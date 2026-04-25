@@ -1,0 +1,91 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+IS_PAPER = "paper" in ALPACA_BASE_URL
+
+# Position sizing
+MAX_POSITIONS = 5
+MAX_POSITION_PCT = 0.45      # Max 45% of portfolio in one position
+CASH_RESERVE_PCT = 0.10      # Always keep 10% as cash buffer
+
+# Risk management
+STOP_LOSS_PCT = 0.04         # 4% trailing stop (tighter than old fixed stop)
+TAKE_PROFIT_PCT = 0.15       # 15% take profit target (let winners run a bit further)
+TRAILING_STOP_PCT = 4.0      # percent trail below highest price (Alpaca native order)
+KELLY_MULTIPLIER = 0.5       # half-Kelly — balances growth vs drawdown risk
+
+# AI decision threshold
+MIN_CONFIDENCE = 7           # Min confidence score (1-10) to open a position
+
+# Position hold limit — auto-exit after this many trading days
+MAX_HOLD_DAYS = 3
+
+# Bear market filter — skip new buys when SPY drops more than this % in a single day
+BEAR_MARKET_SPY_THRESHOLD = -1.5
+
+# How many top movers to add to the daily scan universe
+TOP_MOVERS_COUNT = 10
+
+# Partial profit taking — sell half position when unrealised gain hits this %
+PARTIAL_PROFIT_PCT = 8.0
+
+# Earnings guard — exit positions with earnings within this many calendar days
+EARNINGS_WARNING_DAYS = 2
+
+# VIX thresholds for stop adjustment
+VIX_HIGH = 25.0   # above this, widen stops
+
+# Max positions per sector
+MAX_SECTOR_POSITIONS = 2
+
+# How many days of historical data to feed to Claude
+LOOKBACK_DAYS = 30
+
+# Market schedule (US Eastern Time)
+MARKET_OPEN_HOUR = 9
+MARKET_OPEN_MINUTE = 31      # Run 1 min after open
+MARKET_TIMEZONE = "America/New_York"
+
+# Stocks to scan - liquid names with fractional share support on Alpaca
+STOCK_UNIVERSE = [
+    # Mega-cap tech
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    # Mid-cap tech & growth
+    "AMD", "NFLX", "CRM", "ADBE", "UBER",
+    # Financials
+    "JPM", "BAC", "GS",
+    # Energy
+    "XOM", "CVX",
+    # Broad market ETFs (low price, fractional)
+    "SPY", "QQQ", "IWM",
+    # Consumer
+    "COST", "WMT", "HD",
+]
+
+# Email notifications
+EMAIL_FROM = os.getenv("EMAIL_FROM")           # Your Gmail address
+EMAIL_TO = os.getenv("EMAIL_TO")               # Primary recipient (you)
+EMAIL_CC = os.getenv("EMAIL_CC", "")           # Additional recipients — comma-separated (e.g. friends/investors)
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # Gmail App Password (not your login password)
+
+# Log file path
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+
+# Pre-trade controls (MiFID II Article 17)
+# Fat-finger guard: reject any single order above this USD value
+MAX_SINGLE_ORDER_USD = 50000.0
+# Runaway algorithm guard: halt new buys once this much notional has been deployed today
+MAX_DAILY_NOTIONAL_USD = 150000.0
+
+# Operations
+# Kill switch creates this file; bot refuses to run while it exists.
+# To resume: python main.py --clear-halt
+HALT_FILE = os.path.join(LOG_DIR, ".HALTED")

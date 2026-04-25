@@ -1,0 +1,21 @@
+# Secrets — never commit these
+.env
+*.pem
+*.key
+
+# Runtime artefacts
+logs/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Python environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
