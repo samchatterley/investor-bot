@@ -38,8 +38,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_LOCK_FILE = os.path.join(config.LOG_DIR, f".lock_{date.today().isoformat()}")
-_LOCK_MAX_AGE_SECONDS = 7200  # auto-clear locks older than 2 hours (handles crash recovery)
+_LOCK_FILE = os.path.join(config.LOG_DIR, f".lock_{config.today_et().isoformat()}")
+_LOCK_MAX_AGE_SECONDS = 1800  # auto-clear locks older than 30 min (handles crash recovery)
 
 
 # ── Lock file management ──────────────────────────────────────────────────────
@@ -148,8 +148,14 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 def run(dry_run: bool = False, mode: str = "open"):
-    today = date.today().isoformat()
+    today = config.today_et().isoformat()
     logger.info(f"=== Trading bot | {today} | mode={mode} {'[DRY RUN]' if dry_run else ''} ===")
+
+    try:
+        config.validate()
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
     if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
         logger.error("ALPACA_API_KEY not set.")

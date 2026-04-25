@@ -1,5 +1,6 @@
 from datetime import date
 from typing import Optional
+from config import today_et
 
 # High-risk scheduled macro events for 2026.
 # On these days, volatility is structurally elevated and unpredictable —
@@ -40,7 +41,7 @@ def get_macro_risk(check_date: Optional[date] = None) -> dict:
     High-risk days: FOMC announcements, CPI releases, NFP releases.
     """
     if check_date is None:
-        check_date = date.today()
+        check_date = today_et()
 
     all_risk_dates = FOMC_ANNOUNCEMENT_DATES | CPI_RELEASE_DATES | NFP_RELEASE_DATES
 

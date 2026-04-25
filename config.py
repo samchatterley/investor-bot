@@ -1,7 +1,14 @@
 import os
+from datetime import date, datetime
+import pytz
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def today_et() -> date:
+    """Return today's date in US Eastern time — use this for all market-date comparisons."""
+    return datetime.now(pytz.timezone(MARKET_TIMEZONE)).date()
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
@@ -89,3 +96,26 @@ MAX_DAILY_NOTIONAL_USD = 150000.0
 # Kill switch creates this file; bot refuses to run while it exists.
 # To resume: python main.py --clear-halt
 HALT_FILE = os.path.join(LOG_DIR, ".HALTED")
+
+
+def validate():
+    """Raise ValueError if any config value is outside its safe operating range."""
+    errors = []
+    if not (0 < MAX_POSITION_PCT <= 1.0):
+        errors.append(f"MAX_POSITION_PCT={MAX_POSITION_PCT} must be between 0 and 1")
+    if not (0 < CASH_RESERVE_PCT < 1.0):
+        errors.append(f"CASH_RESERVE_PCT={CASH_RESERVE_PCT} must be between 0 and 1")
+    if not (1 <= MIN_CONFIDENCE <= 10):
+        errors.append(f"MIN_CONFIDENCE={MIN_CONFIDENCE} must be between 1 and 10")
+    if TRAILING_STOP_PCT <= 0:
+        errors.append(f"TRAILING_STOP_PCT={TRAILING_STOP_PCT} must be positive")
+    if MAX_HOLD_DAYS < 1:
+        errors.append(f"MAX_HOLD_DAYS={MAX_HOLD_DAYS} must be >= 1")
+    if MAX_POSITIONS < 1:
+        errors.append(f"MAX_POSITIONS={MAX_POSITIONS} must be >= 1")
+    if MAX_SINGLE_ORDER_USD <= 0:
+        errors.append(f"MAX_SINGLE_ORDER_USD must be positive")
+    if MAX_DAILY_NOTIONAL_USD <= 0:
+        errors.append(f"MAX_DAILY_NOTIONAL_USD must be positive")
+    if errors:
+        raise ValueError("Config errors:\n" + "\n".join(f"  - {e}" for e in errors))

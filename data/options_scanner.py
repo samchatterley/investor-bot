@@ -59,6 +59,6 @@ def get_options_signals(symbols: list[str]) -> dict:
                 result = future.result()
                 if result:
                     results[sym] = result
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Options future failed for {sym}: {e}")
     return results

@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from typing import Optional
 import yfinance as yf
 import pandas as pd
+from config import today_et
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def days_until_earnings(symbol: str) -> Optional[int]:
     ed = get_next_earnings_date(symbol)
     if ed is None:
         return None
-    today = date.today()
+    today = today_et()
     delta = (ed - today).days
     return delta if delta >= 0 else None
 
@@ -55,7 +56,7 @@ def get_earnings_risk_positions(symbols: list[str], warning_days: int = 2) -> di
     These positions should be exited to avoid gap risk.
     """
     at_risk = {}
-    today = date.today()
+    today = today_et()
     for sym in symbols:
         ed = get_next_earnings_date(sym)
         if ed is None:
