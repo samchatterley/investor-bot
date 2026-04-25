@@ -91,7 +91,6 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
 def get_top_movers(n: int = 10) -> list[str]:
     """Return top n symbols from the extended universe by momentum × volume score today."""
     try:
-        import yfinance as yf
         data = yf.download(
             EXTENDED_UNIVERSE,
             period="5d",

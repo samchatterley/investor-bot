@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Optional
 import anthropic
-from config import ANTHROPIC_API_KEY, MIN_CONFIDENCE, MAX_POSITIONS
+from config import ANTHROPIC_API_KEY, MIN_CONFIDENCE, MAX_POSITIONS, MAX_HOLD_DAYS
 from analysis.performance import get_actionable_feedback
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ def build_prompt(
     stale_block = ""
     if stale_positions:
         stale_block = f"""
-STALE POSITIONS (held ≥ {MAX_POSITIONS} trading days — consider exiting to free capital):
+STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to free capital):
 {', '.join(stale_positions)}
 """
 
