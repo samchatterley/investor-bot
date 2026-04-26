@@ -5,7 +5,7 @@ import textwrap
 import unittest
 from unittest.mock import patch
 
-from analysis.weekly_review import _apply_config_changes
+from analysis.weekly_review import _apply_config_changes, get_latest_review
 
 
 _SAMPLE_CONFIG = textwrap.dedent("""\
@@ -91,3 +91,47 @@ class TestApplyConfigChanges(unittest.TestCase):
         content = self._read()
         self.assertIn("MIN_CONFIDENCE = 8", content)
         self.assertIn("MAX_HOLD_DAYS = 5", content)
+
+
+class TestGetLatestReview(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patcher = patch("analysis.weekly_review.LOG_DIR", self.tmpdir)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def _write_review(self, filename, lessons):
+        import json
+        path = os.path.join(self.tmpdir, filename)
+        with open(path, "w") as f:
+            json.dump({"lessons": lessons, "week_summary": "test"}, f)
+
+    def test_returns_empty_list_when_no_reviews(self):
+        self.assertEqual(get_latest_review(), [])
+
+    def test_returns_lessons_from_single_review(self):
+        self._write_review("weekly_review_2026-04-20.json", ["lesson one", "lesson two"])
+        result = get_latest_review()
+        self.assertEqual(result, ["lesson one", "lesson two"])
+
+    def test_returns_lessons_from_most_recent_review(self):
+        self._write_review("weekly_review_2026-04-13.json", ["old lesson"])
+        self._write_review("weekly_review_2026-04-20.json", ["new lesson"])
+        result = get_latest_review()
+        self.assertEqual(result, ["new lesson"])
+
+    def test_ignores_non_review_files(self):
+        import json
+        with open(os.path.join(self.tmpdir, "2026-04-20.json"), "w") as f:
+            json.dump({"date": "2026-04-20"}, f)
+        self.assertEqual(get_latest_review(), [])
+
+    def test_returns_empty_on_malformed_file(self):
+        path = os.path.join(self.tmpdir, "weekly_review_2026-04-20.json")
+        with open(path, "w") as f:
+            f.write("not valid json {{{")
+        self.assertEqual(get_latest_review(), [])
