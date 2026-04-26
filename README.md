@@ -98,7 +98,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # Fill in .env with your keys
-python run_scheduler.py
+python scripts/run_scheduler.py
 ```
 
 ### Option B — Docker (one command)
@@ -171,6 +171,35 @@ Replays the strategy's rule-based entry signals on historical OHLCV data without
 ```bash
 python cli.py halt          # Interactive kill switch (prompts for confirmation)
 python cli.py resume        # Clear halt and resume
+```
+
+### Scripts reference
+
+These are the background processes — run one of these to keep the bot operating continuously:
+
+| Script | Purpose |
+|--------|---------|
+| `python scripts/run_scheduler.py` | Main scheduler — runs open/midday/close automatically Mon–Fri |
+| `python scripts/run_diagnostics.py` | Run unit test suite and save report to `logs/` |
+| `python backtest/engine.py --start 2025-01-01 --end 2025-12-31` | Run backtester directly |
+
+### Project structure
+
+```
+├── analysis/          AI analyst, performance tracking, weekly review
+├── backtest/          Rule-based backtesting engine
+├── data/              Market data, news, options, sentiment, sectors
+├── execution/         Order placement, stock scanner
+├── notifications/     Email and alert system
+├── risk/              Position sizing, earnings/macro calendar, risk checks
+├── scripts/           Scheduler and diagnostics runner
+├── tests/             Unit test suite (203 tests)
+├── utils/             Audit log, portfolio tracker, decision log, validators
+├── cli.py             Command-line interface
+├── config.py          All configuration and environment variables
+├── dashboard.py       Streamlit web dashboard
+├── main.py            Core trading logic
+└── start              Launcher shortcut (./start dashboard, ./start status, etc.)
 ```
 
 ---

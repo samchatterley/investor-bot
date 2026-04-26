@@ -6,7 +6,7 @@ services:
     env_file: .env
     volumes:
       - ./logs:/app/logs
-    command: python run_scheduler.py
+    command: python scripts/run_scheduler.py
 
   dashboard:
     build: .

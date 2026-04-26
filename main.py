@@ -523,8 +523,8 @@ if __name__ == "__main__":
             except Exception as e:
                 logger.warning(f"Could not fetch account value ({e}) — defaulting to $100,000")
                 capital = 100000.0
-        import backtester
-        backtester.run_backtest(
+        from backtest import run_backtest
+        run_backtest(
             config.STOCK_UNIVERSE, args.start, args.end, capital,
             max_positions=config.MAX_POSITIONS,
         )

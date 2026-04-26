@@ -1,7 +1,6 @@
 """
 Runs the full unit test suite and returns a structured diagnostic report.
-Called from run_scheduler.py as part of the Sunday evening job — results
-are included in the weekly review email.
+Called from scripts/run_scheduler.py as part of the Sunday evening job.
 """
 import json
 import logging
@@ -11,10 +10,15 @@ import time
 import unittest
 from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
+# Ensure the project root is on the path when this script is run directly
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_SCRIPTS_DIR)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-_ROOT = os.path.dirname(os.path.abspath(__file__))
 _TESTS_DIR = os.path.join(_ROOT, "tests")
+
+logger = logging.getLogger(__name__)
 
 
 class _SilentResult(unittest.TestResult):
@@ -27,9 +31,6 @@ def run_diagnostics() -> dict:
     Discover and run all tests in tests/. Returns a report dict with counts,
     duration, status (PASS/FAIL), and details of any failures.
     """
-    if _ROOT not in sys.path:
-        sys.path.insert(0, _ROOT)
-
     loader = unittest.TestLoader()
     suite = loader.discover(_TESTS_DIR, pattern="test_*.py")
 
@@ -59,9 +60,7 @@ def run_diagnostics() -> dict:
         "failures": failures,
     }
 
-    logger.info(
-        f"Diagnostics: {passed}/{result.testsRun} passed | {status} | {duration:.1f}s"
-    )
+    logger.info(f"Diagnostics: {passed}/{result.testsRun} passed | {status} | {duration:.1f}s")
     if failures:
         for f in failures:
             logger.warning(f"  FAIL: {f['test']} — {f['message']}")

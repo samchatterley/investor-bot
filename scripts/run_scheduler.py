@@ -10,8 +10,15 @@ UK times (BST, UTC+1):
 Leave this process running in a terminal or tmux session.
 Alternatively, use cron (see README or inline comments below).
 """
-
 import os
+import sys
+
+# Ensure the project root is on the path when this script is run directly
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_SCRIPTS_DIR)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import schedule
 import time
 import logging
@@ -19,7 +26,7 @@ import config
 import main as bot
 from analysis.weekly_review import run_weekly_review
 from notifications.emailer import send_weekly_review
-from run_diagnostics import run_diagnostics
+from scripts.run_diagnostics import run_diagnostics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +57,6 @@ def _weekly_review():
         logger.info("Trading HALTED — skipping weekly review.")
         return
 
-    # Run diagnostics first so the report is available for the email
     logger.info("Running system diagnostics...")
     test_report = None
     try:
@@ -64,7 +70,6 @@ def _weekly_review():
         if review:
             send_weekly_review(review, test_report=test_report)
         elif test_report:
-            # If there's no trade history to review yet, send diagnostics on their own
             from notifications.emailer import _send_html, _build_weekly_html
             from datetime import date as _date
             review_stub = {

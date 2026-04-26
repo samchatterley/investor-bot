@@ -170,7 +170,7 @@ def _diagnostics_button(total: int, cooldown_end: float):
         if st.button("Run diagnostics now", type="primary"):
             with st.spinner(f"Running {total} tests..."):
                 result = subprocess.run(
-                    [sys.executable, "run_diagnostics.py"],
+                    [sys.executable, "scripts/run_diagnostics.py"],
                     cwd=os.path.dirname(os.path.abspath(__file__)),
                     capture_output=True, text=True, timeout=120,
                 )

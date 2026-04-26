@@ -18,4 +18,4 @@ COPY . .
 RUN mkdir -p logs
 
 # Default: run the scheduler
-CMD ["python", "run_scheduler.py"]
+CMD ["python", "scripts/run_scheduler.py"]

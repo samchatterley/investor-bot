@@ -142,7 +142,7 @@ def cmd_resume(args):
 
 
 def cmd_backtest(args):
-    import backtester
+    from backtest import run_backtest
     capital = args.capital
     if capital is None:
         try:
@@ -153,7 +153,7 @@ def cmd_backtest(args):
         except Exception:
             capital = 100_000.0
             print(f"  Defaulting to ${capital:,.0f}")
-    backtester.run_backtest(config.STOCK_UNIVERSE, args.start, args.end, capital)
+    run_backtest(config.STOCK_UNIVERSE, args.start, args.end, capital)
 
 
 def cmd_dashboard(args):
