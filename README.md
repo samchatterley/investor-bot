@@ -22,71 +22,93 @@ The goal here was to build something in between — a system where an AI model d
 
 ### Workflow
 
-```
-Market data + options + news + macro calendar
-            │
-            ▼
-    ┌───────────────┐
-    │ Context build │  30d OHLCV, regime classification, performance feedback,
-    └───────┬───────┘  earnings calendar, lessons from last week's review
-            │
-            ▼
-    ┌───────────────┐
-    │  Claude call  │  Structured prompt → JSON response with per-symbol
-    └───────┬───────┘  decisions, confidence scores, reasoning
-            │
-            ▼
-    ┌───────────────┐
-    │  Validation   │  Schema check, universe whitelist, confidence floor,
-    └───────┬───────┘  conflict detection, prompt injection scan
-            │
-            ▼
-    ┌───────────────┐
-    │  Risk checks  │  Kelly sizing, position limits, fat-finger guard,
-    └───────┬───────┘  sector cap, bear filter, VIX adjustment
-            │
-            ▼
-    ┌───────────────┐
-    │    Execute    │  Fractional market orders + trailing stop via Alpaca API
-    └───────┬───────┘
-            │
-            ▼
-    ┌───────────────┐
-    │  Audit + log  │  Every decision logged (executed or not), daily JSON
-    └───────────────┘  record, end-of-day summary email
+```mermaid
+flowchart TD
+    A["📊 Market data\nOHLCV · Options · News · Sentiment\nMacro calendar · Earnings calendar"]
+
+    B["🔧 Context build\n30d price history · Regime classification\nPerformance feedback · Last week's lessons"]
+
+    C["🤖 Claude — tool call\nStructured prompt → typed JSON response\nPer-symbol decisions · Confidence scores · Reasoning"]
+
+    D["✅ Validation\nTool-use schema · Universe whitelist\nConfidence floor · Conflict detection\nPrompt injection scan"]
+
+    E["🛡️ Risk checks\nKelly sizing · Position limits\nFat-finger guard · Sector cap\nBear filter · VIX adjustment"]
+
+    F["⚡ Execute\nFractional market orders\nTrailing stop via Alpaca API"]
+
+    G["📝 Audit + log\nEvery decision logged — executed or not\nDaily JSON record · End-of-day email"]
+
+    A --> B --> C --> D --> E --> F --> G
+
+    style A fill:#e8f4fd,stroke:#2196F3,color:#000
+    style B fill:#e8f4fd,stroke:#2196F3,color:#000
+    style C fill:#f3e8fd,stroke:#9C27B0,color:#000
+    style D fill:#e8fdf0,stroke:#4CAF50,color:#000
+    style E fill:#fff3e0,stroke:#FF9800,color:#000
+    style F fill:#fde8e8,stroke:#F44336,color:#000
+    style G fill:#e8f4fd,stroke:#2196F3,color:#000
 ```
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                        main.py                          │
-│   Orchestrator — schedule, lock, halt check, run cycle  │
-└────┬──────────┬────────────┬───────────────┬────────────┘
-     │          │            │               │
-     ▼          ▼            ▼               ▼
-  data/      risk/      analysis/       execution/
-  ──────     ──────     ─────────       ──────────
-  OHLCV      Position   ai_analyst      trader.py
-  Options    sizer      weekly_review   stock_scanner
-  News       Risk mgr   performance
-  Sentiment  Earnings
-  Sectors    Macro cal
-     │          │            │               │
-     └──────────┴────────────┴───────────────┘
-                             │
-                    ┌────────▼────────┐
-                    │    utils/       │
-                    │  audit_log      │
-                    │  decision_log   │
-                    │  portfolio      │
-                    │  validators     │
-                    └────────┬────────┘
-                             │
-              ┌──────────────▼──────────────┐
-              │       notifications/        │
-              │  Daily email · Alerts       │
-              └─────────────────────────────┘
+```mermaid
+flowchart TD
+    MAIN["⚙️ main.py\nOrchestrator — schedule · lock · halt check · run cycle"]
+
+    subgraph DATA["📊 data/"]
+        direction TB
+        D1["OHLCV · Options"]
+        D2["News · Sentiment"]
+        D3["Sectors · Macro cal"]
+    end
+
+    subgraph RISK["🛡️ risk/"]
+        direction TB
+        R1["Position sizer"]
+        R2["Risk manager"]
+        R3["Earnings · Macro cal"]
+    end
+
+    subgraph ANALYSIS["🧠 analysis/"]
+        direction TB
+        A1["ai_analyst"]
+        A2["weekly_review"]
+        A3["performance"]
+    end
+
+    subgraph EXEC["🚀 execution/"]
+        direction TB
+        E1["trader.py"]
+        E2["stock_scanner"]
+    end
+
+    subgraph UTILS["🔧 utils/"]
+        direction TB
+        U1["audit_log · decision_log"]
+        U2["portfolio · validators"]
+    end
+
+    NOTIF["🔔 notifications/\nDaily email · Alerts"]
+
+    MAIN --> DATA
+    MAIN --> RISK
+    MAIN --> ANALYSIS
+    MAIN --> EXEC
+
+    DATA --> UTILS
+    RISK --> UTILS
+    ANALYSIS --> UTILS
+    EXEC --> UTILS
+
+    UTILS --> NOTIF
+
+    style MAIN fill:#1a237e,color:#fff,stroke:#1a237e
+    style DATA fill:#e8f5e9,stroke:#4CAF50,color:#000
+    style RISK fill:#fff3e0,stroke:#FF9800,color:#000
+    style ANALYSIS fill:#f3e8fd,stroke:#9C27B0,color:#000
+    style EXEC fill:#e8f4fd,stroke:#2196F3,color:#000
+    style UTILS fill:#e0f7fa,stroke:#00BCD4,color:#000
+    style NOTIF fill:#fff8e1,stroke:#FFC107,color:#000
 ```
 
 ### Architecture tradeoffs
