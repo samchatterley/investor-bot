@@ -289,7 +289,7 @@ def _print_results(r: dict):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", default="2025-01-01")
-    parser.add_argument("--end", default="2025-12-31")
+    parser.add_argument("--end", default=datetime.today().strftime("%Y-%m-%d"))
     parser.add_argument("--capital", type=float, default=25000.0)
     args = parser.parse_args()
     run_backtest(STOCK_UNIVERSE, args.start, args.end, initial_capital=args.capital)

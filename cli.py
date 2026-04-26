@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import sys
+from datetime import date
 from itertools import groupby
 
 import config
@@ -154,7 +155,8 @@ def cmd_backtest(args):
         except Exception:
             capital = 100_000.0
             print(f"  Defaulting to ${capital:,.0f}")
-    run_backtest(config.STOCK_UNIVERSE, args.start, args.end, capital,
+    end = args.end or date.today().isoformat()
+    run_backtest(config.STOCK_UNIVERSE, args.start, end, capital,
                  max_positions=config.MAX_POSITIONS)
 
 
@@ -193,7 +195,7 @@ def main():
 
     p = sub.add_parser("backtest", help="Run historical backtest")
     p.add_argument("--start", default="2025-01-01")
-    p.add_argument("--end", default="2025-12-31")
+    p.add_argument("--end", default=None)
     p.add_argument("--capital", type=float, default=None)
 
     sub.add_parser("dashboard", help="Launch Streamlit web dashboard")
