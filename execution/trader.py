@@ -1,7 +1,9 @@
 from __future__ import annotations
+import fcntl
 import json
 import logging
 import os
+from contextlib import contextmanager
 from datetime import date
 from typing import Optional
 from alpaca.trading.client import TradingClient
@@ -155,10 +157,22 @@ def is_market_open(client: TradingClient) -> bool:
 # ---------- Position age tracking ----------
 
 _META_PATH = os.path.join(LOG_DIR, "positions_meta.json")
+_META_LOCK_PATH = _META_PATH + ".lock"
+
+
+@contextmanager
+def _meta_lock():
+    """Exclusive file lock for read-modify-write operations on positions_meta.json."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+    with open(_META_LOCK_PATH, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def _load_meta() -> dict:
-    os.makedirs(LOG_DIR, exist_ok=True)
     if os.path.exists(_META_PATH):
         with open(_META_PATH) as f:
             try:
@@ -169,44 +183,48 @@ def _load_meta() -> dict:
 
 
 def _save_meta(meta: dict):
-    os.makedirs(LOG_DIR, exist_ok=True)
     with open(_META_PATH, "w") as f:
         json.dump(meta, f, indent=2)
 
 
 def get_position_signal(symbol: str) -> str:
     """Return the entry signal stored for a position, or 'unknown'."""
-    return _load_meta().get(symbol, {}).get("signal", "unknown")
+    with _meta_lock():
+        return _load_meta().get(symbol, {}).get("signal", "unknown")
 
 
 def record_buy(symbol: str, entry_price: float, signal: str = "unknown",
                regime: str = "UNKNOWN", confidence: int = 0):
-    meta = _load_meta()
-    meta[symbol] = {
-        "entry_date": date.today().isoformat(),
-        "entry_price": round(entry_price, 4),
-        "signal": signal,
-        "regime": regime,
-        "confidence": confidence,
-    }
-    _save_meta(meta)
+    with _meta_lock():
+        meta = _load_meta()
+        meta[symbol] = {
+            "entry_date": date.today().isoformat(),
+            "entry_price": round(entry_price, 4),
+            "signal": signal,
+            "regime": regime,
+            "confidence": confidence,
+        }
+        _save_meta(meta)
 
 
 def record_sell(symbol: str):
-    meta = _load_meta()
-    meta.pop(symbol, None)
-    _save_meta(meta)
+    with _meta_lock():
+        meta = _load_meta()
+        meta.pop(symbol, None)
+        _save_meta(meta)
 
 
 def get_position_meta(symbol: str) -> dict:
     """Return full entry metadata for a position (signal, regime, confidence, entry_price, entry_date)."""
     defaults = {"signal": "unknown", "regime": "UNKNOWN", "confidence": 0, "entry_price": 0.0}
-    return {**defaults, **_load_meta().get(symbol, {})}
+    with _meta_lock():
+        return {**defaults, **_load_meta().get(symbol, {})}
 
 
 def get_position_ages() -> dict[str, int]:
     """Return {symbol: approximate_trading_days_held}."""
-    meta = _load_meta()
+    with _meta_lock():
+        meta = _load_meta()
     today = date.today()
     ages = {}
     for symbol, data in meta.items():
@@ -233,25 +251,26 @@ def reconcile_positions(client: TradingClient):
     adds placeholder entries for positions with no metadata.
     """
     actual = {p.symbol for p in client.get_all_positions()}
-    meta = _load_meta()
-    changed = False
+    with _meta_lock():
+        meta = _load_meta()
+        changed = False
 
-    # Remove entries for positions we no longer hold
-    for sym in list(meta.keys()):
-        if sym not in actual:
-            logger.info(f"Reconcile: removing stale metadata for {sym}")
-            del meta[sym]
-            changed = True
+        # Remove entries for positions we no longer hold
+        for sym in list(meta.keys()):
+            if sym not in actual:
+                logger.info(f"Reconcile: removing stale metadata for {sym}")
+                del meta[sym]
+                changed = True
 
-    # Add placeholder entries for positions with no metadata
-    for sym in actual:
-        if sym not in meta:
-            logger.info(f"Reconcile: adding missing metadata for {sym}")
-            meta[sym] = {"entry_date": date.today().isoformat(), "entry_price": 0.0, "signal": "unknown"}
-            changed = True
+        # Add placeholder entries for positions with no metadata
+        for sym in actual:
+            if sym not in meta:
+                logger.info(f"Reconcile: adding missing metadata for {sym}")
+                meta[sym] = {"entry_date": date.today().isoformat(), "entry_price": 0.0, "signal": "unknown"}
+                changed = True
 
-    if changed:
-        _save_meta(meta)
+        if changed:
+            _save_meta(meta)
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):
