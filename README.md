@@ -23,92 +23,82 @@ The goal here was to build something in between — a system where an AI model d
 ### Workflow
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '15px', 'lineColor': '#94a3b8'}}}%%
 flowchart TD
-    A["📊 Market data\nOHLCV · Options · News · Sentiment\nMacro calendar · Earnings calendar"]
+    classDef input    fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f,rx:8
+    classDef ai       fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065,rx:8
+    classDef validate fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d,rx:8
+    classDef risk     fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#431407,rx:8
+    classDef execute  fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#500724,rx:8
+    classDef audit    fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#0f172a,rx:8
 
-    B["🔧 Context build\n30d price history · Regime classification\nPerformance feedback · Last week's lessons"]
+    A["📊 &nbsp;Market context
+    OHLCV · options · news · sentiment
+    regime · earnings · macro · past lessons"]:::input
 
-    C["🤖 Claude — tool call\nStructured prompt → typed JSON response\nPer-symbol decisions · Confidence scores · Reasoning"]
+    B["🤖 &nbsp;Claude — structured tool call
+    Full context prompt → typed JSON response
+    Per-symbol decisions · confidence scores · reasoning"]:::ai
 
-    D["✅ Validation\nTool-use schema · Universe whitelist\nConfidence floor · Conflict detection\nPrompt injection scan"]
+    C["✅ &nbsp;Validation — two independent layers
+    API: tool-use schema enforces types at boundary
+    Domain: whitelist · confidence · signal · conflict"]:::validate
 
-    E["🛡️ Risk checks\nKelly sizing · Position limits\nFat-finger guard · Sector cap\nBear filter · VIX adjustment"]
+    D["🛡️ &nbsp;Risk gate
+    Kelly sizing · position limits · sector cap
+    fat-finger guard · bear filter · VIX adjustment"]:::risk
 
-    F["⚡ Execute\nFractional market orders\nTrailing stop via Alpaca API"]
+    E["⚡ &nbsp;Execute
+    Fractional market orders via Alpaca
+    Trailing stop attached · stop coverage verified"]:::execute
 
-    G["📝 Audit + log\nEvery decision logged — executed or not\nDaily JSON record · End-of-day email"]
+    F["📝 &nbsp;Audit
+    Every decision logged whether executed or not
+    Daily JSON record · end-of-day summary email"]:::audit
 
-    A --> B --> C --> D --> E --> F --> G
-
-    style A fill:#e8f4fd,stroke:#2196F3,color:#000
-    style B fill:#e8f4fd,stroke:#2196F3,color:#000
-    style C fill:#f3e8fd,stroke:#9C27B0,color:#000
-    style D fill:#e8fdf0,stroke:#4CAF50,color:#000
-    style E fill:#fff3e0,stroke:#FF9800,color:#000
-    style F fill:#fde8e8,stroke:#F44336,color:#000
-    style G fill:#e8f4fd,stroke:#2196F3,color:#000
+    A --> B --> C --> D --> E --> F
 ```
 
 ### Architecture
 
 ```mermaid
-flowchart TD
-    MAIN["⚙️ main.py\nOrchestrator — schedule · lock · halt check · run cycle"]
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '15px', 'lineColor': '#94a3b8'}}}%%
+flowchart TB
+    classDef main     fill:#0f172a,stroke:#0f172a,color:#f8fafc,stroke-width:2px
+    classDef data     fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
+    classDef analysis fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065
+    classDef risk     fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#431407
+    classDef exec     fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#500724
+    classDef utils    fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+    classDef notif    fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#451a03
 
-    subgraph DATA["📊 data/"]
-        direction TB
-        D1["OHLCV · Options"]
-        D2["News · Sentiment"]
-        D3["Sectors · Macro cal"]
-    end
+    MAIN["⚙️ &nbsp;main.py
+    Orchestrator — schedule · lock · halt check · run cycle"]:::main
 
-    subgraph RISK["🛡️ risk/"]
-        direction TB
-        R1["Position sizer"]
-        R2["Risk manager"]
-        R3["Earnings · Macro cal"]
-    end
+    DATA["📊 &nbsp;data/
+    OHLCV · options · news
+    sentiment · sectors · macro"]:::data
 
-    subgraph ANALYSIS["🧠 analysis/"]
-        direction TB
-        A1["ai_analyst"]
-        A2["weekly_review"]
-        A3["performance"]
-    end
+    ANALYSIS["🧠 &nbsp;analysis/
+    ai_analyst · weekly_review
+    performance tracking"]:::analysis
 
-    subgraph EXEC["🚀 execution/"]
-        direction TB
-        E1["trader.py"]
-        E2["stock_scanner"]
-    end
+    RISK["🛡️ &nbsp;risk/
+    position sizer · risk manager
+    earnings · macro calendar"]:::risk
 
-    subgraph UTILS["🔧 utils/"]
-        direction TB
-        U1["audit_log · decision_log"]
-        U2["portfolio · validators"]
-    end
+    EXEC["🚀 &nbsp;execution/
+    trader · stock_scanner"]:::exec
 
-    NOTIF["🔔 notifications/\nDaily email · Alerts"]
+    UTILS["🔧 &nbsp;utils/
+    audit_log · decision_log · portfolio · validators"]:::utils
 
-    MAIN --> DATA
-    MAIN --> RISK
-    MAIN --> ANALYSIS
-    MAIN --> EXEC
+    NOTIF["🔔 &nbsp;notifications/
+    Daily email · Emergency alerts"]:::notif
 
-    DATA --> UTILS
-    RISK --> UTILS
-    ANALYSIS --> UTILS
-    EXEC --> UTILS
-
+    MAIN --> DATA & ANALYSIS & RISK & EXEC
+    DATA & ANALYSIS & RISK & EXEC --> UTILS
     UTILS --> NOTIF
-
-    style MAIN fill:#1a237e,color:#fff,stroke:#1a237e
-    style DATA fill:#e8f5e9,stroke:#4CAF50,color:#000
-    style RISK fill:#fff3e0,stroke:#FF9800,color:#000
-    style ANALYSIS fill:#f3e8fd,stroke:#9C27B0,color:#000
-    style EXEC fill:#e8f4fd,stroke:#2196F3,color:#000
-    style UTILS fill:#e0f7fa,stroke:#00BCD4,color:#000
-    style NOTIF fill:#fff8e1,stroke:#FFC107,color:#000
 ```
 
 ### Architecture tradeoffs
