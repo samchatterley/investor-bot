@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 import logging
 from typing import Optional
 import anthropic
@@ -27,9 +26,58 @@ IMPORTANT: Write all reasoning in plain English that a non-technical reader can 
 Do NOT use acronyms or jargon. Instead of "RSI at 49", say "the momentum indicator shows
 the stock is neither overbought nor oversold". Instead of "MACD crossed up", say "momentum
 just shifted upward". Instead of "EMA9 above EMA21", say "the short-term trend is above the
-medium-term trend, confirming an uptrend". Keep reasoning to 2-3 sentences maximum.
+medium-term trend, confirming an uptrend". Keep reasoning to 2-3 sentences maximum."""
 
-Always respond with valid JSON only. No prose outside the JSON."""
+
+# Tool schema — forces Claude to return structured data matching this shape.
+# Eliminates JSON parsing fragility; confidence bounds and signal enum are
+# enforced at the API layer before the response reaches our validator.
+_DECISION_TOOL = {
+    "name": "submit_trading_decisions",
+    "description": "Submit structured trading decisions for the current session",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "date": {"type": "string", "description": "Today's date YYYY-MM-DD"},
+            "market_summary": {"type": "string", "description": "One sentence on overall market tone"},
+            "position_decisions": {
+                "type": "array",
+                "description": "Decision for each currently held position",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "action": {"type": "string", "enum": ["HOLD", "SELL"]},
+                        "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["symbol", "action", "confidence", "reasoning"],
+                },
+            },
+            "buy_candidates": {
+                "type": "array",
+                "description": "Ranked list of buy candidates, highest conviction first",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
+                        "reasoning": {"type": "string"},
+                        "key_signal": {
+                            "type": "string",
+                            "enum": [
+                                "mean_reversion", "momentum", "trend_continuation",
+                                "macd_crossover", "rsi_oversold", "news_catalyst", "unknown",
+                            ],
+                        },
+                    },
+                    "required": ["symbol", "confidence", "reasoning", "key_signal"],
+                },
+            },
+        },
+        "required": ["date", "market_summary", "position_decisions", "buy_candidates"],
+    },
+}
 
 
 _REGIME_ADVICE = {
@@ -218,27 +266,7 @@ TASK:
 NOTE: Do NOT include a cash_fraction field — position sizing is handled automatically
 by the Kelly Criterion using your confidence score. Focus on signal quality and confidence accuracy.
 
-Respond with ONLY this JSON:
-{{
-  "date": "YYYY-MM-DD",
-  "market_summary": "one sentence on overall market tone",
-  "position_decisions": [
-    {{
-      "symbol": "AAPL",
-      "action": "HOLD" | "SELL",
-      "confidence": 8,
-      "reasoning": "brief reason"
-    }}
-  ],
-  "buy_candidates": [
-    {{
-      "symbol": "MSFT",
-      "confidence": 8,
-      "reasoning": "brief reason",
-      "key_signal": "rsi_oversold | macd_crossover | momentum | mean_reversion | trend_continuation | news_catalyst"
-    }}
-  ]
-}}"""
+Use the submit_trading_decisions tool to return your analysis."""
 
 
 def get_trading_decisions(
@@ -282,26 +310,22 @@ def get_trading_decisions(
             model=CLAUDE_MODEL,
             max_tokens=1500,
             system=SYSTEM_PROMPT,
+            tools=[_DECISION_TOOL],
+            tool_choice={"type": "tool", "name": "submit_trading_decisions"},
             messages=[{"role": "user", "content": prompt}],
         )
 
-        raw = response.content[0].text.strip()
+        tool_block = next(
+            (b for b in response.content if hasattr(b, "input")), None
+        )
+        if tool_block is None:
+            logger.error("AI response contained no tool call")
+            return None
 
-        # Strip markdown code fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        raw = raw.strip()
-
-        decisions = json.loads(raw)
+        decisions = tool_block.input
         logger.info(f"AI analysis complete. Market: {decisions.get('market_summary', '')}")
         return decisions
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse AI response as JSON: {e}")
-        logger.debug(f"Raw response: {raw if 'raw' in dir() else 'unknown'}")
-        return None
     except anthropic.APIError as e:
         logger.error(f"Anthropic API error: {e}")
         return None

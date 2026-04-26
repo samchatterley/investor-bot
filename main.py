@@ -197,6 +197,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     # ── Reconcile position metadata ───────────────────────────────────────────
     trader.reconcile_positions(client)
+    trader.ensure_stops_attached(client)
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
     history = portfolio_tracker.load_history()

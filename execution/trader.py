@@ -10,7 +10,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 import time
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, IS_PAPER, TRAILING_STOP_PCT, LOG_DIR
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, IS_PAPER, TRAILING_STOP_PCT, LOG_DIR, today_et
 from utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,7 @@ def record_buy(symbol: str, entry_price: float, signal: str = "unknown",
     with _meta_lock():
         meta = _load_meta()
         meta[symbol] = {
-            "entry_date": date.today().isoformat(),
+            "entry_date": today_et().isoformat(),
             "entry_price": round(entry_price, 4),
             "signal": signal,
             "regime": regime,
@@ -225,7 +225,7 @@ def get_position_ages() -> dict[str, int]:
     """Return {symbol: approximate_trading_days_held}."""
     with _meta_lock():
         meta = _load_meta()
-    today = date.today()
+    today = today_et()
     ages = {}
     for symbol, data in meta.items():
         try:
@@ -266,11 +266,38 @@ def reconcile_positions(client: TradingClient):
         for sym in actual:
             if sym not in meta:
                 logger.info(f"Reconcile: adding missing metadata for {sym}")
-                meta[sym] = {"entry_date": date.today().isoformat(), "entry_price": 0.0, "signal": "unknown"}
+                meta[sym] = {"entry_date": today_et().isoformat(), "entry_price": 0.0, "signal": "unknown"}
                 changed = True
 
         if changed:
             _save_meta(meta)
+
+
+def ensure_stops_attached(client: TradingClient):
+    """
+    Detect open positions with no active trailing stop and attach one.
+
+    Guards against the gap where place_buy_order timed out waiting for fill
+    but the order subsequently filled — leaving a live position unprotected.
+    Called at the start of every run after reconcile_positions.
+    """
+    try:
+        positions = client.get_all_positions()
+        if not positions:
+            return
+        open_orders = client.get_orders()
+        protected = {
+            o.symbol for o in open_orders
+            if str(o.order_type) in ("trailing_stop", "stop", "stop_limit")
+            and str(o.side) == "sell"
+        }
+        for pos in positions:
+            if pos.symbol not in protected:
+                qty = float(pos.qty)
+                logger.warning(f"No active stop for {pos.symbol} (qty={qty:.6f}) — attaching trailing stop")
+                place_trailing_stop(client, pos.symbol, qty)
+    except Exception as e:
+        logger.error(f"ensure_stops_attached failed: {e}")
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):
