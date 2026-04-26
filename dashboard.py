@@ -552,7 +552,7 @@ elif page == "Diagnostics":
 
     report = _load_diagnostics()
     if not report:
-        st.info("No diagnostic report yet. Run: `python run_diagnostics.py`")
+        st.info("No diagnostic report yet. Run: `python scripts/run_diagnostics.py`")
     else:
         status  = report.get("status", "UNKNOWN")
         passed  = report.get("passed", 0)

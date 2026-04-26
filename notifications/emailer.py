@@ -206,9 +206,9 @@ def _build_html(record: dict, name: str = "there") -> str:
     trade_count = len(record.get("trades_executed", [])) + len(record.get("stop_losses_triggered", []))
     trade_line = f"{trade_count} trade{'s' if trade_count != 1 else ''} today" if trade_count else "No trades today"
 
-    is_paper = "paper" in str(record.get("mode", "paper")).lower()
-    mode_label = "Paper trading" if is_paper else "Live trading"
-    mode_colour = "#999999" if is_paper else "#e65100"
+    from config import IS_PAPER
+    mode_label = "Paper trading" if IS_PAPER else "Live trading"
+    mode_colour = "#999999" if IS_PAPER else "#e65100"
 
     trade_cards = _build_trade_cards(record)
 

@@ -55,7 +55,8 @@ def _acquire_lock() -> bool:
         else:
             logger.warning("Lock file exists — another run may be in progress. Remove .lock file to override.")
             return False
-    open(_LOCK_FILE, "w").close()
+    with open(_LOCK_FILE, "w"):
+        pass
     return True
 
 

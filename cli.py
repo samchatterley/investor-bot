@@ -153,7 +153,8 @@ def cmd_backtest(args):
         except Exception:
             capital = 100_000.0
             print(f"  Defaulting to ${capital:,.0f}")
-    run_backtest(config.STOCK_UNIVERSE, args.start, args.end, capital)
+    run_backtest(config.STOCK_UNIVERSE, args.start, args.end, capital,
+                 max_positions=config.MAX_POSITIONS)
 
 
 def cmd_dashboard(args):
