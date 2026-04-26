@@ -4,11 +4,13 @@ without calling Claude (avoids API cost).
 
 Usage:
     python backtester.py --start 2024-01-01 --end 2024-12-31
-    python backtester.py --start 2025-01-01 --end 2025-12-31 --capital 25
+    python backtester.py --start 2025-01-01 --end 2025-12-31 --capital 25000
 """
 
 import argparse
+import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 import pandas as pd
@@ -17,7 +19,7 @@ import yfinance as yf
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands
-from config import STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from config import STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT, LOG_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -221,6 +223,11 @@ def run_backtest(
         else:
             by_signal[s]["losses"] += 1
 
+    # Sharpe ratio (annualised, daily returns, risk-free ≈ 0)
+    eq_values = [v for _, v in equity_curve]
+    daily_rets = pd.Series(eq_values).pct_change().dropna()
+    sharpe = float(daily_rets.mean() / daily_rets.std() * (252 ** 0.5)) if daily_rets.std() > 0 else 0.0
+
     results = {
         "start": start_date,
         "end": end_date,
@@ -231,11 +238,30 @@ def run_backtest(
         "win_rate_pct": round(win_rate, 1),
         "avg_return_per_trade_pct": round(avg_return, 2),
         "max_drawdown_pct": round(max_dd, 2),
+        "sharpe_ratio": round(sharpe, 2),
         "by_signal": by_signal,
+        "equity_curve": equity_curve,
+        "trades": trades,
     }
 
     _print_results(results)
+    _save_results(results)
     return results
+
+
+def _save_results(r: dict):
+    """Persist latest backtest results for the dashboard to read."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        path = os.path.join(LOG_DIR, "backtest_results.json")
+        # equity_curve contains datetime objects — convert to strings
+        saveable = {k: v for k, v in r.items() if k != "equity_curve"}
+        saveable["equity_curve"] = [[str(d), v] for d, v in r.get("equity_curve", [])]
+        with open(path, "w") as f:
+            json.dump(saveable, f, indent=2)
+        logger.info(f"Backtest results saved to {path}")
+    except Exception as e:
+        logger.error(f"Could not save backtest results: {e}")
 
 
 def _print_results(r: dict):
@@ -249,6 +275,7 @@ def _print_results(r: dict):
     print(f"  Win rate:          {r['win_rate_pct']:.0f}%")
     print(f"  Avg return/trade:  {r['avg_return_per_trade_pct']:+.2f}%")
     print(f"  Max drawdown:      {r['max_drawdown_pct']:.1f}%")
+    print(f"  Sharpe ratio:      {r['sharpe_ratio']:.2f}")
     print()
     print("  By signal:")
     for sig, data in r["by_signal"].items():

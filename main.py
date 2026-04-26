@@ -29,6 +29,7 @@ from notifications import emailer, alerts
 from utils import portfolio_tracker
 from utils.portfolio_tracker import get_day_summary
 from utils import audit_log
+from utils import decision_log
 from utils.validators import validate_ai_response, sanitize_headlines, check_pre_trade
 
 logging.basicConfig(
@@ -221,6 +222,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     all_trades: list = []
     daily_notional_spent = 0.0  # tracks total notional for daily cap check
+    executed_symbols: set[str] = set()
 
     # ── Market context ────────────────────────────────────────────────────────
     logger.info("Fetching market context...")
@@ -368,6 +370,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         decisions["buy_candidates"] = []
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
+    decision_log.log_decisions(decisions, mode, executed_symbols)
     audit_log.log_ai_decision(
         decisions.get("market_summary", ""),
         len(decisions.get("buy_candidates", [])),
@@ -394,8 +397,10 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     )
                     audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
                 trader.record_sell(symbol)
+                executed_symbols.add(symbol)
                 all_trades.append({**result, "action": "SELL", "detail": reason})
         else:
+            executed_symbols.add(symbol)
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
 
     # ── Execute buys (with pre-trade controls) ────────────────────────────────
@@ -466,10 +471,12 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                             if result.get("filled_qty"):
                                 audit_log.log_order_filled(symbol, result["order_id"], result["filled_qty"])
                                 trader.place_trailing_stop(client, symbol, result["filled_qty"])
+                            executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | Kelly {kelly:.0%} | {candidate.get('key_signal')} | conf={confidence}"
                             all_trades.append({**result, "action": "BUY", "detail": detail})
                     else:
                         daily_notional_spent += notional
+                        executed_symbols.add(symbol)
                         all_trades.append({"symbol": symbol, "action": "BUY", "detail": f"dry run ${notional:.2f}"})
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")

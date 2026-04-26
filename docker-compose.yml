@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    container_name: investorbot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./logs:/app/logs
+    command: python run_scheduler.py
+
+  dashboard:
+    build: .
+    container_name: investorbot-dashboard
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./logs:/app/logs
+    ports:
+      - "8501:8501"
+    command: python -m streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    depends_on:
+      - bot
