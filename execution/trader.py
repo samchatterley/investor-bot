@@ -8,7 +8,8 @@ from datetime import date
 from typing import Optional
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
+import pandas as pd
 import time
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, IS_PAPER, TRAILING_STOP_PCT, LOG_DIR, today_et
 from utils.retry import with_retry
@@ -230,9 +231,7 @@ def get_position_ages() -> dict[str, int]:
     for symbol, data in meta.items():
         try:
             entry = date.fromisoformat(data["entry_date"])
-            calendar_days = (today - entry).days
-            # Approximate: 5 trading days per 7 calendar days
-            trading_days = max(1, round(calendar_days * 5 / 7))
+            trading_days = max(1, len(pd.bdate_range(entry.isoformat(), today.isoformat())) - 1)
             ages[symbol] = trading_days
         except Exception:
             ages[symbol] = 1
@@ -286,16 +285,24 @@ def ensure_stops_attached(client: TradingClient):
         if not positions:
             return
         open_orders = client.get_orders()
-        protected = {
-            o.symbol for o in open_orders
-            if str(o.order_type) in ("trailing_stop", "stop", "stop_limit")
-            and str(o.side) == "sell"
-        }
+
+        # Sum protected qty per symbol across all active sell stop orders
+        stop_qty: dict[str, float] = {}
+        for o in open_orders:
+            if (o.order_type in {OrderType.TRAILING_STOP, OrderType.STOP, OrderType.STOP_LIMIT}
+                    and o.side == OrderSide.SELL):
+                stop_qty[o.symbol] = stop_qty.get(o.symbol, 0.0) + float(o.qty or 0)
+
         for pos in positions:
-            if pos.symbol not in protected:
-                qty = float(pos.qty)
-                logger.warning(f"No active stop for {pos.symbol} (qty={qty:.6f}) — attaching trailing stop")
-                place_trailing_stop(client, pos.symbol, qty)
+            pos_qty = float(pos.qty)
+            covered = stop_qty.get(pos.symbol, 0.0)
+            if covered < pos_qty:
+                shortfall = pos_qty - covered
+                logger.warning(
+                    f"Position {pos.symbol}: {pos_qty:.6f} shares, "
+                    f"{covered:.6f} covered by stops — attaching stop for {shortfall:.6f}"
+                )
+                place_trailing_stop(client, pos.symbol, shortfall)
     except Exception as e:
         logger.error(f"ensure_stops_attached failed: {e}")
 

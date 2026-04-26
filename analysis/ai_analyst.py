@@ -4,6 +4,7 @@ from typing import Optional
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MIN_CONFIDENCE, MAX_POSITIONS, MAX_HOLD_DAYS
 from analysis.performance import get_actionable_feedback
+from utils.validators import validate_ai_response
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,17 @@ def get_trading_decisions(
             return None
 
         decisions = tool_block.input
+
+        # Independent domain validation — API schema enforcement and internal
+        # validation are kept separate so neither can mask failures in the other.
+        # known_symbols is derived from the snapshots passed to this call.
+        known_symbols = {s["symbol"] for s in snapshots} | {p["symbol"] for p in current_positions}
+        is_valid, errors = validate_ai_response(decisions, known_symbols)
+        if not is_valid:
+            logger.warning(f"AI response failed domain validation: {errors}")
+            # Return decisions anyway — main.py runs the authoritative validation
+            # and will strip invalid candidates before any order is placed.
+
         logger.info(f"AI analysis complete. Market: {decisions.get('market_summary', '')}")
         return decisions
 
