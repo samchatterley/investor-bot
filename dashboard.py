@@ -466,7 +466,7 @@ elif page == "Backtest":
 
     results = _load_backtest()
     if not results:
-        st.info("No backtest results yet. Run: `python cli.py backtest --start 2024-01-01 --end 2024-12-31`")
+        st.info("No backtest results yet. Run: `python cli.py backtest --start 2025-01-01 --end 2025-12-31`")
     else:
         st.caption(
             f"Period: **{results['start']}** → **{results['end']}**  ·  "

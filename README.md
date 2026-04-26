@@ -136,7 +136,7 @@ python cli.py run --mode open     # Trigger a trading run
 python cli.py run --dry-run       # Analyse only, no orders placed
 python cli.py halt                # Emergency kill switch
 python cli.py resume              # Clear halt and resume
-python cli.py backtest --start 2024-01-01 --end 2024-12-31
+python cli.py backtest --start 2025-01-01 --end 2025-12-31
 python cli.py dashboard           # Launch web dashboard
 ```
 
@@ -161,7 +161,7 @@ Opens at `http://localhost:8501`. Five pages:
 ### Backtesting
 
 ```bash
-python cli.py backtest --start 2024-01-01 --end 2024-12-31 --capital 25000
+python cli.py backtest --start 2025-01-01 --end 2025-12-31 --capital 25000
 ```
 
 Replays the strategy's rule-based entry signals on historical OHLCV data without calling Claude (no API cost). Reports total return, win rate, Sharpe ratio, max drawdown, and performance by signal type. Results are saved to `logs/backtest_results.json` and rendered in the dashboard.

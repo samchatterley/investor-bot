@@ -190,8 +190,8 @@ def main():
     sub.add_parser("resume", help="Clear halt file and resume trading")
 
     p = sub.add_parser("backtest", help="Run historical backtest")
-    p.add_argument("--start", default="2024-01-01")
-    p.add_argument("--end", default="2024-12-31")
+    p.add_argument("--start", default="2025-01-01")
+    p.add_argument("--end", default="2025-12-31")
     p.add_argument("--capital", type=float, default=None)
 
     sub.add_parser("dashboard", help="Launch Streamlit web dashboard")

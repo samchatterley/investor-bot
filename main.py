@@ -503,8 +503,8 @@ if __name__ == "__main__":
     parser.add_argument("--kill-switch", action="store_true", help="Emergency: liquidate all and halt")
     parser.add_argument("--clear-halt", action="store_true", help="Remove halt file and resume trading")
     parser.add_argument("--backtest", action="store_true", help="Run historical backtest")
-    parser.add_argument("--start", default="2024-01-01")
-    parser.add_argument("--end", default="2024-12-31")
+    parser.add_argument("--start", default="2025-01-01")
+    parser.add_argument("--end", default="2025-12-31")
     parser.add_argument("--capital", type=float, default=None,
                         help="Starting capital for backtest. Defaults to current Alpaca portfolio value.")
     args = parser.parse_args()

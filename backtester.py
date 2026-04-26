@@ -3,7 +3,7 @@ Rule-based backtester — validates technical signal quality on historical data
 without calling Claude (avoids API cost).
 
 Usage:
-    python backtester.py --start 2024-01-01 --end 2024-12-31
+    python backtester.py --start 2025-01-01 --end 2025-12-31
     python backtester.py --start 2025-01-01 --end 2025-12-31 --capital 25000
 """
 
@@ -288,8 +288,8 @@ def _print_results(r: dict):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start", default="2024-01-01")
-    parser.add_argument("--end", default="2024-12-31")
+    parser.add_argument("--start", default="2025-01-01")
+    parser.add_argument("--end", default="2025-12-31")
     parser.add_argument("--capital", type=float, default=25.0)
     args = parser.parse_args()
     run_backtest(STOCK_UNIVERSE, args.start, args.end, initial_capital=args.capital)
