@@ -16,7 +16,7 @@ from datetime import date, timedelta
 
 import anthropic
 import config as cfg
-from config import ANTHROPIC_API_KEY, LOG_DIR
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
 from analysis.performance import get_win_rates, compute_metrics
 from utils.portfolio_tracker import load_history
 
@@ -85,12 +85,17 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
         status = "applied" if new_val == raw_proposed else "clamped"
         new_str = str(new_val) if spec["type"] == int else f"{new_val:.1f}"
 
-        modified = re.sub(
+        updated = re.sub(
             rf"^({param}\s*=\s*)[\d.]+",
             rf"\g<1>{new_str}",
             modified,
             flags=re.MULTILINE,
         )
+        if updated == modified:
+            logger.warning(f"Config change: could not find '{param}' line to update — skipping")
+            results.append({**change, "status": "rejected", "rejection_reason": "regex matched no line in config.py"})
+            continue
+        modified = updated
         results.append({
             "parameter": param,
             "old_value": old_val,
@@ -208,7 +213,7 @@ Respond with ONLY this JSON:
     try:
         ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         response = ai_client.messages.create(
-            model="claude-sonnet-4-6",
+            model=CLAUDE_MODEL,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )

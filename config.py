@@ -56,6 +56,9 @@ MAX_SECTOR_POSITIONS = 2
 # How many days of historical data to feed to Claude
 LOOKBACK_DAYS = 30
 
+# Claude model
+CLAUDE_MODEL = "claude-sonnet-4-6"
+
 # Market schedule (US Eastern Time)
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 31      # Run 1 min after open

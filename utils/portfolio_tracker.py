@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from config import LOG_DIR
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ def save_daily_run(
 ):
     record = {
         "date": date,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "account_before": account_before,
         "account_after": account_after,
         "market_summary": ai_decisions.get("market_summary", ""),

@@ -21,7 +21,7 @@ def kelly_fraction(confidence: int) -> float:
     """
     p = confidence / 10.0
     q = 1.0 - p
-    b = TAKE_PROFIT_PCT / STOP_LOSS_PCT  # reward-to-risk ratio
+    b = TAKE_PROFIT_PCT / max(STOP_LOSS_PCT, 1e-6)  # reward-to-risk ratio
     raw_kelly = (p * b - q) / b
     fraction = max(0.0, raw_kelly * KELLY_MULTIPLIER)
     return min(fraction, MAX_POSITION_PCT)

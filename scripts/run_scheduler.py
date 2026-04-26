@@ -23,6 +23,7 @@ import schedule
 import time
 import logging
 import config
+config.validate()
 import main as bot
 from analysis.weekly_review import run_weekly_review
 from notifications.emailer import send_weekly_review

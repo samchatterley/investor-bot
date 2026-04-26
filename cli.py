@@ -19,6 +19,7 @@ import sys
 from itertools import groupby
 
 import config
+config.validate()
 from utils.portfolio_tracker import load_history
 from utils.decision_log import load_decisions
 

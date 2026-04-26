@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Optional
 import anthropic
-from config import ANTHROPIC_API_KEY, MIN_CONFIDENCE, MAX_POSITIONS, MAX_HOLD_DAYS
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MIN_CONFIDENCE, MAX_POSITIONS, MAX_HOLD_DAYS
 from analysis.performance import get_actionable_feedback
 
 logger = logging.getLogger(__name__)
@@ -279,7 +279,7 @@ def get_trading_decisions(
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=CLAUDE_MODEL,
             max_tokens=1500,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt}],

@@ -162,7 +162,7 @@ def run_backtest(
         for sym, signal, _ in candidates[:slots]:
             try:
                 px = float(indicators[sym].loc[today, "Close"])
-                notional = (cash / (slots or 1)) * 0.9   # deploy 90% of cash per slot
+                notional = (cash / slots) * 0.9
                 shares = notional / px
                 cost = shares * px
                 if cost > cash or cost < 0.5:

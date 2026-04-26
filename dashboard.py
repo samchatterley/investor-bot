@@ -326,7 +326,7 @@ if page == "Overview":
             return f"color: {C_GREEN}" if v >= 0 else f"color: {C_RED}"
 
         styled = (pos_df.style
-                  .applymap(_colour_pnl, subset=["P&L ($)", "P&L (%)"])
+                  .map(_colour_pnl, subset=["P&L ($)", "P&L (%)"])
                   .format({"Value ($)": "${:,.2f}", "P&L ($)": "${:+,.2f}", "P&L (%)": "{:+.2f}%"}))
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -378,7 +378,7 @@ elif page == "Trades":
                 return ""
 
             st.dataframe(
-                df.style.applymap(_style_action, subset=["Action"]),
+                df.style.map(_style_action, subset=["Action"]),
                 use_container_width=True, hide_index=True,
             )
         else:
