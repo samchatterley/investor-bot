@@ -1,0 +1,7 @@
+#!/bin/bash
+# InvestorBot launcher — wraps venv activation and cli.py
+# Usage: ./start dashboard | ./start status | ./start backtest | ./start run --dry-run
+
+cd "$(dirname "$0")"
+source .venv/bin/activate
+python cli.py "$@"
