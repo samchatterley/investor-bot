@@ -231,6 +231,9 @@ def get_position_ages() -> dict[str, int]:
     for symbol, data in meta.items():
         try:
             entry = date.fromisoformat(data["entry_date"])
+            # bdate_range is inclusive of both endpoints, so subtract 1 to get
+            # days elapsed since entry (same-day entry = 0 elapsed → clamped to 1).
+            # Stale threshold is >= MAX_HOLD_DAYS (default 3), so same-day = 1 is safe.
             trading_days = max(1, len(pd.bdate_range(entry.isoformat(), today.isoformat())) - 1)
             ages[symbol] = trading_days
         except Exception:
@@ -296,13 +299,13 @@ def ensure_stops_attached(client: TradingClient):
         for pos in positions:
             pos_qty = float(pos.qty)
             covered = stop_qty.get(pos.symbol, 0.0)
-            if covered < pos_qty:
-                shortfall = pos_qty - covered
+            uncovered = pos_qty - covered
+            if uncovered > 0.000001:  # tolerance avoids acting on float dust
                 logger.warning(
                     f"Position {pos.symbol}: {pos_qty:.6f} shares, "
-                    f"{covered:.6f} covered by stops — attaching stop for {shortfall:.6f}"
+                    f"{covered:.6f} covered by stops — attaching stop for {uncovered:.6f}"
                 )
-                place_trailing_stop(client, pos.symbol, shortfall)
+                place_trailing_stop(client, pos.symbol, uncovered)
     except Exception as e:
         logger.error(f"ensure_stops_attached failed: {e}")
 
