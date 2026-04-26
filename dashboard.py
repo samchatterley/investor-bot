@@ -7,6 +7,8 @@ Launch:  python cli.py dashboard
 
 import json
 import os
+import subprocess
+import sys
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -558,7 +560,14 @@ elif page == "Diagnostics":
 
         st.divider()
         if st.button("Run diagnostics now", type="primary"):
-            with st.spinner("Running tests..."):
-                from run_diagnostics import run_diagnostics
-                run_diagnostics()
-                st.rerun()
+            with st.spinner(f"Running {report.get('total', 'all')} tests..."):
+                result = subprocess.run(
+                    [sys.executable, "run_diagnostics.py"],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    capture_output=True, text=True, timeout=120,
+                )
+            if result.returncode == 0:
+                st.success("Tests complete.")
+            else:
+                st.error(f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}")
+            st.rerun()
