@@ -73,7 +73,7 @@ def _weekly_review():
             }
             _send_html(
                 subject=f"Weekly Diagnostics {_date.today().isoformat()} · tests {test_report.get('status','')}",
-                html=_build_weekly_html(review_stub, test_report),
+                html_fn=lambda name: _build_weekly_html(review_stub, name, test_report),
             )
     except Exception as e:
         logger.error(f"Weekly review failed: {e}", exc_info=True)

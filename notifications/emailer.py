@@ -3,35 +3,59 @@ import logging
 from datetime import date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from config import EMAIL_FROM, EMAIL_TO, EMAIL_CC, EMAIL_APP_PASSWORD
+from config import EMAIL_FROM, EMAIL_TO, EMAIL_CC, EMAIL_APP_PASSWORD, EMAIL_RECIPIENTS
 
 logger = logging.getLogger(__name__)
 
 
 def _all_recipients() -> list[str]:
-    """Return the full recipient list: owner + any CC addresses."""
+    """Return flat recipient list (legacy fallback — no names)."""
     recipients = [EMAIL_TO] if EMAIL_TO else []
     if EMAIL_CC:
         recipients += [a.strip() for a in EMAIL_CC.split(",") if a.strip()]
     return recipients
 
 
-def _send_html(subject: str, html: str):
-    """Send an HTML email to all configured recipients."""
-    if not EMAIL_FROM or not EMAIL_APP_PASSWORD or not EMAIL_TO:
-        logger.warning("Email not configured — skipping. Add EMAIL_FROM, EMAIL_TO, EMAIL_APP_PASSWORD to .env")
+def _named_recipients() -> list[tuple[str, str]]:
+    """Return [(first_name, email), ...].
+    Reads EMAIL_RECIPIENTS ("Name:email,...") if set, otherwise falls back
+    to EMAIL_TO + EMAIL_CC with a generic greeting.
+    """
+    if EMAIL_RECIPIENTS:
+        result = []
+        for part in EMAIL_RECIPIENTS.split(","):
+            part = part.strip()
+            if ":" in part:
+                name, email = part.split(":", 1)
+                result.append((name.strip(), email.strip()))
+            elif part:
+                result.append(("there", part))
+        return result
+    return [("there", e) for e in _all_recipients()]
+
+
+def _send_html(subject: str, html_fn):
+    """Send a personalised HTML email to each recipient individually.
+    html_fn: callable(first_name: str) -> str
+    """
+    if not EMAIL_FROM or not EMAIL_APP_PASSWORD:
+        logger.warning("Email not configured — skipping. Add EMAIL_FROM and EMAIL_APP_PASSWORD to .env")
         return
-    recipients = _all_recipients()
+    recipients = _named_recipients()
+    if not recipients:
+        logger.warning("No recipients configured — skipping. Add EMAIL_RECIPIENTS to .env")
+        return
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = EMAIL_FROM
-        msg["To"] = ", ".join(recipients)
-        msg.attach(MIMEText(html, "html"))
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_FROM, EMAIL_APP_PASSWORD)
-            server.sendmail(EMAIL_FROM, recipients, msg.as_string())
-        logger.info(f"Email sent to {recipients}")
+            for name, email in recipients:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"] = EMAIL_FROM
+                msg["To"] = email
+                msg.attach(MIMEText(html_fn(name), "html"))
+                server.sendmail(EMAIL_FROM, [email], msg.as_string())
+                logger.info(f"Email sent to {email} ({name})")
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
 
@@ -168,7 +192,7 @@ def _build_trade_cards(record: dict) -> str:
     return cards
 
 
-def _build_html(record: dict) -> str:
+def _build_html(record: dict, name: str = "there") -> str:
     pnl = record["daily_pnl"]
     pnl_colour = "#2e7d32" if pnl >= 0 else "#c62828"
     pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
@@ -213,7 +237,7 @@ def _build_html(record: dict) -> str:
       <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden">
         <tr><td style="padding:32px 28px 0">
 
-          <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#555;margin:0 0 4px 0">Hi Sam,</p>
+          <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#555;margin:0 0 4px 0">Hi {name},</p>
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#777;margin:0 0 28px 0">Here&#39;s your trading update for <b>{record['date']}</b>.</p>
 
           <!-- P&L hero -->
@@ -350,7 +374,7 @@ def _build_diagnostics_section(report: dict) -> str:
     </table>"""
 
 
-def _build_weekly_html(review: dict, test_report: dict | None = None) -> str:
+def _build_weekly_html(review: dict, name: str = "there", test_report: dict | None = None) -> str:
     week_summary = review.get("week_summary", "")
     what_worked = review.get("what_worked", [])
     what_didnt = review.get("what_didnt", [])
@@ -433,7 +457,7 @@ def _build_weekly_html(review: dict, test_report: dict | None = None) -> str:
       <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden">
         <tr><td style="padding:32px 28px 36px">
 
-          <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#555;margin:0 0 4px 0">Hi Sam,</p>
+          <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#555;margin:0 0 4px 0">Hi {name},</p>
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#777;margin:0 0 24px 0">
             Here&#39;s your weekly self-review for the week ending <b>{date.today().isoformat()}</b>.
           </p>
@@ -469,12 +493,10 @@ def _build_weekly_html(review: dict, test_report: dict | None = None) -> str:
 def send_weekly_review(review: dict, test_report: dict | None = None):
     applied_count = sum(1 for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped"))
     change_note = f" · {applied_count} config change{'s' if applied_count != 1 else ''} applied" if applied_count else ""
-    diag_note = ""
-    if test_report:
-        diag_note = f" · tests {test_report.get('status', '')}"
+    diag_note = f" · tests {test_report.get('status', '')}" if test_report else ""
     _send_html(
         subject=f"Weekly Review {date.today().isoformat()}{change_note}{diag_note}",
-        html=_build_weekly_html(review, test_report),
+        html_fn=lambda name: _build_weekly_html(review, name, test_report),
     )
 
 
@@ -485,5 +507,5 @@ def send_summary(record: dict):
     sign = "+" if pnl >= 0 else ""
     _send_html(
         subject=f"Trading Bot {record['date']} — {sign}${pnl:,.2f} ({sign}{ret_pct:.2f}%)",
-        html=_build_html(record),
+        html_fn=lambda name: _build_html(record, name),
     )

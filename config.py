@@ -79,9 +79,14 @@ STOCK_UNIVERSE = [
 
 # Email notifications
 EMAIL_FROM = os.getenv("EMAIL_FROM")           # Your Gmail address
-EMAIL_TO = os.getenv("EMAIL_TO")               # Primary recipient (you)
-EMAIL_CC = os.getenv("EMAIL_CC", "")           # Additional recipients — comma-separated (e.g. friends/investors)
+EMAIL_TO = os.getenv("EMAIL_TO")               # Owner address — emergency alerts only
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # Gmail App Password (not your login password)
+# Named recipient list for daily summary + weekly review emails.
+# Format: "FirstName:email,FirstName:email,..."
+# Example: "Sam:sam@gmail.com,Harri:harri@outlook.com,Jess:jess@gmail.com"
+EMAIL_RECIPIENTS = os.getenv("EMAIL_RECIPIENTS", "")
+# Legacy fallback — used if EMAIL_RECIPIENTS is not set
+EMAIL_CC = os.getenv("EMAIL_CC", "")
 
 # Log file path
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
