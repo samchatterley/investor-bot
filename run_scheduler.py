@@ -19,6 +19,7 @@ import config
 import main as bot
 from analysis.weekly_review import run_weekly_review
 from notifications.emailer import send_weekly_review
+from run_diagnostics import run_diagnostics
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,11 +49,32 @@ def _weekly_review():
     if os.path.exists(config.HALT_FILE):
         logger.info("Trading HALTED — skipping weekly review.")
         return
+
+    # Run diagnostics first so the report is available for the email
+    logger.info("Running system diagnostics...")
+    test_report = None
+    try:
+        test_report = run_diagnostics()
+    except Exception as e:
+        logger.error(f"Diagnostics failed: {e}", exc_info=True)
+
     logger.info("Running weekly self-review...")
     try:
         review = run_weekly_review()
         if review:
-            send_weekly_review(review)
+            send_weekly_review(review, test_report=test_report)
+        elif test_report:
+            # If there's no trade history to review yet, send diagnostics on their own
+            from notifications.emailer import _send_html, _build_weekly_html
+            from datetime import date as _date
+            review_stub = {
+                "week_summary": "No trade history available for this week.",
+                "what_worked": [], "what_didnt": [], "lessons": [], "applied_changes": [],
+            }
+            _send_html(
+                subject=f"Weekly Diagnostics {_date.today().isoformat()} · tests {test_report.get('status','')}",
+                html=_build_weekly_html(review_stub, test_report),
+            )
     except Exception as e:
         logger.error(f"Weekly review failed: {e}", exc_info=True)
 

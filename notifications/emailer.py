@@ -289,7 +289,68 @@ def _build_html(record: dict) -> str:
 </html>"""
 
 
-def _build_weekly_html(review: dict) -> str:
+def _build_diagnostics_section(report: dict) -> str:
+    if not report:
+        return ""
+
+    status = report.get("status", "UNKNOWN")
+    passed = report.get("passed", 0)
+    total = report.get("total", 0)
+    duration = report.get("duration_seconds", 0)
+    failures = report.get("failures", [])
+
+    status_colour = "#2e7d32" if status == "PASS" else "#c62828"
+    status_bg = "#f1f8f1" if status == "PASS" else "#fff5f5"
+
+    failure_rows = ""
+    if failures:
+        failure_rows = "".join(
+            f"""<tr>
+              <td style="padding:6px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;
+                         color:#c62828;border-bottom:1px solid #f5f5f5;line-height:1.4">
+                <b>{f['test'].split('.')[-1]}</b><br>
+                <span style="color:#999">{f['message'][:120]}</span>
+              </td>
+            </tr>"""
+            for f in failures
+        )
+        failure_table = f"""
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px">
+          {failure_rows}
+        </table>"""
+    else:
+        failure_table = ""
+
+    return f"""
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="background:{status_bg};border-radius:8px;margin-top:24px">
+      <tr><td style="padding:16px 20px">
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;
+                         color:#888;text-transform:uppercase;letter-spacing:.6px;margin:0 0 4px 0">
+                System Diagnostics
+              </p>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:22px;font-weight:bold;
+                         color:{status_colour};margin:0">{status}</p>
+            </td>
+            <td style="text-align:right">
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#888;margin:0">
+                {passed}/{total} tests passed
+              </p>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#aaa;margin:4px 0 0">
+                {duration:.1f}s
+              </p>
+            </td>
+          </tr>
+        </table>
+        {failure_table}
+      </td></tr>
+    </table>"""
+
+
+def _build_weekly_html(review: dict, test_report: dict | None = None) -> str:
     week_summary = review.get("week_summary", "")
     what_worked = review.get("what_worked", [])
     what_didnt = review.get("what_didnt", [])
@@ -391,6 +452,7 @@ def _build_weekly_html(review: dict) -> str:
           {_section("Lessons injected into next week&#39;s prompts", _bullets(lessons, "#1565c0"))}
           {_section("Config changes applied to config.py", changes_block)}
           {rejected_block}
+          {_build_diagnostics_section(test_report)}
 
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#bbb;margin:32px 0 0;text-align:center">
             Weekly self-review &nbsp;&#183;&nbsp; Your trading bot
@@ -404,12 +466,15 @@ def _build_weekly_html(review: dict) -> str:
 </html>"""
 
 
-def send_weekly_review(review: dict):
+def send_weekly_review(review: dict, test_report: dict | None = None):
     applied_count = sum(1 for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped"))
     change_note = f" · {applied_count} config change{'s' if applied_count != 1 else ''} applied" if applied_count else ""
+    diag_note = ""
+    if test_report:
+        diag_note = f" · tests {test_report.get('status', '')}"
     _send_html(
-        subject=f"Weekly Review {date.today().isoformat()}{change_note}",
-        html=_build_weekly_html(review),
+        subject=f"Weekly Review {date.today().isoformat()}{change_note}{diag_note}",
+        html=_build_weekly_html(review, test_report),
     )
 
 
