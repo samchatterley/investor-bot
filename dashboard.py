@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -550,7 +551,24 @@ elif page == "Diagnostics":
         c3.metric("Failed",   str(report.get("failed", 0)))
         c4.metric("Errors",   str(report.get("errors", 0)))
         c5.metric("Duration", f"{dur}s")
-        st.caption(f"Last run: {ts}")
+
+        # Human-readable timestamp + age
+        try:
+            run_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            now    = datetime.now(timezone.utc)
+            age_s  = (now - run_dt).total_seconds()
+            if age_s < 60:
+                age_str = "just now"
+            elif age_s < 3600:
+                age_str = f"{int(age_s // 60)}m ago"
+            elif age_s < 86400:
+                age_str = f"{int(age_s // 3600)}h ago"
+            else:
+                age_str = f"{int(age_s // 86400)}d ago"
+            friendly_ts = run_dt.strftime("%-d %b %Y at %H:%M UTC")
+            st.caption(f"Last run: {friendly_ts}  ·  {age_str}")
+        except Exception:
+            st.caption(f"Last run: {ts}")
 
         if report.get("failures"):
             _section("Failures")
@@ -559,15 +577,27 @@ elif page == "Diagnostics":
                     st.code(f["message"], language="text")
 
         st.divider()
-        if st.button("Run diagnostics now", type="primary"):
-            with st.spinner(f"Running {report.get('total', 'all')} tests..."):
-                result = subprocess.run(
-                    [sys.executable, "run_diagnostics.py"],
-                    cwd=os.path.dirname(os.path.abspath(__file__)),
-                    capture_output=True, text=True, timeout=120,
-                )
-            if result.returncode == 0:
-                st.success("Tests complete.")
-            else:
-                st.error(f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}")
-            st.rerun()
+
+        # Rate-limit: disable button if last run was less than 60 seconds ago
+        try:
+            run_dt  = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            age_s   = (datetime.now(timezone.utc) - run_dt).total_seconds()
+            cooldown = max(0, int(60 - age_s))
+        except Exception:
+            cooldown = 0
+
+        if cooldown > 0:
+            st.button(f"Run diagnostics now  (available in {cooldown}s)", disabled=True)
+        else:
+            if st.button("Run diagnostics now", type="primary"):
+                with st.spinner(f"Running {total} tests..."):
+                    result = subprocess.run(
+                        [sys.executable, "run_diagnostics.py"],
+                        cwd=os.path.dirname(os.path.abspath(__file__)),
+                        capture_output=True, text=True, timeout=120,
+                    )
+                if result.returncode == 0:
+                    st.success("Tests complete.")
+                else:
+                    st.error(f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}")
+                st.rerun()
