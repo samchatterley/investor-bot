@@ -161,6 +161,26 @@ hr {{ border-color: {C_BORDER} !important; }}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+@st.fragment(run_every=1)
+def _diagnostics_button(total: int, cooldown_end: float):
+    remaining = max(0, int(cooldown_end - datetime.now(timezone.utc).timestamp()))
+    if remaining > 0:
+        st.button(f"Run diagnostics now  —  {remaining}s", disabled=True)
+    else:
+        if st.button("Run diagnostics now", type="primary"):
+            with st.spinner(f"Running {total} tests..."):
+                result = subprocess.run(
+                    [sys.executable, "run_diagnostics.py"],
+                    cwd=os.path.dirname(os.path.abspath(__file__)),
+                    capture_output=True, text=True, timeout=120,
+                )
+            if result.returncode == 0:
+                st.success("Tests complete.")
+            else:
+                st.error(f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}")
+            st.rerun()
+
+
 def _section(title: str):
     st.markdown(f"<br>", unsafe_allow_html=True)
     st.markdown(f"**{title.upper()}**")
@@ -578,26 +598,9 @@ elif page == "Diagnostics":
 
         st.divider()
 
-        # Rate-limit: disable button if last run was less than 60 seconds ago
         try:
-            run_dt  = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            age_s   = (datetime.now(timezone.utc) - run_dt).total_seconds()
-            cooldown = max(0, int(60 - age_s))
+            cooldown_end = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() + 60
         except Exception:
-            cooldown = 0
+            cooldown_end = 0.0
 
-        if cooldown > 0:
-            st.button(f"Run diagnostics now  (available in {cooldown}s)", disabled=True)
-        else:
-            if st.button("Run diagnostics now", type="primary"):
-                with st.spinner(f"Running {total} tests..."):
-                    result = subprocess.run(
-                        [sys.executable, "run_diagnostics.py"],
-                        cwd=os.path.dirname(os.path.abspath(__file__)),
-                        capture_output=True, text=True, timeout=120,
-                    )
-                if result.returncode == 0:
-                    st.success("Tests complete.")
-                else:
-                    st.error(f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}")
-                st.rerun()
+        _diagnostics_button(total=total, cooldown_end=cooldown_end)
