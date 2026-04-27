@@ -7,7 +7,6 @@ to config.py so they take effect from Monday's first run.
 Runs Sunday evenings via run_scheduler.py.
 Output saved to logs/weekly_review_YYYY-MM-DD.json.
 """
-from __future__ import annotations
 import json
 import logging
 import os

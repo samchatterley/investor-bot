@@ -13,7 +13,6 @@ check_pre_trade       — fat-finger / daily notional cap guard applied before
                         risk controls.
 """
 
-from __future__ import annotations
 import re
 import logging
 

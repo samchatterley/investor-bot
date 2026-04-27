@@ -14,7 +14,6 @@ Fields per entry:
   executed       True if the trade was actually placed
   market_summary overall market tone for that run
 """
-from __future__ import annotations
 import json
 import os
 import logging

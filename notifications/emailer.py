@@ -1,4 +1,3 @@
-from __future__ import annotations
 import smtplib
 import logging
 from datetime import date

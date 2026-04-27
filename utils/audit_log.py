@@ -10,7 +10,6 @@ To inspect: `cat logs/audit.jsonl | python3 -m json.tool | less`
 To filter orders: `grep ORDER_PLACED logs/audit.jsonl`
 """
 
-from __future__ import annotations
 import json
 import os
 import logging
