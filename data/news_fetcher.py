@@ -11,7 +11,13 @@ def _fetch_single(symbol: str, max_headlines: int) -> tuple[str, list[str]]:
         raw = getattr(ticker, "news", None) or []
         headlines = []
         for item in raw[:max_headlines]:
-            title = item.get("title") or item.get("headline", "")
+            # yfinance nests title under content{} in newer API versions
+            title = (
+                item.get("title")
+                or item.get("headline")
+                or (item.get("content") or {}).get("title")
+                or ""
+            )
             if title:
                 headlines.append(title)
         return symbol, headlines
