@@ -1,8 +1,4 @@
-"""
-Tests for execution/stock_scanner.py.
-get_market_regime: mocks SPY history; prefilter_candidates: pure logic.
-get_top_movers requires yfinance network — excluded.
-"""
+"""Tests for execution/stock_scanner.py — get_market_regime, prefilter_candidates, get_top_movers."""
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -133,3 +129,52 @@ class TestPrefilterCandidates(unittest.TestCase):
         result = prefilter_candidates([good, bad])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["symbol"], "GOOD")
+
+
+class TestGetTopMovers(unittest.TestCase):
+
+    def _make_data(self, symbols, n_rows=5):
+        import numpy as np
+        idx = pd.date_range("2026-01-01", periods=n_rows, freq="B")
+        closes = pd.DataFrame(
+            {sym: [100 + i for i in range(n_rows)] for sym in symbols}, index=idx
+        )
+        volumes = pd.DataFrame(
+            {sym: [1_000_000] * n_rows for sym in symbols}, index=idx
+        )
+        mock = MagicMock()
+        mock.empty = False
+        mock.__len__ = MagicMock(return_value=n_rows)
+        mock.__getitem__ = lambda self, key: closes if key == "Close" else volumes
+        return mock
+
+    def test_returns_list_on_success(self):
+        from execution.stock_scanner import get_top_movers
+        syms = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
+        with patch("execution.stock_scanner.yf.download", return_value=self._make_data(syms)):
+            result = get_top_movers(n=3)
+        self.assertIsInstance(result, list)
+
+    def test_returns_empty_on_exception(self):
+        from execution.stock_scanner import get_top_movers
+        with patch("execution.stock_scanner.yf.download", side_effect=Exception("network error")):
+            result = get_top_movers()
+        self.assertEqual(result, [])
+
+    def test_returns_empty_on_empty_data(self):
+        from execution.stock_scanner import get_top_movers
+        mock = MagicMock()
+        mock.empty = True
+        with patch("execution.stock_scanner.yf.download", return_value=mock):
+            result = get_top_movers()
+        self.assertEqual(result, [])
+
+    def test_returns_empty_when_insufficient_rows(self):
+        from execution.stock_scanner import get_top_movers
+        syms = ["AAPL"]
+        mock = MagicMock()
+        mock.empty = False
+        mock.__len__ = MagicMock(return_value=1)
+        with patch("execution.stock_scanner.yf.download", return_value=mock):
+            result = get_top_movers()
+        self.assertEqual(result, [])

@@ -277,7 +277,12 @@ def reconcile_positions(client: TradingClient):
     Removes stale entries for positions that no longer exist,
     adds placeholder entries for positions with no metadata.
     """
-    actual = {p.symbol for p in client.get_all_positions()}
+    try:
+        positions = client.get_all_positions()
+    except Exception as e:
+        logger.error(f"reconcile_positions: could not fetch positions — {e}")
+        return
+    actual = {p.symbol for p in positions}
     with _meta_lock():
         meta = _load_meta()
         changed = False

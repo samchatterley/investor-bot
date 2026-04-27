@@ -142,3 +142,55 @@ class TestCheckPreTrade(unittest.TestCase):
     def test_would_hit_daily_cap_rejected(self):
         approved, _ = check_pre_trade("MSFT", 50_001, 100_000, 50_000, 150_000)
         self.assertFalse(approved)
+
+
+class TestValidateAiResponseUnhappyPaths(unittest.TestCase):
+
+    def _valid(self):
+        return {
+            "market_summary": "Bullish.",
+            "buy_candidates": [
+                {"symbol": "AAPL", "confidence": 8, "key_signal": "momentum", "reasoning": "ok"}
+            ],
+            "position_decisions": [],
+        }
+
+    def test_buy_candidates_not_a_list_produces_error(self):
+        data = self._valid()
+        data["buy_candidates"] = "AAPL"
+        is_valid, errors = validate_ai_response(data, {"AAPL"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("not a list" in e for e in errors))
+
+    def test_position_decisions_not_a_list_produces_error(self):
+        data = self._valid()
+        data["position_decisions"] = {"symbol": "MSFT", "action": "HOLD"}
+        is_valid, errors = validate_ai_response(data, {"AAPL"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("not a list" in e for e in errors))
+
+    def test_none_confidence_is_invalid(self):
+        data = self._valid()
+        data["buy_candidates"][0]["confidence"] = None
+        is_valid, errors = validate_ai_response(data, {"AAPL"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("confidence" in e for e in errors))
+
+    def test_string_confidence_is_invalid(self):
+        data = self._valid()
+        data["buy_candidates"][0]["confidence"] = "high"
+        is_valid, errors = validate_ai_response(data, {"AAPL"})
+        self.assertFalse(is_valid)
+
+    def test_missing_key_signal_is_accepted(self):
+        data = self._valid()
+        del data["buy_candidates"][0]["key_signal"]
+        is_valid, _ = validate_ai_response(data, {"AAPL"})
+        self.assertTrue(is_valid)
+
+    def test_none_position_action_is_invalid(self):
+        data = self._valid()
+        data["position_decisions"] = [{"symbol": "MSFT", "action": None, "reasoning": ""}]
+        is_valid, errors = validate_ai_response(data, {"AAPL", "MSFT"})
+        self.assertFalse(is_valid)
+        self.assertTrue(any("action" in e for e in errors))

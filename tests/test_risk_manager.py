@@ -94,8 +94,9 @@ class TestVixStopAdjustment(unittest.TestCase):
 class TestValidateBuyCandidates(unittest.TestCase):
 
     def _sector_map(self, sym):
-        return {"AAPL": "Technology", "MSFT": "Technology",
-                "JPM": "Financials", "SPY": "ETF"}.get(sym, "Unknown")
+        return {"AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
+                "JPM": "Financials", "BAC": "Financials",
+                "SPY": "ETF"}.get(sym, "Unknown")
 
     def test_filters_already_held_symbols(self):
         candidates = [{"symbol": "AAPL", "confidence": 8}]
@@ -126,3 +127,48 @@ class TestValidateBuyCandidates(unittest.TestCase):
     def test_empty_candidates_returns_empty(self):
         result = validate_buy_candidates([], {"AAPL"}, self._sector_map)
         self.assertEqual(result, [])
+
+    def test_multiple_candidates_same_sector_capped(self):
+        candidates = [
+            {"symbol": "AAPL", "confidence": 9},
+            {"symbol": "MSFT", "confidence": 8},
+            {"symbol": "NVDA", "confidence": 7},
+        ]
+        result = validate_buy_candidates(candidates, set(), self._sector_map, max_per_sector=2)
+        symbols = [c["symbol"] for c in result]
+        tech_count = sum(1 for s in symbols if self._sector_map(s) == "Technology")
+        self.assertLessEqual(tech_count, 2)
+
+    def test_unknown_sector_symbols_bypass_cap(self):
+        def unknown_map(sym):
+            return "Unknown"
+        candidates = [
+            {"symbol": "AAPL", "confidence": 8},
+            {"symbol": "MSFT", "confidence": 8},
+            {"symbol": "NVDA", "confidence": 8},
+        ]
+        result = validate_buy_candidates(candidates, set(), unknown_map, max_per_sector=1)
+        self.assertEqual(len(result), 3)
+
+    def test_already_held_sector_counts_toward_cap(self):
+        candidates = [{"symbol": "NVDA", "confidence": 8}]
+        held = {"AAPL", "MSFT"}
+        result = validate_buy_candidates(candidates, held, self._sector_map, max_per_sector=2)
+        self.assertEqual(result, [])
+
+
+class TestCircuitBreakerEdgeCases(unittest.TestCase):
+
+    def test_malformed_record_returns_false(self):
+        history = [{"bad_key": 1}, {"bad_key": 2}, {"bad_key": 3},
+                   {"bad_key": 4}, {"bad_key": 5}]
+        triggered, drawdown = check_circuit_breaker(history)
+        self.assertFalse(triggered)
+        self.assertEqual(drawdown, 0.0)
+
+    def test_zero_peak_returns_false(self):
+        def _r(v):
+            return {"account_after": {"portfolio_value": v}}
+        history = [_r(0), _r(0), _r(0), _r(0), _r(0)]
+        triggered, drawdown = check_circuit_breaker(history)
+        self.assertFalse(triggered)

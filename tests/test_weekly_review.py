@@ -255,3 +255,20 @@ class TestRunWeeklyReview(unittest.TestCase):
             mock_anthropic.return_value.messages.create.return_value = bad_msg
             result = run_weekly_review()
         self.assertIsNone(result)
+
+    def test_parses_markdown_wrapped_json(self):
+        from analysis.weekly_review import run_weekly_review
+        fake_review = {
+            "week_summary": "Wrapped JSON week",
+            "what_worked": [], "what_didnt": [],
+            "lessons": [], "config_changes": [],
+        }
+        wrapped = f"```json\n{json.dumps(fake_review)}\n```"
+        msg = MagicMock()
+        msg.content = [MagicMock(text=wrapped)]
+        with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
+             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value.messages.create.return_value = msg
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        self.assertEqual(result["week_summary"], "Wrapped JSON week")

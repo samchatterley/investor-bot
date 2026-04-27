@@ -124,3 +124,31 @@ class TestPositionAges(unittest.TestCase):
         from execution.trader import get_position_ages, get_stale_positions
         self.assertEqual(get_position_ages(), {})
         self.assertEqual(get_stale_positions(), [])
+
+
+class TestLoadMetaCorruption(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        p1, p2 = _meta_patcher(self.tmpdir)
+        self.p1 = p1.start()
+        self.p2 = p2.start()
+        self.addCleanup(p1.stop)
+        self.addCleanup(p2.stop)
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+
+    def test_corrupted_json_returns_empty_dict_not_exception(self):
+        import json
+        from execution.trader import _META_PATH, get_position_meta
+        with open(_META_PATH, "w") as f:
+            f.write("not valid json {{{")
+        meta = get_position_meta("AAPL")
+        self.assertEqual(meta["signal"], "unknown")
+
+    def test_empty_file_returns_defaults(self):
+        from execution.trader import _META_PATH, get_position_meta
+        with open(_META_PATH, "w") as f:
+            f.write("")
+        meta = get_position_meta("AAPL")
+        self.assertEqual(meta["signal"], "unknown")
+        self.assertEqual(meta["confidence"], 0)

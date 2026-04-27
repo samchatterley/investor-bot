@@ -157,6 +157,14 @@ class TestWaitForFill(unittest.TestCase):
             result = wait_for_fill(client, "order-123", max_wait=3)
         self.assertAlmostEqual(result, 10.0)
 
+    def test_poll_exception_handled_gracefully(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.side_effect = Exception("API timeout")
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=3)
+        self.assertIsNone(result)
+
 
 class TestPlaceSellOrder(unittest.TestCase):
 
@@ -281,6 +289,15 @@ class TestReconcilePositions(unittest.TestCase):
         meta = get_position_meta("AAPL")
         self.assertEqual(meta["signal"], "momentum")
         self.assertEqual(meta["confidence"], 8)
+
+    def test_api_exception_does_not_crash(self):
+        from execution.trader import reconcile_positions
+        client = MagicMock()
+        client.get_all_positions.side_effect = Exception("broker down")
+        try:
+            reconcile_positions(client)
+        except Exception:
+            self.fail("reconcile_positions raised unexpectedly on API error")
 
 
 class TestEnsureStopsAttached(unittest.TestCase):
