@@ -339,3 +339,74 @@ class TestEnsureStopsAttached(unittest.TestCase):
             ensure_stops_attached(client)
         except Exception:
             self.fail("ensure_stops_attached raised unexpectedly")
+
+
+class TestIsMarketOpen(unittest.TestCase):
+
+    def test_returns_true_when_market_open(self):
+        from execution.trader import is_market_open
+        client = MagicMock()
+        client.get_clock.return_value = MagicMock(is_open=True)
+        self.assertTrue(is_market_open(client))
+
+    def test_returns_false_when_market_closed(self):
+        from execution.trader import is_market_open
+        client = MagicMock()
+        client.get_clock.return_value = MagicMock(is_open=False)
+        self.assertFalse(is_market_open(client))
+
+
+class TestGetPositionSignal(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_returns_signal_for_known_position(self):
+        from execution.trader import record_buy, get_position_signal
+        record_buy("AAPL", 180.0, signal="momentum")
+        self.assertEqual(get_position_signal("AAPL"), "momentum")
+
+    def test_returns_unknown_for_missing_position(self):
+        from execution.trader import get_position_signal
+        self.assertEqual(get_position_signal("GHOST"), "unknown")
+
+
+class TestPlacePartialSell(unittest.TestCase):
+
+    def test_places_partial_sell_order(self):
+        from execution.trader import place_partial_sell
+        client = MagicMock()
+        client.submit_order.return_value = MagicMock(id="order-partial")
+        result = place_partial_sell(client, "AAPL", 5.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["symbol"], "AAPL")
+        self.assertAlmostEqual(result["qty"], 5.0)
+
+    def test_returns_none_for_zero_qty(self):
+        from execution.trader import place_partial_sell
+        client = MagicMock()
+        result = place_partial_sell(client, "AAPL", 0.0)
+        self.assertIsNone(result)
+        client.submit_order.assert_not_called()
+
+    def test_returns_none_for_negative_qty(self):
+        from execution.trader import place_partial_sell
+        client = MagicMock()
+        result = place_partial_sell(client, "AAPL", -1.0)
+        self.assertIsNone(result)
+        client.submit_order.assert_not_called()
+
+    def test_returns_none_on_error(self):
+        from execution.trader import place_partial_sell
+        client = MagicMock()
+        client.submit_order.side_effect = Exception("insufficient shares")
+        result = place_partial_sell(client, "AAPL", 5.0)
+        self.assertIsNone(result)

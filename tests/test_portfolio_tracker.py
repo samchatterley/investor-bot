@@ -96,6 +96,64 @@ class TestGetDaySummary(PortfolioTrackerBase):
         self.assertAlmostEqual(summary["daily_pnl"], 1_000.0)
 
 
+class TestPrintSummary(PortfolioTrackerBase):
+
+    def _record(self, pnl=500.0, trades=None, stops=None):
+        return {
+            "date": "2026-01-15",
+            "market_summary": "Quiet day",
+            "account_after": {"portfolio_value": 100_500, "cash": 20_000},
+            "daily_pnl": pnl,
+            "trades_executed": trades or [],
+            "stop_losses_triggered": stops or [],
+        }
+
+    def test_print_summary_does_not_raise(self):
+        from utils.portfolio_tracker import print_summary
+        import io, sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            print_summary(self._record())
+        finally:
+            sys.stdout = sys.__stdout__
+        self.assertIn("2026-01-15", captured.getvalue())
+
+    def test_print_summary_shows_pnl(self):
+        from utils.portfolio_tracker import print_summary
+        import io, sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            print_summary(self._record(pnl=250.0))
+        finally:
+            sys.stdout = sys.__stdout__
+        self.assertIn("250", captured.getvalue())
+
+    def test_print_summary_shows_trades(self):
+        from utils.portfolio_tracker import print_summary
+        import io, sys
+        trades = [{"action": "BUY", "symbol": "NVDA", "detail": "$5000"}]
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            print_summary(self._record(trades=trades))
+        finally:
+            sys.stdout = sys.__stdout__
+        self.assertIn("NVDA", captured.getvalue())
+
+    def test_print_summary_no_trades_message(self):
+        from utils.portfolio_tracker import print_summary
+        import io, sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            print_summary(self._record())
+        finally:
+            sys.stdout = sys.__stdout__
+        self.assertIn("No trades", captured.getvalue())
+
+
 class TestGetTrackRecord(PortfolioTrackerBase):
 
     def test_returns_last_n_days(self):

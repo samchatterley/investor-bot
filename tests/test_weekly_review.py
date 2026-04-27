@@ -1,9 +1,10 @@
+import json
 import os
 import shutil
 import tempfile
 import textwrap
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from analysis.weekly_review import _apply_config_changes, get_latest_review
 
@@ -135,3 +136,122 @@ class TestGetLatestReview(unittest.TestCase):
         with open(path, "w") as f:
             f.write("not valid json {{{")
         self.assertEqual(get_latest_review(), [])
+
+
+class TestCurrentParamValues(unittest.TestCase):
+
+    def test_returns_all_four_params(self):
+        from analysis.weekly_review import _current_param_values
+        result = _current_param_values()
+        for key in ["MIN_CONFIDENCE", "TRAILING_STOP_PCT", "PARTIAL_PROFIT_PCT", "MAX_HOLD_DAYS"]:
+            self.assertIn(key, result)
+
+    def test_values_are_numeric(self):
+        from analysis.weekly_review import _current_param_values
+        result = _current_param_values()
+        for val in result.values():
+            self.assertIsInstance(val, (int, float))
+
+    def test_values_within_safe_bounds(self):
+        from analysis.weekly_review import _current_param_values, _SAFE_PARAMS
+        result = _current_param_values()
+        for param, spec in _SAFE_PARAMS.items():
+            self.assertGreaterEqual(result[param], spec["min"],
+                                    f"{param} below minimum")
+            self.assertLessEqual(result[param], spec["max"],
+                                 f"{param} above maximum")
+
+
+class TestRunWeeklyReview(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.tmpdir, "config.py")
+        with open(self.config_path, "w") as f:
+            f.write(textwrap.dedent("""\
+                MIN_CONFIDENCE = 7
+                TRAILING_STOP_PCT = 4.0
+                PARTIAL_PROFIT_PCT = 8.0
+                MAX_HOLD_DAYS = 3
+            """))
+        self.log_patcher = patch("analysis.weekly_review.LOG_DIR", self.tmpdir)
+        self.config_patcher = patch("analysis.weekly_review._CONFIG_PATH", self.config_path)
+        self.log_patcher.start()
+        self.config_patcher.start()
+        self.addCleanup(self.log_patcher.stop)
+        self.addCleanup(self.config_patcher.stop)
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+
+    def _make_record(self, date_str, pnl=100.0):
+        return {
+            "date": date_str,
+            "account_before": {"portfolio_value": 100_000},
+            "account_after":  {"portfolio_value": 100_000 + pnl},
+            "daily_pnl": pnl,
+            "trades_executed": [],
+            "market_summary": "quiet",
+        }
+
+    def _mock_ai_response(self, review_dict):
+        msg = MagicMock()
+        msg.content = [MagicMock(text=json.dumps(review_dict))]
+        return msg
+
+    def test_returns_none_when_no_recent_records(self):
+        from analysis.weekly_review import run_weekly_review
+        with patch("analysis.weekly_review.load_history", return_value=[]):
+            result = run_weekly_review()
+        self.assertIsNone(result)
+
+    def test_returns_review_dict_on_success(self):
+        from analysis.weekly_review import run_weekly_review
+        fake_review = {
+            "week_summary": "Good week",
+            "what_worked": ["momentum"],
+            "what_didnt": [],
+            "lessons": ["Stay disciplined"],
+            "config_changes": [],
+        }
+        with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
+             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(fake_review)
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        self.assertIn("week_summary", result)
+        self.assertIn("applied_changes", result)
+
+    def test_saves_review_file_to_log_dir(self):
+        from analysis.weekly_review import run_weekly_review
+        fake_review = {
+            "week_summary": "OK", "what_worked": [], "what_didnt": [],
+            "lessons": [], "config_changes": [],
+        }
+        with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
+             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(fake_review)
+            run_weekly_review()
+        review_files = [f for f in os.listdir(self.tmpdir) if f.startswith("weekly_review_")]
+        self.assertEqual(len(review_files), 1)
+
+    def test_applies_config_changes_from_review(self):
+        from analysis.weekly_review import run_weekly_review
+        fake_review = {
+            "week_summary": "OK", "what_worked": [], "what_didnt": [],
+            "lessons": [],
+            "config_changes": [{"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"}],
+        }
+        with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
+             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(fake_review)
+            result = run_weekly_review()
+        self.assertTrue(any(c["status"] in ("applied", "clamped") for c in result["applied_changes"]))
+
+    def test_returns_none_on_json_decode_error(self):
+        from analysis.weekly_review import run_weekly_review
+        bad_msg = MagicMock()
+        bad_msg.content = [MagicMock(text="not valid json")]
+        with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
+             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value.messages.create.return_value = bad_msg
+            result = run_weekly_review()
+        self.assertIsNone(result)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from analysis.performance import (
     compute_metrics,
+    generate_dashboard,
     _empty_bucket,
     _update_bucket,
     _bucket_summary,
@@ -169,3 +170,57 @@ class TestSignalTracking(unittest.TestCase):
         result = get_actionable_feedback()
         self.assertIn("momentum", result)
         self.assertIn("win rate", result.lower())
+
+
+class TestGenerateDashboard(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.dashboard_patcher = patch(
+            "analysis.performance._DASHBOARD_PATH",
+            os.path.join(self.tmpdir, "dashboard.html"),
+        )
+        self.stats_patcher = patch(
+            "analysis.performance._STATS_PATH",
+            os.path.join(self.tmpdir, "signal_stats.json"),
+        )
+        self.dashboard_patcher.start()
+        self.stats_patcher.start()
+        self.addCleanup(self.dashboard_patcher.stop)
+        self.addCleanup(self.stats_patcher.stop)
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+
+    def _run(self, date_str, before, after, pnl=None):
+        if pnl is None:
+            pnl = after - before
+        return {
+            "date": date_str,
+            "account_before": {"portfolio_value": before},
+            "account_after":  {"portfolio_value": after},
+            "daily_pnl": pnl,
+            "trades_executed": [],
+        }
+
+    def test_creates_html_file(self):
+        records = [self._run("2026-01-01", 100_000, 101_000, pnl=1_000)]
+        generate_dashboard(records)
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "dashboard.html")))
+
+    def test_does_nothing_for_empty_records(self):
+        generate_dashboard([])
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, "dashboard.html")))
+
+    def test_html_contains_portfolio_value(self):
+        records = [self._run("2026-01-01", 100_000, 105_000, pnl=5_000)]
+        generate_dashboard(records)
+        with open(os.path.join(self.tmpdir, "dashboard.html")) as f:
+            html = f.read()
+        self.assertIn("105000", html)
+
+    def test_html_contains_trade_rows_when_trades_present(self):
+        records = [self._run("2026-01-01", 100_000, 101_000, pnl=1_000)]
+        records[0]["trades_executed"] = [{"action": "BUY", "symbol": "AAPL", "detail": "$5000"}]
+        generate_dashboard(records)
+        with open(os.path.join(self.tmpdir, "dashboard.html")) as f:
+            html = f.read()
+        self.assertIn("AAPL", html)
