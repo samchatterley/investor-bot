@@ -1,51 +1,57 @@
-import requests
+from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-STOCKTWITS_URL = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
 
-
-def _fetch_stocktwits(symbol: str) -> tuple[str, dict]:
-    """Fetch sentiment for a symbol from Stocktwits public API."""
+def _fetch_analyst(symbol: str) -> tuple[str, dict]:
+    """
+    Fetch analyst sentiment from yfinance.
+    recommendationMean: 1.0 = strong buy, 3.0 = hold, 5.0 = strong sell
+    """
     try:
-        url = STOCKTWITS_URL.format(symbol=symbol)
-        resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code != 200:
+        info = yf.Ticker(symbol).info
+        mean = info.get("recommendationMean")
+        key = info.get("recommendationKey", "")
+        analysts = info.get("numberOfAnalystOpinions")
+        target = info.get("targetMeanPrice")
+        current = info.get("currentPrice") or info.get("regularMarketPrice")
+
+        if mean is None or not analysts:
             return symbol, {}
 
-        data = resp.json()
-        messages = data.get("messages", [])
-        if not messages:
-            return symbol, {}
+        # Convert 1–5 scale to bullish/bearish pct for compatibility with prompt
+        # 1.0–2.0 = bullish, 2.0–3.0 = neutral-bullish, 3.0+ = neutral/bearish
+        bullish_pct = round(max(0, min(100, (5 - mean) / 4 * 100)))
+        bearish_pct = 100 - bullish_pct
 
-        bullish = sum(1 for m in messages if m.get("entities", {}).get("sentiment", {}).get("basic") == "Bullish")
-        bearish = sum(1 for m in messages if m.get("entities", {}).get("sentiment", {}).get("basic") == "Bearish")
-        total = bullish + bearish
-
-        if total == 0:
-            return symbol, {}
-
-        return symbol, {
-            "bullish_pct": round(bullish / total * 100),
-            "bearish_pct": round(bearish / total * 100),
-            "message_count": len(messages),
+        result = {
+            "bullish_pct": bullish_pct,
+            "bearish_pct": bearish_pct,
+            "analyst_count": analysts,
+            "recommendation": key,
         }
+        if target and current:
+            result["upside_pct"] = round((target / current - 1) * 100, 1)
+
+        return symbol, result
     except Exception as e:
-        logger.debug(f"Stocktwits fetch failed for {symbol}: {e}")
+        logger.debug(f"Analyst sentiment fetch failed for {symbol}: {e}")
         return symbol, {}
 
 
 def get_sentiment(symbols: list[str]) -> dict[str, dict]:
     """
-    Return {symbol: {bullish_pct, bearish_pct, message_count}} for each symbol.
-    Symbols with no data are omitted. Fetched in parallel with a timeout.
+    Return analyst sentiment for each symbol via yfinance.
+    Format: {symbol: {bullish_pct, bearish_pct, analyst_count, recommendation, upside_pct}}
+    Symbols with no data are omitted.
     """
     results = {}
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(_fetch_stocktwits, sym): sym for sym in symbols}
-        for future in as_completed(futures, timeout=15):
+        futures = {executor.submit(_fetch_analyst, sym): sym for sym in symbols}
+        for future in as_completed(futures, timeout=30):
             try:
                 symbol, data = future.result()
                 if data:
