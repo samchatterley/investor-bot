@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import date
 from typing import Optional
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, TrailingStopOrderRequest
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
 import pandas as pd
 import time
@@ -99,22 +99,44 @@ def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 10) -> O
     return None
 
 
-def place_trailing_stop(client: TradingClient, symbol: str, qty: float) -> Optional[dict]:
-    """Attach a trailing stop to an open position. DAY required for fractional shares."""
+def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_price: float | None = None) -> Optional[dict]:
+    """Attach a stop to an open position.
+
+    Alpaca does not support trailing stop orders for fractional shares — falls back
+    to a fixed stop order at TRAILING_STOP_PCT below current price when qty is fractional.
+    """
     if not qty or qty <= 0:
         return None
+    is_fractional = abs(qty - round(qty)) > 0.000001
     try:
-        order = client.submit_order(
-            TrailingStopOrderRequest(
-                symbol=symbol,
-                qty=round(qty, 6),
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.DAY,
-                trail_percent=TRAILING_STOP_PCT,
+        if is_fractional:
+            if not current_price:
+                logger.warning(f"Cannot place stop for fractional {symbol}: no current price")
+                return None
+            stop_price = round(current_price * (1 - TRAILING_STOP_PCT / 100), 2)
+            order = client.submit_order(
+                StopOrderRequest(
+                    symbol=symbol,
+                    qty=round(qty, 6),
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
+                    stop_price=stop_price,
+                )
             )
-        )
-        logger.info(f"Trailing stop: {symbol} {TRAILING_STOP_PCT}% trail | order_id={order.id}")
-        return {"symbol": symbol, "trail_pct": TRAILING_STOP_PCT, "order_id": str(order.id)}
+            logger.info(f"Stop order (fractional): {symbol} stop=${stop_price} | order_id={order.id}")
+            return {"symbol": symbol, "stop_price": stop_price, "order_id": str(order.id)}
+        else:
+            order = client.submit_order(
+                TrailingStopOrderRequest(
+                    symbol=symbol,
+                    qty=round(qty, 6),
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
+                    trail_percent=TRAILING_STOP_PCT,
+                )
+            )
+            logger.info(f"Trailing stop: {symbol} {TRAILING_STOP_PCT}% trail | order_id={order.id}")
+            return {"symbol": symbol, "trail_pct": TRAILING_STOP_PCT, "order_id": str(order.id)}
     except Exception as e:
         logger.error(f"Failed to place trailing stop for {symbol}: {e}")
         return None
@@ -301,11 +323,12 @@ def ensure_stops_attached(client: TradingClient):
             covered = stop_qty.get(pos.symbol, 0.0)
             uncovered = pos_qty - covered
             if uncovered > 0.000001:  # tolerance avoids acting on float dust
+                current_price = float(pos.current_price) if pos.current_price else None
                 logger.warning(
                     f"Position {pos.symbol}: {pos_qty:.6f} shares, "
                     f"{covered:.6f} covered by stops — attaching stop for {uncovered:.6f}"
                 )
-                place_trailing_stop(client, pos.symbol, uncovered)
+                place_trailing_stop(client, pos.symbol, uncovered, current_price=current_price)
     except Exception as e:
         logger.error(f"ensure_stops_attached failed: {e}")
 
