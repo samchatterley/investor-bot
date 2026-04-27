@@ -100,7 +100,7 @@ def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 10) -> O
 
 
 def place_trailing_stop(client: TradingClient, symbol: str, qty: float) -> Optional[dict]:
-    """Attach a GTC trailing stop to an open position."""
+    """Attach a trailing stop to an open position. DAY required for fractional shares."""
     if not qty or qty <= 0:
         return None
     try:
@@ -109,7 +109,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float) -> Optio
                 symbol=symbol,
                 qty=round(qty, 6),
                 side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
+                time_in_force=TimeInForce.DAY,
                 trail_percent=TRAILING_STOP_PCT,
             )
         )
