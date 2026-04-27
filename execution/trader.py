@@ -2,6 +2,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import math
 import os
 from contextlib import contextmanager
 from datetime import date
@@ -107,7 +108,9 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
     """
     if not qty or qty <= 0:
         return None
-    is_fractional = abs(qty - round(qty)) > 0.000001
+    # Truncate (not round) to avoid requesting more qty than Alpaca reports available
+    safe_qty = math.floor(qty * 1_000_000) / 1_000_000
+    is_fractional = abs(safe_qty - round(safe_qty)) > 0.000001
     try:
         if is_fractional:
             if not current_price:
@@ -117,7 +120,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
             order = client.submit_order(
                 StopOrderRequest(
                     symbol=symbol,
-                    qty=round(qty, 6),
+                    qty=safe_qty,
                     side=OrderSide.SELL,
                     time_in_force=TimeInForce.DAY,
                     stop_price=stop_price,
@@ -129,7 +132,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
             order = client.submit_order(
                 TrailingStopOrderRequest(
                     symbol=symbol,
-                    qty=round(qty, 6),
+                    qty=safe_qty,
                     side=OrderSide.SELL,
                     time_in_force=TimeInForce.DAY,
                     trail_percent=TRAILING_STOP_PCT,
