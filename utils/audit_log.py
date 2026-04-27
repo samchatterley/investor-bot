@@ -91,7 +91,7 @@ def log_earnings_exit(symbol: str, earnings_date: str):
 
 
 def log_macro_skip(event: str):
-    _write("MACRO_SKIP", {"event": event})
+    _write("MACRO_SKIP", {"macro_event": event})
 
 
 # ── Kill switch / halt ────────────────────────────────────────────────────────

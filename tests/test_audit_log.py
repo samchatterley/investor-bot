@@ -111,3 +111,25 @@ class TestAuditLogWrites(AuditLogBase):
         events = self._read_events()
         self.assertIn("ts", events[0])
         self.assertIn("T", events[0]["ts"])  # ISO format check
+
+    def test_log_daily_loss_limit(self):
+        from utils.audit_log import log_daily_loss_limit
+        log_daily_loss_limit(-4.2)
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "DAILY_LOSS_LIMIT")
+        self.assertAlmostEqual(events[0]["loss_pct"], -4.2)
+
+    def test_log_earnings_exit(self):
+        from utils.audit_log import log_earnings_exit
+        log_earnings_exit("AAPL", "2026-05-01")
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "EARNINGS_EXIT")
+        self.assertEqual(events[0]["symbol"], "AAPL")
+        self.assertEqual(events[0]["earnings_date"], "2026-05-01")
+
+    def test_log_macro_skip(self):
+        from utils.audit_log import log_macro_skip
+        log_macro_skip("FOMC Rate Decision")
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "MACRO_SKIP")
+        self.assertIn("FOMC", events[0]["macro_event"])
