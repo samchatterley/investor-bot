@@ -85,7 +85,7 @@ def place_buy_order(client: TradingClient, symbol: str, notional_usd: float) -> 
         return None
 
 
-def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 10) -> Optional[float]:
+def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> Optional[float]:
     """Poll until a market order is filled. Returns filled qty or None on timeout."""
     for _ in range(max_wait):
         try:

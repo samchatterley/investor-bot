@@ -135,7 +135,7 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
                     remaining_qty = trader.wait_for_fill(client, result["order_id"])
                     if remaining_qty is not None:
                         audit_log.log_order_filled(symbol, result["order_id"], remaining_qty)
-                        trader.place_trailing_stop(client, symbol, pos["qty"] - half_qty)
+                        trader.place_trailing_stop(client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"])
                     executed.append({
                         "symbol": symbol,
                         "action": "PARTIAL SELL",
@@ -472,9 +472,10 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                             audit_log.log_order_placed(symbol, "BUY", notional, result["order_id"])
                             if result.get("filled_qty"):
                                 audit_log.log_order_filled(symbol, result["order_id"], result["filled_qty"])
-                                trader.place_trailing_stop(client, symbol, result["filled_qty"])
+                                current_price = snap["current_price"] if snap else None
+                                trader.place_trailing_stop(client, symbol, result["filled_qty"], current_price=current_price)
                             executed_symbols.add(symbol)
-                            detail = f"${notional:.2f} | Kelly {kelly:.0%} | {candidate.get('key_signal')} | conf={confidence}"
+                            detail = f"${notional:.2f} | Kelly {kelly:.0%} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({**result, "action": "BUY", "detail": detail})
                     else:
                         daily_notional_spent += notional
@@ -482,6 +483,10 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         all_trades.append({"symbol": symbol, "action": "BUY", "detail": f"dry run ${notional:.2f}"})
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")
+
+    # ── Attach any missing stops (catches fills that arrived after wait_for_fill timed out) ──
+    if not dry_run and all_trades:
+        trader.ensure_stops_attached(client)
 
     # ── Finalise ──────────────────────────────────────────────────────────────
     account_after = trader.get_account_info(client)

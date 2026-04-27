@@ -97,8 +97,8 @@ def _humanise_detail(detail: str) -> str:
         elif "Kelly" in part:
             pct = part.replace("Kelly", "").strip()
             result.append(f"Sized at {pct} of available cash")
-        elif "confidence=" in part:
-            val = part.replace("confidence=", "").strip()
+        elif "confidence=" in part or part.startswith("conf="):
+            val = part.replace("confidence=", "").replace("conf=", "").strip()
             result.append(f"Confidence: {val}/10")
         elif part in _SIGNAL_LABELS:
             result.append(f"Signal: {_SIGNAL_LABELS[part]}")
