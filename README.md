@@ -204,9 +204,11 @@ TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'
 
 **Root cause:** The type annotation `dict | None` (PEP 604 union syntax) requires Python 3.10+. Development had used Python 3.11; the production Mac ran 3.9. The crash happened at module *import*, not at runtime — the annotation was in a function signature that never ran, but Python 3.9 evaluates all annotations eagerly at import time.
 
-**Fix:** Added `from __future__ import annotations` to the affected files. This makes all annotations lazy strings (PEP 563), restoring compatibility back to Python 3.7 with no other changes needed.
+**Fix (1.2):** Added `from __future__ import annotations` to the affected files. This makes all annotations lazy strings (PEP 563), restoring compatibility back to Python 3.7 with no other changes needed.
 
-**Learning:** Host Python version should be pinned in `.env.example` or the setup instructions, and tested explicitly. The venv Python and the system Python used by cron can differ silently.
+**Fix (1.4):** Standardised the entire stack on Python 3.12 — venv, cron, and Docker image all pinned to 3.12. The `from __future__ import annotations` shims were subsequently removed as they were no longer needed.
+
+**Learning:** The venv Python and the system Python used by cron can differ silently. Cron entries must point to the venv binary explicitly, not `/usr/bin/python3`.
 
 ---
 
@@ -297,14 +299,11 @@ insufficient qty available for order (requested: 64.075232, available: 64.075231
 
 **Root cause:** The crontab had only been configured for the open run during initial setup. The scheduler script (`scripts/run_scheduler.py`) was correct, but the cron entries for midday and close had never been added.
 
-**Fix:** Added the two missing cron entries:
+**Fix (1.2):** Added the two missing cron entries.
 
-```
-0  17 * * 1-5  ... main.py --mode midday
-45 20 * * 1-5  ... main.py --mode close
-```
+**Fix (1.5):** Removed cron entirely and consolidated on `scripts/run_scheduler.py` as the single production runner. The scheduler was already the intended entrypoint (it is what Docker runs) and includes the Sunday weekly review, proper exception handling, and diagnostics. Cron was a partial implementation missing the Sunday job and running on the wrong Python binary.
 
-**Learning:** "The system supports three modes" and "the system is configured to run three modes" are different claims. Setup instructions should include explicit verification steps, not just configuration snippets.
+**Learning:** "The system supports three modes" and "the system is configured to run three modes" are different claims. The scheduler script is the single authoritative runner — cron entries are a footgun that can diverge silently.
 
 ---
 
@@ -370,7 +369,9 @@ By signal:
 
 ### Where it runs
 
-Currently running on a local Mac in a `tmux` session. This is intentional for paper-trading — there is no cost, no infrastructure, and no blast radius if something goes wrong. For a production deployment the natural next step would be a small VPS (Hetzner, DigitalOcean) or a Docker container on a cloud host with a persistent volume for `logs/`.
+Currently running on a local Mac in a `tmux` session with `caffeinate` to prevent sleep. This is intentional for paper-trading — there is no cost, no infrastructure, and no blast radius if something goes wrong. For a production deployment the natural next step would be a small VPS (Hetzner, DigitalOcean) or a Docker container on a cloud host with a persistent volume for `logs/`.
+
+The scheduler (`scripts/run_scheduler.py`) is the single production runner — it handles all three daily runs plus the Sunday weekly review. Do not use cron alongside it; doing so will double-fire every run.
 
 ### Secrets handling
 
@@ -389,7 +390,7 @@ All secrets live in `.env` which is gitignored and never committed. The `.env.ex
 - **Daily email**: end-of-day summary to all recipients — acts as a daily heartbeat. If the email doesn't arrive, the bot didn't run.
 - **Dashboard**: `http://localhost:8501` shows live portfolio, equity curve, and recent decisions.
 - **Logs**: `logs/YYYY-MM-DD.json` for every run, `logs/decisions.jsonl` for every AI decision, `logs/audit_log.jsonl` for every order.
-- **Diagnostics**: `python scripts/run_diagnostics.py` runs 203 unit tests and saves a report to `logs/test_report_YYYY-MM-DD.json`. Also runs automatically every Sunday.
+- **Diagnostics**: `python scripts/run_diagnostics.py` runs 460 unit tests and saves a report to `logs/test_report_YYYY-MM-DD.json`. Also runs automatically every Sunday.
 
 ### Cost
 
@@ -509,7 +510,7 @@ On Sunday evenings Claude reviews the full week, writes explicit lessons, and ma
 
 ## Setup
 
-**Requirements:** Python 3.10+, a free [Alpaca Markets](https://alpaca.markets) account, an [Anthropic API](https://console.anthropic.com) key, and a Gmail account with an App Password.
+**Requirements:** Python 3.12, a free [Alpaca Markets](https://alpaca.markets) account, an [Anthropic API](https://console.anthropic.com) key, and a Gmail account with an App Password.
 
 ### Option A — local (Python venv)
 
@@ -603,7 +604,7 @@ python cli.py resume   # Clear halt file and resume
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (203 tests)
+├── tests/             Unit test suite (460 tests)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface
 ├── config.py          All configuration and environment variables
@@ -630,7 +631,7 @@ Each person listed in `EMAIL_RECIPIENTS` receives a personalised email addressed
 
 The current system deliberately keeps all state local and all execution synchronous. The natural next steps, in priority order:
 
-1. **Live paper-trading evidence** — accumulate 4–8 weeks of real paper results before considering live capital. The backtest is signal evidence; paper trading is execution evidence.
+1. **Live paper-trading evidence** — currently running a full week of live paper trading (w/c 28 April 2026) before committing real capital. The Sunday weekly review will produce an automated performance analysis and parameter adjustment. The backtest is signal evidence; paper trading is execution evidence.
 2. **Drawdown-based position sizing** — reduce Kelly fraction automatically when the portfolio is in a drawdown, not just when individual signals are weak.
 3. **Multi-timeframe signals** — the current 30-day lookback is a single timeframe. Adding weekly trend confirmation would reduce false positives on the momentum signal.
 4. **Centralised logging** — move from local JSON files to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
@@ -644,6 +645,8 @@ The current system deliberately keeps all state local and all execution synchron
 
 - **Fractional shares.** All orders use fractional share support, so the full calculated dollar amount is deployed rather than rounding down to whole shares. This matters most for high-price names like NVDA or GOOGL.
 
+- **Python 3.12 throughout.** The venv, Docker image, and scheduler all use Python 3.12. Do not invoke `python3` or `/usr/bin/python3` directly — always use `.venv/bin/python` to ensure the correct interpreter and pinned dependencies are used.
+
 - **Dependencies are version-pinned.** `requirements.txt` pins exact versions to prevent silent behaviour changes from upstream updates. Test in paper mode before upgrading any dependency.
 
 - **Logs stay local.** The `logs/` directory is gitignored and never leaves the machine. Each run writes a timestamped JSON record.
@@ -652,11 +655,65 @@ The current system deliberately keeps all state local and all execution synchron
 
 - **AI explainability.** Every recommendation Claude makes is logged to `logs/decisions.jsonl` with its confidence score, plain-English reasoning, and signal type — whether or not the trade was ultimately executed.
 
-- **203 unit tests.** The test suite covers all core logic modules and runs automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **460 unit tests.** The test suite covers every public function and every unhappy path across all core modules, and runs automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
 ## Version history
+
+### 1.5 — April 2026 — Pre-live hardening
+Four bugs discovered through log review after the first live paper-trading session, fixed before leaving the system unattended for a full week:
+
+- **Trailing stops never attached for fractional positions at buy time.** `place_trailing_stop` requires `current_price` to place a fixed stop when quantity is fractional. Both call sites (buy and partial-exit) were not passing it — the function silently returned `None`. Fixed by passing `snap["current_price"]` and `pos["current_price"]` at each site.
+- **Stop exposure window between runs.** `ensure_stops_attached` only ran at the start of each run, not after the buy loop. Any position opened during a run had no stop protection until the next scheduled run hours later. Fixed by adding a second `ensure_stops_attached` call after the buy loop.
+- **`wait_for_fill` too short for paper API.** Default timeout was 10 seconds; Alpaca's paper environment can take 15–20 seconds to confirm fills. Both orders on day one returned `filled_qty = None`. Increased default to 30 seconds.
+- **`conf=` not humanised in email.** The detail string was built with `conf=8` but `_humanise_detail` only matched `confidence=`. Confidence showed as raw text instead of "Confidence: 8/10". Fixed in both the builder and the translator.
+
+Consolidated on `scripts/run_scheduler.py` as the single production runner. Cron entries removed — the scheduler handles all three daily runs plus the Sunday weekly review. Recommended launch command: `caffeinate -i .venv/bin/python scripts/run_scheduler.py` inside a `tmux` session to prevent Mac sleep.
+
+---
+
+### 1.4 — April 2026 — Python 3.12 standardisation
+- **Standardised entire stack on Python 3.12.** Venv, Dockerfile (`python:3.12-slim`), and scheduler all now use the same interpreter. Cron entries updated to use `.venv/bin/python` explicitly, which also fixed the root cause of Incident 1 (system Python 3.9 being invoked by cron).
+- **Removed `from __future__ import annotations` shims** from all 12 production files. These were added as a Python 3.9 compatibility workaround (v1.2); with the full stack on 3.12 they are dead weight.
+- **Upgraded all dependencies** to latest: pandas 3.0.2, numpy 2.4.4, yfinance 1.3.0, curl_cffi 0.15.0, requests 2.33.1. Full test suite confirmed clean on upgraded stack.
+
+---
+
+### 1.3 — April 2026 — Full test coverage
+Comprehensive test pass covering every public function and every unhappy path across all modules. Test count: 203 → 460.
+
+New test files added: `test_fetch_stock_data`, `test_parallel_fetchers`, `test_market_data`, `test_options_scanner`, `test_sector_data`, `test_decision_log`, `test_alerts`, `test_trader_orders`, `test_ai_analyst`, `test_weekly_review` (extended), `test_performance` (extended), `test_portfolio_tracker` (extended), `test_emailer` (extended).
+
+Coverage highlights:
+- All six incident regressions (`test_incidents.py`)
+- Every yfinance adapter path including new API shape fallbacks
+- All Alpaca order types: buy, sell, partial sell, close, trailing stop (fractional and whole-share branches), cancel
+- Full email pipeline: recipient resolution, HTML builders, SMTP layer (mocked), subject line formatting
+- Validator unhappy paths: non-list fields, `None` confidence, string confidence, `None` action
+- Risk manager: sector cap with multiple candidates, Unknown sector bypass, malformed records
+- Weekly review: markdown-wrapped JSON parsing, config line-not-found rejection
+- `reconcile_positions` and `wait_for_fill` exception handling
+
+Production fix included: `reconcile_positions` now catches broker API exceptions gracefully instead of crashing the run (discovered via test).
+
+---
+
+### 1.2 — April 2026 — Day-one incident fixes
+Six failures surfaced in the first two hours of live paper trading on 27 April 2026. All diagnosed from logs alone; all fixed within the same session. See the **Live testing — day one incidents** section for full details.
+
+| # | Incident | Fix |
+|---|----------|-----|
+| 1 | Python 3.9 `\|` syntax crash at cron startup | `from __future__ import annotations` in affected files |
+| 2 | News fetcher returning zero results (yfinance API shape change) | Fallback chain: `title` → `headline` → `content.title` |
+| 3 | Sentiment fetcher blocked (Stocktwits Cloudflare + closed API) | Full rewrite using yfinance analyst consensus (`recommendationMean`) |
+| 4 | Trailing stops rejected for fractional shares | Detect fractional qty; fall back to fixed `StopOrderRequest` |
+| 5 | Stop qty rounding above available qty | Floor truncation (`math.floor`) instead of `round` |
+| 6 | Midday and close runs never scheduled | Added missing cron entries (later replaced by scheduler) |
+
+Regression test suite added: `test_incidents.py` (34 tests) covers all six failure modes to prevent recurrence.
+
+---
 
 ### 1.1 — April 2026
 Added web dashboard (Streamlit, 5 pages), CLI (`cli.py`), Docker deploy, AI decision log (`logs/decisions.jsonl`), personalised email greetings per recipient, Sharpe ratio in backtester, backtest results persisted for the dashboard, file locking on position metadata, and dynamic backtest end date. Unit test suite expanded to 203 tests.
