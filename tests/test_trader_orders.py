@@ -427,3 +427,66 @@ class TestPlacePartialSell(unittest.TestCase):
         client.submit_order.side_effect = Exception("insufficient shares")
         result = place_partial_sell(client, "AAPL", 5.0)
         self.assertIsNone(result)
+
+
+class TestPlaceTrailingStop(unittest.TestCase):
+
+    def _make_order(self, order_id="stop-123"):
+        o = MagicMock()
+        o.id = order_id
+        return o
+
+    def test_returns_none_for_zero_qty(self):
+        from execution.trader import place_trailing_stop
+        result = place_trailing_stop(MagicMock(), "AAPL", 0.0)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_negative_qty(self):
+        from execution.trader import place_trailing_stop
+        result = place_trailing_stop(MagicMock(), "AAPL", -1.0)
+        self.assertIsNone(result)
+
+    def test_whole_shares_places_trailing_stop_order(self):
+        from execution.trader import place_trailing_stop
+        from alpaca.trading.requests import TrailingStopOrderRequest
+        client = MagicMock()
+        client.submit_order.return_value = self._make_order("stop-trail")
+        result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["symbol"], "AAPL")
+        self.assertIn("trail_pct", result)
+        # Verify TrailingStopOrderRequest was used (not StopOrderRequest)
+        submitted = client.submit_order.call_args[0][0]
+        self.assertIsInstance(submitted, TrailingStopOrderRequest)
+
+    def test_fractional_shares_places_fixed_stop_order(self):
+        from execution.trader import place_trailing_stop
+        from alpaca.trading.requests import StopOrderRequest
+        client = MagicMock()
+        client.submit_order.return_value = self._make_order("stop-fixed")
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
+        self.assertIsNotNone(result)
+        self.assertIn("stop_price", result)
+        submitted = client.submit_order.call_args[0][0]
+        self.assertIsInstance(submitted, StopOrderRequest)
+
+    def test_fractional_stop_price_below_current(self):
+        from execution.trader import place_trailing_stop
+        from config import TRAILING_STOP_PCT
+        client = MagicMock()
+        client.submit_order.return_value = self._make_order()
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=200.0)
+        expected_stop = round(200.0 * (1 - TRAILING_STOP_PCT / 100), 2)
+        self.assertAlmostEqual(result["stop_price"], expected_stop, places=2)
+
+    def test_fractional_without_current_price_returns_none(self):
+        from execution.trader import place_trailing_stop
+        result = place_trailing_stop(MagicMock(), "AAPL", 2.5, current_price=None)
+        self.assertIsNone(result)
+
+    def test_returns_none_on_api_error(self):
+        from execution.trader import place_trailing_stop
+        client = MagicMock()
+        client.submit_order.side_effect = Exception("order rejected")
+        result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
+        self.assertIsNone(result)

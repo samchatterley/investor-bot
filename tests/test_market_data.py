@@ -165,3 +165,111 @@ class TestGetSpy5dReturn(unittest.TestCase):
         with patch("data.market_data.yf.Ticker", side_effect=Exception("timeout")):
             result = get_spy_5d_return()
         self.assertIsNone(result)
+
+
+class TestFetchStockData(unittest.TestCase):
+
+    def _make_ticker(self, rows=60, empty=False):
+        mock_ticker = MagicMock()
+        if empty:
+            mock_ticker.history.return_value = pd.DataFrame()
+        else:
+            closes = [100.0 + i * 0.5 for i in range(rows)]
+            df = pd.DataFrame({
+                "Open":   closes,
+                "High":   [c + 1 for c in closes],
+                "Low":    [c - 1 for c in closes],
+                "Close":  closes,
+                "Volume": [1_000_000] * rows,
+            }, index=pd.date_range("2025-01-01", periods=rows, freq="B"))
+            mock_ticker.history.return_value = df
+        return mock_ticker
+
+    def test_returns_dataframe_on_success(self):
+        from data.market_data import fetch_stock_data
+        with patch("data.market_data.yf.Ticker", return_value=self._make_ticker(60)):
+            result = fetch_stock_data("AAPL", days=30)
+        self.assertIsNotNone(result)
+        self.assertIn("rsi", result.columns)
+        self.assertIn("macd", result.columns)
+
+    def test_returns_none_on_empty_dataframe(self):
+        from data.market_data import fetch_stock_data
+        with patch("data.market_data.yf.Ticker", return_value=self._make_ticker(empty=True)):
+            result = fetch_stock_data("AAPL", days=30)
+        self.assertIsNone(result)
+
+    def test_returns_none_when_insufficient_rows(self):
+        from data.market_data import fetch_stock_data
+        with patch("data.market_data.yf.Ticker", return_value=self._make_ticker(rows=10)):
+            result = fetch_stock_data("AAPL", days=30)
+        self.assertIsNone(result)
+
+    def test_returns_none_on_exception(self):
+        from data.market_data import fetch_stock_data
+        with patch("data.market_data.yf.Ticker", side_effect=Exception("network")):
+            result = fetch_stock_data("AAPL", days=30)
+        self.assertIsNone(result)
+
+    def test_result_limited_to_requested_days(self):
+        from data.market_data import fetch_stock_data
+        with patch("data.market_data.yf.Ticker", return_value=self._make_ticker(200)):
+            result = fetch_stock_data("AAPL", days=20)
+        self.assertIsNotNone(result)
+        self.assertLessEqual(len(result), 20)
+
+
+class TestGetMarketSnapshots(unittest.TestCase):
+
+    def _make_snap(self, symbol):
+        return {
+            "symbol": symbol, "current_price": 100.0,
+            "ret_1d_pct": 0.5, "ret_5d_pct": 2.0, "ret_10d_pct": 4.0,
+            "rsi_14": 55.0, "macd_diff": 0.1,
+            "macd_crossed_up": False, "macd_crossed_down": False,
+            "ema9_above_ema21": True, "bb_pct": 0.5,
+            "vol_ratio": 1.2, "price_vs_ema9_pct": 1.0,
+            "weekly_trend_up": True, "weekly_rsi": 55.0,
+        }
+
+    def test_returns_list_of_snapshots(self):
+        from data.market_data import get_market_snapshots
+        snap = self._make_snap("AAPL")
+        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()), \
+             patch("data.market_data.summarise_for_ai", return_value=snap), \
+             patch("data.market_data.get_spy_5d_return", return_value=1.0):
+            result = get_market_snapshots(["AAPL"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["symbol"], "AAPL")
+
+    def test_skips_symbols_with_no_data(self):
+        from data.market_data import get_market_snapshots
+        with patch("data.market_data.fetch_stock_data", return_value=None), \
+             patch("data.market_data.get_spy_5d_return", return_value=None):
+            result = get_market_snapshots(["AAPL", "NVDA"])
+        self.assertEqual(result, [])
+
+    def test_adds_relative_strength_when_spy_available(self):
+        from data.market_data import get_market_snapshots
+        snap = self._make_snap("AAPL")
+        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()), \
+             patch("data.market_data.summarise_for_ai", return_value=snap), \
+             patch("data.market_data.get_spy_5d_return", return_value=1.5):
+            result = get_market_snapshots(["AAPL"])
+        self.assertIn("rel_strength_5d", result[0])
+        self.assertAlmostEqual(result[0]["rel_strength_5d"], snap["ret_5d_pct"] - 1.5, places=2)
+
+    def test_skips_relative_strength_when_spy_unavailable(self):
+        from data.market_data import get_market_snapshots
+        snap = self._make_snap("AAPL")
+        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()), \
+             patch("data.market_data.summarise_for_ai", return_value=snap), \
+             patch("data.market_data.get_spy_5d_return", return_value=None):
+            result = get_market_snapshots(["AAPL"])
+        self.assertNotIn("rel_strength_5d", result[0])
+
+    def test_returns_empty_list_for_no_symbols(self):
+        from data.market_data import get_market_snapshots
+        with patch("data.market_data.get_spy_5d_return", return_value=None):
+            result = get_market_snapshots([])
+        self.assertEqual(result, [])

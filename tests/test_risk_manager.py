@@ -156,6 +156,14 @@ class TestValidateBuyCandidates(unittest.TestCase):
         result = validate_buy_candidates(candidates, held, self._sector_map, max_per_sector=2)
         self.assertEqual(result, [])
 
+    def test_sector_map_fn_exception_propagates(self):
+        def boom(sym):
+            raise RuntimeError(f"sector lookup failed for {sym}")
+        with self.assertRaises(RuntimeError):
+            validate_buy_candidates(
+                [{"symbol": "AAPL", "confidence": 8}], set(), boom
+            )
+
 
 class TestCircuitBreakerEdgeCases(unittest.TestCase):
 
