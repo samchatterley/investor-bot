@@ -85,11 +85,10 @@ def _weekly_review():
         logger.error(f"Weekly review failed: {e}", exc_info=True)
 
 
-for day in [schedule.every().monday, schedule.every().tuesday, schedule.every().wednesday,
-            schedule.every().thursday, schedule.every().friday]:
-    day.at("14:31").do(_open)    # 09:31 ET  (BST)
-    day.at("17:00").do(_midday)  # 12:00 ET  (BST)
-    day.at("20:30").do(_close)   # 15:30 ET  (BST)
+for _day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
+    getattr(schedule.every(), _day).at("14:31").do(_open)    # 09:31 ET  (BST)
+    getattr(schedule.every(), _day).at("17:00").do(_midday)  # 12:00 ET  (BST)
+    getattr(schedule.every(), _day).at("20:30").do(_close)   # 15:30 ET  (BST)
 
 schedule.every().sunday.at("20:00").do(_weekly_review)  # Sunday 20:00 BST
 
