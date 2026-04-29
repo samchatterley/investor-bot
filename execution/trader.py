@@ -163,13 +163,17 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> Optional
 
 
 def close_position(client: TradingClient, symbol: str) -> Optional[dict]:
-    """Close an entire position using Alpaca's close_position helper."""
-    try:
+    """Close an entire position. Retries up to 3 times before returning None."""
+    @with_retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
+    def _attempt():
         client.close_position(symbol)
+
+    try:
+        _attempt()
         logger.info(f"Position closed: {symbol}")
         return {"symbol": symbol, "status": "closed"}
     except Exception as e:
-        logger.error(f"Failed to close position {symbol}: {e}")
+        logger.error(f"Failed to close position {symbol} after 3 attempts: {e}")
         return None
 
 

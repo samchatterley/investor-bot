@@ -401,6 +401,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                 trader.record_sell(symbol)
                 executed_symbols.add(symbol)
                 all_trades.append({**result, "action": "SELL", "detail": reason})
+            else:
+                logger.error(f"  SELL FAILED {symbol} — close_position returned None after retries. Manual review required.")
+                alerts.alert_error("SELL FAILED", f"{symbol}: failed to close position after 3 attempts — manual review required.")
         else:
             executed_symbols.add(symbol)
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
