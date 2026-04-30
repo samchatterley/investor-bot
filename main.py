@@ -14,6 +14,7 @@ Usage:
 import sys
 import os
 import time
+import uuid
 import logging
 import argparse
 from datetime import date, datetime, timezone
@@ -30,6 +31,7 @@ from utils import portfolio_tracker
 from utils.portfolio_tracker import get_day_summary
 from utils import audit_log
 from utils import decision_log
+from utils.db import init_db
 from utils.validators import validate_ai_response, sanitize_headlines, check_pre_trade
 
 logging.basicConfig(
@@ -184,6 +186,8 @@ def run(dry_run: bool = False, mode: str = "open"):
         logger.critical(f"Trading is HALTED. Delete halt file or run: python main.py --clear-halt")
         sys.exit(1)
 
+    init_db()
+
     if not _acquire_lock():
         return
 
@@ -197,6 +201,11 @@ def run(dry_run: bool = False, mode: str = "open"):
 
 
 def _run_inner(dry_run: bool, mode: str, today: str):
+    run_id = str(uuid.uuid4())
+    audit_log.set_run_id(run_id)
+    decision_log.set_run_id(run_id)
+    logger.info(f"run_id={run_id}")
+
     client = trader.get_client()
 
     if not trader.is_market_open(client):
@@ -282,6 +291,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             ai_decisions={"market_summary": f"{mode} check", "position_decisions": [], "buy_candidates": []},
             trades_executed=all_trades,
             stop_losses_triggered=[],
+            run_id=run_id,
         )
         portfolio_tracker.print_summary(record)
         audit_log.log_run_end(mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"])
@@ -377,6 +387,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         leading_sectors=leading_sectors,
         options_signals=options_sigs,
         lessons=lessons,
+        run_id=run_id,
     )
 
     if not decisions:
@@ -533,6 +544,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         ai_decisions=decisions,
         trades_executed=all_trades,
         stop_losses_triggered=[],
+        run_id=run_id,
     )
     portfolio_tracker.print_summary(record)
     performance.generate_dashboard(portfolio_tracker.load_history())

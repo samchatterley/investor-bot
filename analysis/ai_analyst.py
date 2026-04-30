@@ -270,6 +270,32 @@ by the Kelly Criterion using your confidence score. Focus on signal quality and 
 Use the submit_trading_decisions tool to return your analysis."""
 
 
+_COST_PER_M_INPUT  = 3.0   # USD per 1M input tokens (claude-sonnet-4-x)
+_COST_PER_M_OUTPUT = 15.0  # USD per 1M output tokens
+
+
+def _record_llm_usage(run_id: str | None, input_tokens: int, output_tokens: int):
+    """Write token counts and estimated cost to the llm_usage SQLite table."""
+    cost = (input_tokens / 1_000_000) * _COST_PER_M_INPUT + \
+           (output_tokens / 1_000_000) * _COST_PER_M_OUTPUT
+    try:
+        from datetime import datetime, timezone
+        from utils.db import get_db
+        ts = datetime.now(timezone.utc).isoformat()
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO llm_usage (run_id, ts, model, input_tokens, output_tokens, cost_usd) "
+                "VALUES (?,?,?,?,?,?)",
+                (run_id, ts, CLAUDE_MODEL, input_tokens, output_tokens, round(cost, 6)),
+            )
+        logger.info(
+            f"LLM usage: {input_tokens} in / {output_tokens} out  "
+            f"≈ ${cost:.4f}  run_id={run_id}"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to record LLM usage: {e}")
+
+
 def get_trading_decisions(
     snapshots: list[dict],
     current_positions: list[dict],
@@ -288,6 +314,7 @@ def get_trading_decisions(
     leading_sectors: list[str] | None = None,
     options_signals: dict | None = None,
     lessons: list[str] | None = None,
+    run_id: str | None = None,
 ) -> Optional[dict]:
     prompt = build_prompt(
         snapshots, current_positions, available_cash, portfolio_value,
@@ -315,6 +342,10 @@ def get_trading_decisions(
             tool_choice={"type": "tool", "name": "submit_trading_decisions"},
             messages=[{"role": "user", "content": prompt}],
         )
+
+        # Record token usage immediately — even if subsequent parsing fails
+        if hasattr(response, "usage") and response.usage:
+            _record_llm_usage(run_id, response.usage.input_tokens, response.usage.output_tokens)
 
         tool_block = next(
             (b for b in response.content if hasattr(b, "input")), None

@@ -1,10 +1,10 @@
 """
-Structured audit trail written to logs/audit.jsonl (newline-delimited JSON).
+Structured audit trail — written to both logs/audit.jsonl and the SQLite
+audit_events table (via utils.db).
 
-Each line is a self-contained JSON event with a UTC timestamp. The file is
-append-only during normal operation — never overwritten or rotated — to
-satisfy MiFID II Article 25 record-keeping requirements (orders and decisions
-must be retained for 5 years and be reproducible on request).
+Each entry is self-contained with a UTC timestamp. The JSONL file is
+append-only and never rotated to satisfy MiFID II Article 25 record-keeping
+requirements. SQLite enables fast querying and cross-run correlation by run_id.
 
 To inspect: `cat logs/audit.jsonl | python3 -m json.tool | less`
 To filter orders: `grep ORDER_PLACED logs/audit.jsonl`
@@ -19,20 +19,39 @@ from config import LOG_DIR
 logger = logging.getLogger(__name__)
 
 _AUDIT_PATH = os.path.join(LOG_DIR, "audit.jsonl")
+_run_id: str | None = None
+
+
+def set_run_id(run_id: str) -> None:
+    """Called once per run in main.py so all events are correlated."""
+    global _run_id
+    _run_id = run_id
 
 
 def _write(event_type: str, payload: dict):
-    entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "event": event_type,
-        **payload,
-    }
+    ts = datetime.now(timezone.utc).isoformat()
+    entry = {"ts": ts, "event": event_type, **payload}
+    if _run_id:
+        entry["run_id"] = _run_id
+
+    # JSONL — append-only for MiFID II compliance
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(_AUDIT_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception as e:
-        logger.error(f"Audit log write failed: {e}")
+        logger.error(f"Audit JSONL write failed: {e}")
+
+    # SQLite — queryable, correlated by run_id
+    try:
+        from utils.db import get_db
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO audit_events (run_id, ts, event, payload) VALUES (?,?,?,?)",
+                (_run_id, ts, event_type, json.dumps(payload)),
+            )
+    except Exception as e:
+        logger.error(f"Audit SQLite write failed: {e}")
 
 
 # ── Run lifecycle ─────────────────────────────────────────────────────────────

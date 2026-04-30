@@ -36,11 +36,13 @@ def _mock_account(portfolio_value=100_000, cash=20_000, buying_power=40_000, equ
 
 
 def _meta_patcher(tmpdir):
-    meta_path = os.path.join(tmpdir, "positions_meta.json")
+    """Return patchers that isolate trader metadata tests to a temp SQLite DB."""
+    import utils.db as db_module
+    db_path = os.path.join(tmpdir, "test.db")
     return [
-        patch("execution.trader._META_PATH", meta_path),
-        patch("execution.trader._META_LOCK_PATH", meta_path + ".lock"),
-        patch("execution.trader.LOG_DIR", tmpdir),
+        patch.object(db_module, "_DB_PATH", db_path),
+        patch.object(db_module, "_initialized", False),
+        patch.object(db_module, "_migrate_json_state", lambda: None),
     ]
 
 
@@ -251,10 +253,14 @@ class TestCancelOpenOrders(unittest.TestCase):
 class TestReconcilePositions(unittest.TestCase):
 
     def setUp(self):
+        import utils.db as db_module
         self.tmpdir = tempfile.mkdtemp()
         self.patchers = _meta_patcher(self.tmpdir)
         for p in self.patchers:
             p.start()
+        db_module._initialized = False
+        from utils.db import init_db
+        init_db()
 
     def tearDown(self):
         for p in self.patchers:
@@ -376,10 +382,14 @@ class TestIsMarketOpen(unittest.TestCase):
 class TestGetPositionSignal(unittest.TestCase):
 
     def setUp(self):
+        import utils.db as db_module
         self.tmpdir = tempfile.mkdtemp()
         self.patchers = _meta_patcher(self.tmpdir)
         for p in self.patchers:
             p.start()
+        db_module._initialized = False
+        from utils.db import init_db
+        init_db()
 
     def tearDown(self):
         for p in self.patchers:

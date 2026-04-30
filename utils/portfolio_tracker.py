@@ -25,9 +25,11 @@ def save_daily_run(
     ai_decisions: dict,
     trades_executed: list[dict],
     stop_losses_triggered: list[dict],
+    run_id: str | None = None,
 ):
     record = {
         "date": date,
+        "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "account_before": account_before,
         "account_after": account_after,
@@ -73,6 +75,38 @@ def save_daily_run(
     with open(path, "w") as f:
         json.dump(record, f, indent=2)
 
+    # Mirror to SQLite runs table
+    try:
+        from utils.db import get_db
+        mode = "open"
+        if "-midday" in date:
+            mode = "midday"
+        elif "-close" in date:
+            mode = "close"
+        with get_db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO runs "
+                "(date, mode, run_id, timestamp, account_before, account_after, "
+                "market_summary, position_decisions, buy_candidates, trades_executed, "
+                "stop_losses, daily_pnl) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record["date"],
+                    mode,
+                    record.get("run_id"),
+                    record["timestamp"],
+                    json.dumps(record["account_before"]),
+                    json.dumps(record["account_after"]),
+                    record.get("market_summary", ""),
+                    json.dumps(record.get("position_decisions", [])),
+                    json.dumps(record.get("buy_candidates", [])),
+                    json.dumps(record.get("trades_executed", [])),
+                    json.dumps(record.get("stop_losses_triggered", [])),
+                    record.get("daily_pnl", 0.0),
+                ),
+            )
+    except Exception as e:
+        logger.warning(f"SQLite run write failed: {e}")
+
     logger.info(f"Daily run saved to {path}")
     return record
 
@@ -113,6 +147,15 @@ def save_daily_baseline(portfolio_value: float) -> None:
     today = datetime.now(timezone.utc).date().isoformat()
     with open(_BASELINE_PATH, "w") as f:
         json.dump({"date": today, "portfolio_value": portfolio_value}, f)
+    try:
+        from utils.db import get_db
+        with get_db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO daily_baselines VALUES (?,?)",
+                (today, portfolio_value),
+            )
+    except Exception as e:
+        logger.warning(f"SQLite baseline write failed: {e}")
 
 
 def load_daily_baseline() -> float | None:

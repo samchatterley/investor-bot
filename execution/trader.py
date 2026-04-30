@@ -1,9 +1,6 @@
-import fcntl
-import json
 import logging
 import math
 import os
-from contextlib import contextmanager
 from datetime import date
 from typing import Optional
 from alpaca.trading.client import TradingClient
@@ -183,77 +180,68 @@ def is_market_open(client: TradingClient) -> bool:
     return clock.is_open
 
 
-# ---------- Position age tracking ----------
+# ---------- Position metadata (SQLite) ----------
 
-_META_PATH = os.path.join(LOG_DIR, "positions_meta.json")
-_META_LOCK_PATH = _META_PATH + ".lock"
-
-
-@contextmanager
-def _meta_lock():
-    """Exclusive file lock for read-modify-write operations on positions_meta.json."""
-    os.makedirs(LOG_DIR, exist_ok=True)
-    with open(_META_LOCK_PATH, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
-
-
-def _load_meta() -> dict:
-    if os.path.exists(_META_PATH):
-        with open(_META_PATH) as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-    return {}
-
-
-def _save_meta(meta: dict):
-    with open(_META_PATH, "w") as f:
-        json.dump(meta, f, indent=2)
+def _db():
+    from utils.db import get_db
+    return get_db()
 
 
 def get_position_signal(symbol: str) -> str:
     """Return the entry signal stored for a position, or 'unknown'."""
-    with _meta_lock():
-        return _load_meta().get(symbol, {}).get("signal", "unknown")
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT signal FROM positions WHERE symbol=?", (symbol,)
+            ).fetchone()
+        return row["signal"] if row else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def record_buy(symbol: str, entry_price: float, signal: str = "unknown",
                regime: str = "UNKNOWN", confidence: int = 0):
-    with _meta_lock():
-        meta = _load_meta()
-        meta[symbol] = {
-            "entry_date": today_et().isoformat(),
-            "entry_price": round(entry_price, 4),
-            "signal": signal,
-            "regime": regime,
-            "confidence": confidence,
-        }
-        _save_meta(meta)
+    with _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
+            "VALUES (?,?,?,?,?,?)",
+            (symbol, today_et().isoformat(), round(entry_price, 4), signal, regime, confidence),
+        )
 
 
 def record_sell(symbol: str):
-    with _meta_lock():
-        meta = _load_meta()
-        meta.pop(symbol, None)
-        _save_meta(meta)
+    with _db() as conn:
+        conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
 
 
 def get_position_meta(symbol: str) -> dict:
     """Return full entry metadata for a position (signal, regime, confidence, entry_price, entry_date)."""
     defaults = {"signal": "unknown", "regime": "UNKNOWN", "confidence": 0, "entry_price": 0.0}
-    with _meta_lock():
-        return {**defaults, **_load_meta().get(symbol, {})}
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT * FROM positions WHERE symbol=?", (symbol,)
+            ).fetchone()
+        if row:
+            return {**defaults, **dict(row)}
+    except Exception:
+        pass
+    return defaults
+
+
+def _load_all_positions() -> dict:
+    """Return all position metadata as {symbol: dict}."""
+    try:
+        with _db() as conn:
+            rows = conn.execute("SELECT * FROM positions").fetchall()
+        return {row["symbol"]: dict(row) for row in rows}
+    except Exception:
+        return {}
 
 
 def get_position_ages() -> dict[str, int]:
     """Return {symbol: approximate_trading_days_held}."""
-    with _meta_lock():
-        meta = _load_meta()
+    meta = _load_all_positions()
     today = today_et()
     ages = {}
     for symbol, data in meta.items():
@@ -276,7 +264,7 @@ def get_stale_positions(max_days: int = 3) -> list[str]:
 
 def reconcile_positions(client: TradingClient):
     """
-    Sync positions_meta.json with actual Alpaca positions.
+    Sync the SQLite positions table with actual Alpaca positions.
     Removes stale entries for positions that no longer exist,
     adds placeholder entries for positions with no metadata.
     """
@@ -286,26 +274,23 @@ def reconcile_positions(client: TradingClient):
         logger.error(f"reconcile_positions: could not fetch positions — {e}")
         return
     actual = {p.symbol for p in positions}
-    with _meta_lock():
-        meta = _load_meta()
-        changed = False
+    try:
+        with _db() as conn:
+            stored = {row["symbol"] for row in conn.execute("SELECT symbol FROM positions")}
 
-        # Remove entries for positions we no longer hold
-        for sym in list(meta.keys()):
-            if sym not in actual:
+            for sym in stored - actual:
                 logger.info(f"Reconcile: removing stale metadata for {sym}")
-                del meta[sym]
-                changed = True
+                conn.execute("DELETE FROM positions WHERE symbol=?", (sym,))
 
-        # Add placeholder entries for positions with no metadata
-        for sym in actual:
-            if sym not in meta:
+            for sym in actual - stored:
                 logger.info(f"Reconcile: adding missing metadata for {sym}")
-                meta[sym] = {"entry_date": today_et().isoformat(), "entry_price": 0.0, "signal": "unknown"}
-                changed = True
-
-        if changed:
-            _save_meta(meta)
+                conn.execute(
+                    "INSERT OR IGNORE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (sym, today_et().isoformat(), 0.0, "unknown", "UNKNOWN", 0),
+                )
+    except Exception as e:
+        logger.error(f"reconcile_positions: database error — {e}")
 
 
 def ensure_stops_attached(client: TradingClient):

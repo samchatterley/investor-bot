@@ -1,7 +1,6 @@
 """
-Tests for the pure file-I/O position metadata functions in execution/trader.py.
-Alpaca API calls (place_buy_order, get_account_info, etc.) are excluded — those
-require a live/mock broker connection and belong in integration tests.
+Tests for position metadata functions in execution/trader.py (SQLite backend).
+Alpaca API calls are excluded — those require a live/mock broker connection.
 """
 import os
 import shutil
@@ -11,21 +10,34 @@ from datetime import date
 from unittest.mock import patch
 
 
-def _meta_patcher(tmpdir):
-    meta_path = os.path.join(tmpdir, "positions_meta.json")
-    return patch("execution.trader._META_PATH", meta_path), patch("execution.trader.LOG_DIR", tmpdir)
-
-
-class TestRecordBuyAndSell(unittest.TestCase):
+class _MetaTestBase(unittest.TestCase):
 
     def setUp(self):
+        import utils.db as db_module
+
         self.tmpdir = tempfile.mkdtemp()
-        p1, p2 = _meta_patcher(self.tmpdir)
-        self.p1 = p1.start()
-        self.p2 = p2.start()
-        self.addCleanup(p1.stop)
-        self.addCleanup(p2.stop)
+        db_path = os.path.join(self.tmpdir, "test.db")
+
+        # Patch DB path, reset init flag, and suppress JSON migration so the
+        # temp DB starts empty rather than inheriting live positions_meta.json data.
+        self.p_path = patch.object(db_module, "_DB_PATH", db_path)
+        self.p_init = patch.object(db_module, "_initialized", False)
+        self.p_migrate = patch.object(db_module, "_migrate_json_state", lambda: None)
+        self.p_path.start()
+        self.p_init.start()
+        self.p_migrate.start()
+        self.addCleanup(self.p_path.stop)
+        self.addCleanup(self.p_init.stop)
+        self.addCleanup(self.p_migrate.stop)
         self.addCleanup(shutil.rmtree, self.tmpdir)
+
+        # Initialise schema in the isolated temp DB
+        db_module._initialized = False
+        from utils.db import init_db
+        init_db()
+
+
+class TestRecordBuyAndSell(_MetaTestBase):
 
     def test_record_buy_creates_entry(self):
         from execution.trader import record_buy, get_position_meta
@@ -62,16 +74,7 @@ class TestRecordBuyAndSell(unittest.TestCase):
         self.assertEqual(get_position_meta("MSFT")["signal"], "mean_reversion")
 
 
-class TestGetPositionMeta(unittest.TestCase):
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        p1, p2 = _meta_patcher(self.tmpdir)
-        self.p1 = p1.start()
-        self.p2 = p2.start()
-        self.addCleanup(p1.stop)
-        self.addCleanup(p2.stop)
-        self.addCleanup(shutil.rmtree, self.tmpdir)
+class TestGetPositionMeta(_MetaTestBase):
 
     def test_unknown_symbol_returns_defaults(self):
         from execution.trader import get_position_meta
@@ -83,22 +86,13 @@ class TestGetPositionMeta(unittest.TestCase):
 
     def test_defaults_not_overwritten_by_partial_metadata(self):
         from execution.trader import record_buy, get_position_meta
-        record_buy("AAPL", 180.0)  # no regime or confidence
+        record_buy("AAPL", 180.0)  # no regime or confidence supplied → defaults
         meta = get_position_meta("AAPL")
         self.assertEqual(meta["regime"], "UNKNOWN")
         self.assertEqual(meta["confidence"], 0)
 
 
-class TestPositionAges(unittest.TestCase):
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        p1, p2 = _meta_patcher(self.tmpdir)
-        self.p1 = p1.start()
-        self.p2 = p2.start()
-        self.addCleanup(p1.stop)
-        self.addCleanup(p2.stop)
-        self.addCleanup(shutil.rmtree, self.tmpdir)
+class TestPositionAges(_MetaTestBase):
 
     def test_position_entered_today_has_age_one(self):
         from execution.trader import record_buy, get_position_ages
@@ -109,14 +103,12 @@ class TestPositionAges(unittest.TestCase):
     def test_get_stale_positions_below_threshold(self):
         from execution.trader import record_buy, get_stale_positions
         record_buy("AAPL", 175.0)
-        # A position entered today won't be stale at max_days=3
         stale = get_stale_positions(max_days=30)
         self.assertNotIn("AAPL", stale)
 
     def test_get_stale_positions_with_low_threshold(self):
         from execution.trader import record_buy, get_stale_positions
         record_buy("AAPL", 175.0)
-        # With max_days=1, a 1-day position is stale
         stale = get_stale_positions(max_days=1)
         self.assertIn("AAPL", stale)
 
@@ -124,31 +116,3 @@ class TestPositionAges(unittest.TestCase):
         from execution.trader import get_position_ages, get_stale_positions
         self.assertEqual(get_position_ages(), {})
         self.assertEqual(get_stale_positions(), [])
-
-
-class TestLoadMetaCorruption(unittest.TestCase):
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        p1, p2 = _meta_patcher(self.tmpdir)
-        self.p1 = p1.start()
-        self.p2 = p2.start()
-        self.addCleanup(p1.stop)
-        self.addCleanup(p2.stop)
-        self.addCleanup(shutil.rmtree, self.tmpdir)
-
-    def test_corrupted_json_returns_empty_dict_not_exception(self):
-        import json
-        from execution.trader import _META_PATH, get_position_meta
-        with open(_META_PATH, "w") as f:
-            f.write("not valid json {{{")
-        meta = get_position_meta("AAPL")
-        self.assertEqual(meta["signal"], "unknown")
-
-    def test_empty_file_returns_defaults(self):
-        from execution.trader import _META_PATH, get_position_meta
-        with open(_META_PATH, "w") as f:
-            f.write("")
-        meta = get_position_meta("AAPL")
-        self.assertEqual(meta["signal"], "unknown")
-        self.assertEqual(meta["confidence"], 0)

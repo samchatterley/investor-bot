@@ -1,6 +1,6 @@
 """
 Per-trade AI decision log — captures Claude's full reasoning for every buy/sell candidate.
-Written to logs/decisions.jsonl (append-only JSONL).
+Written to both logs/decisions.jsonl (append-only JSONL) and the SQLite decisions table.
 
 Fields per entry:
   ts             UTC timestamp
@@ -23,15 +23,48 @@ from config import LOG_DIR
 logger = logging.getLogger(__name__)
 
 _DECISIONS_PATH = os.path.join(LOG_DIR, "decisions.jsonl")
+_run_id: str | None = None
+
+
+def set_run_id(run_id: str) -> None:
+    """Called once per run in main.py so all decisions share the same run_id."""
+    global _run_id
+    _run_id = run_id
 
 
 def _write(entry: dict):
+    # JSONL
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(_DECISIONS_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception as e:
-        logger.error(f"Decision log write failed: {e}")
+        logger.error(f"Decision JSONL write failed: {e}")
+
+    # SQLite
+    try:
+        from utils.db import get_db
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO decisions "
+                "(run_id, date, mode, timestamp, market_summary, symbol, action, "
+                "confidence, key_signal, reasoning, executed) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    entry.get("run_id"),
+                    entry.get("date", ""),
+                    entry.get("mode", "open"),
+                    entry.get("ts", ""),
+                    entry.get("market_summary", ""),
+                    entry.get("symbol", ""),
+                    entry.get("action", ""),
+                    entry.get("confidence"),
+                    entry.get("key_signal"),
+                    entry.get("reasoning"),
+                    int(entry.get("executed", False)),
+                ),
+            )
+    except Exception as e:
+        logger.error(f"Decision SQLite write failed: {e}")
 
 
 def log_decisions(decisions: dict, mode: str, executed_symbols: set[str]):
@@ -46,6 +79,7 @@ def log_decisions(decisions: dict, mode: str, executed_symbols: set[str]):
     for candidate in decisions.get("buy_candidates", []):
         sym = candidate.get("symbol", "")
         _write({
+            "run_id": _run_id,
             "ts": now,
             "date": date,
             "mode": mode,
@@ -61,6 +95,7 @@ def log_decisions(decisions: dict, mode: str, executed_symbols: set[str]):
     for decision in decisions.get("position_decisions", []):
         sym = decision.get("symbol", "")
         _write({
+            "run_id": _run_id,
             "ts": now,
             "date": date,
             "mode": mode,
