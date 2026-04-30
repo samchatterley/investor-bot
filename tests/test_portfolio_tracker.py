@@ -36,8 +36,13 @@ class TestSaveAndLoad(PortfolioTrackerBase):
 
     def test_save_creates_json_file(self):
         save_daily_run("2026-01-15", _account(100_000), _account(101_000), _ai(), [], [])
-        files = os.listdir(self.tmpdir)
-        self.assertTrue(any("2026-01-15" in f for f in files))
+        # File is saved in a weekly subdirectory — search recursively
+        all_files = [
+            fname
+            for _, _, files in os.walk(self.tmpdir)
+            for fname in files
+        ]
+        self.assertTrue(any("2026-01-15" in f for f in all_files))
 
     def test_load_returns_saved_record(self):
         save_daily_run("2026-01-15", _account(100_000), _account(101_000), _ai(), [], [])

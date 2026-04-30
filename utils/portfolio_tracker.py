@@ -1,7 +1,7 @@
 import json
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, timezone
 from config import LOG_DIR
 
 _BASELINE_PATH = os.path.join(LOG_DIR, "daily_baseline.json")
@@ -13,9 +13,25 @@ def _ensure_log_dir():
     os.makedirs(LOG_DIR, exist_ok=True)
 
 
+def _weekly_log_dir(date_str: str) -> str:
+    """Return (and create) the ISO-week subdirectory for a given date string.
+
+    Files are organised as logs/{iso_year}/Week {iso_week}/.
+    Week numbers follow ISO 8601 — Monday is the first day, and Monday 4 May 2026
+    is the start of Week 19.
+    """
+    try:
+        d = _date.fromisoformat(date_str[:10])
+    except ValueError:
+        d = datetime.now(timezone.utc).date()
+    iso_year, iso_week, _ = d.isocalendar()
+    week_dir = os.path.join(LOG_DIR, str(iso_year), f"Week {iso_week}")
+    os.makedirs(week_dir, exist_ok=True)
+    return week_dir
+
+
 def _daily_log_path(date: str) -> str:
-    _ensure_log_dir()
-    return os.path.join(LOG_DIR, f"{date}.json")
+    return os.path.join(_weekly_log_dir(date), f"{date}.json")
 
 
 def save_daily_run(
@@ -138,7 +154,10 @@ def print_summary(record: dict):
     print("=" * 50 + "\n")
 
 
-_NON_RUN_FILES = {"positions_meta.json", "signal_stats.json"}
+_NON_RUN_FILES = {
+    "positions_meta.json", "signal_stats.json", "daily_baseline.json",
+    "backtest_results.json", "runtime_config.json",
+}
 
 
 def save_daily_baseline(portfolio_value: float) -> None:
@@ -172,19 +191,24 @@ def load_daily_baseline() -> float | None:
 
 
 def load_history() -> list[dict]:
-    """Load all daily run records, ignoring metadata and stats files."""
+    """Load all daily run records from weekly subdirectories, sorted chronologically."""
     _ensure_log_dir()
+    # Collect (filename, full_path) across all subdirs; sort by filename for chronological order
+    found: list[tuple[str, str]] = []
+    for root, dirs, files in os.walk(LOG_DIR):
+        dirs.sort()
+        for fname in files:
+            if fname.endswith(".json") and fname not in _NON_RUN_FILES:
+                found.append((fname, os.path.join(root, fname)))
     records = []
-    for fname in sorted(os.listdir(LOG_DIR)):
-        if not fname.endswith(".json") or fname in _NON_RUN_FILES:
-            continue
-        with open(os.path.join(LOG_DIR, fname)) as f:
-            try:
+    for _fname, fpath in sorted(found):
+        try:
+            with open(fpath) as f:
                 data = json.load(f)
-                if "date" in data and "account_after" in data:
-                    records.append(data)
-            except json.JSONDecodeError:
-                pass
+            if "date" in data and "account_after" in data:
+                records.append(data)
+        except json.JSONDecodeError:
+            pass
     return records
 
 
