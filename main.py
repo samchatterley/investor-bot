@@ -13,6 +13,7 @@ Usage:
 
 import sys
 import os
+import math
 import time
 import uuid
 import logging
@@ -398,9 +399,17 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     is_valid, validation_errors = validate_ai_response(decisions, ai_known_symbols, held_symbols=held_symbols)
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
-        logger.error(f"AI response failed validation — aborting buys. Errors: {validation_errors}")
-        # Allow sells to proceed for safety, but block all buys
-        decisions["buy_candidates"] = []
+        logger.warning(f"AI response validation: {len(validation_errors)} issue(s) — filtering invalid candidates")
+        # Surgical filter: remove candidates not in the verified symbol universe.
+        # Allows valid candidates through rather than aborting all buys.
+        before = len(decisions.get("buy_candidates", []))
+        decisions["buy_candidates"] = [
+            c for c in decisions.get("buy_candidates", [])
+            if c.get("symbol") in ai_known_symbols
+        ]
+        removed = before - len(decisions["buy_candidates"])
+        if removed:
+            logger.warning(f"  Removed {removed} out-of-universe buy candidate(s): {validation_errors}")
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
     decision_log.log_decisions(decisions, mode, executed_symbols)
@@ -516,7 +525,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                             if result.get("filled_qty"):
                                 audit_log.log_order_filled(symbol, result["order_id"], result["filled_qty"])
                                 current_price = snap["current_price"] if snap else None
-                                stop_result = trader.place_trailing_stop(client, symbol, result["filled_qty"], current_price=current_price)
+                                # Floor to whole shares — Alpaca rejects fractional stop orders
+                                stop_qty = int(math.floor(result["filled_qty"]))
+                                stop_result = trader.place_trailing_stop(client, symbol, stop_qty, current_price=current_price) if stop_qty >= 1 else None
                                 if stop_result is None:
                                     logger.error(f"  Stop placement FAILED for {symbol} — position unprotected!")
                                     alerts.alert_error("STOP FAILED", f"{symbol}: trailing stop placement failed after buy — position has no downside protection.")

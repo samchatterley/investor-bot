@@ -387,7 +387,22 @@ class TestMaxOrdersPerRun(unittest.TestCase):
 
 class TestGTCStopForFractional(unittest.TestCase):
 
-    def test_fractional_position_uses_day(self):
+    def test_sub_share_position_returns_none_without_api_call(self):
+        """Positions smaller than 1 whole share cannot be stop-protected — Alpaca rejects them."""
+        from execution.trader import place_trailing_stop
+
+        mock_client = MagicMock()
+
+        # qty=0.5 — floor is 0, below the 1-share minimum — no API call should be made
+        with patch("execution.trader.TRAILING_STOP_PCT", 4.0):
+            result = place_trailing_stop(mock_client, "AAPL", qty=0.5, current_price=150.0)
+
+        self.assertIsNone(result)
+        mock_client.submit_order.assert_not_called()
+
+    def test_fractional_position_floors_to_whole_shares(self):
+        """A position with fractional qty (e.g. 2.7 shares) places a stop for 2 whole shares."""
+        from alpaca.trading.requests import StopOrderRequest
         from alpaca.trading.enums import TimeInForce
         from execution.trader import place_trailing_stop
 
@@ -396,11 +411,13 @@ class TestGTCStopForFractional(unittest.TestCase):
         mock_order.id = "stop-123"
         mock_client.submit_order.return_value = mock_order
 
-        # qty=0.5 is fractional — Alpaca rejects GTC for fractional orders
         with patch("execution.trader.TRAILING_STOP_PCT", 4.0):
-            place_trailing_stop(mock_client, "AAPL", qty=0.5, current_price=150.0)
+            result = place_trailing_stop(mock_client, "AAPL", qty=2.7, current_price=150.0)
 
+        self.assertIsNotNone(result)
         call_args = mock_client.submit_order.call_args[0][0]
+        self.assertIsInstance(call_args, StopOrderRequest)
+        self.assertEqual(call_args.qty, 2)  # floored from 2.7
         self.assertEqual(call_args.time_in_force, TimeInForce.DAY)
 
     def test_whole_share_uses_trailing_stop_not_fixed(self):

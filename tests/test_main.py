@@ -615,12 +615,14 @@ class TestRunInnerOpenAborts(RunInnerBase):
 
 class TestRunInnerBuyFiltering(RunInnerBase):
 
-    def test_validation_failure_blocks_buys(self):
+    def test_validation_failure_removes_out_of_universe_candidates(self):
+        """Candidates whose symbol is not in the filtered scan universe are dropped."""
         buy_mock = MagicMock()
-        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        # GHOST is not in prefilter_candidates, so it's not in ai_known_symbols
+        decisions = _decisions(buys=[{"symbol": "GHOST", "confidence": 8, "key_signal": "momentum"}])
         stack, mocks = self._patch_all(**{
             "main.ai_analyst.get_trading_decisions": decisions,
-            "main.validate_ai_response": (False, ["bad symbol"]),
+            "main.validate_ai_response": (False, ["BUY candidate 'GHOST' not in scanned universe — rejecting"]),
             "main.trader.place_buy_order": buy_mock,
             "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
         })
@@ -628,6 +630,29 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             from main import _run_inner
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
         buy_mock.assert_not_called()
+
+    def test_validation_failure_preserves_in_universe_candidates(self):
+        """Candidates in the scan universe survive a validation failure for other symbols."""
+        buy_mock = MagicMock()
+        buy_mock.return_value = {"symbol": "AAPL", "order_id": "x", "notional": 5000.0, "filled_qty": 30.0}
+        # AAPL passes pre-filter; GHOST does not — validation flags GHOST
+        decisions = _decisions(buys=[
+            {"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"},
+            {"symbol": "GHOST", "confidence": 7, "key_signal": "momentum"},
+        ])
+        stack, mocks = self._patch_all(**{
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.validate_ai_response": (False, ["BUY candidate 'GHOST' not in scanned universe — rejecting"]),
+            "main.trader.place_buy_order": buy_mock,
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # AAPL should still be bought; GHOST should be dropped
+        called_symbols = [c.args[1] for c in buy_mock.call_args_list]
+        self.assertIn("AAPL", called_symbols)
+        self.assertNotIn("GHOST", called_symbols)
 
     def test_bearish_regime_blocks_buys(self):
         buy_mock = MagicMock()

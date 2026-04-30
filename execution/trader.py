@@ -99,32 +99,50 @@ def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> O
 def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_price: float | None = None) -> Optional[dict]:
     """Attach a stop to an open position.
 
-    Alpaca does not support trailing stop orders for fractional shares — falls back
-    to a fixed stop order at TRAILING_STOP_PCT below current price when qty is fractional.
+    Alpaca rejects stop orders for fractional share quantities (error 42210000).
+    When qty is fractional, we floor to the nearest whole share. The sub-share
+    remainder runs without stop protection, but it is a tiny notional amount.
+    If floor(qty) < 1 (entire position is sub-share), no stop can be placed.
     """
     if not qty or qty <= 0:
         return None
     # Truncate (not round) to avoid requesting more qty than Alpaca reports available
     safe_qty = math.floor(qty * 1_000_000) / 1_000_000
     is_fractional = abs(safe_qty - round(safe_qty)) > 0.000001
-    try:
-        if is_fractional:
-            if not current_price:
-                logger.warning(f"Cannot place stop for fractional {symbol}: no current price")
-                return None
-            stop_price = round(current_price * (1 - TRAILING_STOP_PCT / 100), 2)
+
+    if is_fractional:
+        whole_qty = int(math.floor(safe_qty))
+        if whole_qty < 1:
+            logger.warning(
+                f"Cannot stop-protect {symbol}: position is entirely sub-share "
+                f"({safe_qty:.6f}) — Alpaca does not support fractional stop orders"
+            )
+            return None
+        # Place stop for whole-share portion; fractional remainder is unprotected
+        if not current_price:
+            logger.warning(f"Cannot place stop for {symbol}: no current price")
+            return None
+        stop_price = round(current_price * (1 - TRAILING_STOP_PCT / 100), 2)
+        try:
             order = client.submit_order(
                 StopOrderRequest(
                     symbol=symbol,
-                    qty=safe_qty,
+                    qty=whole_qty,
                     side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,  # Alpaca rejects GTC for fractional; ensure_stops_attached re-attaches daily
+                    time_in_force=TimeInForce.DAY,
                     stop_price=stop_price,
                 )
             )
-            logger.info(f"Stop order (fractional): {symbol} stop=${stop_price} | order_id={order.id}")
+            logger.info(
+                f"Stop order: {symbol} {whole_qty} shares (of {safe_qty:.6f}) "
+                f"stop=${stop_price} | order_id={order.id}"
+            )
             return {"symbol": symbol, "stop_price": stop_price, "order_id": str(order.id)}
-        else:
+        except Exception as e:
+            logger.error(f"Failed to place trailing stop for {symbol}: {e}")
+            return None
+    else:
+        try:
             order = client.submit_order(
                 TrailingStopOrderRequest(
                     symbol=symbol,
@@ -136,9 +154,9 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
             )
             logger.info(f"Trailing stop: {symbol} {TRAILING_STOP_PCT}% trail | order_id={order.id}")
             return {"symbol": symbol, "trail_pct": TRAILING_STOP_PCT, "order_id": str(order.id)}
-    except Exception as e:
-        logger.error(f"Failed to place trailing stop for {symbol}: {e}")
-        return None
+        except Exception as e:
+            logger.error(f"Failed to place trailing stop for {symbol}: {e}")
+            return None
 
 
 def place_sell_order(client: TradingClient, symbol: str, qty: float) -> Optional[dict]:
@@ -319,12 +337,16 @@ def ensure_stops_attached(client: TradingClient):
             covered = stop_qty.get(pos.symbol, 0.0)
             uncovered = pos_qty - covered
             if uncovered > 0.000001:  # tolerance avoids acting on float dust
+                whole_uncovered = int(math.floor(uncovered))
+                if whole_uncovered < 1:
+                    # Sub-share remainder — Alpaca cannot stop-protect this, skip silently
+                    continue
                 current_price = float(pos.current_price) if pos.current_price else None
                 logger.warning(
                     f"Position {pos.symbol}: {pos_qty:.6f} shares, "
-                    f"{covered:.6f} covered by stops — attaching stop for {uncovered:.6f}"
+                    f"{covered:.6f} covered by stops — attaching stop for {whole_uncovered}"
                 )
-                place_trailing_stop(client, pos.symbol, uncovered, current_price=current_price)
+                place_trailing_stop(client, pos.symbol, whole_uncovered, current_price=current_price)
     except Exception as e:
         logger.error(f"ensure_stops_attached failed: {e}")
 
