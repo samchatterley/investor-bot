@@ -61,7 +61,7 @@ class TestSellHallucinationGuard(unittest.TestCase):
 
     def _decisions(self, sell_sym):
         return {
-            "market_summary": "test",
+            "market_summary": "Quiet session, no major catalysts.",
             "buy_candidates": [],
             "position_decisions": [{"symbol": sell_sym, "action": "SELL", "reasoning": "test"}],
         }

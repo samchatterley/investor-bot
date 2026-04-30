@@ -2,8 +2,10 @@
 Input validation and sanitization.
 
 validate_ai_response  — schema-checks Claude's JSON before any order is placed.
-                        Prevents acting on hallucinated stock symbols, out-of-range
-                        confidence scores, or unknown action types.
+                        Phase 1: Pydantic structural/domain validation (types,
+                        ranges, reasoning length, duplicate symbols, buy/sell
+                        conflicts). Phase 2: runtime context checks (known
+                        universe, held positions).
 
 sanitize_headlines    — strips potential prompt injection patterns from news
                         headlines before they are forwarded to Claude.
@@ -16,13 +18,11 @@ check_pre_trade       — fat-finger / daily notional cap guard applied before
 import re
 import logging
 
-logger = logging.getLogger(__name__)
+from pydantic import ValidationError
 
-_VALID_POSITION_ACTIONS = {"HOLD", "SELL"}
-_VALID_BUY_SIGNALS = {
-    "mean_reversion", "momentum", "trend_continuation",
-    "macd_crossover", "rsi_oversold", "news_catalyst", "unknown",
-}
+from models import DecisionSet
+
+logger = logging.getLogger(__name__)
 
 # Regex to detect prompt injection attempts in externally-sourced text.
 # Covers: imperative override language AND template-syntax attacks ({{SYSTEM}}, <system>).
@@ -43,57 +43,52 @@ def validate_ai_response(
     Validate Claude's JSON response before executing any trade.
     Returns (is_valid, list_of_errors).
 
-    Guards against:
-    - Hallucinated ticker symbols not in our scan universe
-    - Confidence scores outside the 1-10 range
-    - Unknown signal types
-    - Invalid HOLD/SELL action values
-    - SELL decisions for symbols not currently held
+    Phase 1 — structural and domain validation via Pydantic:
+      - Required fields present and correctly typed
+      - Confidence is an integer 1–10 (float rejected)
+      - Reasoning meets minimum length (buy candidates: 20 chars)
+      - key_signal is from the known set
+      - No duplicate buy candidates
+      - No symbol appearing in both BUY and SELL
+
+    Phase 2 — runtime context checks:
+      - Buy candidate symbol must be in the scanned universe
+      - Buy candidate must not already be held
+      - SELL decision must reference a currently-held symbol
     """
     errors: list[str] = []
 
     if not isinstance(decisions, dict):
         return False, ["AI response is not a dict"]
 
-    for required in ("buy_candidates", "position_decisions", "market_summary"):
-        if required not in decisions:
-            errors.append(f"Missing required field: {required}")
+    # Phase 1: structural and domain validation
+    try:
+        DecisionSet.model_validate(decisions)
+    except ValidationError as exc:
+        for err in exc.errors():
+            loc = " → ".join(str(p) for p in err["loc"]) if err["loc"] else "root"
+            errors.append(f"{loc}: {err['msg']}")
 
-    buy_candidates = decisions.get("buy_candidates", [])
-    position_decisions = decisions.get("position_decisions", [])
-
-    if not isinstance(buy_candidates, list):
-        errors.append("buy_candidates is not a list")
-        buy_candidates = []
-    if not isinstance(position_decisions, list):
-        errors.append("position_decisions is not a list")
-        position_decisions = []
-
-    for c in buy_candidates:
+    # Phase 2: context-dependent checks — always run so main.py gets the full picture
+    for c in (decisions.get("buy_candidates") or []):
+        if not isinstance(c, dict):
+            continue
         sym = c.get("symbol", "")
-        conf = c.get("confidence")
-        signal = c.get("key_signal", "")
-
         if sym not in known_symbols:
             errors.append(f"BUY candidate '{sym}' not in scanned universe — rejecting")
         if held_symbols and sym in held_symbols:
             errors.append(f"BUY candidate '{sym}' already held — conflict with open position")
-        if not isinstance(conf, (int, float)) or not (1 <= conf <= 10):
-            errors.append(f"Invalid confidence for {sym}: {conf!r} (must be 1–10)")
-        if signal and signal not in _VALID_BUY_SIGNALS:
-            errors.append(f"Unknown signal '{signal}' for {sym}")
 
-    for d in position_decisions:
+    for d in (decisions.get("position_decisions") or []):
+        if not isinstance(d, dict):
+            continue
         action = d.get("action")
         sym = d.get("symbol", "?")
-        if action not in _VALID_POSITION_ACTIONS:
-            errors.append(f"Invalid action '{action}' for position {sym}")
         if action == "SELL" and held_symbols is not None and sym not in held_symbols:
             errors.append(f"SELL for '{sym}' rejected — not in held positions")
 
     if errors:
         logger.warning(f"AI response validation failed ({len(errors)} error(s)): {errors}")
-
     return len(errors) == 0, errors
 
 
