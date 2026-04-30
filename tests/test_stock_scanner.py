@@ -18,6 +18,7 @@ def _snap(**kwargs):
         "rsi_14": 50, "bb_pct": 0.5, "vol_ratio": 1.0,
         "ema9_above_ema21": False, "macd_diff": 0, "macd_crossed_up": False,
         "weekly_trend_up": True, "ret_5d_pct": 0,
+        "avg_volume": 1_000_000,  # above MIN_VOLUME = 500_000
     }
     defaults.update(kwargs)
     return defaults
@@ -119,6 +120,11 @@ class TestPrefilterCandidates(unittest.TestCase):
         snap = _snap(rsi_14=25, bb_pct=0.10, vol_ratio=1.5, weekly_trend_up=False)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
+
+    def test_illiquid_stock_filtered_by_min_volume(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2, avg_volume=100_000)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 0)
 
     def test_empty_input_returns_empty(self):
         self.assertEqual(prefilter_candidates([]), [])

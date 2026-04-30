@@ -27,6 +27,12 @@ def fetch_stock_data(symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
             logger.warning(f"Insufficient data for {symbol}")
             return None
 
+        last_date = df.index[-1].date()
+        staleness = (datetime.now().date() - last_date).days
+        if staleness > 3:
+            logger.warning(f"{symbol}: last data point {last_date} is {staleness} days old — skipping stale feed")
+            return None
+
         df = df.copy()
 
         close = df["Close"]
@@ -54,7 +60,8 @@ def fetch_stock_data(symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
         df["bb_pct"] = bb.bollinger_pband()  # 0=at lower band, 1=at upper band
 
         # Volume vs 20-day average
-        df["vol_ratio"] = volume / volume.rolling(20).mean()
+        df["avg_volume_20"] = volume.rolling(20).mean()
+        df["vol_ratio"] = volume / df["avg_volume_20"]
 
         # Price momentum
         df["ret_1d"] = close.pct_change(1) * 100
@@ -105,6 +112,7 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame) -> dict:
         "ema9_above_ema21": bool(latest["ema9"] > latest["ema21"]),
         "bb_pct": round(float(latest["bb_pct"]), 2),   # 0=oversold zone, 1=overbought zone
         "vol_ratio": round(float(latest["vol_ratio"]), 2),  # >1.5 = high volume
+        "avg_volume": int(float(_av)) if (_av := latest.get("avg_volume_20")) is not None and not pd.isna(_av) else 0,
         "price_vs_ema9_pct": round((float(latest["Close"]) / float(latest["ema9"]) - 1) * 100, 2),
         "weekly_trend_up": bool(latest.get("weekly_trend_up", True)),
         "weekly_rsi": float(latest.get("weekly_rsi", 50.0)),

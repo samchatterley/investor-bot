@@ -1,19 +1,46 @@
 import yfinance as yf
 import logging
+from config import MIN_VOLUME
 
 logger = logging.getLogger(__name__)
 
-# Broader universe used only for the daily top-movers scan
+# Broader universe used only for the daily top-movers scan.
+# Intentionally sector-diverse and mid-cap-heavy so the momentum×volume scorer
+# can surface "sleeper" moves beyond mega-caps.
 EXTENDED_UNIVERSE = list(dict.fromkeys([
+    # Mega-cap tech (anchor names)
     "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "NFLX",
-    "CRM", "ADBE", "UBER", "JPM", "BAC", "GS", "XOM", "CVX",
-    "COST", "WMT", "HD", "INTC", "QCOM", "AVGO", "TXN",
-    "V", "MA", "PYPL", "SHOP", "COIN",
-    "SNAP", "PINS", "RBLX", "DIS",
-    "PFE", "MRNA", "ABBV", "LLY",
-    "BA", "CAT", "GE", "LMT",
-    "NKE", "MCD", "SBUX", "TGT",
-    "PLTR", "SNOW", "NET", "DDOG", "CRWD",
+    "CRM", "ADBE", "UBER",
+    # Semiconductors — mid/large
+    "INTC", "QCOM", "AVGO", "TXN", "MU", "SMCI", "MRVL", "ON", "MPWR",
+    "LRCX", "KLAC", "AMAT", "SWKS",
+    # Software / SaaS growth
+    "PLTR", "SNOW", "NET", "DDOG", "CRWD", "BILL", "APP", "GTLB",
+    "PCOR", "MNDY", "HUBS", "TEAM", "ZS", "PANW",
+    # Fintech & payments
+    "V", "MA", "PYPL", "SQ", "SHOP", "COIN", "AFRM", "SOFI", "HOOD",
+    # Financials
+    "JPM", "BAC", "GS", "MS", "C", "SCHW",
+    # Energy — oil & clean
+    "XOM", "CVX", "OXY", "ENPH", "SEDG", "FSLR", "RUN", "PLUG", "BE",
+    # Healthcare & biotech
+    "PFE", "MRNA", "ABBV", "LLY", "JNJ", "BMY",
+    "EXAS", "NBIX", "BMRN", "INCY", "SRPT",
+    "ISRG", "DXCM", "PODD",
+    # Defense — large & mid
+    "LMT", "RTX", "NOC", "BA", "HII", "KTOS", "RKLB", "LDOS",
+    # Industrials & infrastructure
+    "CAT", "GE", "HON", "EMR", "GNRC", "AXON", "SAIA", "XYL",
+    # Consumer discretionary
+    "NKE", "MCD", "SBUX", "TGT", "COST", "WMT", "HD",
+    "DKNG", "LYFT", "DASH", "CHWY", "W",
+    # Entertainment & media
+    "DIS", "SNAP", "PINS", "RBLX",
+    # Commodities & materials
+    "FCX", "AA", "MP", "CLF",
+    # Crypto-adjacent (high volatility movers)
+    "MSTR", "MARA", "RIOT",
+    # Broad market ETFs (baseline comparison)
     "SPY", "QQQ", "IWM",
 ]))
 
@@ -62,6 +89,9 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
     """
     qualified = []
     for s in snapshots:
+        if s.get("avg_volume", 0) < MIN_VOLUME:
+            continue
+
         rsi = s.get("rsi_14", 50)
         bb = s.get("bb_pct", 0.5)
         vol = s.get("vol_ratio", 1.0)

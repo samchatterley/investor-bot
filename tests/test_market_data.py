@@ -24,6 +24,7 @@ def _make_df(rows=3, close_vals=None):
         "bb_lower":       [c - 5 for c in closes],
         "bb_pct":         [0.5] * n,
         "vol_ratio":      [1.2] * n,
+        "avg_volume_20":  [1_000_000] * n,
         "ret_1d":         [0.5] * n,
         "ret_5d":         [2.0] * n,
         "ret_10d":        [4.0] * n,
@@ -175,13 +176,14 @@ class TestFetchStockData(unittest.TestCase):
             mock_ticker.history.return_value = pd.DataFrame()
         else:
             closes = [100.0 + i * 0.5 for i in range(rows)]
+            # Use recent dates so the stale-data guard (> 3 days) doesn't reject the fixture.
             df = pd.DataFrame({
                 "Open":   closes,
                 "High":   [c + 1 for c in closes],
                 "Low":    [c - 1 for c in closes],
                 "Close":  closes,
                 "Volume": [1_000_000] * rows,
-            }, index=pd.date_range("2025-01-01", periods=rows, freq="B"))
+            }, index=pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=rows))
             mock_ticker.history.return_value = df
         return mock_ticker
 

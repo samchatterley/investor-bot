@@ -121,7 +121,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
                     symbol=symbol,
                     qty=safe_qty,
                     side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
+                    time_in_force=TimeInForce.DAY,  # Alpaca rejects GTC for fractional; ensure_stops_attached re-attaches daily
                     stop_price=stop_price,
                 )
             )

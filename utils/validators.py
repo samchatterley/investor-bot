@@ -24,15 +24,21 @@ _VALID_BUY_SIGNALS = {
     "macd_crossover", "rsi_oversold", "news_catalyst", "unknown",
 }
 
-# Regex to detect prompt injection attempts in externally-sourced text
+# Regex to detect prompt injection attempts in externally-sourced text.
+# Covers: imperative override language AND template-syntax attacks ({{SYSTEM}}, <system>).
 _INJECTION_RE = re.compile(
     r"(ignore|disregard|forget|override|bypass|dismiss)\s{0,10}"
-    r".{0,30}(instruction|prompt|rule|order|previous|above|system)",
+    r".{0,30}(instruction|prompt|rule|order|previous|above|system)"
+    r"|(\{\{|\[\[)\s*(system|prompt|instruction)",
     re.IGNORECASE,
 )
 
 
-def validate_ai_response(decisions: dict, known_symbols: set[str]) -> tuple[bool, list[str]]:
+def validate_ai_response(
+    decisions: dict,
+    known_symbols: set[str],
+    held_symbols: set[str] | None = None,
+) -> tuple[bool, list[str]]:
     """
     Validate Claude's JSON response before executing any trade.
     Returns (is_valid, list_of_errors).
@@ -42,11 +48,16 @@ def validate_ai_response(decisions: dict, known_symbols: set[str]) -> tuple[bool
     - Confidence scores outside the 1-10 range
     - Unknown signal types
     - Invalid HOLD/SELL action values
+    - SELL decisions for symbols not currently held
     """
     errors: list[str] = []
 
     if not isinstance(decisions, dict):
         return False, ["AI response is not a dict"]
+
+    for required in ("buy_candidates", "position_decisions", "market_summary"):
+        if required not in decisions:
+            errors.append(f"Missing required field: {required}")
 
     buy_candidates = decisions.get("buy_candidates", [])
     position_decisions = decisions.get("position_decisions", [])
@@ -65,6 +76,8 @@ def validate_ai_response(decisions: dict, known_symbols: set[str]) -> tuple[bool
 
         if sym not in known_symbols:
             errors.append(f"BUY candidate '{sym}' not in scanned universe — rejecting")
+        if held_symbols and sym in held_symbols:
+            errors.append(f"BUY candidate '{sym}' already held — conflict with open position")
         if not isinstance(conf, (int, float)) or not (1 <= conf <= 10):
             errors.append(f"Invalid confidence for {sym}: {conf!r} (must be 1–10)")
         if signal and signal not in _VALID_BUY_SIGNALS:
@@ -75,6 +88,8 @@ def validate_ai_response(decisions: dict, known_symbols: set[str]) -> tuple[bool
         sym = d.get("symbol", "?")
         if action not in _VALID_POSITION_ACTIONS:
             errors.append(f"Invalid action '{action}' for position {sym}")
+        if action == "SELL" and held_symbols is not None and sym not in held_symbols:
+            errors.append(f"SELL for '{sym}' rejected — not in held positions")
 
     if errors:
         logger.warning(f"AI response validation failed ({len(errors)} error(s)): {errors}")

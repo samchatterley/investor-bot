@@ -1,0 +1,152 @@
+{
+  "account": {
+    "portfolio_value": 100000.0,
+    "cash": 62000.0,
+    "buying_power": 124000.0,
+    "equity": 100000.0
+  },
+  "open_positions": [
+    {
+      "symbol": "MSFT",
+      "qty": 45.2,
+      "avg_entry_price": 415.30,
+      "current_price": 421.50,
+      "unrealized_pl": 280.24,
+      "unrealized_plpc": 1.49,
+      "market_value": 19051.80
+    }
+  ],
+  "regime": {
+    "is_bearish": false,
+    "spy_change_pct": 0.42,
+    "spy_5d_pct": 1.15,
+    "regime": "BULL_TRENDING"
+  },
+  "vix": 16.2,
+  "snapshots": [
+    {
+      "symbol": "NVDA",
+      "current_price": 118.40,
+      "ret_1d_pct": 2.1,
+      "ret_5d_pct": 5.3,
+      "rsi_14": 58,
+      "bb_pct": 0.71,
+      "vol_ratio": 1.8,
+      "ema9_above_ema21": true,
+      "macd_diff": 0.42,
+      "macd_crossed_up": false,
+      "weekly_trend_up": true,
+      "avg_volume": 42000000,
+      "sector": "Technology"
+    },
+    {
+      "symbol": "AMD",
+      "current_price": 162.80,
+      "ret_1d_pct": 3.4,
+      "ret_5d_pct": 7.1,
+      "rsi_14": 54,
+      "bb_pct": 0.68,
+      "vol_ratio": 2.1,
+      "ema9_above_ema21": true,
+      "macd_diff": 0.88,
+      "macd_crossed_up": true,
+      "weekly_trend_up": true,
+      "avg_volume": 38000000,
+      "sector": "Technology"
+    },
+    {
+      "symbol": "LMT",
+      "current_price": 498.20,
+      "ret_1d_pct": -0.3,
+      "ret_5d_pct": -1.2,
+      "rsi_14": 34,
+      "bb_pct": 0.18,
+      "vol_ratio": 0.9,
+      "ema9_above_ema21": false,
+      "macd_diff": -0.22,
+      "macd_crossed_up": false,
+      "weekly_trend_up": false,
+      "avg_volume": 980000,
+      "sector": "Industrials"
+    },
+    {
+      "symbol": "JPM",
+      "current_price": 228.60,
+      "ret_1d_pct": 0.8,
+      "ret_5d_pct": 2.4,
+      "rsi_14": 61,
+      "bb_pct": 0.62,
+      "vol_ratio": 1.3,
+      "ema9_above_ema21": true,
+      "macd_diff": 0.31,
+      "macd_crossed_up": false,
+      "weekly_trend_up": true,
+      "avg_volume": 8200000,
+      "sector": "Financials"
+    },
+    {
+      "symbol": "ENPH",
+      "current_price": 64.10,
+      "ret_1d_pct": 4.2,
+      "ret_5d_pct": 9.8,
+      "rsi_14": 62,
+      "bb_pct": 0.72,
+      "vol_ratio": 2.6,
+      "ema9_above_ema21": true,
+      "macd_diff": 1.14,
+      "macd_crossed_up": true,
+      "weekly_trend_up": true,
+      "avg_volume": 4100000,
+      "sector": "Energy"
+    },
+    {
+      "symbol": "COST",
+      "current_price": 911.40,
+      "ret_1d_pct": 0.2,
+      "ret_5d_pct": 0.9,
+      "rsi_14": 55,
+      "bb_pct": 0.51,
+      "vol_ratio": 0.8,
+      "ema9_above_ema21": true,
+      "macd_diff": 0.08,
+      "macd_crossed_up": false,
+      "weekly_trend_up": true,
+      "avg_volume": 2800000,
+      "sector": "Consumer Staples"
+    }
+  ],
+  "ai_response": {
+    "market_summary": "Market is in BULL_TRENDING regime with SPY up 0.4% today and 1.2% on the week. VIX at 16 is benign. Semiconductors and clean energy are leading; defensive names lag. Favour momentum setups with volume confirmation.",
+    "position_decisions": [
+      {
+        "symbol": "MSFT",
+        "action": "HOLD",
+        "confidence": 7,
+        "reasoning": "Position up 1.5% from entry. Trend intact, no sell signal. Hold with stop in place."
+      }
+    ],
+    "buy_candidates": [
+      {
+        "symbol": "AMD",
+        "action": "BUY",
+        "confidence": 8,
+        "key_signal": "momentum",
+        "reasoning": "Fresh MACD crossover with 2.1x volume surge and 7% 5-day gain. Clean breakout above recent resistance at 158. BULL_TRENDING regime favours momentum setups."
+      },
+      {
+        "symbol": "ENPH",
+        "action": "BUY",
+        "confidence": 7,
+        "key_signal": "momentum",
+        "reasoning": "Clean energy leading sector today. ENPH up 9.8% on the week with 2.6x volume — institutional accumulation signal. MACD crossed up; weekly trend confirmed."
+      },
+      {
+        "symbol": "FAKECORP",
+        "action": "BUY",
+        "confidence": 9,
+        "key_signal": "momentum",
+        "reasoning": "This ticker is not in the scanned universe — should be rejected by the validator."
+      }
+    ]
+  }
+}

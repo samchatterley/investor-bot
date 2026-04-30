@@ -10,7 +10,6 @@ Output saved to logs/weekly_review_YYYY-MM-DD.json.
 import json
 import logging
 import os
-import re
 from datetime import date, timedelta
 
 import anthropic
@@ -21,7 +20,7 @@ from utils.portfolio_tracker import load_history
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "config.py"))
+_RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 
 # Only these parameters may be auto-adjusted, within these bounds.
 _SAFE_PARAMS: dict[str, dict] = {
@@ -43,19 +42,21 @@ def _current_param_values() -> dict[str, float | int]:
 
 def _apply_config_changes(proposed: list[dict]) -> list[dict]:
     """
-    Apply a list of proposed config changes to config.py, respecting safe bounds.
-    Each item: {parameter, proposed_value, reason}.
-    Returns enriched list with added fields: old_value, new_value, status
-    ('applied' | 'clamped' | 'rejected' | 'unchanged').
+    Apply proposed config changes by writing to logs/runtime_config.json.
+    config.py loads this file at startup via _load_runtime_overrides(), so changes
+    take effect on the next bot run without touching config.py source.
     """
     if not proposed:
         return []
 
-    with open(_CONFIG_PATH) as f:
-        content = f.read()
+    try:
+        with open(_RUNTIME_CONFIG_PATH) as f:
+            current_overrides: dict = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        current_overrides = {}
 
     results = []
-    modified = content
+    new_overrides = dict(current_overrides)
 
     for change in proposed:
         param = change.get("parameter", "")
@@ -66,13 +67,7 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
                              "rejection_reason": "not in the safe-to-modify list"})
             continue
 
-        match = re.search(rf"^{param}\s*=\s*([\d.]+)", modified, re.MULTILINE)
-        if not match:
-            results.append({**change, "status": "rejected",
-                             "rejection_reason": "line not found in config.py"})
-            continue
-
-        old_val = spec["type"](match.group(1))
+        old_val = spec["type"](current_overrides.get(param, getattr(cfg, param)))
         raw_proposed = spec["type"](change.get("proposed_value", old_val))
         new_val = max(spec["min"], min(spec["max"], raw_proposed))
 
@@ -82,19 +77,7 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
             continue
 
         status = "applied" if new_val == raw_proposed else "clamped"
-        new_str = str(new_val) if spec["type"] == int else f"{new_val:.1f}"
-
-        updated = re.sub(
-            rf"^({param}\s*=\s*)[\d.]+",
-            rf"\g<1>{new_str}",
-            modified,
-            flags=re.MULTILINE,
-        )
-        if updated == modified:
-            logger.warning(f"Config change: could not find '{param}' line to update — skipping")
-            results.append({**change, "status": "rejected", "rejection_reason": "regex matched no line in config.py"})
-            continue
-        modified = updated
+        new_overrides[param] = new_val
         results.append({
             "parameter": param,
             "old_value": old_val,
@@ -105,8 +88,9 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
         logger.info(f"Config change: {param} {old_val} → {new_val} ({status})")
 
     if any(r["status"] in ("applied", "clamped") for r in results):
-        with open(_CONFIG_PATH, "w") as f:
-            f.write(modified)
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(_RUNTIME_CONFIG_PATH, "w") as f:
+            json.dump(new_overrides, f, indent=2)
 
     return results
 

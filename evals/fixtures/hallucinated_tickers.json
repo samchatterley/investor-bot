@@ -1,0 +1,41 @@
+{
+  "description": "AI response containing tickers not in the scanned universe. Validator must reject hallucinated symbols and pass real ones.",
+  "scanned_universe": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMD"],
+  "held_symbols": [],
+  "ai_response": {
+    "market_summary": "Semiconductor momentum intact; broad market choppy.",
+    "position_decisions": [],
+    "buy_candidates": [
+      {
+        "symbol": "FAKECO",
+        "action": "BUY",
+        "confidence": 8,
+        "key_signal": "momentum",
+        "reasoning": "Strong breakout — but this ticker was never in the scan universe."
+      },
+      {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "confidence": 7,
+        "key_signal": "mean_reversion",
+        "reasoning": "Oversold bounce off 50-day MA with volume confirmation."
+      },
+      {
+        "symbol": "XYZPDQ",
+        "action": "BUY",
+        "confidence": 9,
+        "key_signal": "momentum",
+        "reasoning": "Another hallucinated ticker that should be caught."
+      },
+      {
+        "symbol": "NVDA",
+        "action": "BUY",
+        "confidence": 8,
+        "key_signal": "momentum",
+        "reasoning": "AI chip demand cycle intact; volume confirming uptrend."
+      }
+    ]
+  },
+  "expected_rejected": ["FAKECO", "XYZPDQ"],
+  "expected_accepted": ["AAPL", "NVDA"]
+}

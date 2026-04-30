@@ -1,0 +1,49 @@
+{
+  "description": "Three malformed AI responses that should all be rejected by schema validation.",
+  "cases": [
+    {
+      "description": "Missing buy_candidates field",
+      "response": {
+        "market_summary": "Market flat.",
+        "position_decisions": []
+      },
+      "expected_valid": false,
+      "expected_error_contains": "buy_candidates"
+    },
+    {
+      "description": "Confidence score out of valid range (1-10)",
+      "response": {
+        "market_summary": "Market flat.",
+        "position_decisions": [],
+        "buy_candidates": [
+          {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "confidence": 15,
+            "key_signal": "momentum",
+            "reasoning": "Confidence 15 is outside the 1-10 range."
+          }
+        ]
+      },
+      "expected_valid": false,
+      "expected_error_contains": "confidence"
+    },
+    {
+      "description": "Unknown action type in position_decisions",
+      "response": {
+        "market_summary": "Market flat.",
+        "position_decisions": [
+          {
+            "symbol": "NVDA",
+            "action": "HOLD_FOREVER",
+            "confidence": 7,
+            "reasoning": "HOLD_FOREVER is not a valid action."
+          }
+        ],
+        "buy_candidates": []
+      },
+      "expected_valid": false,
+      "expected_error_contains": "action"
+    }
+  ]
+}

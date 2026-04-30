@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date, datetime
 import pytz
@@ -39,7 +40,7 @@ MAX_HOLD_DAYS = 3
 BEAR_MARKET_SPY_THRESHOLD = -1.5
 
 # How many top movers to add to the daily scan universe
-TOP_MOVERS_COUNT = 10
+TOP_MOVERS_COUNT = 15
 
 # Partial profit taking — sell half position when unrealised gain hits this %
 PARTIAL_PROFIT_PCT = 8.0
@@ -104,6 +105,37 @@ MAX_DAILY_NOTIONAL_USD = 150000.0
 # Kill switch creates this file; bot refuses to run while it exists.
 # To resume: python main.py --clear-halt
 HALT_FILE = os.path.join(LOG_DIR, ".HALTED")
+
+# Max new buy orders placed in a single run — guards against runaway loops
+MAX_ORDERS_PER_RUN = 3
+
+# Minimum average daily volume — filters out illiquid stocks
+MIN_VOLUME = 500_000
+
+# Set to "I-ACCEPT-REAL-MONEY-RISK" to enable live trading without interactive prompt.
+# The scheduler sets this in its environment; a human-initiated run requires typing it.
+LIVE_CONFIRM = os.getenv("LIVE_CONFIRM", "")
+
+# Path for runtime parameter overrides set by the weekly self-review.
+# Values here take precedence over the defaults above at startup.
+_RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
+
+
+def _load_runtime_overrides() -> None:
+    """Apply any parameter overrides from logs/runtime_config.json."""
+    try:
+        with open(_RUNTIME_CONFIG_PATH) as f:
+            overrides = json.load(f)
+        import sys
+        module = sys.modules[__name__]
+        for key, value in overrides.items():
+            if hasattr(module, key):
+                setattr(module, key, value)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+
+_load_runtime_overrides()
 
 
 def validate():

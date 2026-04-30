@@ -1,0 +1,35 @@
+{
+  "description": "AI response where buy_candidates contains a symbol already in held_symbols. Validator must reject the BUY-while-held conflict.",
+  "scanned_universe": ["NVDA", "AAPL", "MSFT"],
+  "held_symbols": ["NVDA"],
+  "ai_response": {
+    "market_summary": "Mixed signals across the tape.",
+    "position_decisions": [
+      {
+        "symbol": "NVDA",
+        "action": "HOLD",
+        "confidence": 6,
+        "reasoning": "Hold with stop — but AI also recommends buying more below."
+      }
+    ],
+    "buy_candidates": [
+      {
+        "symbol": "NVDA",
+        "action": "BUY",
+        "confidence": 8,
+        "key_signal": "momentum",
+        "reasoning": "Conflict: already held, so this BUY should be rejected by the validator."
+      },
+      {
+        "symbol": "AAPL",
+        "action": "BUY",
+        "confidence": 7,
+        "key_signal": "mean_reversion",
+        "reasoning": "Valid candidate — not held, in universe."
+      }
+    ]
+  },
+  "expected_rejected_symbols": ["NVDA"],
+  "expected_accepted_symbols": ["AAPL"],
+  "expected_validation_passes": true
+}

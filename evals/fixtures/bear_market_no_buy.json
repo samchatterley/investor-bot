@@ -1,0 +1,32 @@
+{
+  "description": "BEAR_DAY regime with buy candidates present. The bear filter must suppress all new buys regardless of candidate quality.",
+  "regime": {
+    "is_bearish": true,
+    "spy_change_pct": -2.1,
+    "spy_5d_pct": -4.3,
+    "regime": "BEAR_DAY"
+  },
+  "vix": 28.4,
+  "ai_response": {
+    "market_summary": "Broad sell-off on tariff escalation. SPY down 2.1%. Risk-off.",
+    "position_decisions": [],
+    "buy_candidates": [
+      {
+        "symbol": "MSFT",
+        "action": "BUY",
+        "confidence": 8,
+        "key_signal": "momentum",
+        "reasoning": "Relative strength vs market — but bear filter should still suppress this."
+      },
+      {
+        "symbol": "GOOGL",
+        "action": "BUY",
+        "confidence": 9,
+        "key_signal": "mean_reversion",
+        "reasoning": "Deep oversold bounce setup — high confidence but bear day blocks all new buys."
+      }
+    ]
+  },
+  "expected_buys_placed": 0,
+  "expected_reason": "bear_filter"
+}

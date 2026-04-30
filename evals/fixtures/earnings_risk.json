@@ -1,0 +1,26 @@
+{
+  "description": "Held positions where one has earnings within 2 days. The earnings guard must trigger an exit for the at-risk position only.",
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "entry_date": "2026-04-28",
+      "entry_price": 182.0,
+      "current_price": 185.5,
+      "unrealized_plpc": 1.92
+    },
+    {
+      "symbol": "MSFT",
+      "entry_date": "2026-04-26",
+      "entry_price": 415.0,
+      "current_price": 418.2,
+      "unrealized_plpc": 0.77
+    }
+  ],
+  "earnings_within_2_days": ["AAPL"],
+  "earnings_dates": {
+    "AAPL": "2026-05-01",
+    "MSFT": "2026-05-15"
+  },
+  "expected_exits": ["AAPL"],
+  "expected_held": ["MSFT"]
+}

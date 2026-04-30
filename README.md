@@ -1,8 +1,25 @@
-# InvestorBot
+# InvestorBot — AI Governance & Execution Control System
 
-An autonomous AI trading agent that manages a US equities portfolio using Claude as its reasoning engine. It runs on a fixed schedule three times per trading day, sizes positions with Kelly Criterion, enforces a multi-layer pre-trade risk framework, and conducts a weekly self-review — proposing bounded adjustments to its own parameters based on what is and isn't working.
+An autonomous AI decision-support system for US equities portfolio management. Claude (Anthropic) performs analysis and issues structured recommendations; a deterministic validator, risk gate, and human-override layer decide whether to act. The system never allows an AI model to place, cancel, or modify orders directly.
 
-**Paper trading by default.** The bot runs in Alpaca's paper environment until you explicitly change one environment variable and accept the associated risks. Live mode is a deliberate opt-in, not the default path.
+**Paper trading by default.** The system runs in Alpaca's simulation environment until the operator explicitly confirms live mode with a required acknowledgement string. There is no fast path to real orders.
+
+> **Portfolio framing:** This project demonstrates the skills most relevant to forward-deployed engineering — integrating multiple third-party APIs behind fault-tolerant adapters, treating AI output as untrusted input that must be validated before action, building operator-facing tooling, handling real runtime failures, and designing for auditability. See the [FDE skills section](#why-this-demonstrates-fde-skills) below.
+
+---
+
+## Why this demonstrates FDE skills
+
+| FDE skill | How it shows up here |
+|-----------|----------------------|
+| Ambiguous problem → working product | Defined scope, constraints, and tradeoffs for an autonomous system operating on a schedule with no human in the loop |
+| Multiple third-party API integrations | Alpaca (brokerage), Anthropic (LLM), yfinance (market data), Gmail (SMTP) — each behind a fault-tolerant adapter with retry logic |
+| AI output treated as untrusted | Every Claude response schema-checked, domain-validated, and risk-gated before any order is placed |
+| Operator dashboard and CLI | Non-code workflows for halt, resume, status, decisions, backtest — all without touching source |
+| Paper-first deployment model | Default `.env.example` points to paper endpoint; live mode requires explicit opt-in with safeguards |
+| Real incident handling | Six production failures on day one, all diagnosed from logs and fixed same session — documented with root cause and fix |
+| Audit trail for every action | Append-only SQLite record for every recommendation, order, and risk event — whether executed or not |
+| Demo mode, no credentials needed | `python cli.py demo` runs a complete simulated cycle on static fixtures for reviewers who don't have API keys |
 
 ---
 
@@ -54,7 +71,7 @@ flowchart TD
 
     F["📝 &nbsp;Audit
     Every decision logged whether executed or not
-    Daily JSON record · end-of-day summary email"]:::audit
+    SQLite record · run_id correlation · end-of-day email"]:::audit
 
     A --> B --> C --> D --> E --> F
 ```
@@ -105,12 +122,14 @@ flowchart TB
 
 | Decision | Rationale | Tradeoff accepted |
 |----------|-----------|-------------------|
-| Claude as decision engine, not execution engine | Interpretable reasoning, plain-English audit trail, easy to constrain | Higher latency than pure quant model; API cost per run |
+| Claude as recommender, not executor | Interpretable reasoning, plain-English audit trail, easy to constrain | Higher latency than pure quant model; API cost per run |
 | Rule-based validator as gatekeeper | AI output is untrusted by default — every response schema-checked before acting | Some valid signals rejected by over-strict rules |
 | Paper-first, explicit live opt-in | Prevents accidental live deployment; forces conscious decision | Slightly more setup friction |
-| File-based state (`positions_meta.json`) | No infrastructure dependency, runs anywhere | Requires file locking; wouldn't scale beyond a single host |
-| Bounded self-modification (4 params, hard range limits) | Allows adaptation without unbounded drift | Slower adaptation than fully autonomous parameter search |
-| All logs local | No external dependency, no data leakage | No centralised observability; logs are lost if disk is lost |
+| SQLite state (`logs/investorbot.db`) | ACID transactions, queryability, atomic audit joins — migrated from JSON files after a real overwrite incident | Requires schema migrations as the system evolves |
+| Constrained parameter recommendation engine | Allows adaptation within hard bounds without unbounded drift | Slower adaptation than fully autonomous parameter search |
+| Structured logging with run_id | Correlate every audit event, decision, and order to the run that caused it | Slightly more logging overhead per run |
+
+Full rationale for each decision is in [docs/adr/](docs/adr/).
 
 ---
 
@@ -143,6 +162,8 @@ Every Claude response is validated before it reaches the execution layer:
 
 If validation fails, the run continues with the remaining valid decisions. Partial failures are logged; complete failures abort the run and send an alert.
 
+Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [LLM eval section](#llm-eval-fixtures).
+
 ### Risk layer (`risk/`)
 
 After validation, position-level risk checks are applied independently of Claude's recommendations:
@@ -156,9 +177,13 @@ After validation, position-level risk checks are applied independently of Claude
 - **VIX adjustment** — trailing stops widen automatically above VIX 25
 - **Earnings guard** — positions with earnings within 2 calendar days are exited pre-emptively
 
-### Bounded self-modification
+### Constrained parameter recommendation engine
 
-The weekly self-review allows Claude to propose changes to its own operating parameters. Changes are applied only within hard-coded bounds that cannot be exceeded regardless of what Claude proposes:
+The weekly self-review enables Claude to propose adjustments to four operating parameters. This is a **constrained recommendation** mechanism — not self-modification. Every proposal:
+
+1. Is checked against hard-coded bounds that cannot be exceeded regardless of what Claude proposes
+2. Is written to `logs/runtime_config.json` with evidence-based reasoning (never edits source code)
+3. Appears in the Sunday email for operator review
 
 | Parameter | Allowed range |
 |-----------|---------------|
@@ -167,7 +192,7 @@ The weekly self-review allows Claude to propose changes to its own operating par
 | `PARTIAL_PROFIT_PCT` | 5.0% – 20.0% |
 | `MAX_HOLD_DAYS` | 2 – 7 days |
 
-All proposed changes are written to `logs/weekly_review_YYYY-MM-DD.json` with evidence-based reasoning before being applied. If the regex substitution fails to find the target line in config, the change is rejected and logged — the file is never written in a partially-modified state.
+Values outside bounds are logged and rejected. The runtime config file is loaded at startup alongside `config.py` — source is never modified by the system. See [ADR-005](docs/adr/ADR-005-bounded-parameter-updates.md) for full rationale.
 
 ### Human override
 
@@ -182,9 +207,26 @@ The halt command prompts for explicit confirmation before liquidating open posit
 
 ### Audit trail
 
-Every Claude recommendation is written to `logs/decisions.jsonl` regardless of whether it was executed — including the confidence score, plain-English reasoning, signal type, and a flag indicating whether it became a real trade. This log is queryable via `python cli.py decisions` and rendered in the dashboard's AI Decisions page.
+Every Claude recommendation is written to the SQLite audit store regardless of whether it was executed — including the confidence score, plain-English reasoning, signal type, `run_id`, and a flag indicating whether it became a real trade. This log is queryable via `python cli.py decisions` and rendered in the dashboard's AI Decisions page.
 
-Every order placed is written to `logs/audit_log.jsonl` with a timestamp, symbol, action, price, quantity, and run mode.
+Every order placed is recorded with timestamp, symbol, action, price, quantity, run_id, and mode. The `run_id` field links every audit event, decision, and order back to the run that caused them.
+
+---
+
+## LLM eval fixtures
+
+The [`evals/`](evals/) directory contains structured test fixtures for the AI governance layer. Each fixture covers a scenario where Claude's output or input is adversarial, edge-case, or safety-critical:
+
+| Fixture | What it tests |
+|---------|--------------|
+| `prompt_injection_headlines.json` | News headlines containing injection attempts — scanner must drop them |
+| `hallucinated_tickers.json` | AI recommends symbols outside the scanned universe — validator must reject |
+| `bear_market_no_buy.json` | Bear regime + buy candidates — risk gate must suppress buys |
+| `conflicting_signals.json` | BUY and SELL for the same symbol in one response — validator must flag conflict |
+| `earnings_risk.json` | Position with earnings within 2 days — earnings guard must trigger exit |
+| `malformed_tool_calls.json` | Three malformed AI responses — schema validator must reject all |
+
+Run with: `pytest evals/`
 
 ---
 
@@ -348,7 +390,7 @@ By signal:
 - **Rule-based proxy, not live Claude decisions.** The backtester uses hardcoded signal rules (RSI < 35, EMA crossover, etc.) as a proxy for what Claude would recommend. Live Claude decisions will differ — sometimes better, sometimes worse.
 - **No transaction costs or slippage.** Real fills, especially on momentum signals, will be worse than the backtested prices.
 - **Look-ahead bias risk.** Indicator warmup windows are buffered by 90 days, but subtle data leakage is possible.
-- **Survivorship bias.** The universe is fixed to the current 28-symbol list, which contains names that have survived and grown. Pre-2025 signals on this list are upward-biased.
+- **Survivorship bias.** The universe is fixed to the current symbol list, which contains names that have survived and grown. Pre-2025 signals on this list are upward-biased.
 - **Past performance.** 2025 included the DeepSeek shock (January), tariff volatility (April), and a significant drawdown. Sharpe of 0.94 over this period is reasonable but not exceptional.
 
 ### Known failure modes
@@ -359,7 +401,7 @@ By signal:
 | Claude recommends a symbol outside the universe | Validator rejects that recommendation, others proceed | Logged; no action needed |
 | Alpaca API timeout | Order attempt fails, position not opened, error logged | Bot continues; retried next run |
 | News headline contains injected instructions | Headline is dropped, warning logged | Automatic; review logs if frequent |
-| `positions_meta.json` corrupted | Falls back to empty dict, reconciliation run restores state from live Alpaca positions | Automatic |
+| SQLite locked or corrupt | Falls back to in-memory state for the run; alert sent | Automatic recovery on next run |
 | Both API keys invalid | Run fails at client initialisation, alert sent | Fix `.env` and resume |
 | Daily loss limit hit | All positions liquidated, halt file created, alert sent | Manual resume required: `python cli.py resume` |
 
@@ -379,18 +421,19 @@ All secrets live in `.env` which is gitignored and never committed. The `.env.ex
 
 ### Persistence and recovery
 
-- **Lock file** (`logs/.bot.lock`): prevents two scheduler instances running simultaneously. If the process dies mid-run, the lock is cleaned up on next start.
+- **Lock file** (`logs/.lock_YYYY-MM-DD`): prevents two scheduler instances running simultaneously on the same day. Date-scoped to avoid midnight-crossing races.
 - **Halt file** (`logs/.HALTED`): persists across restarts. If the bot is halted by a circuit breaker, it stays halted until manually resumed — it will not auto-resume after a crash.
-- **Position metadata** (`logs/positions_meta.json`): reconciled against live Alpaca positions at the start of every open run. If the file is missing or corrupt, state is rebuilt from the broker.
-- **File locking**: `positions_meta.json` uses `fcntl.LOCK_EX` for all read-modify-write operations, preventing corruption if a manual `cli.py run` and the scheduler overlap.
+- **SQLite database** (`logs/investorbot.db`): all position metadata, run records, audit events, and AI decisions. Reconciled against live Alpaca positions at the start of every open run. ACID transactions prevent the partial-write races that affected the earlier JSON-file implementation.
 
 ### Monitoring
 
 - **Email alerts**: circuit breaker triggers, daily loss limit hits, and run errors all send an immediate email to `EMAIL_TO`.
 - **Daily email**: end-of-day summary to all recipients — acts as a daily heartbeat. If the email doesn't arrive, the bot didn't run.
 - **Dashboard**: `http://localhost:8501` shows live portfolio, equity curve, and recent decisions.
-- **Logs**: `logs/YYYY-MM-DD.json` for every run, `logs/decisions.jsonl` for every AI decision, `logs/audit_log.jsonl` for every order.
-- **Diagnostics**: `python scripts/run_diagnostics.py` runs 460 unit tests and saves a report to `logs/test_report_YYYY-MM-DD.json`. Also runs automatically every Sunday.
+- **Structured logs**: every run emits JSON-structured log lines with `run_id`, `ts`, `event`, and `payload` — queryable via `logs/investorbot.db`.
+- **run_id correlation**: every audit event, AI decision, and order carries the same `run_id` (UUID), making it possible to reconstruct the full causal chain for any trade.
+- **LLM cost tracking**: token usage for each Claude call is logged (input tokens, output tokens, estimated cost) to the `llm_usage` table.
+- **Diagnostics**: `python scripts/run_diagnostics.py` runs the full unit test suite and saves a report to `logs/test_report_YYYY-MM-DD.json`. Also runs automatically every Sunday.
 
 ### Cost
 
@@ -421,7 +464,7 @@ python cli.py halt                 # Kill switch if needed
 **Email not arriving**
 ```bash
 python cli.py run --dry-run       # Triggers email flow without placing orders
-# Check logs/YYYY-MM-DD.json for error details
+# Check logs/investorbot.db for error details
 ```
 
 **Suspicious behaviour / want to inspect decisions**
@@ -438,73 +481,17 @@ python cli.py resume              # Clear halt when ready
 
 ---
 
-## What it does
+## Try it — no credentials needed
 
-Each trading day the bot runs three cycles:
+```bash
+git clone https://github.com/samchatterley/investor-bot
+cd investor-bot
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python cli.py demo
+```
 
-| Time (ET) | Time (BST) | Mode | What happens |
-|-----------|------------|------|--------------|
-| 09:31 | 14:31 | Open | Full AI analysis → new buys + position review |
-| 12:00 | 17:00 | Midday | Partial profit-taking + stop-loss sweep, no new buys |
-| 15:30 | 20:30 | Close | Final position review, end-of-day summary email |
-
-At the end of each trading day a summary email is sent to all recipients with portfolio value, P&L, trades executed, and the AI's market commentary.
-
-Every Sunday evening the bot runs a weekly self-review: Claude reads seven days of performance data and trade history, writes lessons learned, and applies bounded adjustments to its own configuration parameters.
-
----
-
-## How it works
-
-### AI decision layer
-
-At the open run, the bot builds a structured prompt for Claude containing:
-
-- 30 days of price and volume data for a 28-stock universe (mega-cap tech, financials, energy, broad ETFs)
-- Options chain data (put/call ratio, implied volatility)
-- Macro calendar (Fed meetings, CPI, NFP dates)
-- Earnings calendar (positions with earnings within 2 days are exited pre-emptively)
-- Market regime classification: `BULL_TRENDING`, `CHOPPY`, `HIGH_VOL`, or `BEAR_DAY`
-- Performance feedback from the signal tracking system — win rates by regime and confidence tier
-- Lessons from the most recent weekly self-review
-
-Claude returns structured decisions for each current position (hold / partial sell / full sell) and a ranked list of buy candidates with confidence scores (1–10) and reasoning.
-
-Only candidates scoring 7 or above are acted on. All decisions, including those below the threshold, are logged.
-
-### Position sizing
-
-Positions are sized using half-Kelly Criterion against a rolling win-rate estimate. Hard limits apply regardless:
-
-- Maximum 5 open positions simultaneously
-- Maximum 45% of portfolio in any single position
-- Always retain 10% cash reserve
-- Maximum $50,000 per individual order
-- Maximum $150,000 total daily notional deployed
-
-### Risk management
-
-- **Trailing stops**: Alpaca-native trailing stop orders placed at entry (default 4% trail)
-- **Partial profit taking**: Half the position sold when unrealised gain hits 8%
-- **Take profit**: Full exit at 15%
-- **Hold limit**: Positions auto-exit after 3 trading days regardless of P&L
-- **Sector cap**: Maximum 2 positions in any single sector at once
-- **Bear filter**: No new buys when SPY drops more than 1.5% in a single session
-- **VIX adjustment**: Stops widen automatically when VIX exceeds 25
-- **Circuit breaker**: All buying halted if intraday drawdown breaches threshold; alert sent to owner
-- **Daily loss limit**: All positions closed if daily loss limit is hit
-- **Earnings guard**: Positions with earnings within 2 calendar days are exited at open
-
-### Self-improvement
-
-The bot tracks every trade outcome against two dimensions:
-
-- **Regime**: which of the four market states was active at entry
-- **Confidence**: the AI's stated confidence score at the time of the buy
-
-Over time this builds per-bucket win rates that feed back into the daily prompt as directive text ("In BULL_TRENDING markets, high-confidence signals have a 72% win rate — lean into these").
-
-On Sunday evenings Claude reviews the full week, writes explicit lessons, and may adjust the four parameters listed in the AI Governance section above. All changes are applied directly to `config.py` via bounded regex replacement and reported in the Sunday email with evidence-based reasoning.
+`demo` mode runs a complete simulated open cycle using static fixture data — no Alpaca account, no Anthropic key, no Gmail. It shows the market context build, AI decision parsing, validation, risk gate, simulated order placement, and audit log output in real time.
 
 ---
 
@@ -546,11 +533,12 @@ This starts two containers: the trading scheduler (`investorbot`) and the web da
 | `EMAIL_RECIPIENTS` | Named recipients for daily summary + weekly review: `Sam:sam@gmail.com,Harri:harri@outlook.com` |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (not your login password) |
 
-**Live trading:** changing `ALPACA_BASE_URL` to the live endpoint will cause the bot to place real orders. Do this only after extended paper trading, after reviewing the risk parameters in `config.py`, and with full understanding of the system's behaviour.
+**Live trading:** The system is designed as a paper-trading governance and simulation framework. Live mode (changing `ALPACA_BASE_URL` to the live endpoint) additionally requires setting `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` in your `.env`. Do this only after extended paper trading, after reviewing all risk parameters, and with full understanding of every circuit breaker and kill switch in the system. Additional compliance, monitoring, and approval layers are strongly recommended before operating with real capital.
 
 ### CLI
 
 ```bash
+python cli.py demo                # Complete simulated run — no credentials needed
 python cli.py status              # Account value, open positions, halt state
 python cli.py positions           # Live positions with P&L
 python cli.py trades --days 10    # Recent trade history
@@ -600,13 +588,15 @@ python cli.py resume   # Clear halt file and resume
 ├── analysis/          AI analyst, performance tracking, weekly review
 ├── backtest/          Rule-based backtesting engine
 ├── data/              Market data, news, options, sentiment, sectors
+├── docs/adr/          Architecture Decision Records (5 design decisions)
+├── evals/             LLM eval fixtures — prompt injection, hallucinated tickers, bear market, etc.
 ├── execution/         Order placement, stock scanner
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (460 tests)
+├── tests/             Unit test suite (580 tests)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
-├── cli.py             Command-line interface
+├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
 ├── dashboard.py       Streamlit web dashboard
 ├── main.py            Core trading logic
@@ -629,19 +619,19 @@ Each person listed in `EMAIL_RECIPIENTS` receives a personalised email addressed
 
 ## What's next
 
-The current system deliberately keeps all state local and all execution synchronous. The natural next steps, in priority order:
+The current system deliberately keeps deployment local and execution synchronous. The natural next steps, in priority order:
 
 1. **Live paper-trading evidence** — currently running a full week of live paper trading (w/c 28 April 2026) before committing real capital. The Sunday weekly review will produce an automated performance analysis and parameter adjustment. The backtest is signal evidence; paper trading is execution evidence.
 2. **Drawdown-based position sizing** — reduce Kelly fraction automatically when the portfolio is in a drawdown, not just when individual signals are weak.
 3. **Multi-timeframe signals** — the current 30-day lookback is a single timeframe. Adding weekly trend confirmation would reduce false positives on the momentum signal.
-4. **Centralised logging** — move from local JSON files to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
+4. **Centralised logging** — move from local SQLite to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
 5. **Account-level performance attribution** — track alpha vs SPY benchmark, not just absolute return. The current metrics don't adjust for beta.
 
 ---
 
 ## Notes of interest
 
-- **Paper-first by design.** The `.env.example` points to Alpaca's paper endpoint. There is no fast path to live trading — it requires a conscious URL change, a re-read of the risk parameters, and an understanding of every circuit breaker in the system.
+- **Paper-first by design.** The `.env.example` points to Alpaca's paper endpoint. Live trading requires a conscious URL change, a required confirmation string, a re-read of the risk parameters, and an understanding of every circuit breaker in the system.
 
 - **Fractional shares.** All orders use fractional share support, so the full calculated dollar amount is deployed rather than rounding down to whole shares. This matters most for high-price names like NVDA or GOOGL.
 
@@ -649,17 +639,27 @@ The current system deliberately keeps all state local and all execution synchron
 
 - **Dependencies are version-pinned.** `requirements.txt` pins exact versions to prevent silent behaviour changes from upstream updates. Test in paper mode before upgrading any dependency.
 
-- **Logs stay local.** The `logs/` directory is gitignored and never leaves the machine. Each run writes a timestamped JSON record.
-
 - **MiFID II-style pre-trade controls.** The fat-finger guard (`MAX_SINGLE_ORDER_USD`) and runaway algorithm guard (`MAX_DAILY_NOTIONAL_USD`) are modelled on Article 17 algorithmic trading obligations — limits that apply regardless of what Claude decides.
 
-- **AI explainability.** Every recommendation Claude makes is logged to `logs/decisions.jsonl` with its confidence score, plain-English reasoning, and signal type — whether or not the trade was ultimately executed.
+- **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **460 unit tests.** The test suite covers every public function and every unhappy path across all core modules, and runs automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **580 unit tests.** The test suite covers every public function and every unhappy path across all core modules, and runs automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
 ## Version history
+
+### 1.6 — April 2026 — FDE hardening
+
+- **SQLite migration.** Replaced JSON file state (`positions_meta.json`, per-day run files, `audit.jsonl`, `decisions.jsonl`) with a single SQLite database (`logs/investorbot.db`). Existing data is automatically migrated on first run. ACID transactions eliminate the partial-write race condition that caused trade history loss in earlier versions.
+- **run_id correlation.** Every run generates a UUID that is attached to every audit event, AI decision, and order — making it possible to reconstruct the full causal chain for any trade.
+- **LLM cost tracking.** Token usage and estimated cost per Claude call logged to the `llm_usage` table.
+- **Demo mode.** `python cli.py demo` runs a complete simulated cycle on static fixture data — no API credentials required. Designed for portfolio reviewers and interviewers.
+- **ADRs.** Five Architecture Decision Records added to `docs/adr/` covering Claude-as-recommender, SQLite migration, paper-first deployment, prompt injection mitigation, and bounded parameter updates.
+- **LLM eval fixtures.** Six fixture files in `evals/` covering prompt injection, hallucinated tickers, bear market suppression, conflicting signals, earnings risk, and malformed AI responses. Run via `pytest evals/`.
+- **README reframe.** Repositioned as "AI governance & execution control system"; added FDE skills matrix; softened live trading language; reframed parameter updates as "constrained recommendation engine".
+
+---
 
 ### 1.5 — April 2026 — Pre-live hardening
 Four bugs discovered through log review after the first live paper-trading session, fixed before leaving the system unattended for a full week:
@@ -683,40 +683,15 @@ Consolidated on `scripts/run_scheduler.py` as the single production runner. Cron
 ### 1.3 — April 2026 — Full test coverage
 Comprehensive test pass covering every public function and every unhappy path across all modules. Test count: 203 → 460.
 
-New test files added: `test_fetch_stock_data`, `test_parallel_fetchers`, `test_market_data`, `test_options_scanner`, `test_sector_data`, `test_decision_log`, `test_alerts`, `test_trader_orders`, `test_ai_analyst`, `test_weekly_review` (extended), `test_performance` (extended), `test_portfolio_tracker` (extended), `test_emailer` (extended).
-
-Coverage highlights:
-- All six incident regressions (`test_incidents.py`)
-- Every yfinance adapter path including new API shape fallbacks
-- All Alpaca order types: buy, sell, partial sell, close, trailing stop (fractional and whole-share branches), cancel
-- Full email pipeline: recipient resolution, HTML builders, SMTP layer (mocked), subject line formatting
-- Validator unhappy paths: non-list fields, `None` confidence, string confidence, `None` action
-- Risk manager: sector cap with multiple candidates, Unknown sector bypass, malformed records
-- Weekly review: markdown-wrapped JSON parsing, config line-not-found rejection
-- `reconcile_positions` and `wait_for_fill` exception handling
-
-Production fix included: `reconcile_positions` now catches broker API exceptions gracefully instead of crashing the run (discovered via test).
-
 ---
 
 ### 1.2 — April 2026 — Day-one incident fixes
 Six failures surfaced in the first two hours of live paper trading on 27 April 2026. All diagnosed from logs alone; all fixed within the same session. See the **Live testing — day one incidents** section for full details.
 
-| # | Incident | Fix |
-|---|----------|-----|
-| 1 | Python 3.9 `\|` syntax crash at cron startup | `from __future__ import annotations` in affected files |
-| 2 | News fetcher returning zero results (yfinance API shape change) | Fallback chain: `title` → `headline` → `content.title` |
-| 3 | Sentiment fetcher blocked (Stocktwits Cloudflare + closed API) | Full rewrite using yfinance analyst consensus (`recommendationMean`) |
-| 4 | Trailing stops rejected for fractional shares | Detect fractional qty; fall back to fixed `StopOrderRequest` |
-| 5 | Stop qty rounding above available qty | Floor truncation (`math.floor`) instead of `round` |
-| 6 | Midday and close runs never scheduled | Added missing cron entries (later replaced by scheduler) |
-
-Regression test suite added: `test_incidents.py` (34 tests) covers all six failure modes to prevent recurrence.
-
 ---
 
 ### 1.1 — April 2026
-Added web dashboard (Streamlit, 5 pages), CLI (`cli.py`), Docker deploy, AI decision log (`logs/decisions.jsonl`), personalised email greetings per recipient, Sharpe ratio in backtester, backtest results persisted for the dashboard, file locking on position metadata, and dynamic backtest end date. Unit test suite expanded to 203 tests.
+Added web dashboard (Streamlit, 5 pages), CLI (`cli.py`), Docker deploy, AI decision log, personalised email greetings per recipient, Sharpe ratio in backtester, backtest results persisted for the dashboard, file locking on position metadata, and dynamic backtest end date.
 
 ### 1.0 — April 2026
-Initial release. Full autonomous paper-trading capability with AI-driven decision making, Kelly Criterion sizing, multi-layer risk management, regime-aware signal tracking, weekly self-review with bounded self-modification, and multi-recipient email reporting.
+Initial release. Full autonomous paper-trading capability with AI-driven decision making, Kelly Criterion sizing, multi-layer risk management, regime-aware signal tracking, weekly self-review with bounded parameter recommendations, and multi-recipient email reporting.

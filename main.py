@@ -39,30 +39,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_LOCK_FILE = os.path.join(config.LOG_DIR, f".lock_{config.today_et().isoformat()}")
 _LOCK_MAX_AGE_SECONDS = 1800  # auto-clear locks older than 30 min (handles crash recovery)
+
+
+def _lock_file() -> str:
+    # Computed at call time so a run spanning midnight uses the correct date.
+    return os.path.join(config.LOG_DIR, f".lock_{config.today_et().isoformat()}")
 
 
 # ── Lock file management ──────────────────────────────────────────────────────
 
 def _acquire_lock() -> bool:
+    lock_file = _lock_file()
     os.makedirs(config.LOG_DIR, exist_ok=True)
-    if os.path.exists(_LOCK_FILE):
-        age = time.time() - os.path.getmtime(_LOCK_FILE)
+    if os.path.exists(lock_file):
+        age = time.time() - os.path.getmtime(lock_file)
         if age > _LOCK_MAX_AGE_SECONDS:
             logger.warning(f"Stale lock file found ({age / 3600:.1f}h old) — auto-clearing")
-            os.remove(_LOCK_FILE)
+            os.remove(lock_file)
         else:
             logger.warning("Lock file exists — another run may be in progress. Remove .lock file to override.")
             return False
-    with open(_LOCK_FILE, "w"):
+    with open(lock_file, "w"):
         pass
     return True
 
 
 def _release_lock():
     try:
-        os.remove(_LOCK_FILE)
+        os.remove(_lock_file())
     except FileNotFoundError:
         pass
 
@@ -151,7 +156,15 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
 
 def run(dry_run: bool = False, mode: str = "open"):
     today = config.today_et().isoformat()
-    logger.info(f"=== Trading bot | {today} | mode={mode} {'[DRY RUN]' if dry_run else ''} ===")
+    mode_label = "PAPER" if config.IS_PAPER else "*** LIVE ***"
+    logger.info(f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''} ===")
+    if not config.IS_PAPER and not dry_run:
+        if config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK":
+            logger.error(
+                "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
+                "Set it in .env or export it before running."
+            )
+            sys.exit(1)
 
     try:
         config.validate()
@@ -195,6 +208,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     logger.info(f"Portfolio: ${account_before['portfolio_value']:.2f}  Cash: ${account_before['cash']:.2f}")
     audit_log.log_run_start(mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER)
 
+    if mode == "open":
+        portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
+
     # ── Reconcile position metadata ───────────────────────────────────────────
     trader.reconcile_positions(client)
     trader.ensure_stops_attached(client)
@@ -208,8 +224,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         logger.warning("Circuit breaker active — no new buys today.")
 
     # ── Daily loss check ──────────────────────────────────────────────────────
+    _baseline = portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
     dl_triggered, dl_pct = risk_manager.check_daily_loss(
-        account_before["portfolio_value"], trader.get_account_info(client)["portfolio_value"]
+        _baseline, account_before["portfolio_value"]
     )
     if dl_triggered:
         audit_log.log_daily_loss_limit(dl_pct)
@@ -313,14 +330,17 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         logger.error("No market data. Aborting.")
         return
 
-    known_symbols = {s["symbol"] for s in snapshots}
-
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in held_symbols]
     candidate_snaps = [s for s in snapshots if s["symbol"] not in held_symbols]
     filtered_candidates = stock_scanner.prefilter_candidates(candidate_snaps)
     ai_snapshots = held_snaps + filtered_candidates
     logger.info(f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed")
+
+    # Symbols the AI actually received — used as the validation universe.
+    # Broader known_symbols (all fetched) would allow hallucinated tickers from
+    # top_movers that never made it through the pre-filter.
+    ai_known_symbols = {s["symbol"] for s in ai_snapshots}
 
     # ── Options flow ──────────────────────────────────────────────────────────
     options_syms = [s["symbol"] for s in filtered_candidates]
@@ -364,7 +384,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         return
 
     # ── Validate AI response before acting ───────────────────────────────────
-    is_valid, validation_errors = validate_ai_response(decisions, known_symbols)
+    is_valid, validation_errors = validate_ai_response(decisions, ai_known_symbols, held_symbols=held_symbols)
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
         logger.error(f"AI response failed validation — aborting buys. Errors: {validation_errors}")
@@ -439,10 +459,18 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             valid_candidates.sort(key=lambda x: x["confidence"], reverse=True)
             valid_candidates = valid_candidates[:slots]
 
+            orders_placed = 0
             for candidate in valid_candidates:
+                if orders_placed >= config.MAX_ORDERS_PER_RUN:
+                    logger.warning(f"MAX_ORDERS_PER_RUN ({config.MAX_ORDERS_PER_RUN}) reached — no more buys this run")
+                    break
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
-                kelly = position_sizer.kelly_fraction(confidence)
+                kelly = position_sizer.kelly_fraction(
+                    confidence,
+                    signal=candidate.get("key_signal", "unknown"),
+                    regime=regime.get("regime", "UNKNOWN"),
+                )
                 notional = min(
                     available_cash * kelly,
                     account_now["portfolio_value"] * config.MAX_POSITION_PCT,
@@ -463,6 +491,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     if not dry_run:
                         result = trader.place_buy_order(client, symbol, notional)
                         if result:
+                            orders_placed += 1
                             daily_notional_spent += notional
                             snap = next((s for s in snapshots if s["symbol"] == symbol), None)
                             entry_price = snap["current_price"] if snap else 0.0
@@ -476,11 +505,15 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                             if result.get("filled_qty"):
                                 audit_log.log_order_filled(symbol, result["order_id"], result["filled_qty"])
                                 current_price = snap["current_price"] if snap else None
-                                trader.place_trailing_stop(client, symbol, result["filled_qty"], current_price=current_price)
+                                stop_result = trader.place_trailing_stop(client, symbol, result["filled_qty"], current_price=current_price)
+                                if stop_result is None:
+                                    logger.error(f"  Stop placement FAILED for {symbol} — position unprotected!")
+                                    alerts.alert_error("STOP FAILED", f"{symbol}: trailing stop placement failed after buy — position has no downside protection.")
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | Kelly {kelly:.0%} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({**result, "action": "BUY", "detail": detail})
                     else:
+                        orders_placed += 1
                         daily_notional_spent += notional
                         executed_symbols.add(symbol)
                         all_trades.append({"symbol": symbol, "action": "BUY", "detail": f"dry run ${notional:.2f}"})

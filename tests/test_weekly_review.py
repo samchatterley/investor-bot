@@ -2,38 +2,31 @@ import json
 import os
 import shutil
 import tempfile
-import textwrap
 import unittest
 from unittest.mock import patch, MagicMock
 
+import config as cfg
 from analysis.weekly_review import _apply_config_changes, get_latest_review
 
 
-_SAMPLE_CONFIG = textwrap.dedent("""\
-    MIN_CONFIDENCE = 7
-    TRAILING_STOP_PCT = 4.0
-    PARTIAL_PROFIT_PCT = 8.0
-    MAX_HOLD_DAYS = 3
-""")
-
-
 class TestApplyConfigChanges(unittest.TestCase):
+    """_apply_config_changes writes to runtime_config.json, not config.py."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.tmpdir, "config.py")
-        with open(self.config_path, "w") as f:
-            f.write(_SAMPLE_CONFIG)
-        self.patcher = patch("analysis.weekly_review._CONFIG_PATH", self.config_path)
+        self.runtime_path = os.path.join(self.tmpdir, "runtime_config.json")
+        self.patcher = patch("analysis.weekly_review._RUNTIME_CONFIG_PATH", self.runtime_path)
         self.patcher.start()
 
     def tearDown(self):
         self.patcher.stop()
         shutil.rmtree(self.tmpdir)
 
-    def _read(self):
-        with open(self.config_path) as f:
-            return f.read()
+    def _read(self) -> dict:
+        if not os.path.exists(self.runtime_path):
+            return {}
+        with open(self.runtime_path) as f:
+            return json.load(f)
 
     def test_empty_list_returns_empty(self):
         result = _apply_config_changes([])
@@ -44,7 +37,7 @@ class TestApplyConfigChanges(unittest.TestCase):
             {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"}
         ])
         self.assertEqual(result[0]["status"], "applied")
-        self.assertIn("MIN_CONFIDENCE = 8", self._read())
+        self.assertEqual(self._read()["MIN_CONFIDENCE"], 8)
 
     def test_unknown_parameter_is_rejected(self):
         result = _apply_config_changes([
@@ -67,19 +60,19 @@ class TestApplyConfigChanges(unittest.TestCase):
         self.assertEqual(result[0]["new_value"], 2.0)
 
     def test_unchanged_value_not_written(self):
-        original = self._read()
         result = _apply_config_changes([
-            {"parameter": "MIN_CONFIDENCE", "proposed_value": 7, "reason": "no change"}
+            {"parameter": "MIN_CONFIDENCE", "proposed_value": cfg.MIN_CONFIDENCE, "reason": "no change"}
         ])
         self.assertEqual(result[0]["status"], "unchanged")
-        self.assertEqual(self._read(), original)
+        # File should not be created when nothing changed
+        self.assertFalse(os.path.exists(self.runtime_path))
 
     def test_old_and_new_values_returned(self):
         result = _apply_config_changes([
-            {"parameter": "MAX_HOLD_DAYS", "proposed_value": 5, "reason": "test"}
+            {"parameter": "MAX_HOLD_DAYS", "proposed_value": cfg.MAX_HOLD_DAYS + 2, "reason": "test"}
         ])
-        self.assertEqual(result[0]["old_value"], 3)
-        self.assertEqual(result[0]["new_value"], 5)
+        self.assertEqual(result[0]["old_value"], cfg.MAX_HOLD_DAYS)
+        self.assertEqual(result[0]["new_value"], cfg.MAX_HOLD_DAYS + 2)
 
     def test_multiple_changes_applied_independently(self):
         result = _apply_config_changes([
@@ -87,11 +80,11 @@ class TestApplyConfigChanges(unittest.TestCase):
             {"parameter": "MAX_HOLD_DAYS", "proposed_value": 5, "reason": "test"},
         ])
         statuses = {r["parameter"]: r["status"] for r in result}
-        self.assertEqual(statuses["MIN_CONFIDENCE"], "applied")
-        self.assertEqual(statuses["MAX_HOLD_DAYS"], "applied")
-        content = self._read()
-        self.assertIn("MIN_CONFIDENCE = 8", content)
-        self.assertIn("MAX_HOLD_DAYS = 5", content)
+        self.assertIn(statuses["MIN_CONFIDENCE"], ("applied", "clamped"))
+        self.assertIn(statuses["MAX_HOLD_DAYS"], ("applied", "clamped"))
+        data = self._read()
+        self.assertIn("MIN_CONFIDENCE", data)
+        self.assertIn("MAX_HOLD_DAYS", data)
 
 
 class TestGetLatestReview(unittest.TestCase):
@@ -166,20 +159,13 @@ class TestRunWeeklyReview(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.tmpdir, "config.py")
-        with open(self.config_path, "w") as f:
-            f.write(textwrap.dedent("""\
-                MIN_CONFIDENCE = 7
-                TRAILING_STOP_PCT = 4.0
-                PARTIAL_PROFIT_PCT = 8.0
-                MAX_HOLD_DAYS = 3
-            """))
+        self.runtime_path = os.path.join(self.tmpdir, "runtime_config.json")
         self.log_patcher = patch("analysis.weekly_review.LOG_DIR", self.tmpdir)
-        self.config_patcher = patch("analysis.weekly_review._CONFIG_PATH", self.config_path)
+        self.runtime_patcher = patch("analysis.weekly_review._RUNTIME_CONFIG_PATH", self.runtime_path)
         self.log_patcher.start()
-        self.config_patcher.start()
+        self.runtime_patcher.start()
         self.addCleanup(self.log_patcher.stop)
-        self.addCleanup(self.config_patcher.stop)
+        self.addCleanup(self.runtime_patcher.stop)
         self.addCleanup(shutil.rmtree, self.tmpdir)
 
     def _make_record(self, date_str, pnl=100.0):

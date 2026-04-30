@@ -49,7 +49,7 @@ class LockBase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.lock_file = os.path.join(self.tmpdir, f".lock_{config.today_et().isoformat()}")
-        self._patcher = patch("main._LOCK_FILE", self.lock_file)
+        self._patcher = patch("main._lock_file", return_value=self.lock_file)
         self._patcher.start()
 
     def tearDown(self):
@@ -305,7 +305,7 @@ class TestRunGuards(unittest.TestCase):
             f.write("HALTED")
         with patch("main.config.validate"), \
              patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main._LOCK_FILE", self.lock_file), \
+             patch("main._lock_file", return_value=self.lock_file), \
              patch("sys.exit") as mock_exit:
             from main import run
             run()
@@ -315,7 +315,7 @@ class TestRunGuards(unittest.TestCase):
         with patch("main.config.validate"), \
              patch("main.config.ALPACA_API_KEY", ""), \
              patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main._LOCK_FILE", self.lock_file), \
+             patch("main._lock_file", return_value=self.lock_file), \
              patch("sys.exit") as mock_exit:
             from main import run
             run()
@@ -326,7 +326,7 @@ class TestRunGuards(unittest.TestCase):
              patch("main.config.ALPACA_API_KEY", "valid-key"), \
              patch("main.config.ANTHROPIC_API_KEY", ""), \
              patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main._LOCK_FILE", self.lock_file), \
+             patch("main._lock_file", return_value=self.lock_file), \
              patch("sys.exit") as mock_exit:
             from main import run
             run()
@@ -340,7 +340,7 @@ class TestRunGuards(unittest.TestCase):
              patch("main.config.ALPACA_API_KEY", "valid-key"), \
              patch("main.config.ANTHROPIC_API_KEY", "valid-key"), \
              patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main._LOCK_FILE", self.lock_file), \
+             patch("main._lock_file", return_value=self.lock_file), \
              patch("main._run_inner", mock_inner):
             from main import run
             run()
@@ -351,7 +351,7 @@ class TestRunGuards(unittest.TestCase):
              patch("main.config.ALPACA_API_KEY", "valid-key"), \
              patch("main.config.ANTHROPIC_API_KEY", "valid-key"), \
              patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main._LOCK_FILE", self.lock_file), \
+             patch("main._lock_file", return_value=self.lock_file), \
              patch("main._run_inner", side_effect=RuntimeError("unexpected")), \
              patch("main.alerts.alert_error"):
             from main import run
@@ -364,7 +364,7 @@ class TestRunGuards(unittest.TestCase):
              patch("main.config.ALPACA_API_KEY", "valid-key"), \
              patch("main.config.ANTHROPIC_API_KEY", "valid-key"), \
              patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main._LOCK_FILE", self.lock_file), \
+             patch("main._lock_file", return_value=self.lock_file), \
              patch("main._run_inner", side_effect=RuntimeError("boom")), \
              patch("main.alerts.alert_error", alert_mock):
             from main import run
@@ -400,10 +400,12 @@ class RunInnerBase(unittest.TestCase):
             "main.trader.close_position":               {"symbol": "X", "status": "closed"},
             "main.trader.place_buy_order":              {"symbol": "AAPL", "order_id": "x", "filled_qty": 1.0, "notional": 1000.0, "status": "filled"},
             "main.trader.place_trailing_stop":          None,
-            "main.portfolio_tracker.load_history":      [],
-            "main.portfolio_tracker.get_track_record":  [],
-            "main.portfolio_tracker.save_daily_run":    _saved_record(),
-            "main.portfolio_tracker.print_summary":     None,
+            "main.portfolio_tracker.load_history":           [],
+            "main.portfolio_tracker.get_track_record":       [],
+            "main.portfolio_tracker.save_daily_run":         _saved_record(),
+            "main.portfolio_tracker.print_summary":          None,
+            "main.portfolio_tracker.save_daily_baseline":    None,
+            "main.portfolio_tracker.load_daily_baseline":    None,
             "main.risk_manager.check_circuit_breaker":  (False, 0.0),
             "main.risk_manager.check_daily_loss":       (False, 0.0),
             "main.risk_manager.validate_buy_candidates": lambda c, **kw: c,

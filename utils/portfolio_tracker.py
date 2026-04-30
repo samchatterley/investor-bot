@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timezone
 from config import LOG_DIR
 
+_BASELINE_PATH = os.path.join(LOG_DIR, "daily_baseline.json")
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,36 @@ def save_daily_run(
     }
 
     path = _daily_log_path(date)
+
+    # Guard against spurious re-runs overwriting a record that already has trades.
+    # If the file exists and the prior record has trades, merge rather than overwrite:
+    # - Preserve the open-of-day account_before so P&L is always measured from market open.
+    # - Union trades by order_id so no executed trade is ever lost.
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                existing = json.load(f)
+            prior_trades = existing.get("trades_executed", [])
+            if prior_trades:
+                existing_ids = {t.get("order_id") for t in prior_trades if t.get("order_id")}
+                merged = list(prior_trades)
+                for t in trades_executed:
+                    if t.get("order_id") not in existing_ids:
+                        merged.append(t)
+                record["trades_executed"] = merged
+                record["account_before"] = existing["account_before"]
+                record["daily_pnl"] = account_after["portfolio_value"] - existing["account_before"]["portfolio_value"]
+                added = len(merged) - len(prior_trades)
+                if added:
+                    logger.info(f"Merged {added} new trade(s) into existing {date} record")
+                else:
+                    logger.warning(
+                        f"Spurious re-run detected for {date}: existing record has "
+                        f"{len(prior_trades)} trade(s) — preserving; current run had {len(trades_executed)}"
+                    )
+        except (json.JSONDecodeError, KeyError):
+            pass  # corrupt existing file — overwrite silently
+
     with open(path, "w") as f:
         json.dump(record, f, indent=2)
 
@@ -73,6 +105,27 @@ def print_summary(record: dict):
 
 
 _NON_RUN_FILES = {"positions_meta.json", "signal_stats.json"}
+
+
+def save_daily_baseline(portfolio_value: float) -> None:
+    """Persist the open-of-day portfolio value so daily loss checks compare against a real baseline."""
+    _ensure_log_dir()
+    today = datetime.now(timezone.utc).date().isoformat()
+    with open(_BASELINE_PATH, "w") as f:
+        json.dump({"date": today, "portfolio_value": portfolio_value}, f)
+
+
+def load_daily_baseline() -> float | None:
+    """Return today's persisted open-of-day equity, or None if not recorded yet."""
+    try:
+        with open(_BASELINE_PATH) as f:
+            data = json.load(f)
+        today = datetime.now(timezone.utc).date().isoformat()
+        if data.get("date") == today:
+            return float(data["portfolio_value"])
+    except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
+        pass
+    return None
 
 
 def load_history() -> list[dict]:
