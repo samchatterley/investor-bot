@@ -120,3 +120,13 @@ def log_kill_switch(positions_closed: int):
 
 def log_halt_cleared():
     _write("HALT_CLEARED", {})
+
+
+# ── Runtime config overrides ──────────────────────────────────────────────────
+
+def log_config_override_applied(key: str, value) -> None:
+    _write("CONFIG_OVERRIDE_APPLIED", {"key": key, "value": value})
+
+
+def log_config_override_rejected(key: str, value, reason: str) -> None:
+    _write("CONFIG_OVERRIDE_REJECTED", {"key": key, "value": value, "reason": reason})

@@ -120,18 +120,99 @@ LIVE_CONFIRM = os.getenv("LIVE_CONFIRM", "")
 # Values here take precedence over the defaults above at startup.
 _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 
+# Explicit allowlist of keys the weekly self-review may modify at runtime.
+# Everything else — API keys, trading mode, stock universe — is immutable.
+RUNTIME_OVERRIDE_KEYS: frozenset[str] = frozenset({
+    "MIN_CONFIDENCE",
+    "MAX_POSITION_PCT",
+    "TRAILING_STOP_PCT",
+    "MAX_HOLD_DAYS",
+    "MAX_ORDERS_PER_RUN",
+    "PARTIAL_PROFIT_PCT",
+})
+
+# (type, min_inclusive, max_inclusive) — applied only to runtime overrides.
+# Tighter than the static validate() bounds to constrain AI self-modification.
+RUNTIME_OVERRIDE_BOUNDS: dict[str, tuple] = {
+    "MIN_CONFIDENCE":     (int,   7,    10),
+    "MAX_POSITION_PCT":   (float, 0.05, 0.25),
+    "TRAILING_STOP_PCT":  (float, 2.0,  10.0),
+    "MAX_HOLD_DAYS":      (int,   1,    10),
+    "MAX_ORDERS_PER_RUN": (int,   1,    5),
+    "PARTIAL_PROFIT_PCT": (float, 3.0,  20.0),
+}
+
 
 def _load_runtime_overrides() -> None:
-    """Apply any parameter overrides from logs/runtime_config.json."""
+    """Apply allowlisted, bounds-checked parameter overrides from runtime_config.json.
+
+    Unknown keys are rejected. Values outside the declared type or bounds are
+    rejected. Every decision is written to the audit log for full observability.
+    Audit failures never prevent startup.
+    """
     try:
         with open(_RUNTIME_CONFIG_PATH) as f:
             overrides = json.load(f)
-        import sys
-        module = sys.modules[__name__]
-        for key, value in overrides.items():
-            if hasattr(module, key):
-                setattr(module, key, value)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return
+    except json.JSONDecodeError as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(f"runtime_config.json is malformed: {exc}")
+        return
+
+    import sys
+    module = sys.modules[__name__]
+
+    for key, raw_value in overrides.items():
+        if key not in RUNTIME_OVERRIDE_KEYS:
+            try:
+                _audit_config_event(
+                    "CONFIG_OVERRIDE_REJECTED",
+                    {"key": key, "value": raw_value, "reason": "not in allowlist"},
+                )
+            except Exception:
+                pass
+            continue
+
+        expected_type, min_val, max_val = RUNTIME_OVERRIDE_BOUNDS[key]
+
+        try:
+            coerced = expected_type(raw_value)
+        except (TypeError, ValueError):
+            try:
+                _audit_config_event(
+                    "CONFIG_OVERRIDE_REJECTED",
+                    {"key": key, "value": raw_value,
+                     "reason": f"cannot coerce to {expected_type.__name__}"},
+                )
+            except Exception:
+                pass
+            continue
+
+        if not (min_val <= coerced <= max_val):
+            try:
+                _audit_config_event(
+                    "CONFIG_OVERRIDE_REJECTED",
+                    {"key": key, "value": coerced,
+                     "reason": f"out of bounds [{min_val}, {max_val}]"},
+                )
+            except Exception:
+                pass
+            continue
+
+        setattr(module, key, coerced)
+        try:
+            _audit_config_event("CONFIG_OVERRIDE_APPLIED", {"key": key, "value": coerced})
+        except Exception:
+            pass
+
+
+def _audit_config_event(event_type: str, payload: dict) -> None:
+    """Lazy audit emit — avoids circular import (audit_log imports config)."""
+    try:
+        from utils import audit_log
+        audit_log._write(event_type, payload)
+    except Exception:
         pass
 
 
