@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ def check_daily_loss(value_at_open: float, value_now: float) -> tuple[bool, floa
     return triggered, round(loss_pct, 2)
 
 
-def check_vix_stop_adjustment(vix: Optional[float]) -> float:
+def check_vix_stop_adjustment(vix: float | None) -> float:
     """
     Return an adjusted trailing stop percentage based on VIX level.
     Higher VIX = wider stop to avoid noise shake-outs.

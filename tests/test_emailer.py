@@ -3,15 +3,16 @@ Tests for the HTML-building logic in notifications/emailer.py.
 SMTP is mocked — connections are never established.
 """
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from notifications.emailer import (
-    _humanise_detail,
-    _build_html,
-    _build_weekly_html,
-    _build_diagnostics_section,
     _all_recipients,
-    _named_recipients,
+    _build_diagnostics_section,
+    _build_html,
     _build_trade_cards,
+    _build_weekly_html,
+    _humanise_detail,
+    _named_recipients,
 )
 
 

@@ -18,7 +18,6 @@ import argparse
 import os
 import sys
 from datetime import date
-from itertools import groupby
 
 # Demo mode bypasses credential validation — parse args before importing config
 _IS_DEMO = len(sys.argv) > 1 and sys.argv[1] == "demo"
@@ -26,8 +25,8 @@ _IS_DEMO = len(sys.argv) > 1 and sys.argv[1] == "demo"
 if not _IS_DEMO:
     import config
     config.validate()
-    from utils.portfolio_tracker import load_history
     from utils.decision_log import load_decisions
+    from utils.portfolio_tracker import load_history
 else:
     import config  # noqa: F811 — import without validate() for demo
 
@@ -117,10 +116,10 @@ def cmd_decisions(args):
     for e in entries:
         groups.setdefault(e["date"], []).append(e)
 
-    for date in sorted(groups)[-args.days:]:
-        day_entries = groups[date]
+    for date_key in sorted(groups)[-args.days:]:
+        day_entries = groups[date_key]
         summary = day_entries[0].get("market_summary", "")
-        print(f"\n  {date}  {summary[:70]}")
+        print(f"\n  {date_key}  {summary[:70]}")
         for e in day_entries:
             executed = "[EXECUTED]" if e.get("executed") else "          "
             sig = f"  [{e.get('key_signal','')}]" if e.get("key_signal") else ""
@@ -181,8 +180,8 @@ def cmd_demo(_args):
     and prints each stage as it would appear in a live run.
     """
     import json
-    import time
     import textwrap
+    import time
 
     _ROOT = os.path.dirname(os.path.abspath(__file__))
     fixture_path = os.path.join(_ROOT, "evals", "fixtures", "demo_run.json")

@@ -1,9 +1,10 @@
-import smtplib
 import logging
+import smtplib
 from datetime import date
-from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from config import EMAIL_FROM, EMAIL_TO, EMAIL_CC, EMAIL_APP_PASSWORD, EMAIL_RECIPIENTS
+from email.mime.text import MIMEText
+
+from config import EMAIL_APP_PASSWORD, EMAIL_CC, EMAIL_FROM, EMAIL_RECIPIENTS, EMAIL_TO
 
 logger = logging.getLogger(__name__)
 

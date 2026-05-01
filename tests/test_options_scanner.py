@@ -1,6 +1,7 @@
 """Tests for data/options_scanner.py — put/call ratio and unusual call detection."""
 import unittest
 from unittest.mock import MagicMock, patch
+
 import pandas as pd
 
 
@@ -62,7 +63,7 @@ class TestGetSignal(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_returns_none_when_total_volume_below_minimum(self):
-        from data.options_scanner import _get_signal, _MIN_VOLUME
+        from data.options_scanner import _get_signal
         chain = _make_chain(call_vol=10, put_vol=5)   # total 15 < _MIN_VOLUME (50)
         with patch("data.options_scanner.yf.Ticker", return_value=_mock_ticker(chain)):
             result = _get_signal("AAPL")
@@ -104,7 +105,6 @@ class TestGetOptionsSignals(unittest.TestCase):
 
     def test_returns_dict_of_results(self):
         from data.options_scanner import get_options_signals
-        chain = _make_chain(call_vol=500, put_vol=300)
         with patch("data.options_scanner._get_signal", return_value={"put_call_ratio": 0.5, "unusual_calls": False}):
             result = get_options_signals(["AAPL", "NVDA"])
         self.assertIsInstance(result, dict)

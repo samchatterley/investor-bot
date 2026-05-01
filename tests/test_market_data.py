@@ -1,8 +1,8 @@
 """Tests for data/market_data.py — summarise_for_ai and yfinance helpers."""
 import unittest
 from unittest.mock import MagicMock, patch
+
 import pandas as pd
-import numpy as np
 
 
 def _make_df(rows=3, close_vals=None):

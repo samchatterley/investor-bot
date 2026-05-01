@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Optional
+
 from config import today_et
 
 # High-risk scheduled macro events for 2026.
@@ -29,13 +29,13 @@ NFP_RELEASE_DATES = {
 }
 
 EVENT_LABELS = {
-    **{d: "FOMC rate decision" for d in FOMC_ANNOUNCEMENT_DATES},
-    **{d: "CPI inflation release" for d in CPI_RELEASE_DATES},
-    **{d: "Non-Farm Payrolls release" for d in NFP_RELEASE_DATES},
+    **dict.fromkeys(FOMC_ANNOUNCEMENT_DATES, "FOMC rate decision"),
+    **dict.fromkeys(CPI_RELEASE_DATES, "CPI inflation release"),
+    **dict.fromkeys(NFP_RELEASE_DATES, "Non-Farm Payrolls release"),
 }
 
 
-def get_macro_risk(check_date: Optional[date] = None) -> dict:
+def get_macro_risk(check_date: date | None = None) -> dict:
     """
     Returns {'is_high_risk': bool, 'event': str | None}.
     High-risk days: FOMC announcements, CPI releases, NFP releases.

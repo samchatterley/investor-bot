@@ -1,6 +1,6 @@
 """Tests for notifications/alerts.py — emergency alert emails."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class TestAlertSend(unittest.TestCase):
@@ -22,22 +22,26 @@ class TestAlertSend(unittest.TestCase):
         return mock_smtp_cls, mock_server
 
     def test_send_skips_when_no_credentials(self):
-        with patch("notifications.alerts.EMAIL_FROM", ""), \
-             patch("notifications.alerts.EMAIL_TO", "owner@example.com"), \
-             patch("notifications.alerts.EMAIL_APP_PASSWORD", ""):
-            with patch("notifications.alerts.smtplib.SMTP_SSL") as mock_smtp:
-                from notifications.alerts import _send
-                _send("subject", "body")
-                mock_smtp.assert_not_called()
+        with (
+            patch("notifications.alerts.EMAIL_FROM", ""),
+            patch("notifications.alerts.EMAIL_TO", "owner@example.com"),
+            patch("notifications.alerts.EMAIL_APP_PASSWORD", ""),
+            patch("notifications.alerts.smtplib.SMTP_SSL") as mock_smtp,
+        ):
+            from notifications.alerts import _send
+            _send("subject", "body")
+            mock_smtp.assert_not_called()
 
     def test_send_skips_when_no_recipient(self):
-        with patch("notifications.alerts.EMAIL_FROM", "bot@gmail.com"), \
-             patch("notifications.alerts.EMAIL_TO", ""), \
-             patch("notifications.alerts.EMAIL_APP_PASSWORD", "secret"):
-            with patch("notifications.alerts.smtplib.SMTP_SSL") as mock_smtp:
-                from notifications.alerts import _send
-                _send("subject", "body")
-                mock_smtp.assert_not_called()
+        with (
+            patch("notifications.alerts.EMAIL_FROM", "bot@gmail.com"),
+            patch("notifications.alerts.EMAIL_TO", ""),
+            patch("notifications.alerts.EMAIL_APP_PASSWORD", "secret"),
+            patch("notifications.alerts.smtplib.SMTP_SSL") as mock_smtp,
+        ):
+            from notifications.alerts import _send
+            _send("subject", "body")
+            mock_smtp.assert_not_called()
 
     def test_send_connects_to_gmail_smtp(self):
         mock_smtp_cls = MagicMock()
@@ -71,7 +75,6 @@ class TestAlertFunctions(unittest.TestCase):
     def _capture_send(self):
         """Context manager that captures _send calls and returns (subject, body)."""
         calls = []
-        original = None
 
         def fake_send(subject, body):
             calls.append((subject, body))

@@ -1,6 +1,7 @@
 """Tests for data/sector_data.py — sector lookup and concentration checks."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
 
 
@@ -20,7 +21,7 @@ class TestGetSector(unittest.TestCase):
         self.assertEqual(get_sector("ZZZZ"), "Unknown")
 
     def test_all_mapped_symbols_have_non_empty_sector(self):
-        from data.sector_data import get_sector, SECTOR_MAP
+        from data.sector_data import SECTOR_MAP, get_sector
         for sym in SECTOR_MAP:
             self.assertNotEqual(get_sector(sym), "Unknown")
             self.assertNotEqual(get_sector(sym), "")
@@ -99,13 +100,12 @@ class TestGetSectorPerformance(unittest.TestCase):
 
     def _make_close_df(self, etfs, values):
         """Build a mock Close DataFrame with enough rows for a 5-day return."""
-        import numpy as np
         rows = 8
-        data = {etf: [v * (1 + 0.001 * i) for i in range(rows)] for etf, v in zip(etfs, values)}
+        data = {etf: [v * (1 + 0.001 * i) for i in range(rows)] for etf, v in zip(etfs, values, strict=False)}
         return pd.DataFrame(data)
 
     def test_returns_sorted_dict_best_to_worst(self):
-        from data.sector_data import get_sector_performance, SECTOR_ETFS
+        from data.sector_data import SECTOR_ETFS, get_sector_performance
         etfs = list(SECTOR_ETFS.values())
         # Give each ETF a distinct start value; last row > first row = positive return
         close_df = self._make_close_df(etfs, [100 + i * 5 for i in range(len(etfs))])

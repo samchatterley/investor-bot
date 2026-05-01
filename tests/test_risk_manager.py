@@ -1,4 +1,5 @@
 import unittest
+
 from risk.risk_manager import (
     check_circuit_breaker,
     check_daily_loss,

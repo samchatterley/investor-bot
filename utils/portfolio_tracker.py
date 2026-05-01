@@ -1,7 +1,9 @@
 import json
-import os
 import logging
-from datetime import date as _date, datetime, timezone
+import os
+from datetime import UTC, datetime
+from datetime import date as _date
+
 from config import LOG_DIR
 
 _BASELINE_PATH = os.path.join(LOG_DIR, "daily_baseline.json")
@@ -23,7 +25,7 @@ def _weekly_log_dir(date_str: str) -> str:
     try:
         d = _date.fromisoformat(date_str[:10])
     except ValueError:
-        d = datetime.now(timezone.utc).date()
+        d = datetime.now(UTC).date()
     iso_year, iso_week, _ = d.isocalendar()
     week_dir = os.path.join(LOG_DIR, str(iso_year), f"Week {iso_week}")
     os.makedirs(week_dir, exist_ok=True)
@@ -46,7 +48,7 @@ def save_daily_run(
     record = {
         "date": date,
         "run_id": run_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "account_before": account_before,
         "account_after": account_after,
         "market_summary": ai_decisions.get("market_summary", ""),
@@ -163,7 +165,7 @@ _NON_RUN_FILES = {
 def save_daily_baseline(portfolio_value: float) -> None:
     """Persist the open-of-day portfolio value so daily loss checks compare against a real baseline."""
     _ensure_log_dir()
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(UTC).date().isoformat()
     with open(_BASELINE_PATH, "w") as f:
         json.dump({"date": today, "portfolio_value": portfolio_value}, f)
     try:
@@ -182,7 +184,7 @@ def load_daily_baseline() -> float | None:
     try:
         with open(_BASELINE_PATH) as f:
             data = json.load(f)
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         if data.get("date") == today:
             return float(data["portfolio_value"])
     except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):

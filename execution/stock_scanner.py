@@ -1,5 +1,7 @@
-import yfinance as yf
 import logging
+
+import yfinance as yf
+
 from config import MIN_VOLUME
 
 logger = logging.getLogger(__name__)

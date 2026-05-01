@@ -1,5 +1,4 @@
 """Tests for scripts/run_scheduler.py — job registration and import safety."""
-import importlib
 import sys
 import types
 import unittest
@@ -25,7 +24,8 @@ def _load_scheduler_module():
         # Remove cached copy so we get a clean import
         sys.modules.pop("scripts.run_scheduler", None)
 
-        import importlib.util, os
+        import importlib.util
+        import os
         spec = importlib.util.spec_from_file_location(
             "scripts.run_scheduler",
             os.path.join(os.path.dirname(__file__), "..", "scripts", "run_scheduler.py"),

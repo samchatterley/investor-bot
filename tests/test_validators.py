@@ -2,8 +2,8 @@ import unittest
 
 from pydantic import ValidationError
 
-from models import BuyCandidate, DecisionSet, PositionDecision, VALID_BUY_SIGNALS
-from utils.validators import validate_ai_response, sanitize_headlines, check_pre_trade
+from models import VALID_BUY_SIGNALS, BuyCandidate, DecisionSet, PositionDecision
+from utils.validators import check_pre_trade, sanitize_headlines, validate_ai_response
 
 _KNOWN = {"AAPL", "MSFT", "NVDA", "SPY"}
 

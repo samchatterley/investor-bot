@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 import config
 from models import OrderResult, OrderStatus
 
-
 # ── 1. Daily loss baseline ────────────────────────────────────────────────────
 
 class TestDailyBaseline(unittest.TestCase):
@@ -33,7 +32,7 @@ class TestDailyBaseline(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def test_save_and_load_roundtrip(self):
-        from utils.portfolio_tracker import save_daily_baseline, load_daily_baseline
+        from utils.portfolio_tracker import load_daily_baseline, save_daily_baseline
         save_daily_baseline(100_000.0)
         result = load_daily_baseline()
         self.assertAlmostEqual(result, 100_000.0)
@@ -43,14 +42,14 @@ class TestDailyBaseline(unittest.TestCase):
         self.assertIsNone(load_daily_baseline())
 
     def test_load_returns_none_for_yesterday(self):
-        from utils.portfolio_tracker import load_daily_baseline
         import utils.portfolio_tracker as pt
+        from utils.portfolio_tracker import load_daily_baseline
         with open(pt._BASELINE_PATH, "w") as f:
             json.dump({"date": "2000-01-01", "portfolio_value": 99_000.0}, f)
         self.assertIsNone(load_daily_baseline())
 
     def test_overwrite_updates_value(self):
-        from utils.portfolio_tracker import save_daily_baseline, load_daily_baseline
+        from utils.portfolio_tracker import load_daily_baseline, save_daily_baseline
         save_daily_baseline(100_000.0)
         save_daily_baseline(95_000.0)
         self.assertAlmostEqual(load_daily_baseline(), 95_000.0)
@@ -125,8 +124,8 @@ class TestRuntimeConfigOverride(unittest.TestCase):
         )
 
     def test_config_py_is_never_touched(self):
-        from analysis.weekly_review import _apply_config_changes
         import analysis.weekly_review as wr
+        from analysis.weekly_review import _apply_config_changes
         config_mtime = os.path.getmtime(
             os.path.normpath(os.path.join(os.path.dirname(wr.__file__), "..", "config.py"))
         )
@@ -406,8 +405,9 @@ class TestGTCStopForFractional(unittest.TestCase):
 
     def test_fractional_position_floors_to_whole_shares(self):
         """A position with fractional qty (e.g. 2.7 shares) places a stop for 2 whole shares."""
-        from alpaca.trading.requests import StopOrderRequest
         from alpaca.trading.enums import TimeInForce
+        from alpaca.trading.requests import StopOrderRequest
+
         from execution.trader import place_trailing_stop
 
         mock_client = MagicMock()
@@ -426,6 +426,7 @@ class TestGTCStopForFractional(unittest.TestCase):
 
     def test_whole_share_uses_trailing_stop_not_fixed(self):
         from alpaca.trading.requests import TrailingStopOrderRequest
+
         from execution.trader import place_trailing_stop
 
         mock_client = MagicMock()

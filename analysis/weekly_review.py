@@ -13,9 +13,10 @@ import os
 from datetime import date, timedelta
 
 import anthropic
+
 import config as cfg
+from analysis.performance import compute_metrics, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
-from analysis.performance import get_win_rates, compute_metrics
 from utils.portfolio_tracker import load_history
 
 logger = logging.getLogger(__name__)

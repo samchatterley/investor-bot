@@ -1,8 +1,8 @@
 """Full coverage of data/market_data.py — fetch_stock_data and get_market_snapshots."""
 import unittest
 from unittest.mock import MagicMock, patch
+
 import pandas as pd
-import numpy as np
 
 
 def _make_ohlcv(n=200, base=100.0):

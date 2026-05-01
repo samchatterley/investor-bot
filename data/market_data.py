@@ -1,18 +1,17 @@
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+
 import pandas as pd
-import numpy as np
 import yfinance as yf
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
-import logging
 
 logger = logging.getLogger(__name__)
 
 
-def fetch_stock_data(symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
+def fetch_stock_data(symbol: str, days: int = 30) -> pd.DataFrame | None:
     """Fetch OHLCV data and compute technical indicators for a symbol."""
     try:
         end = datetime.now()
@@ -36,8 +35,6 @@ def fetch_stock_data(symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
         df = df.copy()
 
         close = df["Close"]
-        high = df["High"]
-        low = df["Low"]
         volume = df["Volume"]
 
         # RSI
@@ -119,7 +116,7 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame) -> dict:
     }
 
 
-def get_vix() -> Optional[float]:
+def get_vix() -> float | None:
     """Return the latest VIX close."""
     try:
         hist = yf.Ticker("^VIX").history(period="3d")
@@ -130,7 +127,7 @@ def get_vix() -> Optional[float]:
     return None
 
 
-def get_spy_5d_return() -> Optional[float]:
+def get_spy_5d_return() -> float | None:
     """Return SPY's 5-day return % for relative strength calculation."""
     try:
         hist = yf.Ticker("SPY").history(period="15d")

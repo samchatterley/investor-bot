@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import patch
+
 import config
-from risk.position_sizer import kelly_fraction, get_max_positions, risk_budget_size
+from risk.position_sizer import get_max_positions, kelly_fraction, risk_budget_size
 
 
 class TestKellyFraction(unittest.TestCase):

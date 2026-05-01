@@ -12,14 +12,14 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+
 import pandas as pd
-import numpy as np
 import yfinance as yf
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands
-from config import STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT, LOG_DIR
+
+from config import LOG_DIR, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna()
 
 
-def _entry_signal(row: pd.Series) -> Optional[str]:
+def _entry_signal(row: pd.Series) -> str | None:
     """
     Simplified entry rules (proxy for Claude's analysis):
     - Mean reversion: RSI < 35 AND bb_pct < 0.25 AND vol_ratio > 1.2
@@ -185,7 +185,6 @@ def run_backtest(
                 continue
 
     # Close remaining positions at end
-    final_date = trading_dates[-1]
     for sym, pos in positions.items():
         try:
             px = float(indicators[sym].iloc[-1]["Close"])

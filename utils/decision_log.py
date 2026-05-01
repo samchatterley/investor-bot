@@ -14,10 +14,12 @@ Fields per entry:
   executed       True if the trade was actually placed
   market_summary overall market tone for that run
 """
+import contextlib
 import json
-import os
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import UTC, datetime
+
 from config import LOG_DIR
 
 logger = logging.getLogger(__name__)
@@ -72,7 +74,7 @@ def log_decisions(decisions: dict, mode: str, executed_symbols: set[str]):
     Log every buy candidate and position decision from an AI analysis run.
     executed_symbols — symbols where an order was actually placed.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     date = decisions.get("date", now[:10])
     market_summary = decisions.get("market_summary", "")
 
@@ -119,10 +121,8 @@ def load_decisions(n: int = 200) -> list[dict]:
             for line in f:
                 line = line.strip()
                 if line:
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
     except Exception:
         pass
     return entries[-n:]

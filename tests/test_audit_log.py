@@ -99,7 +99,7 @@ class TestAuditLogWrites(AuditLogBase):
         self.assertEqual(events[0]["event"], "HALT_CLEARED")
 
     def test_events_are_appended_not_overwritten(self):
-        from utils.audit_log import log_run_start, log_run_end
+        from utils.audit_log import log_run_end, log_run_start
         log_run_start("open", 100_000, 10_000, True)
         log_run_end("open", 500.0, 2, 100_500)
         events = self._read_events()

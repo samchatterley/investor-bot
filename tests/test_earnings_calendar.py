@@ -1,13 +1,13 @@
 import unittest
 from datetime import date
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
 from risk.earnings_calendar import (
-    get_next_earnings_date,
     days_until_earnings,
     get_earnings_risk_positions,
+    get_next_earnings_date,
 )
 
 _TODAY = date(2026, 4, 26)
@@ -46,22 +46,28 @@ class TestDaysUntilEarnings(unittest.TestCase):
 
     def test_future_earnings_returns_positive(self):
         future = date(2026, 4, 28)
-        with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(future)):
-            with patch("risk.earnings_calendar.today_et", return_value=_TODAY):
-                result = days_until_earnings("AAPL")
+        with (
+            patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(future)),
+            patch("risk.earnings_calendar.today_et", return_value=_TODAY),
+        ):
+            result = days_until_earnings("AAPL")
         self.assertEqual(result, 2)
 
     def test_past_earnings_returns_none(self):
         past = date(2026, 4, 20)
-        with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(past)):
-            with patch("risk.earnings_calendar.today_et", return_value=_TODAY):
-                result = days_until_earnings("AAPL")
+        with (
+            patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(past)),
+            patch("risk.earnings_calendar.today_et", return_value=_TODAY),
+        ):
+            result = days_until_earnings("AAPL")
         self.assertIsNone(result)
 
     def test_today_earnings_returns_zero(self):
-        with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(_TODAY)):
-            with patch("risk.earnings_calendar.today_et", return_value=_TODAY):
-                result = days_until_earnings("AAPL")
+        with (
+            patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(_TODAY)),
+            patch("risk.earnings_calendar.today_et", return_value=_TODAY),
+        ):
+            result = days_until_earnings("AAPL")
         self.assertEqual(result, 0)
 
     def test_no_data_returns_none(self):
@@ -74,22 +80,28 @@ class TestGetEarningsRiskPositions(unittest.TestCase):
 
     def test_position_within_warning_days_flagged(self):
         tomorrow = date(2026, 4, 27)
-        with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(tomorrow)):
-            with patch("risk.earnings_calendar.today_et", return_value=_TODAY):
-                at_risk = get_earnings_risk_positions(["AAPL"], warning_days=2)
+        with (
+            patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(tomorrow)),
+            patch("risk.earnings_calendar.today_et", return_value=_TODAY),
+        ):
+            at_risk = get_earnings_risk_positions(["AAPL"], warning_days=2)
         self.assertIn("AAPL", at_risk)
 
     def test_position_outside_warning_days_not_flagged(self):
         far_future = date(2026, 5, 30)
-        with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(far_future)):
-            with patch("risk.earnings_calendar.today_et", return_value=_TODAY):
-                at_risk = get_earnings_risk_positions(["AAPL"], warning_days=2)
+        with (
+            patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(far_future)),
+            patch("risk.earnings_calendar.today_et", return_value=_TODAY),
+        ):
+            at_risk = get_earnings_risk_positions(["AAPL"], warning_days=2)
         self.assertNotIn("AAPL", at_risk)
 
     def test_no_earnings_data_not_flagged(self):
-        with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(None)):
-            with patch("risk.earnings_calendar.today_et", return_value=_TODAY):
-                at_risk = get_earnings_risk_positions(["AAPL"], warning_days=2)
+        with (
+            patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(None)),
+            patch("risk.earnings_calendar.today_et", return_value=_TODAY),
+        ):
+            at_risk = get_earnings_risk_positions(["AAPL"], warning_days=2)
         self.assertNotIn("AAPL", at_risk)
 
     def test_empty_symbols_returns_empty(self):

@@ -11,29 +11,28 @@ Usage:
     python main.py --backtest          # Run historical backtest and exit
 """
 
-import sys
-import os
+import argparse
+import contextlib
+import logging
 import math
+import os
+import sys
 import time
 import uuid
-import logging
-import argparse
-from datetime import date, datetime, timezone
+from datetime import UTC, datetime
 
 import config
-from data import market_data, news_fetcher, options_scanner, sector_data
-from data import sentiment as sentiment_module
 from analysis import ai_analyst, performance
 from analysis.weekly_review import get_latest_review
-from risk import risk_manager, earnings_calendar, macro_calendar, position_sizer
-from execution import trader, stock_scanner
-from notifications import emailer, alerts
-from utils import portfolio_tracker
-from utils.portfolio_tracker import get_day_summary
-from utils import audit_log
-from utils import decision_log
+from data import market_data, news_fetcher, options_scanner, sector_data
+from data import sentiment as sentiment_module
+from execution import stock_scanner, trader
+from notifications import alerts, emailer
+from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
+from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
-from utils.validators import validate_ai_response, sanitize_headlines, check_pre_trade
+from utils.portfolio_tracker import get_day_summary
+from utils.validators import check_pre_trade, sanitize_headlines, validate_ai_response
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,10 +68,8 @@ def _acquire_lock() -> bool:
 
 
 def _release_lock():
-    try:
+    with contextlib.suppress(FileNotFoundError):
         os.remove(_lock_file())
-    except FileNotFoundError:
-        pass
 
 
 # ── Kill switch ───────────────────────────────────────────────────────────────
@@ -106,14 +103,14 @@ def _run_kill_switch():
     # 3. Write HALT file
     os.makedirs(config.LOG_DIR, exist_ok=True)
     with open(config.HALT_FILE, "w") as f:
-        f.write(f"HALTED: {datetime.now(timezone.utc).isoformat()}\n")
+        f.write(f"HALTED: {datetime.now(UTC).isoformat()}\n")
         f.write(f"Positions closed: {closed}\n")
-        f.write(f"To resume trading: python main.py --clear-halt\n")
+        f.write("To resume trading: python main.py --clear-halt\n")
 
     audit_log.log_kill_switch(closed)
     alerts.alert_error("KILL SWITCH", f"Emergency halt activated. {closed} positions liquidated. Delete HALT file to resume.")
     logger.critical(f"Kill switch complete. {closed} positions closed.")
-    logger.critical(f"To resume: python main.py --clear-halt")
+    logger.critical("To resume: python main.py --clear-halt")
 
 
 def _run_clear_halt():
@@ -161,13 +158,12 @@ def run(dry_run: bool = False, mode: str = "open"):
     today = config.today_et().isoformat()
     mode_label = "PAPER" if config.IS_PAPER else "*** LIVE ***"
     logger.info(f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''} ===")
-    if not config.IS_PAPER and not dry_run:
-        if config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK":
-            logger.error(
-                "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
-                "Set it in .env or export it before running."
-            )
-            sys.exit(1)
+    if not config.IS_PAPER and not dry_run and config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK":
+        logger.error(
+            "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
+            "Set it in .env or export it before running."
+        )
+        sys.exit(1)
 
     try:
         config.validate()
@@ -184,7 +180,7 @@ def run(dry_run: bool = False, mode: str = "open"):
 
     # Halt file check — bot refuses to run while HALT file exists
     if os.path.exists(config.HALT_FILE):
-        logger.critical(f"Trading is HALTED. Delete halt file or run: python main.py --clear-halt")
+        logger.critical("Trading is HALTED. Delete halt file or run: python main.py --clear-halt")
         sys.exit(1)
 
     init_db()
@@ -466,9 +462,12 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     skip_buys = cb_triggered or regime.get("is_bearish") or macro.get("is_high_risk")
     if skip_buys:
         reasons = []
-        if cb_triggered: reasons.append("circuit breaker")
-        if regime.get("is_bearish"): reasons.append("bear market filter")
-        if macro.get("is_high_risk"): reasons.append(f"macro event: {macro.get('event')}")
+        if cb_triggered:
+            reasons.append("circuit breaker")
+        if regime.get("is_bearish"):
+            reasons.append("bear market filter")
+        if macro.get("is_high_risk"):
+            reasons.append(f"macro event: {macro.get('event')}")
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
     else:
         account_now = trader.get_account_info(client)

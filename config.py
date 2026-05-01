@@ -1,6 +1,8 @@
+import contextlib
 import json
 import os
 from datetime import date, datetime
+
 import pytz
 from dotenv import load_dotenv
 
@@ -167,13 +169,11 @@ def _load_runtime_overrides() -> None:
 
     for key, raw_value in overrides.items():
         if key not in RUNTIME_OVERRIDE_KEYS:
-            try:
+            with contextlib.suppress(Exception):
                 _audit_config_event(
                     "CONFIG_OVERRIDE_REJECTED",
                     {"key": key, "value": raw_value, "reason": "not in allowlist"},
                 )
-            except Exception:
-                pass
             continue
 
         expected_type, min_val, max_val = RUNTIME_OVERRIDE_BOUNDS[key]
@@ -181,32 +181,26 @@ def _load_runtime_overrides() -> None:
         try:
             coerced = expected_type(raw_value)
         except (TypeError, ValueError):
-            try:
+            with contextlib.suppress(Exception):
                 _audit_config_event(
                     "CONFIG_OVERRIDE_REJECTED",
                     {"key": key, "value": raw_value,
                      "reason": f"cannot coerce to {expected_type.__name__}"},
                 )
-            except Exception:
-                pass
             continue
 
         if not (min_val <= coerced <= max_val):
-            try:
+            with contextlib.suppress(Exception):
                 _audit_config_event(
                     "CONFIG_OVERRIDE_REJECTED",
                     {"key": key, "value": coerced,
                      "reason": f"out of bounds [{min_val}, {max_val}]"},
                 )
-            except Exception:
-                pass
             continue
 
         setattr(module, key, coerced)
-        try:
+        with contextlib.suppress(Exception):
             _audit_config_event("CONFIG_OVERRIDE_APPLIED", {"key": key, "value": coerced})
-        except Exception:
-            pass
 
 
 def _audit_config_event(event_type: str, payload: dict) -> None:
@@ -237,8 +231,8 @@ def validate():
     if MAX_POSITIONS < 1:
         errors.append(f"MAX_POSITIONS={MAX_POSITIONS} must be >= 1")
     if MAX_SINGLE_ORDER_USD <= 0:
-        errors.append(f"MAX_SINGLE_ORDER_USD must be positive")
+        errors.append("MAX_SINGLE_ORDER_USD must be positive")
     if MAX_DAILY_NOTIONAL_USD <= 0:
-        errors.append(f"MAX_DAILY_NOTIONAL_USD must be positive")
+        errors.append("MAX_DAILY_NOTIONAL_USD must be positive")
     if errors:
         raise ValueError("Config errors:\n" + "\n".join(f"  - {e}" for e in errors))

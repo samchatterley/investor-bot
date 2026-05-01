@@ -131,20 +131,20 @@ class TestLoadDecisions(DecisionLogBase):
         self.assertEqual(result, [])
 
     def test_returns_written_entries(self):
-        from utils.decision_log import log_decisions, load_decisions
+        from utils.decision_log import load_decisions, log_decisions
         log_decisions(_decisions(buy_symbols=["AAPL", "NVDA"]), "open", {"AAPL"})
         result = load_decisions()
         self.assertEqual(len(result), 2)
 
     def test_respects_n_limit(self):
-        from utils.decision_log import log_decisions, load_decisions
+        from utils.decision_log import load_decisions, log_decisions
         for i in range(10):
             log_decisions(_decisions(buy_symbols=[f"SYM{i}"]), "open", set())
         result = load_decisions(n=5)
         self.assertEqual(len(result), 5)
 
     def test_returns_last_n_not_first_n(self):
-        from utils.decision_log import log_decisions, load_decisions
+        from utils.decision_log import load_decisions, log_decisions
         for i in range(5):
             log_decisions(_decisions(buy_symbols=[f"SYM{i}"]), "open", set())
         result = load_decisions(n=2)

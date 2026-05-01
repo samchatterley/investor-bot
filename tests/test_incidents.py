@@ -5,8 +5,7 @@ silent regressions if the affected code is refactored.
 """
 import math
 import unittest
-from unittest.mock import MagicMock, patch, call
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Incident 1 — Python 3.9 compatibility (dict | None annotations)
@@ -206,16 +205,18 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
         return client
 
     def test_fractional_qty_uses_stop_order(self):
-        from execution.trader import place_trailing_stop
         from alpaca.trading.requests import StopOrderRequest
+
+        from execution.trader import place_trailing_stop
         client = self._make_client()
         place_trailing_stop(client, "NVDA", qty=132.652248, current_price=210.0)
         submitted = client.submit_order.call_args[0][0]
         self.assertIsInstance(submitted, StopOrderRequest)
 
     def test_whole_qty_uses_trailing_stop_order(self):
-        from execution.trader import place_trailing_stop
         from alpaca.trading.requests import TrailingStopOrderRequest
+
+        from execution.trader import place_trailing_stop
         client = self._make_client()
         place_trailing_stop(client, "AAPL", qty=10.0, current_price=180.0)
         submitted = client.submit_order.call_args[0][0]
@@ -231,8 +232,8 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
         client.submit_order.assert_not_called()
 
     def test_fractional_stop_price_calculated_from_current_price(self):
-        from execution.trader import place_trailing_stop
         from config import TRAILING_STOP_PCT
+        from execution.trader import place_trailing_stop
         client = self._make_client()
         current_price = 200.0
         place_trailing_stop(client, "NVDA", qty=5.5, current_price=current_price)
@@ -283,8 +284,8 @@ class TestStopQtyTruncation(unittest.TestCase):
         self.assertEqual(self._safe_qty(5.123456), 5.123456)
 
     def test_submitted_qty_does_not_exceed_position_qty(self):
+
         from execution.trader import place_trailing_stop
-        from alpaca.trading.requests import StopOrderRequest
         client = MagicMock()
         order = MagicMock()
         order.id = "x"

@@ -1,11 +1,8 @@
 """Tests for cli.py — all command handlers."""
 import io
-import os
-import shutil
 import sys
-import tempfile
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 def _account(value=100_000, cash=30_000):
@@ -87,13 +84,14 @@ class TestCmdStatus(unittest.TestCase):
                     from cli import cmd_status
                     output = _capture(cmd_status, args)
             elif api_error:
-                with patch("os.path.exists", return_value=False):
-                    with patch("cli.trader", side_effect=Exception("API down")):
-                        from cli import cmd_status
-                        output = _capture(cmd_status, args)
+                with (
+                    patch("os.path.exists", return_value=False),
+                    patch("cli.trader", side_effect=Exception("API down")),
+                ):
+                    from cli import cmd_status
+                    output = _capture(cmd_status, args)
             else:
                 with patch("os.path.exists", return_value=False):
-                    import importlib
                     import cli as cli_mod
                     with patch.object(cli_mod, "_print_positions"), \
                          patch("execution.trader.get_client", return_value=mock_client), \

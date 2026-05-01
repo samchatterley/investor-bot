@@ -1,9 +1,11 @@
 import json
 import logging
-from typing import Optional
+from datetime import UTC
+
 import anthropic
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MIN_CONFIDENCE, MAX_POSITIONS, MAX_HOLD_DAYS
+
 from analysis.performance import get_actionable_feedback
+from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HOLD_DAYS, MAX_POSITIONS, MIN_CONFIDENCE
 from utils.validators import validate_ai_response
 
 logger = logging.getLogger(__name__)
@@ -174,7 +176,7 @@ def build_prompt(
     lessons_block = ""
     if lessons:
         lessons_block = "LESSONS FROM LAST WEEK'S REVIEW (apply these adjustments today):\n"
-        lessons_block += "\n".join(f"  - {l}" for l in lessons) + "\n"
+        lessons_block += "\n".join(f"  - {lesson}" for lesson in lessons) + "\n"
 
     # Stale positions note
     stale_block = ""
@@ -279,9 +281,10 @@ def _record_llm_usage(run_id: str | None, input_tokens: int, output_tokens: int)
     cost = (input_tokens / 1_000_000) * _COST_PER_M_INPUT + \
            (output_tokens / 1_000_000) * _COST_PER_M_OUTPUT
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         from utils.db import get_db
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO llm_usage (run_id, ts, model, input_tokens, output_tokens, cost_usd) "
@@ -315,7 +318,7 @@ def get_trading_decisions(
     options_signals: dict | None = None,
     lessons: list[str] | None = None,
     run_id: str | None = None,
-) -> Optional[dict]:
+) -> dict | None:
     prompt = build_prompt(
         snapshots, current_positions, available_cash, portfolio_value,
         news_by_symbol=news_by_symbol,

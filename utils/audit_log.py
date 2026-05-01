@@ -11,9 +11,10 @@ To filter orders: `grep ORDER_PLACED logs/audit.jsonl`
 """
 
 import json
-import os
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import UTC, datetime
+
 from config import LOG_DIR
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def set_run_id(run_id: str) -> None:
 
 
 def _write(event_type: str, payload: dict):
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(UTC).isoformat()
     entry = {"ts": ts, "event": event_type, **payload}
     if _run_id:
         entry["run_id"] = _run_id

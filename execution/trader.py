@@ -1,13 +1,20 @@
 import logging
 import math
-import os
-from datetime import date
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, TrailingStopOrderRequest
-from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
-import pandas as pd
 import time
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, IS_PAPER, TRAILING_STOP_PCT, LOG_DIR, today_et
+from datetime import date
+
+import pandas as pd
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, TrailingStopOrderRequest
+
+from config import (
+    ALPACA_API_KEY,
+    ALPACA_SECRET_KEY,
+    IS_PAPER,
+    TRAILING_STOP_PCT,
+    today_et,
+)
 from models import OrderResult, OrderStatus
 from utils.retry import with_retry
 

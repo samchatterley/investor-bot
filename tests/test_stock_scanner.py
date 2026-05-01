@@ -1,6 +1,6 @@
 """Tests for execution/stock_scanner.py — get_market_regime, prefilter_candidates, get_top_movers."""
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -140,7 +140,6 @@ class TestPrefilterCandidates(unittest.TestCase):
 class TestGetTopMovers(unittest.TestCase):
 
     def _make_data(self, symbols, n_rows=5):
-        import numpy as np
         idx = pd.date_range("2026-01-01", periods=n_rows, freq="B")
         closes = pd.DataFrame(
             {sym: [100 + i for i in range(n_rows)] for sym in symbols}, index=idx
@@ -177,7 +176,6 @@ class TestGetTopMovers(unittest.TestCase):
 
     def test_returns_empty_when_insufficient_rows(self):
         from execution.stock_scanner import get_top_movers
-        syms = ["AAPL"]
         mock = MagicMock()
         mock.empty = False
         mock.__len__ = MagicMock(return_value=1)

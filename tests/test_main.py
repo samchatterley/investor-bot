@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import config
 from models import OrderResult, OrderStatus
 
-
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
 def _account(value=100_000, cash=30_000):
@@ -136,7 +135,8 @@ class TestRunKillSwitch(unittest.TestCase):
 
     def test_halt_file_contains_halted_marker(self):
         self._run()
-        self.assertIn("HALTED", open(self.halt_file).read())
+        with open(self.halt_file) as _f:
+            self.assertIn("HALTED", _f.read())
 
     def test_cancels_all_orders(self):
         client = self._run()
@@ -165,9 +165,7 @@ class TestRunKillSwitch(unittest.TestCase):
 
     def test_cancel_failure_does_not_abort_position_close(self):
         positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
-        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        client = self._run(positions=positions, cancel_raises=True)
-        close_mock  # close still called despite cancel error (tested via close_results)
+        self._run(positions=positions, cancel_raises=True)
         self.assertTrue(os.path.exists(self.halt_file))
 
     def test_sends_alert_email(self):

@@ -19,15 +19,18 @@ _ROOT = os.path.dirname(_SCRIPTS_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import schedule
-import time
-import logging
-import config
+import logging  # noqa: E402
+import time  # noqa: E402
+
+import schedule  # noqa: E402
+
+import config  # noqa: E402
+
 config.validate()
-import main as bot
-from analysis.weekly_review import run_weekly_review
-from notifications.emailer import send_weekly_review
-from scripts.run_diagnostics import run_diagnostics
+import main as bot  # noqa: E402
+from analysis.weekly_review import run_weekly_review  # noqa: E402
+from notifications.emailer import send_weekly_review  # noqa: E402
+from scripts.run_diagnostics import run_diagnostics  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,8 +74,9 @@ def _weekly_review():
         if review:
             send_weekly_review(review, test_report=test_report)
         elif test_report:
-            from notifications.emailer import _send_html, _build_weekly_html
             from datetime import date as _date
+
+            from notifications.emailer import _build_weekly_html, _send_html
             review_stub = {
                 "week_summary": "No trade history available for this week.",
                 "what_worked": [], "what_didnt": [], "lessons": [], "proposed_changes": [],

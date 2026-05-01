@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import config as cfg
 from analysis.weekly_review import _apply_config_changes, get_latest_review
@@ -146,7 +146,7 @@ class TestCurrentParamValues(unittest.TestCase):
             self.assertIsInstance(val, (int, float))
 
     def test_values_within_safe_bounds(self):
-        from analysis.weekly_review import _current_param_values, _SAFE_PARAMS
+        from analysis.weekly_review import _SAFE_PARAMS, _current_param_values
         result = _current_param_values()
         for param, spec in _SAFE_PARAMS.items():
             self.assertGreaterEqual(result[param], spec["min"],

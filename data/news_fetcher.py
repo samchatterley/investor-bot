@@ -1,6 +1,7 @@
-import yfinance as yf
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import yfinance as yf
 
 logger = logging.getLogger(__name__)
 

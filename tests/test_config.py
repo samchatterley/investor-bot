@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import date
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 import config
 
@@ -200,7 +200,7 @@ class TestRuntimeOverrideApply(TestRuntimeOverrideBase):
 class TestRuntimeOverrideReject(TestRuntimeOverrideBase):
 
     def test_unknown_key_not_applied(self):
-        original = getattr(config, "IS_PAPER")
+        original = config.IS_PAPER
         self._write({"IS_PAPER": False})
         self._load()
         self.assertEqual(config.IS_PAPER, original)

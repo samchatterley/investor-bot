@@ -24,12 +24,12 @@ class TestBuildPrompt(unittest.TestCase):
 
     def _build(self, **kwargs):
         from analysis.ai_analyst import build_prompt
-        defaults = dict(
-            snapshots=[_snapshot()],
-            current_positions=[],
-            available_cash=50_000.0,
-            portfolio_value=100_000.0,
-        )
+        defaults = {
+            "snapshots": [_snapshot()],
+            "current_positions": [],
+            "available_cash": 50_000.0,
+            "portfolio_value": 100_000.0,
+        }
         defaults.update(kwargs)
         return build_prompt(**defaults)
 
@@ -178,6 +178,7 @@ class TestGetTradingDecisions(unittest.TestCase):
 
     def test_returns_none_on_api_error(self):
         import anthropic
+
         from analysis.ai_analyst import get_trading_decisions
         with patch("analysis.ai_analyst.client") as mock_client:
             mock_client.messages.create.side_effect = anthropic.APIError(

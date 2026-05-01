@@ -5,14 +5,14 @@ import unittest
 from unittest.mock import patch
 
 from analysis.performance import (
-    compute_metrics,
-    generate_dashboard,
+    _bucket_summary,
     _empty_bucket,
     _update_bucket,
-    _bucket_summary,
-    record_trade_outcome,
-    get_win_rates,
+    compute_metrics,
+    generate_dashboard,
     get_actionable_feedback,
+    get_win_rates,
+    record_trade_outcome,
 )
 
 

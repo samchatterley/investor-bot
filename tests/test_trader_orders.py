@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from models import OrderResult, OrderStatus
 
@@ -323,7 +323,7 @@ class TestReconcilePositions(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def test_removes_stale_metadata_for_closed_positions(self):
-        from execution.trader import record_buy, reconcile_positions, get_position_meta
+        from execution.trader import get_position_meta, reconcile_positions, record_buy
         record_buy("AAPL", 180.0)
         # Alpaca shows no open positions
         client = MagicMock()
@@ -333,7 +333,7 @@ class TestReconcilePositions(unittest.TestCase):
         self.assertEqual(meta["signal"], "unknown")  # reverted to default
 
     def test_adds_placeholder_for_untracked_position(self):
-        from execution.trader import reconcile_positions, get_position_meta
+        from execution.trader import get_position_meta, reconcile_positions
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("NVDA", 10)]
         reconcile_positions(client)
@@ -342,7 +342,7 @@ class TestReconcilePositions(unittest.TestCase):
         self.assertIn("entry_date", meta)
 
     def test_keeps_existing_metadata_for_held_positions(self):
-        from execution.trader import record_buy, reconcile_positions, get_position_meta
+        from execution.trader import get_position_meta, reconcile_positions, record_buy
         record_buy("AAPL", 180.0, signal="momentum", confidence=8)
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10)]
@@ -364,7 +364,7 @@ class TestReconcilePositions(unittest.TestCase):
 class TestEnsureStopsAttached(unittest.TestCase):
 
     def _make_stop_order(self, symbol, order_type, qty):
-        from alpaca.trading.enums import OrderType, OrderSide
+        from alpaca.trading.enums import OrderSide
         o = MagicMock()
         o.symbol = symbol
         o.order_type = order_type
@@ -380,8 +380,8 @@ class TestEnsureStopsAttached(unittest.TestCase):
         client.submit_order.assert_not_called()
 
     def test_attaches_stop_for_uncovered_position(self):
+
         from execution.trader import ensure_stops_attached
-        from alpaca.trading.enums import OrderType
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10.0)]
         client.get_orders.return_value = []  # no existing stops
@@ -393,8 +393,9 @@ class TestEnsureStopsAttached(unittest.TestCase):
             self.assertEqual(args[0][1], "AAPL")
 
     def test_does_not_duplicate_stop_when_already_covered(self):
+        from alpaca.trading.enums import OrderSide, OrderType
+
         from execution.trader import ensure_stops_attached
-        from alpaca.trading.enums import OrderType, OrderSide
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10.0)]
 
@@ -452,7 +453,7 @@ class TestGetPositionSignal(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def test_returns_signal_for_known_position(self):
-        from execution.trader import record_buy, get_position_signal
+        from execution.trader import get_position_signal, record_buy
         record_buy("AAPL", 180.0, signal="momentum")
         self.assertEqual(get_position_signal("AAPL"), "momentum")
 
@@ -514,8 +515,9 @@ class TestPlaceTrailingStop(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_whole_shares_places_trailing_stop_order(self):
-        from execution.trader import place_trailing_stop
         from alpaca.trading.requests import TrailingStopOrderRequest
+
+        from execution.trader import place_trailing_stop
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-trail")
         result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
@@ -526,8 +528,9 @@ class TestPlaceTrailingStop(unittest.TestCase):
         self.assertIsInstance(submitted, TrailingStopOrderRequest)
 
     def test_fractional_shares_places_fixed_stop_order(self):
-        from execution.trader import place_trailing_stop
         from alpaca.trading.requests import StopOrderRequest
+
+        from execution.trader import place_trailing_stop
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-fixed")
         result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
@@ -537,8 +540,8 @@ class TestPlaceTrailingStop(unittest.TestCase):
         self.assertIsInstance(submitted, StopOrderRequest)
 
     def test_fractional_stop_price_below_current(self):
-        from execution.trader import place_trailing_stop
         from config import TRAILING_STOP_PCT
+        from execution.trader import place_trailing_stop
         client = MagicMock()
         client.submit_order.return_value = self._make_order()
         place_trailing_stop(client, "AAPL", 2.5, current_price=200.0)

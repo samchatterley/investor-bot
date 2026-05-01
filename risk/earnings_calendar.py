@@ -1,14 +1,15 @@
 import logging
-from datetime import date, timedelta
-from typing import Optional
-import yfinance as yf
+from datetime import date
+
 import pandas as pd
+import yfinance as yf
+
 from config import today_et
 
 logger = logging.getLogger(__name__)
 
 
-def get_next_earnings_date(symbol: str) -> Optional[date]:
+def get_next_earnings_date(symbol: str) -> date | None:
     """Return the next earnings date for a symbol, or None if unavailable."""
     try:
         ticker = yf.Ticker(symbol)
@@ -40,7 +41,7 @@ def get_next_earnings_date(symbol: str) -> Optional[date]:
         return None
 
 
-def days_until_earnings(symbol: str) -> Optional[int]:
+def days_until_earnings(symbol: str) -> int | None:
     """Return how many calendar days until next earnings, or None."""
     ed = get_next_earnings_date(symbol)
     if ed is None:

@@ -1,10 +1,11 @@
 import unittest
 from datetime import date
+
 from risk.macro_calendar import (
-    get_macro_risk,
-    FOMC_ANNOUNCEMENT_DATES,
     CPI_RELEASE_DATES,
+    FOMC_ANNOUNCEMENT_DATES,
     NFP_RELEASE_DATES,
+    get_macro_risk,
 )
 
 

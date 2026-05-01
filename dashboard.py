@@ -9,15 +9,15 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from utils.portfolio_tracker import load_history
 from utils.decision_log import load_decisions
+from utils.portfolio_tracker import load_history
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -40,15 +40,15 @@ C_YELLOW  = "#f0b429"
 C_TEXT    = "#e2e8f0"
 C_MUTED   = "#8896a5"
 
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color=C_TEXT, family="system-ui, -apple-system, sans-serif", size=12),
-    margin=dict(l=0, r=0, t=28, b=0),
-    xaxis=dict(gridcolor="rgba(255,255,255,0.06)", showline=False, zeroline=False),
-    yaxis=dict(gridcolor="rgba(255,255,255,0.06)", showline=False, zeroline=False),
-    legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)"),
-)
+PLOTLY_LAYOUT = {
+    "paper_bgcolor": "rgba(0,0,0,0)",
+    "plot_bgcolor": "rgba(0,0,0,0)",
+    "font": {"color": C_TEXT, "family": "system-ui, -apple-system, sans-serif", "size": 12},
+    "margin": {"l": 0, "r": 0, "t": 28, "b": 0},
+    "xaxis": {"gridcolor": "rgba(255,255,255,0.06)", "showline": False, "zeroline": False},
+    "yaxis": {"gridcolor": "rgba(255,255,255,0.06)", "showline": False, "zeroline": False},
+    "legend": {"bgcolor": "rgba(0,0,0,0)", "bordercolor": "rgba(0,0,0,0)"},
+}
 
 # ── Global CSS — targets native Streamlit elements ────────────────────────────
 
@@ -163,7 +163,7 @@ hr {{ border-color: {C_BORDER} !important; }}
 
 @st.fragment(run_every=1)
 def _diagnostics_button(total: int, cooldown_end: float):
-    remaining = max(0, int(cooldown_end - datetime.now(timezone.utc).timestamp()))
+    remaining = max(0, int(cooldown_end - datetime.now(UTC).timestamp()))
     if remaining > 0:
         st.button(f"Run diagnostics now  —  {remaining}s", disabled=True)
     else:
@@ -182,7 +182,7 @@ def _diagnostics_button(total: int, cooldown_end: float):
 
 
 def _section(title: str):
-    st.markdown(f"<br>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"**{title.upper()}**")
     st.markdown(
         f'<hr style="margin-top:2px;margin-bottom:12px;border-color:{C_BORDER};">',
@@ -204,7 +204,7 @@ def _equity_fig(dates, values, color=C_ACCENT):
     fig.add_trace(go.Scatter(
         x=dates, y=values,
         mode="lines",
-        line=dict(color=color, width=2.5),
+        line={"color": color, "width": 2.5},
         fill="tozeroy",
         fillcolor=f"rgba({r},{g},{b},0.07)",
         hovertemplate="<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
@@ -373,8 +373,10 @@ elif page == "Trades":
             df = pd.DataFrame(rows)
 
             def _style_action(v):
-                if v == "BUY":         return f"color: {C_GREEN}; font-weight: 600"
-                if "SELL" in str(v):   return f"color: {C_RED}; font-weight: 600"
+                if v == "BUY":
+                    return f"color: {C_GREEN}; font-weight: 600"
+                if "SELL" in str(v):
+                    return f"color: {C_RED}; font-weight: 600"
                 return ""
 
             st.dataframe(
@@ -436,7 +438,7 @@ elif page == "AI Decisions":
                     textfont_size=11,
                     hovertemplate="%{label}: %{value}<extra></extra>",
                 ))
-                pie.update_layout(**{**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=10, b=0)})
+                pie.update_layout(**{**PLOTLY_LAYOUT, "margin": {"l": 0, "r": 0, "t": 10, "b": 0}})
                 st.plotly_chart(pie, use_container_width=True, config={"displayModeBar": False})
 
         _section("Decision Log")
@@ -575,7 +577,7 @@ elif page == "Diagnostics":
         # Human-readable timestamp + age
         try:
             run_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            now    = datetime.now(timezone.utc)
+            now    = datetime.now(UTC)
             age_s  = (now - run_dt).total_seconds()
             if age_s < 60:
                 age_str = "just now"

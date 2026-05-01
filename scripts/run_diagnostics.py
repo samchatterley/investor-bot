@@ -8,7 +8,7 @@ import os
 import sys
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # Ensure the project root is on the path when this script is run directly
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +50,7 @@ def run_diagnostics() -> dict:
     status = "PASS" if not failures else "FAIL"
 
     report = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "total": result.testsRun,
         "passed": passed,
         "failed": len(result.failures),
@@ -73,7 +73,7 @@ def _save_report(report: dict):
     try:
         from config import LOG_DIR
         os.makedirs(LOG_DIR, exist_ok=True)
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         path = os.path.join(LOG_DIR, f"test_report_{today}.json")
         with open(path, "w") as f:
             json.dump(report, f, indent=2)
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     print(f"\n{'='*40}")
     print(f"  {report['status']}  —  {report['passed']}/{report['total']} tests passed  ({report['duration_seconds']}s)")
     if report["failures"]:
-        print(f"\n  Failures:")
+        print("\n  Failures:")
         for f in report["failures"]:
             print(f"    • {f['test']}")
             print(f"      {f['message']}")

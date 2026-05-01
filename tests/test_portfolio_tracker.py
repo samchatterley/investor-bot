@@ -5,10 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from utils.portfolio_tracker import (
-    save_daily_run,
-    load_history,
     get_day_summary,
     get_track_record,
+    load_history,
+    save_daily_run,
 )
 
 
@@ -114,8 +114,10 @@ class TestPrintSummary(PortfolioTrackerBase):
         }
 
     def test_print_summary_does_not_raise(self):
+        import io
+        import sys
+
         from utils.portfolio_tracker import print_summary
-        import io, sys
         captured = io.StringIO()
         sys.stdout = captured
         try:
@@ -125,8 +127,10 @@ class TestPrintSummary(PortfolioTrackerBase):
         self.assertIn("2026-01-15", captured.getvalue())
 
     def test_print_summary_shows_pnl(self):
+        import io
+        import sys
+
         from utils.portfolio_tracker import print_summary
-        import io, sys
         captured = io.StringIO()
         sys.stdout = captured
         try:
@@ -136,8 +140,10 @@ class TestPrintSummary(PortfolioTrackerBase):
         self.assertIn("250", captured.getvalue())
 
     def test_print_summary_shows_trades(self):
+        import io
+        import sys
+
         from utils.portfolio_tracker import print_summary
-        import io, sys
         trades = [{"action": "BUY", "symbol": "NVDA", "detail": "$5000"}]
         captured = io.StringIO()
         sys.stdout = captured
@@ -148,8 +154,10 @@ class TestPrintSummary(PortfolioTrackerBase):
         self.assertIn("NVDA", captured.getvalue())
 
     def test_print_summary_no_trades_message(self):
+        import io
+        import sys
+
         from utils.portfolio_tracker import print_summary
-        import io, sys
         captured = io.StringIO()
         sys.stdout = captured
         try:

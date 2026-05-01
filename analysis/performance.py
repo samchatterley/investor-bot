@@ -1,8 +1,9 @@
 import json
-import os
 import logging
 import math
+import os
 from datetime import date
+
 from config import LOG_DIR
 
 logger = logging.getLogger(__name__)

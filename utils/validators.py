@@ -15,8 +15,8 @@ check_pre_trade       — fat-finger / daily notional cap guard applied before
                         risk controls.
 """
 
-import re
 import logging
+import re
 
 from pydantic import ValidationError
 
