@@ -488,14 +488,14 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     break
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
-                kelly = position_sizer.kelly_fraction(
-                    confidence,
-                    signal=candidate.get("key_signal", "unknown"),
-                    regime=regime.get("regime", "UNKNOWN"),
-                )
                 notional = min(
-                    available_cash * kelly,
-                    account_now["portfolio_value"] * config.MAX_POSITION_PCT,
+                    position_sizer.risk_budget_size(
+                        account_now["portfolio_value"],
+                        confidence,
+                        signal=candidate.get("key_signal", "unknown"),
+                        regime=regime.get("regime", "UNKNOWN"),
+                    ),
+                    available_cash,
                 )
 
                 # Pre-trade controls (MiFID II)
@@ -507,7 +507,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     logger.warning(f"  Pre-trade check failed: {rejection_reason}")
                     continue
 
-                logger.info(f"  BUY {symbol}: ${notional:.2f} Kelly {kelly:.0%} | conf={confidence}")
+                logger.info(f"  BUY {symbol}: ${notional:.2f} | conf={confidence}")
 
                 if notional >= 1.0:
                     if not dry_run:
@@ -534,7 +534,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                                     logger.error(f"  Stop placement FAILED for {symbol} — position unprotected!")
                                     alerts.alert_error("STOP FAILED", f"{symbol}: trailing stop placement failed after buy — position has no downside protection.")
                             executed_symbols.add(symbol)
-                            detail = f"${notional:.2f} | Kelly {kelly:.0%} | {candidate.get('key_signal')} | confidence={confidence}"
+                            detail = f"${notional:.2f} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})
                     else:
                         orders_placed += 1

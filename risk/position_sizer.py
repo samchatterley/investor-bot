@@ -2,7 +2,10 @@ import json
 import logging
 import os
 
-from config import STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_PCT, KELLY_MULTIPLIER, LOG_DIR
+from config import (
+    STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_POSITION_PCT, KELLY_MULTIPLIER, LOG_DIR,
+    TRAILING_STOP_PCT, RISK_PER_TRADE_PCT, MAX_POSITION_WEIGHT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,38 @@ def kelly_fraction(confidence: int, signal: str = "unknown", regime: str = "UNKN
     raw_kelly = (p * b - q) / b
     fraction = max(0.0, raw_kelly * KELLY_MULTIPLIER)
     return min(fraction, MAX_POSITION_PCT)
+
+
+def risk_budget_size(
+    equity: float,
+    confidence: int,
+    signal: str = "unknown",
+    regime: str = "UNKNOWN",
+) -> float:
+    """
+    Risk-budget position sizing.
+
+    Sizes a position so that if the trailing stop triggers, the loss equals
+    RISK_PER_TRADE_PCT of equity. Result is capped at MAX_POSITION_WEIGHT of equity.
+
+    Kelly fraction is computed and logged as calibration telemetry but never
+    used to increase size above the risk-budget cap.
+    """
+    if equity <= 0:
+        return 0.0
+
+    risk_usd = equity * RISK_PER_TRADE_PCT
+    stop_pct = TRAILING_STOP_PCT / 100.0
+    notional = risk_usd / max(stop_pct, 1e-6)
+    notional = min(notional, equity * MAX_POSITION_WEIGHT)
+
+    kelly = kelly_fraction(confidence, signal, regime)
+    logger.debug(
+        f"risk_budget_size: notional={notional:.2f} kelly_telemetry={kelly:.3f} "
+        f"conf={confidence} {signal}/{regime}"
+    )
+
+    return max(0.0, notional)
 
 
 def get_max_positions(portfolio_value: float) -> int:

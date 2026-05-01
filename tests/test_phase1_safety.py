@@ -98,9 +98,11 @@ class TestSellHallucinationGuard(unittest.TestCase):
         self.assertTrue(is_valid)
 
 
-# ── 3. Weekly review writes runtime_config.json, not config.py ───────────────
+# ── 3. Weekly review never writes config changes to disk ─────────────────────
 
 class TestRuntimeConfigOverride(unittest.TestCase):
+    """Auto-parameter modification is disabled — _apply_config_changes validates
+    and reports proposed changes but must never write runtime_config.json."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -112,13 +114,13 @@ class TestRuntimeConfigOverride(unittest.TestCase):
         self._patcher.stop()
         shutil.rmtree(self.tmpdir)
 
-    def test_change_writes_json_not_python(self):
+    def test_config_changes_never_written_to_disk(self):
         from analysis.weekly_review import _apply_config_changes
         _apply_config_changes([{"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "x"}])
-        with open(self.runtime_path) as f:
-            data = json.load(f)
-        self.assertIn("MIN_CONFIDENCE", data)
-        self.assertEqual(data["MIN_CONFIDENCE"], 8)
+        self.assertFalse(
+            os.path.exists(self.runtime_path),
+            "runtime_config.json must not be written — auto-modification is disabled",
+        )
 
     def test_config_py_is_never_touched(self):
         from analysis.weekly_review import _apply_config_changes
@@ -132,17 +134,14 @@ class TestRuntimeConfigOverride(unittest.TestCase):
                 os.path.normpath(os.path.join(os.path.dirname(wr.__file__), "..", "config.py"))
             ),
             config_mtime,
-            "config.py was modified — should only write to runtime_config.json",
+            "config.py must never be modified by the weekly review",
         )
 
-    def test_multiple_writes_merge_not_overwrite(self):
+    def test_multiple_calls_never_write_to_disk(self):
         from analysis.weekly_review import _apply_config_changes
         _apply_config_changes([{"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "x"}])
         _apply_config_changes([{"parameter": "MAX_HOLD_DAYS", "proposed_value": 5, "reason": "x"}])
-        with open(self.runtime_path) as f:
-            data = json.load(f)
-        self.assertIn("MIN_CONFIDENCE", data)
-        self.assertIn("MAX_HOLD_DAYS", data)
+        self.assertFalse(os.path.exists(self.runtime_path))
 
 
 # ── 4. Stale data rejection ───────────────────────────────────────────────────

@@ -410,7 +410,7 @@ class RunInnerBase(unittest.TestCase):
             "main.risk_manager.check_circuit_breaker":  (False, 0.0),
             "main.risk_manager.check_daily_loss":       (False, 0.0),
             "main.risk_manager.validate_buy_candidates": lambda c, **kw: c,
-            "main.position_sizer.kelly_fraction":       0.1,
+            "main.position_sizer.risk_budget_size":     500.0,
             "main.position_sizer.get_max_positions":    5,
             "main.market_data.get_vix":                 18.0,
             "main.stock_scanner.get_market_regime":     _regime(),

@@ -21,14 +21,18 @@ IS_PAPER = "paper" in ALPACA_BASE_URL
 
 # Position sizing
 MAX_POSITIONS = 5
-MAX_POSITION_PCT = 0.45      # Max 45% of portfolio in one position
+MAX_POSITION_PCT = 0.45      # Max 45% of portfolio in one position (legacy Kelly cap, kept for config.validate())
 CASH_RESERVE_PCT = 0.10      # Always keep 10% as cash buffer
+
+# Risk-budget sizing (replaces Kelly)
+RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity risked per trade
+MAX_POSITION_WEIGHT = 0.05   # 5% of portfolio per position (hard cap)
 
 # Risk management
 STOP_LOSS_PCT = 0.04         # 4% trailing stop (tighter than old fixed stop)
 TAKE_PROFIT_PCT = 0.15       # 15% take profit target (let winners run a bit further)
 TRAILING_STOP_PCT = 4.0      # percent trail below highest price (Alpaca native order)
-KELLY_MULTIPLIER = 0.5       # half-Kelly — balances growth vs drawdown risk
+KELLY_MULTIPLIER = 0.5       # half-Kelly — kept for research telemetry only
 
 # AI decision threshold
 MIN_CONFIDENCE = 7           # Min confidence score (1-10) to open a position
