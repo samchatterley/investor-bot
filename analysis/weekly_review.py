@@ -42,9 +42,9 @@ def _current_param_values() -> dict[str, float | int]:
 
 def _apply_config_changes(proposed: list[dict]) -> list[dict]:
     """
-    Apply proposed config changes by writing to logs/runtime_config.json.
-    config.py loads this file at startup via _load_runtime_overrides(), so changes
-    take effect on the next bot run without touching config.py source.
+    Validate proposed config changes and return a report of what would be applied.
+    Changes are intentionally NOT written to disk — auto-parameter modification
+    from small weekly trade samples is disabled to prevent strategy drift.
     """
     if not proposed:
         return []
@@ -56,7 +56,6 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
         current_overrides = {}
 
     results = []
-    new_overrides = dict(current_overrides)
 
     for change in proposed:
         param = change.get("parameter", "")
@@ -77,7 +76,6 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
             continue
 
         status = "applied" if new_val == raw_proposed else "clamped"
-        new_overrides[param] = new_val
         results.append({
             "parameter": param,
             "old_value": old_val,
@@ -85,12 +83,7 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
             "reason": change.get("reason", ""),
             "status": status,
         })
-        logger.info(f"Config change: {param} {old_val} → {new_val} ({status})")
-
-    if any(r["status"] in ("applied", "clamped") for r in results):
-        os.makedirs(LOG_DIR, exist_ok=True)
-        with open(_RUNTIME_CONFIG_PATH, "w") as f:
-            json.dump(new_overrides, f, indent=2)
+        logger.info(f"Config proposal (not applied): {param} {old_val} → {new_val} ({status})")
 
     return results
 
@@ -114,9 +107,10 @@ def get_latest_review() -> list[str]:
 
 def run_weekly_review() -> dict | None:
     """
-    Ask Claude to review the past 7 days, generate lessons, and propose config changes.
-    Applies any approved changes to config.py.
-    Returns the full review dict (including applied_changes), or None if skipped/failed.
+    Ask Claude to review the past 7 days and generate lessons for next week.
+    Config changes proposed by the review are recorded as proposed_changes but
+    never written to disk — parameter modification requires a manual decision.
+    Returns the full review dict (including proposed_changes), or None if skipped/failed.
     """
     all_records = load_history()
     cutoff = (date.today() - timedelta(days=7)).isoformat()
@@ -207,9 +201,9 @@ Respond with ONLY this JSON:
                 raw = raw[4:]
         review = json.loads(raw.strip())
 
-        # Apply config changes and record what happened
-        applied_changes = _apply_config_changes(review.get("config_changes", []))
-        review["applied_changes"] = applied_changes
+        # Validate proposed changes and record for logging — not applied to disk
+        proposed_changes = _apply_config_changes(review.get("config_changes", []))
+        review["proposed_changes"] = proposed_changes
 
         path = os.path.join(LOG_DIR, f"weekly_review_{date.today().isoformat()}.json")
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -220,9 +214,9 @@ Respond with ONLY this JSON:
         logger.info(f"Summary: {review.get('week_summary', '')}")
         for lesson in review.get("lessons", []):
             logger.info(f"  Lesson: {lesson}")
-        for change in applied_changes:
+        for change in proposed_changes:
             if change["status"] in ("applied", "clamped"):
-                logger.info(f"  Config: {change['parameter']} {change['old_value']} → {change['new_value']}")
+                logger.info(f"  Proposed (not applied): {change['parameter']} {change['old_value']} → {change['new_value']}")
 
         return review
 

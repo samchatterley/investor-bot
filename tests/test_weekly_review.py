@@ -32,12 +32,13 @@ class TestApplyConfigChanges(unittest.TestCase):
         result = _apply_config_changes([])
         self.assertEqual(result, [])
 
-    def test_valid_change_is_applied(self):
+    def test_valid_change_returns_applied_status(self):
         result = _apply_config_changes([
             {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"}
         ])
         self.assertEqual(result[0]["status"], "applied")
-        self.assertEqual(self._read()["MIN_CONFIDENCE"], 8)
+        # File must NOT be written — auto-parameter modification is disabled
+        self.assertFalse(os.path.exists(self.runtime_path))
 
     def test_unknown_parameter_is_rejected(self):
         result = _apply_config_changes([
@@ -74,7 +75,7 @@ class TestApplyConfigChanges(unittest.TestCase):
         self.assertEqual(result[0]["old_value"], cfg.MAX_HOLD_DAYS)
         self.assertEqual(result[0]["new_value"], cfg.MAX_HOLD_DAYS + 2)
 
-    def test_multiple_changes_applied_independently(self):
+    def test_multiple_changes_validated_independently(self):
         result = _apply_config_changes([
             {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"},
             {"parameter": "MAX_HOLD_DAYS", "proposed_value": 5, "reason": "test"},
@@ -82,9 +83,8 @@ class TestApplyConfigChanges(unittest.TestCase):
         statuses = {r["parameter"]: r["status"] for r in result}
         self.assertIn(statuses["MIN_CONFIDENCE"], ("applied", "clamped"))
         self.assertIn(statuses["MAX_HOLD_DAYS"], ("applied", "clamped"))
-        data = self._read()
-        self.assertIn("MIN_CONFIDENCE", data)
-        self.assertIn("MAX_HOLD_DAYS", data)
+        # File must NOT be written — auto-parameter modification is disabled
+        self.assertFalse(os.path.exists(self.runtime_path))
 
 
 class TestGetLatestReview(unittest.TestCase):
@@ -204,7 +204,7 @@ class TestRunWeeklyReview(unittest.TestCase):
             result = run_weekly_review()
         self.assertIsNotNone(result)
         self.assertIn("week_summary", result)
-        self.assertIn("applied_changes", result)
+        self.assertIn("proposed_changes", result)
 
     def test_saves_review_file_to_log_dir(self):
         from analysis.weekly_review import run_weekly_review
@@ -230,7 +230,7 @@ class TestRunWeeklyReview(unittest.TestCase):
              patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
             mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(fake_review)
             result = run_weekly_review()
-        self.assertTrue(any(c["status"] in ("applied", "clamped") for c in result["applied_changes"]))
+        self.assertTrue(any(c["status"] in ("applied", "clamped") for c in result["proposed_changes"]))
 
     def test_returns_none_on_json_decode_error(self):
         from analysis.weekly_review import run_weekly_review
