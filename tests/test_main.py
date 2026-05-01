@@ -651,8 +651,8 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
         buy_mock.assert_not_called()
 
-    def test_validation_failure_blocks_claude_driven_sells(self):
-        """Validation failure zeroes position_decisions — Claude-recommended sells are blocked."""
+    def test_structural_validation_failure_blocks_claude_driven_sells(self):
+        """Structural (schema) errors zero position_decisions — Claude-recommended sells are blocked."""
         sell_mock = MagicMock()
         decisions = _decisions(
             buys=[{"symbol": "MSFT", "confidence": 8, "key_signal": "momentum"}],
@@ -661,14 +661,34 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         stack, mocks = self._patch_all(**{
             "main.trader.get_open_positions": [{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
             "main.ai_analyst.get_trading_decisions": decisions,
-            "main.validate_ai_response": (False, ["buy_candidates → 0: symbol not in universe"]),
+            # Structural error (Pydantic field path) — not a "BUY candidate '" prefix
+            "main.validate_ai_response": (False, ["position_decisions → 0 → action: Input should be 'HOLD' or 'SELL'"]),
             "main.trader.close_position": sell_mock,
         })
         with stack:
             from main import _run_inner
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
-        # Claude-driven sell must not fire; stale/earnings exits (none here) would still fire
         sell_mock.assert_not_called()
+
+    def test_buy_domain_error_preserves_claude_sells(self):
+        """BUY domain errors (out-of-universe) block buys only — Claude sell decisions still execute."""
+        sell_mock = MagicMock()
+        sell_mock.return_value = OrderResult(status=OrderStatus.FILLED, symbol="AAPL")
+        decisions = _decisions(
+            buys=[{"symbol": "GHOST", "confidence": 8, "key_signal": "momentum"}],
+            sells=[{"symbol": "AAPL", "action": "SELL", "confidence": 7, "reasoning": "momentum weakening"}],
+        )
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": [{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.validate_ai_response": (False, ["BUY candidate 'GHOST' not in scanned universe — rejecting"]),
+            "main.trader.close_position": sell_mock,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # AAPL sell must still fire despite the invalid buy candidate
+        sell_mock.assert_called_once()
 
     def test_bearish_regime_blocks_buys(self):
         buy_mock = MagicMock()

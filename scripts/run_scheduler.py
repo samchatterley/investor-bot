@@ -75,7 +75,7 @@ def _weekly_review():
             from datetime import date as _date
             review_stub = {
                 "week_summary": "No trade history available for this week.",
-                "what_worked": [], "what_didnt": [], "lessons": [], "applied_changes": [],
+                "what_worked": [], "what_didnt": [], "lessons": [], "proposed_changes": [],
             }
             _send_html(
                 subject=f"Weekly Diagnostics {_date.today().isoformat()} · tests {test_report.get('status','')}",

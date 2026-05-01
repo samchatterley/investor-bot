@@ -484,14 +484,16 @@ class TestValidateContextChecks(unittest.TestCase):
         is_valid, errors = validate_ai_response(data, _KNOWN, held_symbols=None)
         self.assertTrue(is_valid)
 
-    def test_sell_for_unheld_symbol_rejected(self):
+    def test_sell_for_unheld_symbol_passes_validation(self):
+        # Trailing stops create a legitimate race: position auto-closes between
+        # data fetch and validation. This is a warning, not a blocking error.
         data = _valid_decisions(
             buys=[],
             sells=[_valid_sell("TSLA", action="SELL")],
         )
         is_valid, errors = validate_ai_response(data, _KNOWN, held_symbols={"AAPL"})
-        self.assertFalse(is_valid)
-        self.assertTrue(any("TSLA" in e for e in errors))
+        self.assertTrue(is_valid)
+        self.assertFalse(any("TSLA" in e for e in errors))
 
     def test_sell_for_held_symbol_passes(self):
         data = _valid_decisions(
@@ -507,17 +509,17 @@ class TestValidateContextChecks(unittest.TestCase):
         is_valid, _ = validate_ai_response(data, _KNOWN, held_symbols={"AAPL"})
         self.assertTrue(is_valid)
 
-    def test_multiple_context_errors_all_reported(self):
+    def test_multiple_buy_context_errors_all_reported(self):
         data = _valid_decisions(
-            buys=[_valid_buy("AAPL"), _valid_buy("NVDA")],
-            sells=[_valid_sell("TSLA", action="SELL"), _valid_sell("AMD", action="SELL")],
+            buys=[_valid_buy("GHOST1"), _valid_buy("GHOST2")],
+            sells=[],
         )
         is_valid, errors = validate_ai_response(
             data, _KNOWN, held_symbols={"MSFT"}
         )
         self.assertFalse(is_valid)
-        sell_errors = [e for e in errors if "rejected" in e and "SELL" in e]
-        self.assertGreaterEqual(len(sell_errors), 2)
+        buy_errors = [e for e in errors if "BUY candidate" in e]
+        self.assertGreaterEqual(len(buy_errors), 2)
 
 
 # ── sanitize_headlines ────────────────────────────────────────────────────────

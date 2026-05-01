@@ -401,16 +401,29 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     is_valid, validation_errors = validate_ai_response(decisions, ai_known_symbols, held_symbols=held_symbols)
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
-        logger.error(
-            f"AI response validation failed ({len(validation_errors)} error(s)) — "
-            f"blocking all Claude-driven decisions: {validation_errors}"
+        buy_domain_only = validation_errors and all(
+            e.startswith("BUY candidate '") for e in validation_errors
         )
-        alerts.alert_error(
-            "VALIDATION FAILURE",
-            f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
-        )
-        decisions["buy_candidates"] = []
-        decisions["position_decisions"] = []
+        if buy_domain_only:
+            # BUY domain errors (out-of-universe, already-held) only taint buy decisions.
+            # Sell decisions are independent and must still execute.
+            logger.warning(
+                f"AI response has {len(validation_errors)} BUY domain error(s) — "
+                f"blocking buys only, preserving sell decisions: {validation_errors}"
+            )
+            decisions["buy_candidates"] = []
+        else:
+            # Structural/schema errors: the whole response is untrustworthy.
+            logger.error(
+                f"AI response validation failed ({len(validation_errors)} structural error(s)) — "
+                f"blocking all Claude-driven decisions: {validation_errors}"
+            )
+            alerts.alert_error(
+                "VALIDATION FAILURE",
+                f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
+            )
+            decisions["buy_candidates"] = []
+            decisions["position_decisions"] = []
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
     decision_log.log_decisions(decisions, mode, executed_symbols)

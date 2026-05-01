@@ -85,7 +85,9 @@ def validate_ai_response(
         action = d.get("action")
         sym = d.get("symbol", "?")
         if action == "SELL" and held_symbols is not None and sym not in held_symbols:
-            errors.append(f"SELL for '{sym}' rejected — not in held positions")
+            # Log a warning but do not add to errors — this is an expected race condition
+            # when a trailing stop auto-closes a position between data fetch and validation.
+            logger.warning(f"SELL for '{sym}' references a non-held position — likely auto-closed by a stop")
 
     if errors:
         logger.warning(f"AI response validation failed ({len(errors)} error(s)): {errors}")
