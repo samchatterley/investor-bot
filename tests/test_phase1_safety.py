@@ -77,15 +77,17 @@ class TestSellHallucinationGuard(unittest.TestCase):
         self.assertTrue(is_valid)
         self.assertEqual(errors, [])
 
-    def test_sell_for_unheld_symbol_rejected(self):
+    def test_sell_for_unheld_symbol_passes_with_warning(self):
+        # Trailing stops create a legitimate race: position closes between data fetch
+        # and validation. This is a warning, not a blocking error.
         from utils.validators import validate_ai_response
         is_valid, errors = validate_ai_response(
             self._decisions("NVDA"),
             known_symbols={"NVDA"},
             held_symbols={"AAPL"},    # NVDA not held
         )
-        self.assertFalse(is_valid)
-        self.assertTrue(any("NVDA" in e for e in errors))
+        self.assertTrue(is_valid)
+        self.assertFalse(any("NVDA" in e for e in errors))
 
     def test_sell_check_skipped_when_held_symbols_none(self):
         from utils.validators import validate_ai_response
