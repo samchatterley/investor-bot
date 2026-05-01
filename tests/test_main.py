@@ -371,6 +371,50 @@ class TestRunGuards(unittest.TestCase):
         alert_mock.assert_called_once()
         self.assertIn("main.run", alert_mock.call_args[0][0])
 
+    def test_exits_when_live_mode_without_accept_flag(self):
+        with (
+            patch("main.config.validate"),
+            patch("main.config.ALPACA_API_KEY", "valid-key"),
+            patch("main.config.ANTHROPIC_API_KEY", "valid-key"),
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.LIVE_CONFIRM", ""),
+            patch("main.config.HALT_FILE", self.halt_file),
+            patch("main._lock_file", return_value=self.lock_file),
+            patch("sys.exit") as mock_exit,
+        ):
+            from main import run
+            run(dry_run=False)
+        mock_exit.assert_called_with(1)
+
+    def test_live_mode_with_correct_flag_does_not_exit(self):
+        mock_inner = MagicMock()
+        with (
+            patch("main.config.validate"),
+            patch("main.config.ALPACA_API_KEY", "valid-key"),
+            patch("main.config.ANTHROPIC_API_KEY", "valid-key"),
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.LIVE_CONFIRM", "I-ACCEPT-REAL-MONEY-RISK"),
+            patch("main.config.HALT_FILE", self.halt_file),
+            patch("main._lock_file", return_value=self.lock_file),
+            patch("main._run_inner", mock_inner),
+        ):
+            from main import run
+            run(dry_run=False)
+        mock_inner.assert_called_once()
+
+    def test_exits_when_config_validate_raises(self):
+        with (
+            patch("main.config.validate", side_effect=ValueError("bad config")),
+            patch("main.config.ALPACA_API_KEY", "valid-key"),
+            patch("main.config.ANTHROPIC_API_KEY", "valid-key"),
+            patch("main.config.HALT_FILE", self.halt_file),
+            patch("main._lock_file", return_value=self.lock_file),
+            patch("sys.exit") as mock_exit,
+        ):
+            from main import run
+            run()
+        mock_exit.assert_called_with(1)
+
 
 # ── _run_inner helpers ─────────────────────────────────────────────────────────
 

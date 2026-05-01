@@ -32,6 +32,14 @@ class TestApplyConfigChanges(unittest.TestCase):
         result = _apply_config_changes([])
         self.assertEqual(result, [])
 
+    def test_apply_when_runtime_config_missing_uses_empty_overrides(self):
+        # runtime_config.json doesn't exist yet — should not raise
+        result = _apply_config_changes([
+            {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"}
+        ])
+        self.assertGreater(len(result), 0)
+        self.assertIn(result[0]["status"], ("applied", "clamped", "unchanged"))
+
     def test_valid_change_returns_applied_status(self):
         result = _apply_config_changes([
             {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"}

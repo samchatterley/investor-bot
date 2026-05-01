@@ -183,3 +183,66 @@ class TestGetTrackRecord(PortfolioTrackerBase):
         self.assertIn("date", entry)
         self.assertIn("daily_pnl_usd", entry)
         self.assertIn("trades", entry)
+
+    def test_stop_losses_appear_as_stop_loss_action(self):
+        stop = {"symbol": "NVDA", "pl_pct": -8.5}
+        save_daily_run("2026-01-01", _account(100_000), _account(91_500), _ai(), [], [stop])
+        record = get_track_record(n_days=1)
+        trade_actions = [t["action"] for t in record[0]["trades"]]
+        self.assertIn("STOP_LOSS", trade_actions)
+
+
+class TestTradeMergeGuard(PortfolioTrackerBase):
+
+    def test_second_run_merges_new_trades(self):
+        trade_a = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        trade_b = {"symbol": "MSFT", "action": "BUY", "detail": "$3000", "order_id": "o2"}
+        save_daily_run("2026-01-15", _account(100_000), _account(100_500), _ai(), [trade_a], [])
+        save_daily_run("2026-01-15", _account(100_500), _account(101_200), _ai(), [trade_b], [])
+        records = load_history()
+        run = next(r for r in records if r["date"] == "2026-01-15")
+        order_ids = {t.get("order_id") for t in run["trades_executed"]}
+        self.assertIn("o1", order_ids)
+        self.assertIn("o2", order_ids)
+
+    def test_second_run_preserves_original_account_before(self):
+        trade_a = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        save_daily_run("2026-01-15", _account(100_000), _account(100_500), _ai(), [trade_a], [])
+        save_daily_run("2026-01-15", _account(100_500), _account(101_200), _ai(), [], [])
+        records = load_history()
+        run = next(r for r in records if r["date"] == "2026-01-15")
+        self.assertEqual(run["account_before"]["portfolio_value"], 100_000)
+
+    def test_spurious_rerun_with_same_trades_does_not_duplicate(self):
+        trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        save_daily_run("2026-01-15", _account(100_000), _account(100_500), _ai(), [trade], [])
+        save_daily_run("2026-01-15", _account(100_500), _account(101_200), _ai(), [trade], [])
+        records = load_history()
+        run = next(r for r in records if r["date"] == "2026-01-15")
+        self.assertEqual(len(run["trades_executed"]), 1)
+
+
+class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
+
+    def test_writes_baseline_file(self):
+        from utils.portfolio_tracker import save_daily_baseline
+        baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
+        with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path):
+            save_daily_baseline(100_000.0)
+        self.assertTrue(os.path.exists(baseline_path))
+
+    def test_baseline_file_contains_portfolio_value(self):
+        import json as _json
+        from utils.portfolio_tracker import save_daily_baseline
+        baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
+        with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path):
+            save_daily_baseline(99_500.0)
+        with open(baseline_path) as f:
+            data = _json.load(f)
+        self.assertAlmostEqual(data["portfolio_value"], 99_500.0)
+
+    def test_invalid_date_string_uses_today(self):
+        from utils.portfolio_tracker import _weekly_log_dir
+        # Non-ISO date triggers ValueError → falls back to today()
+        result = _weekly_log_dir("not-a-date-at-all!!")
+        self.assertTrue(os.path.isdir(result))

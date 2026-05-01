@@ -171,6 +171,44 @@ class TestSignalTracking(unittest.TestCase):
         self.assertIn("momentum", result)
         self.assertIn("win rate", result.lower())
 
+    def test_actionable_feedback_verdict_working_well(self):
+        # ≥60% win rate → "working well"
+        for _ in range(4):
+            record_trade_outcome("breakout", 3.0, confidence=8)
+        result = get_actionable_feedback()
+        self.assertIn("working well", result)
+
+    def test_actionable_feedback_verdict_marginal(self):
+        # 50% win rate → "marginal"
+        for _ in range(2):
+            record_trade_outcome("breakout", 3.0, confidence=7)
+        for _ in range(2):
+            record_trade_outcome("breakout", -2.0, confidence=7)
+        result = get_actionable_feedback()
+        self.assertIn("marginal", result)
+
+    def test_actionable_feedback_verdict_underperforming(self):
+        # 0% win rate → "underperforming"
+        for _ in range(4):
+            record_trade_outcome("breakout", -3.0, confidence=6)
+        result = get_actionable_feedback()
+        self.assertIn("underperforming", result)
+
+    def test_actionable_feedback_includes_regime_note(self):
+        # ≥2 trades in a regime with strong win rate adds a regime note
+        for _ in range(3):
+            record_trade_outcome("breakout", 5.0, regime="BULL_TRENDING", confidence=8)
+        result = get_actionable_feedback()
+        self.assertIn("BULL_TRENDING", result)
+
+    def test_load_stats_handles_corrupt_json(self):
+        corrupt_path = os.path.join(self.tmpdir, "signal_stats.json")
+        with open(corrupt_path, "w") as f:
+            f.write("{ not valid json }")
+        from analysis.performance import _load_stats
+        result = _load_stats()
+        self.assertEqual(result, {})
+
 
 class TestGenerateDashboard(unittest.TestCase):
 

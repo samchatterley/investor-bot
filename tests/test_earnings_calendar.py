@@ -107,3 +107,41 @@ class TestGetEarningsRiskPositions(unittest.TestCase):
     def test_empty_symbols_returns_empty(self):
         at_risk = get_earnings_risk_positions([], warning_days=2)
         self.assertEqual(at_risk, {})
+
+
+class TestGetNextEarningsDateFormats(unittest.TestCase):
+    """Covers alternative yfinance calendar return formats."""
+
+    def _ticker_with_calendar(self, cal):
+        mock = MagicMock()
+        mock.calendar = cal
+        return mock
+
+    def test_dataframe_with_earnings_date_column(self):
+        future = date(2026, 5, 20)
+        df = pd.DataFrame({"Earnings Date": [pd.Timestamp(future.isoformat())]})
+        with patch("risk.earnings_calendar.yf.Ticker",
+                   return_value=self._ticker_with_calendar(df)):
+            result = get_next_earnings_date("AAPL")
+        self.assertEqual(result, future)
+
+    def test_dataframe_without_earnings_date_column_uses_first_cell(self):
+        future = date(2026, 5, 20)
+        df = pd.DataFrame([[pd.Timestamp(future.isoformat())]], columns=["Date"])
+        with patch("risk.earnings_calendar.yf.Ticker",
+                   return_value=self._ticker_with_calendar(df)):
+            result = get_next_earnings_date("AAPL")
+        self.assertEqual(result, future)
+
+    def test_empty_dataframe_returns_none(self):
+        df = pd.DataFrame()
+        with patch("risk.earnings_calendar.yf.Ticker",
+                   return_value=self._ticker_with_calendar(df)):
+            result = get_next_earnings_date("AAPL")
+        self.assertIsNone(result)
+
+    def test_non_dict_non_dataframe_returns_none(self):
+        with patch("risk.earnings_calendar.yf.Ticker",
+                   return_value=self._ticker_with_calendar("unexpected string")):
+            result = get_next_earnings_date("AAPL")
+        self.assertIsNone(result)

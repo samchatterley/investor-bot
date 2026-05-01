@@ -133,3 +133,48 @@ class TestAuditLogWrites(AuditLogBase):
         events = self._read_events()
         self.assertEqual(events[0]["event"], "MACRO_SKIP")
         self.assertIn("FOMC", events[0]["macro_event"])
+
+
+class TestRunIdInjection(AuditLogBase):
+
+    def test_set_run_id_appears_in_subsequent_events(self):
+        from utils import audit_log
+        from utils.audit_log import log_run_start, set_run_id
+        original = audit_log._run_id
+        try:
+            set_run_id("test-run-001")
+            log_run_start("open", 100_000, 10_000, True)
+            events = self._read_events()
+            self.assertEqual(events[0].get("run_id"), "test-run-001")
+        finally:
+            audit_log._run_id = original
+
+    def test_no_run_id_field_when_not_set(self):
+        from utils import audit_log
+        from utils.audit_log import log_run_start
+        original = audit_log._run_id
+        try:
+            audit_log._run_id = None
+            log_run_start("open", 100_000, 10_000, True)
+            events = self._read_events()
+            self.assertNotIn("run_id", events[0])
+        finally:
+            audit_log._run_id = original
+
+
+class TestConfigOverrideLogs(AuditLogBase):
+
+    def test_log_config_override_applied(self):
+        from utils.audit_log import log_config_override_applied
+        log_config_override_applied("MIN_CONFIDENCE", 8)
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "CONFIG_OVERRIDE_APPLIED")
+        self.assertEqual(events[0]["key"], "MIN_CONFIDENCE")
+        self.assertEqual(events[0]["value"], 8)
+
+    def test_log_config_override_rejected(self):
+        from utils.audit_log import log_config_override_rejected
+        log_config_override_rejected("SUPER_LEVER", 99, "not in allowlist")
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "CONFIG_OVERRIDE_REJECTED")
+        self.assertEqual(events[0]["reason"], "not in allowlist")
