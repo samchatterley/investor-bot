@@ -278,27 +278,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     open_positions = trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
 
-    # ── Midday/close: position management only, no new buys ──────────────────
-    if mode in ("midday", "close"):
-        account_after = trader.get_account_info(client)
-        record = portfolio_tracker.save_daily_run(
-            date=f"{today}-{mode}",
-            account_before=account_before,
-            account_after=account_after,
-            ai_decisions={"market_summary": f"{mode} check", "position_decisions": [], "buy_candidates": []},
-            trades_executed=all_trades,
-            stop_losses_triggered=[],
-            run_id=run_id,
-        )
-        portfolio_tracker.print_summary(record)
-        audit_log.log_run_end(mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"])
-        if mode == "close" and not dry_run:
-            day_summary = get_day_summary(today)
-            if day_summary:
-                emailer.send_summary(day_summary)
-        return
-
-    # ── Full open-mode cycle ──────────────────────────────────────────────────
+    # ── Full cycle (all modes) ────────────────────────────────────────────────
 
     # Exit earnings-risk positions
     for symbol, ed in earnings_risk.items():
@@ -458,10 +438,12 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             executed_symbols.add(symbol)
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
 
-    # ── Execute buys (with pre-trade controls) ────────────────────────────────
-    skip_buys = cb_triggered or regime.get("is_bearish") or macro.get("is_high_risk")
+    # ── Execute buys (open mode only; midday/close are position-management runs) ──
+    skip_buys = mode in ("midday", "close") or cb_triggered or regime.get("is_bearish") or macro.get("is_high_risk")
     if skip_buys:
         reasons = []
+        if mode in ("midday", "close"):
+            reasons.append(f"{mode} mode")
         if cb_triggered:
             reasons.append("circuit breaker")
         if regime.get("is_bearish"):
@@ -561,8 +543,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     # ── Finalise ──────────────────────────────────────────────────────────────
     account_after = trader.get_account_info(client)
+    save_date = today if mode == "open" else f"{today}-{mode}"
     record = portfolio_tracker.save_daily_run(
-        date=today,
+        date=save_date,
         account_before=account_before,
         account_after=account_after,
         ai_decisions=decisions,
@@ -573,6 +556,10 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     portfolio_tracker.print_summary(record)
     performance.generate_dashboard(portfolio_tracker.load_history())
     audit_log.log_run_end(mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"])
+    if mode == "close" and not dry_run:
+        day_summary = get_day_summary(today)
+        if day_summary:
+            emailer.send_summary(day_summary)
 
 
 if __name__ == "__main__":
