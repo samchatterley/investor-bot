@@ -185,7 +185,10 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
 
 
 def close_position(client: TradingClient, symbol: str) -> OrderResult:
-    """Close an entire position. Retries up to 3 times before returning REJECTED."""
+    """Close an entire position. Cancels open orders first (trailing stops hold shares),
+    then retries up to 3 times before returning REJECTED."""
+    cancel_open_orders(client, symbol)
+
     @with_retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
     def _attempt():
         client.close_position(symbol)

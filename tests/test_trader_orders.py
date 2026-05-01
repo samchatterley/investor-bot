@@ -8,6 +8,14 @@ from unittest.mock import MagicMock, patch
 from models import OrderResult, OrderStatus
 
 
+def _make_trailing_stop_order(symbol, status="new"):
+    o = MagicMock()
+    o.symbol = symbol
+    o.status = status
+    o.id = f"stop-{symbol}"
+    return o
+
+
 def _mock_order(order_id="order-123", status="new", filled_qty=None):
     o = MagicMock()
     o.id = order_id
@@ -257,6 +265,26 @@ class TestClosePosition(unittest.TestCase):
         self.assertEqual(result.status, OrderStatus.REJECTED)
         self.assertFalse(result.is_success)
         self.assertIn("not found", result.rejection_reason)
+
+    def test_cancels_open_orders_before_closing(self):
+        # Trailing stop holds shares: close_position must cancel open orders first
+        # or Alpaca returns "insufficient qty available for order"
+        from execution.trader import close_position
+        call_order = []
+        client = MagicMock()
+        client.get_orders.return_value = [_make_trailing_stop_order("AAPL")]
+        client.cancel_order_by_id.side_effect = lambda _: call_order.append("cancel")
+        client.close_position.side_effect = lambda _: call_order.append("close")
+        close_position(client, "AAPL")
+        self.assertEqual(call_order, ["cancel", "close"])
+
+    def test_close_succeeds_even_when_cancel_raises(self):
+        from execution.trader import close_position
+        client = MagicMock()
+        client.get_orders.side_effect = Exception("API down")  # cancel_open_orders fails
+        result = close_position(client, "AAPL")
+        client.close_position.assert_called_once_with("AAPL")
+        self.assertTrue(result.is_success)
 
 
 class TestCancelOpenOrders(unittest.TestCase):
