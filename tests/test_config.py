@@ -250,17 +250,13 @@ class TestRuntimeOverrideReject(TestRuntimeOverrideBase):
         self.assertEqual(config.MIN_CONFIDENCE, original_conf)  # rejected
         self.assertEqual(config.MAX_HOLD_DAYS, 3)               # applied
 
-    def test_max_position_pct_above_025_rejected(self):
-        # 0.30 is above the 0.25 runtime override ceiling
-        original = self._originals["MAX_POSITION_PCT"]
-        self._write({"MAX_POSITION_PCT": 0.30})
-        self._load()
-        self.assertEqual(config.MAX_POSITION_PCT, original)
-
-    def test_max_position_pct_at_025_applied(self):
+    def test_max_position_pct_not_runtime_overridable(self):
+        # MAX_POSITION_PCT is a deprecated legacy constant — removed from RUNTIME_OVERRIDE_KEYS
+        # to prevent accidental 45% position sizing via self-modification.
+        original = config.MAX_POSITION_PCT
         self._write({"MAX_POSITION_PCT": 0.25})
         self._load()
-        self.assertAlmostEqual(config.MAX_POSITION_PCT, 0.25)
+        self.assertEqual(config.MAX_POSITION_PCT, original)
 
 
 class TestRuntimeOverrideEdgeCases(TestRuntimeOverrideBase):

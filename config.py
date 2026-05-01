@@ -21,7 +21,7 @@ IS_PAPER = "paper" in ALPACA_BASE_URL
 
 # Position sizing
 MAX_POSITIONS = 5
-MAX_POSITION_PCT = 0.45      # Max 45% of portfolio in one position (legacy Kelly cap, kept for config.validate())
+MAX_POSITION_PCT = 0.45      # Deprecated — legacy Kelly cap; kept only for config.validate(). Superseded by MAX_POSITION_WEIGHT.
 CASH_RESERVE_PCT = 0.10      # Always keep 10% as cash buffer
 
 # Risk-budget sizing (replaces Kelly)
@@ -128,7 +128,6 @@ _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 # Everything else — API keys, trading mode, stock universe — is immutable.
 RUNTIME_OVERRIDE_KEYS: frozenset[str] = frozenset({
     "MIN_CONFIDENCE",
-    "MAX_POSITION_PCT",
     "TRAILING_STOP_PCT",
     "MAX_HOLD_DAYS",
     "MAX_ORDERS_PER_RUN",
@@ -139,7 +138,6 @@ RUNTIME_OVERRIDE_KEYS: frozenset[str] = frozenset({
 # Tighter than the static validate() bounds to constrain AI self-modification.
 RUNTIME_OVERRIDE_BOUNDS: dict[str, tuple] = {
     "MIN_CONFIDENCE":     (int,   7,    10),
-    "MAX_POSITION_PCT":   (float, 0.05, 0.25),
     "TRAILING_STOP_PCT":  (float, 2.0,  10.0),
     "MAX_HOLD_DAYS":      (int,   1,    10),
     "MAX_ORDERS_PER_RUN": (int,   1,    5),

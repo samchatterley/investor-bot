@@ -444,6 +444,7 @@ class RunInnerBase(unittest.TestCase):
             "main.audit_log.log_earnings_exit":         None,
             "main.alerts.alert_circuit_breaker":        None,
             "main.alerts.alert_daily_loss":             None,
+            "main.alerts.alert_error":                  None,
             "main.performance.generate_dashboard":      None,
             "main.performance.record_trade_outcome":    None,
             "main.get_day_summary":                     {"date": "2026-01-15", "account_before": _account(), "account_after": _account(), "daily_pnl": 0.0},
@@ -617,7 +618,7 @@ class TestRunInnerOpenAborts(RunInnerBase):
 class TestRunInnerBuyFiltering(RunInnerBase):
 
     def test_validation_failure_removes_out_of_universe_candidates(self):
-        """Candidates whose symbol is not in the filtered scan universe are dropped."""
+        """Validation failure is fail-closed — all Claude buys are blocked, including out-of-universe candidates."""
         buy_mock = MagicMock()
         # GHOST is not in prefilter_candidates, so it's not in ai_known_symbols
         decisions = _decisions(buys=[{"symbol": "GHOST", "confidence": 8, "key_signal": "momentum"}])
@@ -632,11 +633,9 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
         buy_mock.assert_not_called()
 
-    def test_validation_failure_preserves_in_universe_candidates(self):
-        """Candidates in the scan universe survive a validation failure for other symbols."""
+    def test_validation_failure_blocks_all_claude_buys(self):
+        """Validation failure is fail-closed — AAPL (valid) is also blocked when GHOST (invalid) taints the response."""
         buy_mock = MagicMock()
-        buy_mock.return_value = OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=30.0)
-        # AAPL passes pre-filter; GHOST does not — validation flags GHOST
         decisions = _decisions(buys=[
             {"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"},
             {"symbol": "GHOST", "confidence": 7, "key_signal": "momentum"},
@@ -650,10 +649,26 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         with stack:
             from main import _run_inner
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
-        # AAPL should still be bought; GHOST should be dropped
-        called_symbols = [c.args[1] for c in buy_mock.call_args_list]
-        self.assertIn("AAPL", called_symbols)
-        self.assertNotIn("GHOST", called_symbols)
+        buy_mock.assert_not_called()
+
+    def test_validation_failure_blocks_claude_driven_sells(self):
+        """Validation failure zeroes position_decisions — Claude-recommended sells are blocked."""
+        sell_mock = MagicMock()
+        decisions = _decisions(
+            buys=[{"symbol": "MSFT", "confidence": 8, "key_signal": "momentum"}],
+            sells=[{"symbol": "AAPL", "action": "SELL", "confidence": 7, "reasoning": "momentum weakening"}],
+        )
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": [{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.validate_ai_response": (False, ["buy_candidates → 0: symbol not in universe"]),
+            "main.trader.close_position": sell_mock,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # Claude-driven sell must not fire; stale/earnings exits (none here) would still fire
+        sell_mock.assert_not_called()
 
     def test_bearish_regime_blocks_buys(self):
         buy_mock = MagicMock()

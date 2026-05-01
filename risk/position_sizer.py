@@ -87,11 +87,14 @@ def risk_budget_size(
     notional = risk_usd / max(stop_pct, 1e-6)
     notional = min(notional, equity * MAX_POSITION_WEIGHT)
 
-    kelly = kelly_fraction(confidence, signal, regime)
-    logger.debug(
-        f"risk_budget_size: notional={notional:.2f} kelly_telemetry={kelly:.3f} "
-        f"conf={confidence} {signal}/{regime}"
-    )
+    try:
+        kelly = kelly_fraction(confidence, signal, regime)
+        logger.debug(
+            f"risk_budget_size: notional={notional:.2f} kelly_telemetry={kelly:.3f} "
+            f"conf={confidence} {signal}/{regime}"
+        )
+    except Exception as e:
+        logger.debug(f"kelly_fraction unavailable (telemetry only): {e}")
 
     return max(0.0, notional)
 

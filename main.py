@@ -401,17 +401,16 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     is_valid, validation_errors = validate_ai_response(decisions, ai_known_symbols, held_symbols=held_symbols)
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
-        logger.warning(f"AI response validation: {len(validation_errors)} issue(s) — filtering invalid candidates")
-        # Surgical filter: remove candidates not in the verified symbol universe.
-        # Allows valid candidates through rather than aborting all buys.
-        before = len(decisions.get("buy_candidates", []))
-        decisions["buy_candidates"] = [
-            c for c in decisions.get("buy_candidates", [])
-            if c.get("symbol") in ai_known_symbols
-        ]
-        removed = before - len(decisions["buy_candidates"])
-        if removed:
-            logger.warning(f"  Removed {removed} out-of-universe buy candidate(s): {validation_errors}")
+        logger.error(
+            f"AI response validation failed ({len(validation_errors)} error(s)) — "
+            f"blocking all Claude-driven decisions: {validation_errors}"
+        )
+        alerts.alert_error(
+            "VALIDATION FAILURE",
+            f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
+        )
+        decisions["buy_candidates"] = []
+        decisions["position_decisions"] = []
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
     decision_log.log_decisions(decisions, mode, executed_symbols)

@@ -264,8 +264,8 @@ TASK:
 3. Only recommend BUY if confidence >= {MIN_CONFIDENCE}/10
 4. Treat unusual options call activity as a supporting signal, not a standalone reason to buy
 
-NOTE: Do NOT include a cash_fraction field — position sizing is handled automatically
-by the Kelly Criterion using your confidence score. Focus on signal quality and confidence accuracy.
+NOTE: Do NOT include a cash_fraction field — position sizing is handled automatically.
+Focus on signal quality and confidence accuracy.
 
 Use the submit_trading_decisions tool to return your analysis."""
 
@@ -363,8 +363,8 @@ def get_trading_decisions(
         is_valid, errors = validate_ai_response(decisions, known_symbols)
         if not is_valid:
             logger.warning(f"AI response failed domain validation: {errors}")
-            # Return decisions anyway — main.py runs the authoritative validation
-            # and will strip invalid candidates before any order is placed.
+            # Return decisions anyway — main.py is the authoritative gate and will
+            # fail closed (block all Claude-driven orders) on any validation errors.
 
         logger.info(f"AI analysis complete. Market: {decisions.get('market_summary', '')}")
         return decisions

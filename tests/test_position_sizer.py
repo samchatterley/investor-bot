@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import config
 from risk.position_sizer import kelly_fraction, get_max_positions, risk_budget_size
 
@@ -76,6 +77,14 @@ class TestRiskBudgetSize(unittest.TestCase):
         stop_pct = config.TRAILING_STOP_PCT / 100.0
         expected = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
         self.assertAlmostEqual(risk_budget_size(equity, confidence=8), expected, places=4)
+
+    def test_notional_unaffected_when_kelly_unavailable(self):
+        """Kelly is telemetry only — risk_budget_size returns valid notional even if kelly_fraction fails."""
+        def forbidden(*args, **kwargs):
+            raise AssertionError("kelly_fraction must not determine live notional")
+        with patch("risk.position_sizer.kelly_fraction", side_effect=forbidden):
+            result = risk_budget_size(10_000, confidence=8)
+        self.assertGreater(result, 0.0)
 
     def test_confidence_does_not_change_notional(self):
         # Confidence affects Kelly telemetry only — risk-budget notional is identical
