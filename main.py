@@ -97,7 +97,7 @@ def _run_kill_switch():
     closed = 0
     for pos in positions:
         result = trader.close_position(client, pos["symbol"])
-        if result:
+        if result.is_success:
             closed += 1
             pl = pos["unrealized_pl"]
             logger.critical(f"  Closed {pos['symbol']}  P&L: {'+' if pl >= 0 else ''}{pl:.2f}")
@@ -138,11 +138,11 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
             if not dry_run:
                 trader.cancel_open_orders(client, symbol)
                 result = trader.place_partial_sell(client, symbol, half_qty)
-                if result:
-                    audit_log.log_order_placed(symbol, "SELL_PARTIAL", pos["market_value"] / 2, result["order_id"])
-                    remaining_qty = trader.wait_for_fill(client, result["order_id"])
+                if result and result.is_success:
+                    audit_log.log_order_placed(symbol, "SELL_PARTIAL", pos["market_value"] / 2, result.broker_order_id)
+                    remaining_qty = trader.wait_for_fill(client, result.broker_order_id)
                     if remaining_qty is not None:
-                        audit_log.log_order_filled(symbol, result["order_id"], remaining_qty)
+                        audit_log.log_order_filled(symbol, result.broker_order_id, remaining_qty)
                         trader.place_trailing_stop(client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"])
                     executed.append({
                         "symbol": symbol,
@@ -311,7 +311,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             audit_log.log_earnings_exit(symbol, str(ed))
             if not dry_run:
                 result = trader.close_position(client, symbol)
-                if result:
+                if result.is_success:
                     meta = trader.get_position_meta(symbol)
                     pos = next((p for p in open_positions if p["symbol"] == symbol), None)
                     if pos:
@@ -321,7 +321,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         )
                         audit_log.log_position_closed(symbol, "earnings_exit", pos["unrealized_plpc"])
                     trader.record_sell(symbol)
-                    all_trades.append({**result, "action": "SELL", "detail": "earnings exit"})
+                    all_trades.append({"symbol": symbol, "action": "SELL", "detail": "earnings exit"})
+                else:
+                    logger.error(f"  Earnings exit FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}")
 
     open_positions = trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
@@ -430,7 +432,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         if not dry_run:
             pos = next((p for p in open_positions if p["symbol"] == symbol), None)
             result = trader.close_position(client, symbol)
-            if result:
+            if result.is_success:
                 if pos:
                     meta = trader.get_position_meta(symbol)
                     performance.record_trade_outcome(
@@ -440,10 +442,10 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
                 trader.record_sell(symbol)
                 executed_symbols.add(symbol)
-                all_trades.append({**result, "action": "SELL", "detail": reason})
+                all_trades.append({"symbol": symbol, "action": "SELL", "detail": reason})
             else:
-                logger.error(f"  SELL FAILED {symbol} — close_position returned None after retries. Manual review required.")
-                alerts.alert_error("SELL FAILED", f"{symbol}: failed to close position after 3 attempts — manual review required.")
+                logger.error(f"  SELL FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}. Manual review required.")
+                alerts.alert_error("SELL FAILED", f"{symbol}: failed to close position — {result.rejection_reason or 'unknown error'}")
         else:
             executed_symbols.add(symbol)
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
@@ -510,7 +512,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                 if notional >= 1.0:
                     if not dry_run:
                         result = trader.place_buy_order(client, symbol, notional)
-                        if result:
+                        if result and result.is_success:
                             orders_placed += 1
                             daily_notional_spent += notional
                             snap = next((s for s in snapshots if s["symbol"] == symbol), None)
@@ -521,19 +523,19 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                                 regime=regime.get("regime", "UNKNOWN"),
                                 confidence=confidence,
                             )
-                            audit_log.log_order_placed(symbol, "BUY", notional, result["order_id"])
-                            if result.get("filled_qty"):
-                                audit_log.log_order_filled(symbol, result["order_id"], result["filled_qty"])
+                            audit_log.log_order_placed(symbol, "BUY", notional, result.broker_order_id)
+                            if result.filled_qty:
+                                audit_log.log_order_filled(symbol, result.broker_order_id, result.filled_qty)
                                 current_price = snap["current_price"] if snap else None
                                 # Floor to whole shares — Alpaca rejects fractional stop orders
-                                stop_qty = int(math.floor(result["filled_qty"]))
+                                stop_qty = int(math.floor(result.filled_qty))
                                 stop_result = trader.place_trailing_stop(client, symbol, stop_qty, current_price=current_price) if stop_qty >= 1 else None
-                                if stop_result is None:
+                                if stop_result is None or not stop_result.is_success:
                                     logger.error(f"  Stop placement FAILED for {symbol} — position unprotected!")
                                     alerts.alert_error("STOP FAILED", f"{symbol}: trailing stop placement failed after buy — position has no downside protection.")
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | Kelly {kelly:.0%} | {candidate.get('key_signal')} | confidence={confidence}"
-                            all_trades.append({**result, "action": "BUY", "detail": detail})
+                            all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})
                     else:
                         orders_placed += 1
                         daily_notional_spent += notional

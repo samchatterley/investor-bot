@@ -1,8 +1,36 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# ── Execution result types ────────────────────────────────────────────────────
+
+class OrderStatus(StrEnum):
+    FILLED = "FILLED"
+    PARTIAL = "PARTIAL"
+    TIMEOUT = "TIMEOUT"
+    REJECTED = "REJECTED"
+    STOP_FAILED = "STOP_FAILED"
+    UNPROTECTED = "UNPROTECTED"
+
+
+@dataclass
+class OrderResult:
+    status: OrderStatus
+    symbol: str
+    filled_qty: float = 0.0
+    filled_avg_price: float = 0.0
+    broker_order_id: str | None = None
+    rejection_reason: str | None = None
+    stop_order_id: str | None = None
+
+    @property
+    def is_success(self) -> bool:
+        return self.status == OrderStatus.FILLED
 
 VALID_BUY_SIGNALS: frozenset[str] = frozenset({
     "mean_reversion",
