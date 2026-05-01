@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch, call
 
+from models import OrderResult, OrderStatus
+
 
 def _mock_order(order_id="order-123", status="new", filled_qty=None):
     o = MagicMock()
@@ -44,6 +46,42 @@ def _meta_patcher(tmpdir):
         patch.object(db_module, "_initialized", False),
         patch.object(db_module, "_migrate_json_state", lambda: None),
     ]
+
+
+class TestOrderResult(unittest.TestCase):
+
+    def test_is_success_true_for_filled(self):
+        r = OrderResult(status=OrderStatus.FILLED, symbol="AAPL")
+        self.assertTrue(r.is_success)
+
+    def test_is_success_false_for_rejected(self):
+        r = OrderResult(status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="API error")
+        self.assertFalse(r.is_success)
+
+    def test_is_success_false_for_timeout(self):
+        r = OrderResult(status=OrderStatus.TIMEOUT, symbol="AAPL")
+        self.assertFalse(r.is_success)
+
+    def test_is_success_false_for_stop_failed(self):
+        r = OrderResult(status=OrderStatus.STOP_FAILED, symbol="AAPL")
+        self.assertFalse(r.is_success)
+
+    def test_is_success_false_for_unprotected(self):
+        r = OrderResult(status=OrderStatus.UNPROTECTED, symbol="AAPL")
+        self.assertFalse(r.is_success)
+
+    def test_default_values(self):
+        r = OrderResult(status=OrderStatus.FILLED, symbol="MSFT")
+        self.assertAlmostEqual(r.filled_qty, 0.0)
+        self.assertAlmostEqual(r.filled_avg_price, 0.0)
+        self.assertIsNone(r.broker_order_id)
+        self.assertIsNone(r.rejection_reason)
+        self.assertIsNone(r.stop_order_id)
+
+    def test_all_statuses_present(self):
+        expected = {"FILLED", "PARTIAL", "TIMEOUT", "REJECTED", "STOP_FAILED", "UNPROTECTED"}
+        actual = {s.value for s in OrderStatus}
+        self.assertEqual(actual, expected)
 
 
 class TestGetAccountInfo(unittest.TestCase):
@@ -109,25 +147,37 @@ class TestPlaceBuyOrder(unittest.TestCase):
         with patch("execution.trader.wait_for_fill", return_value=28.5):
             result = place_buy_order(client, "AAPL", 5_000.0)
         self.assertIsNotNone(result)
-        self.assertEqual(result["symbol"], "AAPL")
-        self.assertEqual(result["filled_qty"], 28.5)
+        self.assertEqual(result.symbol, "AAPL")
+        self.assertAlmostEqual(result.filled_qty, 28.5)
+        self.assertEqual(result.status, OrderStatus.FILLED)
 
-    def test_returns_none_on_api_error(self):
+    def test_returns_rejected_on_api_error(self):
         from execution.trader import place_buy_order
         client = MagicMock()
         client.submit_order.side_effect = Exception("insufficient funds")
+        result = place_buy_order(client, "AAPL", 5_000.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, OrderStatus.REJECTED)
+        self.assertIn("insufficient funds", result.rejection_reason)
+
+    def test_returns_timeout_when_fill_does_not_arrive(self):
+        from execution.trader import place_buy_order
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-abc")
         with patch("execution.trader.wait_for_fill", return_value=None):
             result = place_buy_order(client, "AAPL", 5_000.0)
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, OrderStatus.TIMEOUT)
+        self.assertEqual(result.broker_order_id, "order-abc")
 
-    def test_order_includes_order_id_and_notional(self):
+    def test_order_includes_broker_order_id(self):
         from execution.trader import place_buy_order
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-xyz")
         with patch("execution.trader.wait_for_fill", return_value=10.0):
             result = place_buy_order(client, "MSFT", 3_000.0)
-        self.assertEqual(result["order_id"], "order-xyz")
-        self.assertAlmostEqual(result["notional"], 3_000.0)
+        self.assertEqual(result.broker_order_id, "order-xyz")
+        self.assertTrue(result.is_success)
 
 
 class TestWaitForFill(unittest.TestCase):
@@ -175,15 +225,17 @@ class TestPlaceSellOrder(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("sell-123", status="new")
         result = place_sell_order(client, "AAPL", 15.5)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["symbol"], "AAPL")
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.symbol, "AAPL")
+        self.assertEqual(result.broker_order_id, "sell-123")
 
-    def test_returns_none_on_error(self):
+    def test_returns_rejected_on_error(self):
         from execution.trader import place_sell_order
         client = MagicMock()
         client.submit_order.side_effect = Exception("position not found")
         result = place_sell_order(client, "AAPL", 15.5)
-        self.assertIsNone(result)
+        self.assertEqual(result.status, OrderStatus.REJECTED)
+        self.assertIn("position not found", result.rejection_reason)
 
 
 class TestClosePosition(unittest.TestCase):
@@ -193,15 +245,18 @@ class TestClosePosition(unittest.TestCase):
         client = MagicMock()
         result = close_position(client, "AAPL")
         client.close_position.assert_called_once_with("AAPL")
-        self.assertEqual(result["symbol"], "AAPL")
-        self.assertEqual(result["status"], "closed")
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.symbol, "AAPL")
+        self.assertEqual(result.status, OrderStatus.FILLED)
 
-    def test_returns_none_on_error(self):
+    def test_returns_rejected_on_error(self):
         from execution.trader import close_position
         client = MagicMock()
         client.close_position.side_effect = Exception("not found")
         result = close_position(client, "AAPL")
-        self.assertIsNone(result)
+        self.assertEqual(result.status, OrderStatus.REJECTED)
+        self.assertFalse(result.is_success)
+        self.assertIn("not found", result.rejection_reason)
 
 
 class TestCancelOpenOrders(unittest.TestCase):
@@ -413,9 +468,10 @@ class TestPlacePartialSell(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = MagicMock(id="order-partial")
         result = place_partial_sell(client, "AAPL", 5.0)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["symbol"], "AAPL")
-        self.assertAlmostEqual(result["qty"], 5.0)
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.symbol, "AAPL")
+        self.assertAlmostEqual(result.filled_qty, 5.0)
+        self.assertEqual(result.broker_order_id, "order-partial")
 
     def test_returns_none_for_zero_qty(self):
         from execution.trader import place_partial_sell
@@ -431,12 +487,13 @@ class TestPlacePartialSell(unittest.TestCase):
         self.assertIsNone(result)
         client.submit_order.assert_not_called()
 
-    def test_returns_none_on_error(self):
+    def test_returns_rejected_on_error(self):
         from execution.trader import place_partial_sell
         client = MagicMock()
         client.submit_order.side_effect = Exception("insufficient shares")
         result = place_partial_sell(client, "AAPL", 5.0)
-        self.assertIsNone(result)
+        self.assertEqual(result.status, OrderStatus.REJECTED)
+        self.assertFalse(result.is_success)
 
 
 class TestPlaceTrailingStop(unittest.TestCase):
@@ -462,10 +519,9 @@ class TestPlaceTrailingStop(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-trail")
         result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["symbol"], "AAPL")
-        self.assertIn("trail_pct", result)
-        # Verify TrailingStopOrderRequest was used (not StopOrderRequest)
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.symbol, "AAPL")
+        self.assertEqual(result.stop_order_id, "stop-trail")
         submitted = client.submit_order.call_args[0][0]
         self.assertIsInstance(submitted, TrailingStopOrderRequest)
 
@@ -475,8 +531,8 @@ class TestPlaceTrailingStop(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-fixed")
         result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
-        self.assertIsNotNone(result)
-        self.assertIn("stop_price", result)
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.stop_order_id, "stop-fixed")
         submitted = client.submit_order.call_args[0][0]
         self.assertIsInstance(submitted, StopOrderRequest)
 
@@ -485,18 +541,22 @@ class TestPlaceTrailingStop(unittest.TestCase):
         from config import TRAILING_STOP_PCT
         client = MagicMock()
         client.submit_order.return_value = self._make_order()
-        result = place_trailing_stop(client, "AAPL", 2.5, current_price=200.0)
+        place_trailing_stop(client, "AAPL", 2.5, current_price=200.0)
+        # stop_price is set on the submitted request, not in OrderResult
+        submitted = client.submit_order.call_args[0][0]
         expected_stop = round(200.0 * (1 - TRAILING_STOP_PCT / 100), 2)
-        self.assertAlmostEqual(result["stop_price"], expected_stop, places=2)
+        self.assertAlmostEqual(submitted.stop_price, expected_stop, places=2)
 
-    def test_fractional_without_current_price_returns_none(self):
+    def test_fractional_without_current_price_returns_stop_failed(self):
         from execution.trader import place_trailing_stop
         result = place_trailing_stop(MagicMock(), "AAPL", 2.5, current_price=None)
-        self.assertIsNone(result)
+        self.assertEqual(result.status, OrderStatus.STOP_FAILED)
+        self.assertFalse(result.is_success)
 
-    def test_returns_none_on_api_error(self):
+    def test_returns_stop_failed_on_api_error(self):
         from execution.trader import place_trailing_stop
         client = MagicMock()
         client.submit_order.side_effect = Exception("order rejected")
         result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
-        self.assertIsNone(result)
+        self.assertEqual(result.status, OrderStatus.STOP_FAILED)
+        self.assertFalse(result.is_success)

@@ -221,11 +221,13 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
         submitted = client.submit_order.call_args[0][0]
         self.assertIsInstance(submitted, TrailingStopOrderRequest)
 
-    def test_fractional_without_current_price_returns_none(self):
+    def test_fractional_without_current_price_returns_stop_failed(self):
         from execution.trader import place_trailing_stop
+        from models import OrderStatus
         client = self._make_client()
         result = place_trailing_stop(client, "NVDA", qty=132.652248, current_price=None)
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, OrderStatus.STOP_FAILED)
         client.submit_order.assert_not_called()
 
     def test_fractional_stop_price_calculated_from_current_price(self):

@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import config
+from models import OrderResult, OrderStatus
 
 
 # ── 1. Daily loss baseline ────────────────────────────────────────────────────
@@ -271,10 +272,10 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         import contextlib
         from unittest.mock import MagicMock, patch
 
-        buy_mock = MagicMock(return_value={
-            "symbol": "X", "order_id": "o1", "filled_qty": 1.0,
-            "notional": 1000.0, "status": "filled",
-        })
+        buy_mock = MagicMock(return_value=OrderResult(
+            status=OrderStatus.FILLED, symbol="X",
+            broker_order_id="o1", filled_qty=1.0,
+        ))
         candidates = [
             {"symbol": f"SYM{i}", "confidence": 8, "key_signal": "momentum"}
             for i in range(n_candidates)
@@ -300,9 +301,9 @@ class TestMaxOrdersPerRun(unittest.TestCase):
             "main.trader.get_stale_positions":          [],
             "main.trader.record_buy":                   None,
             "main.trader.record_sell":                  None,
-            "main.trader.close_position":               {"symbol": "X", "status": "closed"},
+            "main.trader.close_position":               OrderResult(status=OrderStatus.FILLED, symbol="X"),
             "main.trader.place_buy_order":              buy_mock,
-            "main.trader.place_trailing_stop":          {"trail_pct": 4.0},
+            "main.trader.place_trailing_stop":          OrderResult(status=OrderStatus.FILLED, symbol="X", stop_order_id="stop-1"),
             "main.portfolio_tracker.load_history":      [],
             "main.portfolio_tracker.get_track_record":  [],
             "main.portfolio_tracker.save_daily_run":    record,
@@ -387,7 +388,7 @@ class TestMaxOrdersPerRun(unittest.TestCase):
 
 class TestGTCStopForFractional(unittest.TestCase):
 
-    def test_sub_share_position_returns_none_without_api_call(self):
+    def test_sub_share_position_returns_unprotected_without_api_call(self):
         """Positions smaller than 1 whole share cannot be stop-protected — Alpaca rejects them."""
         from execution.trader import place_trailing_stop
 
@@ -397,7 +398,9 @@ class TestGTCStopForFractional(unittest.TestCase):
         with patch("execution.trader.TRAILING_STOP_PCT", 4.0):
             result = place_trailing_stop(mock_client, "AAPL", qty=0.5, current_price=150.0)
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, OrderStatus.UNPROTECTED)
+        self.assertFalse(result.is_success)
         mock_client.submit_order.assert_not_called()
 
     def test_fractional_position_floors_to_whole_shares(self):

@@ -9,6 +9,7 @@ import unittest.mock
 from unittest.mock import MagicMock, patch
 
 import config
+from models import OrderResult, OrderStatus
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -115,11 +116,11 @@ class TestRunKillSwitch(unittest.TestCase):
         if cancel_raises:
             mock_client.cancel_orders.side_effect = Exception("API down")
         pos = positions or []
-        close_results = [{"symbol": p["symbol"], "status": "closed"} for p in pos]
+        close_results = [OrderResult(status=OrderStatus.FILLED, symbol=p["symbol"]) for p in pos]
 
         with patch("main.trader.get_client", return_value=mock_client), \
              patch("main.trader.get_open_positions", return_value=pos), \
-             patch("main.trader.close_position", side_effect=close_results or [None]), \
+             patch("main.trader.close_position", side_effect=close_results or [OrderResult(OrderStatus.REJECTED, "X")]), \
              patch("main.audit_log.log_position_closed"), \
              patch("main.audit_log.log_kill_switch"), \
              patch("main.alerts.alert_error"), \
@@ -147,8 +148,8 @@ class TestRunKillSwitch(unittest.TestCase):
             {"symbol": "NVDA", "unrealized_pl": -50.0, "unrealized_plpc": -1.0},
         ]
         close_mock = MagicMock(side_effect=[
-            {"symbol": "AAPL", "status": "closed"},
-            {"symbol": "NVDA", "status": "closed"},
+            OrderResult(status=OrderStatus.FILLED, symbol="AAPL"),
+            OrderResult(status=OrderStatus.FILLED, symbol="NVDA"),
         ])
         with patch("main.trader.get_client", return_value=MagicMock()), \
              patch("main.trader.get_open_positions", return_value=positions), \
@@ -164,7 +165,7 @@ class TestRunKillSwitch(unittest.TestCase):
 
     def test_cancel_failure_does_not_abort_position_close(self):
         positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
-        close_mock = MagicMock(return_value={"symbol": "AAPL", "status": "closed"})
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
         client = self._run(positions=positions, cancel_raises=True)
         close_mock  # close still called despite cancel error (tested via close_results)
         self.assertTrue(os.path.exists(self.halt_file))
@@ -239,7 +240,7 @@ class TestHandlePartialExits(unittest.TestCase):
     def test_partial_exit_triggered_at_threshold(self):
         from main import _handle_partial_exits
         with patch("main.trader.cancel_open_orders"), \
-             patch("main.trader.place_partial_sell", return_value={"symbol": "AAPL", "order_id": "x", "qty": 5.0}), \
+             patch("main.trader.place_partial_sell", return_value=OrderResult(OrderStatus.FILLED, "AAPL", broker_order_id="x", filled_qty=5.0)), \
              patch("main.trader.wait_for_fill", return_value=5.0), \
              patch("main.trader.place_trailing_stop"), \
              patch("main.audit_log.log_order_placed"), \
@@ -277,7 +278,7 @@ class TestHandlePartialExits(unittest.TestCase):
             self._pos("NVDA", plpc=config.PARTIAL_PROFIT_PCT - 1),
         ]
         with patch("main.trader.cancel_open_orders"), \
-             patch("main.trader.place_partial_sell", return_value={"symbol": "AAPL", "order_id": "x", "qty": 5.0}), \
+             patch("main.trader.place_partial_sell", return_value=OrderResult(OrderStatus.FILLED, "AAPL", broker_order_id="x", filled_qty=5.0)), \
              patch("main.trader.wait_for_fill", return_value=5.0), \
              patch("main.trader.place_trailing_stop"), \
              patch("main.audit_log.log_order_placed"), \
@@ -397,8 +398,8 @@ class RunInnerBase(unittest.TestCase):
             "main.trader.get_stale_positions":          [],
             "main.trader.record_buy":                   None,
             "main.trader.record_sell":                  None,
-            "main.trader.close_position":               {"symbol": "X", "status": "closed"},
-            "main.trader.place_buy_order":              {"symbol": "AAPL", "order_id": "x", "filled_qty": 1.0, "notional": 1000.0, "status": "filled"},
+            "main.trader.close_position":               OrderResult(status=OrderStatus.FILLED, symbol="X"),
+            "main.trader.place_buy_order":              OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0),
             "main.trader.place_trailing_stop":          None,
             "main.portfolio_tracker.load_history":           [],
             "main.portfolio_tracker.get_track_record":       [],
@@ -550,7 +551,7 @@ class TestRunInnerDailyLoss(RunInnerBase):
     def test_daily_loss_closes_positions(self):
         positions = [{"symbol": "AAPL", "unrealized_pl": -500.0, "unrealized_plpc": -5.0,
                       "qty": 10.0, "market_value": 1000.0, "current_price": 100.0}]
-        close_mock = MagicMock(return_value={"symbol": "AAPL", "status": "closed"})
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
         stack, mocks = self._patch_all(**{
             "main.risk_manager.check_daily_loss": (True, -6.0),
             "main.trader.get_open_positions": positions,
@@ -634,7 +635,7 @@ class TestRunInnerBuyFiltering(RunInnerBase):
     def test_validation_failure_preserves_in_universe_candidates(self):
         """Candidates in the scan universe survive a validation failure for other symbols."""
         buy_mock = MagicMock()
-        buy_mock.return_value = {"symbol": "AAPL", "order_id": "x", "notional": 5000.0, "filled_qty": 30.0}
+        buy_mock.return_value = OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=30.0)
         # AAPL passes pre-filter; GHOST does not — validation flags GHOST
         decisions = _decisions(buys=[
             {"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"},
@@ -697,7 +698,7 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         buy_mock.assert_not_called()
 
     def test_sell_executed_in_open_mode(self):
-        close_mock = MagicMock(return_value={"symbol": "AAPL", "status": "closed"})
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
         positions = [{"symbol": "AAPL", "unrealized_pl": 100.0, "unrealized_plpc": 2.0,
                       "qty": 10.0, "market_value": 1000.0, "current_price": 100.0}]
         decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])

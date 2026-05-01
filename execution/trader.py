@@ -2,13 +2,13 @@ import logging
 import math
 import os
 from datetime import date
-from typing import Optional
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, TrailingStopOrderRequest
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
 import pandas as pd
 import time
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, IS_PAPER, TRAILING_STOP_PCT, LOG_DIR, today_et
+from models import OrderResult, OrderStatus
 from utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -50,8 +50,8 @@ def get_open_positions(client: TradingClient) -> list[dict]:
     return result
 
 
-def place_buy_order(client: TradingClient, symbol: str, notional_usd: float) -> Optional[dict]:
-    """Place a fractional market buy, wait for fill, return order including filled_qty."""
+def place_buy_order(client: TradingClient, symbol: str, notional_usd: float) -> OrderResult | None:
+    """Place a fractional market buy, wait for fill, return OrderResult."""
     if notional_usd < 1.0:
         logger.warning(f"Order too small for {symbol}: ${notional_usd:.2f}")
         return None
@@ -65,24 +65,18 @@ def place_buy_order(client: TradingClient, symbol: str, notional_usd: float) -> 
                 time_in_force=TimeInForce.DAY,
             )
         )
-        logger.info(f"BUY order placed: {symbol} ${notional_usd:.2f} | order_id={order.id}")
+        order_id = str(order.id)
+        logger.info(f"BUY order placed: {symbol} ${notional_usd:.2f} | order_id={order_id}")
 
-        # Wait up to 10s for fill so we can attach a trailing stop
-        filled_qty = wait_for_fill(client, str(order.id))
-
-        return {
-            "symbol": symbol,
-            "order_id": str(order.id),
-            "notional": notional_usd,
-            "filled_qty": filled_qty,
-            "status": str(order.status),
-        }
+        filled_qty = wait_for_fill(client, order_id) or 0.0
+        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
+        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
     except Exception as e:
         logger.error(f"Failed to place BUY for {symbol}: {e}")
-        return None
+        return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
-def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> Optional[float]:
+def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> float | None:
     """Poll until a market order is filled. Returns filled qty or None on timeout."""
     for _ in range(max_wait):
         try:
@@ -96,13 +90,16 @@ def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> O
     return None
 
 
-def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_price: float | None = None) -> Optional[dict]:
+def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_price: float | None = None) -> OrderResult | None:
     """Attach a stop to an open position.
 
     Alpaca rejects stop orders for fractional share quantities (error 42210000).
     When qty is fractional, we floor to the nearest whole share. The sub-share
     remainder runs without stop protection, but it is a tiny notional amount.
     If floor(qty) < 1 (entire position is sub-share), no stop can be placed.
+
+    Returns None only for the qty <= 0 pre-condition violation. All real attempts
+    return an OrderResult (FILLED on success, STOP_FAILED/UNPROTECTED on failure).
     """
     if not qty or qty <= 0:
         return None
@@ -117,11 +114,11 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
                 f"Cannot stop-protect {symbol}: position is entirely sub-share "
                 f"({safe_qty:.6f}) — Alpaca does not support fractional stop orders"
             )
-            return None
+            return OrderResult(status=OrderStatus.UNPROTECTED, symbol=symbol)
         # Place stop for whole-share portion; fractional remainder is unprotected
         if not current_price:
             logger.warning(f"Cannot place stop for {symbol}: no current price")
-            return None
+            return OrderResult(status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason="no current price")
         stop_price = round(current_price * (1 - TRAILING_STOP_PCT / 100), 2)
         try:
             order = client.submit_order(
@@ -133,14 +130,15 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
                     stop_price=stop_price,
                 )
             )
+            order_id = str(order.id)
             logger.info(
                 f"Stop order: {symbol} {whole_qty} shares (of {safe_qty:.6f}) "
-                f"stop=${stop_price} | order_id={order.id}"
+                f"stop=${stop_price} | order_id={order_id}"
             )
-            return {"symbol": symbol, "stop_price": stop_price, "order_id": str(order.id)}
+            return OrderResult(status=OrderStatus.FILLED, symbol=symbol, stop_order_id=order_id)
         except Exception as e:
             logger.error(f"Failed to place trailing stop for {symbol}: {e}")
-            return None
+            return OrderResult(status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason=str(e))
     else:
         try:
             order = client.submit_order(
@@ -152,14 +150,15 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
                     trail_percent=TRAILING_STOP_PCT,
                 )
             )
-            logger.info(f"Trailing stop: {symbol} {TRAILING_STOP_PCT}% trail | order_id={order.id}")
-            return {"symbol": symbol, "trail_pct": TRAILING_STOP_PCT, "order_id": str(order.id)}
+            order_id = str(order.id)
+            logger.info(f"Trailing stop: {symbol} {TRAILING_STOP_PCT}% trail | order_id={order_id}")
+            return OrderResult(status=OrderStatus.FILLED, symbol=symbol, stop_order_id=order_id)
         except Exception as e:
             logger.error(f"Failed to place trailing stop for {symbol}: {e}")
-            return None
+            return OrderResult(status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason=str(e))
 
 
-def place_sell_order(client: TradingClient, symbol: str, qty: float) -> Optional[dict]:
+def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderResult:
     """Sell an entire position (by quantity)."""
     try:
         order = client.submit_order(
@@ -170,15 +169,16 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> Optional
                 time_in_force=TimeInForce.DAY,
             )
         )
-        logger.info(f"SELL order placed: {symbol} qty={qty} | order_id={order.id}")
-        return {"symbol": symbol, "order_id": str(order.id), "qty": qty, "status": str(order.status)}
+        order_id = str(order.id)
+        logger.info(f"SELL order placed: {symbol} qty={qty} | order_id={order_id}")
+        return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=qty)
     except Exception as e:
         logger.error(f"Failed to place SELL for {symbol}: {e}")
-        return None
+        return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
-def close_position(client: TradingClient, symbol: str) -> Optional[dict]:
-    """Close an entire position. Retries up to 3 times before returning None."""
+def close_position(client: TradingClient, symbol: str) -> OrderResult:
+    """Close an entire position. Retries up to 3 times before returning REJECTED."""
     @with_retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
     def _attempt():
         client.close_position(symbol)
@@ -186,10 +186,10 @@ def close_position(client: TradingClient, symbol: str) -> Optional[dict]:
     try:
         _attempt()
         logger.info(f"Position closed: {symbol}")
-        return {"symbol": symbol, "status": "closed"}
+        return OrderResult(status=OrderStatus.FILLED, symbol=symbol)
     except Exception as e:
         logger.error(f"Failed to close position {symbol} after 3 attempts: {e}")
-        return None
+        return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
 @with_retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
@@ -363,7 +363,7 @@ def cancel_open_orders(client: TradingClient, symbol: str):
         logger.error(f"Failed to cancel orders for {symbol}: {e}")
 
 
-def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> Optional[dict]:
+def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderResult | None:
     """Sell a partial quantity of a position."""
     if qty <= 0:
         return None
@@ -376,8 +376,9 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> Option
                 time_in_force=TimeInForce.DAY,
             )
         )
-        logger.info(f"Partial SELL: {symbol} qty={qty:.6f} | order_id={order.id}")
-        return {"symbol": symbol, "order_id": str(order.id), "qty": qty}
+        order_id = str(order.id)
+        logger.info(f"Partial SELL: {symbol} qty={qty:.6f} | order_id={order_id}")
+        return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=qty)
     except Exception as e:
         logger.error(f"Partial sell failed for {symbol}: {e}")
-        return None
+        return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))

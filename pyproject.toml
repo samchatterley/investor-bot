@@ -44,15 +44,21 @@ strict = false
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_return_any = false
-# Clean modules only — execution/trader.py excluded until PR 4 (typed
-# OrderResult) resolves Alpaca SDK union-attr errors; analysis/ excluded
-# until Anthropic SDK overload stubs settle.
+# analysis/ excluded until Anthropic SDK overload stubs settle.
 files = [
     "models.py",
     "config.py",
     "utils/validators.py",
     "risk/position_sizer.py",
+    "execution/trader.py",
 ]
+
+[[tool.mypy.overrides]]
+# Alpaca SDK stubs return union types (Order | dict, Position | str, etc.)
+# that mypy cannot resolve. Suppress SDK-generated codes; our own typed code
+# (OrderResult, dataclasses) is still checked.
+module = "execution.trader"
+disable_error_code = ["union-attr", "arg-type", "index", "operator"]
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 
