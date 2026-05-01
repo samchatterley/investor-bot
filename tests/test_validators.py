@@ -623,9 +623,15 @@ class TestCheckPreTrade(unittest.TestCase):
         approved, _ = check_pre_trade("AAPL", 50_000, 100_000, 50_000, 150_000)
         self.assertTrue(approved)
 
-    def test_zero_notional_approved(self):
-        approved, _ = check_pre_trade("AAPL", 0, 0, 50_000, 150_000)
-        self.assertTrue(approved)
+    def test_zero_notional_rejected(self):
+        approved, reason = check_pre_trade("AAPL", 0, 0, 50_000, 150_000)
+        self.assertFalse(approved)
+        self.assertIn("invalid notional", reason)
+
+    def test_negative_notional_rejected(self):
+        approved, reason = check_pre_trade("AAPL", -100, 0, 50_000, 150_000)
+        self.assertFalse(approved)
+        self.assertIn("invalid notional", reason)
 
     def test_single_order_rejection_message_contains_symbol(self):
         _, reason = check_pre_trade("NVDA", 60_000, 0, 50_000, 150_000)

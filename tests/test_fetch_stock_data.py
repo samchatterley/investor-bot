@@ -8,13 +8,14 @@ import pandas as pd
 def _make_ohlcv(n=200, base=100.0):
     """Return a minimal OHLCV DataFrame that satisfies fetch_stock_data's warmup needs."""
     idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
-    prices = [base + i * 0.1 for i in range(n)]
+    actual_n = len(idx)
+    prices = [base + i * 0.1 for i in range(actual_n)]
     df = pd.DataFrame({
         "Open":   prices,
         "High":   [p + 1 for p in prices],
         "Low":    [p - 1 for p in prices],
         "Close":  prices,
-        "Volume": [1_000_000] * n,
+        "Volume": [1_000_000] * actual_n,
     }, index=idx)
     return df
 

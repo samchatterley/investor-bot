@@ -153,11 +153,12 @@ class TestStaleDataRejection(unittest.TestCase):
         import pandas as pd
         end = pd.Timestamp.today().normalize() - pd.Timedelta(days=days_old)
         idx = pd.bdate_range(end=end, periods=60)
-        prices = [100.0 + i * 0.1 for i in range(60)]
+        actual_n = len(idx)
+        prices = [100.0 + i * 0.1 for i in range(actual_n)]
         df = pd.DataFrame({
             "Open": prices, "High": [p + 1 for p in prices],
             "Low": [p - 1 for p in prices], "Close": prices,
-            "Volume": [1_000_000] * 60,
+            "Volume": [1_000_000] * actual_n,
         }, index=idx)
         t = MagicMock()
         t.history.return_value = df
@@ -422,7 +423,7 @@ class TestGTCStopForFractional(unittest.TestCase):
         call_args = mock_client.submit_order.call_args[0][0]
         self.assertIsInstance(call_args, StopOrderRequest)
         self.assertEqual(call_args.qty, 2)  # floored from 2.7
-        self.assertEqual(call_args.time_in_force, TimeInForce.DAY)
+        self.assertEqual(call_args.time_in_force, TimeInForce.GTC)
 
     def test_whole_share_uses_trailing_stop_not_fixed(self):
         from alpaca.trading.requests import TrailingStopOrderRequest

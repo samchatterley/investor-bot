@@ -16,6 +16,7 @@ check_pre_trade       — fat-finger / daily notional cap guard applied before
 """
 
 import logging
+import math
 import re
 
 from pydantic import ValidationError
@@ -131,6 +132,8 @@ def check_pre_trade(
     - Maximum single-order size (fat-finger guard)
     - Maximum daily notional cap (runaway algorithm guard)
     """
+    if not math.isfinite(notional) or notional <= 0:
+        return False, f"{symbol}: invalid notional {notional!r}"
     if notional > max_single_order:
         return False, (
             f"{symbol}: order ${notional:.2f} exceeds single-order cap ${max_single_order:.2f}"

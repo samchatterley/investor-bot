@@ -3,6 +3,7 @@ import smtplib
 from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 
 from config import EMAIL_APP_PASSWORD, EMAIL_CC, EMAIL_FROM, EMAIL_RECIPIENTS, EMAIL_TO
 
@@ -162,28 +163,32 @@ def _build_trade_cards(record: dict) -> str:
     for t in all_trades:
         detail_row = ""
         if t["detail"]:
+            safe_detail = escape(t['detail'])
             detail_row = f"""
   <tr>
     <td style="padding:6px 16px 14px;background:{t['bg']};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#777;line-height:1.5">
-      {t['detail']}
+      {safe_detail}
     </td>
   </tr>"""
 
         reasoning_row = ""
         if t.get("reasoning"):
+            safe_reasoning = escape(t['reasoning'])
             reasoning_row = f"""
   <tr>
     <td style="padding:12px 16px 14px;background:{t['reasoning_bg']};border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">
       <p style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin:0 0 4px 0">Why</p>
-      <p style="font-size:13px;color:#666;line-height:1.6;margin:0">{t['reasoning']}</p>
+      <p style="font-size:13px;color:#666;line-height:1.6;margin:0">{safe_reasoning}</p>
     </td>
   </tr>"""
 
+        safe_symbol = escape(t['symbol'])
+        safe_action = escape(t['action'])
         cards += f"""<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
   <tr>
     <td style="background:{t['bg']};padding:14px 16px 0">
-      <span style="font-size:18px;font-weight:bold;color:#111;font-family:Arial,Helvetica,sans-serif">{t['symbol']}</span>
-      <span style="margin-left:8px;background:{t['badge_bg']};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{t['action']}</span>
+      <span style="font-size:18px;font-weight:bold;color:#111;font-family:Arial,Helvetica,sans-serif">{safe_symbol}</span>
+      <span style="margin-left:8px;background:{t['badge_bg']};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{safe_action}</span>
     </td>
   </tr>
   {detail_row}
@@ -279,7 +284,7 @@ def _build_html(record: dict, name: str = "there") -> str:
             <tr>
               <td width="4" style="background:#cccccc">&nbsp;</td>
               <td style="background:#f5f5f5;padding:10px 14px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#555;line-height:1.5">
-                <b>Market:</b> {record.get('market_summary', '')}
+                <b>Market:</b> {escape(record.get('market_summary', ''))}
               </td>
             </tr>
           </table>
@@ -387,7 +392,7 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
         if not items:
             return '<p style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#999;margin:0">None noted this week.</p>'
         return "".join(
-            f'<p style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:{colour};margin:0 0 8px 0;padding-left:14px;border-left:3px solid #e0e0e0;line-height:1.5">{item}</p>'
+            f'<p style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:{colour};margin:0 0 8px 0;padding-left:14px;border-left:3px solid #e0e0e0;line-height:1.5">{escape(item)}</p>'
             for item in items
         )
 
@@ -428,8 +433,7 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
         </table>
         {"<p style='font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;margin:8px 0 0'>⚠︎ Value was clamped to the safety boundary.</p>" if any(c['status'] == 'clamped' for c in applied) else ""}
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888;margin:10px 0 0;line-height:1.5">
-          These changes are live in <b>config.py</b> and will take effect from Monday&#39;s first run.
-          Adjust manually if needed.
+          These are proposed parameter changes. Apply them manually to config.py if you want them to take effect.
         </p>"""
     else:
         changes_block = '<p style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#999;margin:0">No parameter changes this week — current settings are performing well.</p>'
@@ -468,14 +472,14 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
             <tr><td style="padding:20px 24px">
               <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#888;
                          text-transform:uppercase;letter-spacing:.6px;margin:0 0 8px 0">How this week went</p>
-              <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#333;line-height:1.6;margin:0">{week_summary}</p>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#333;line-height:1.6;margin:0">{escape(week_summary)}</p>
             </td></tr>
           </table>
 
           {_section("What worked", _bullets(what_worked, "#2e7d32"))}
           {_section("What didn&#39;t work", _bullets(what_didnt, "#c62828"))}
           {_section("Lessons injected into next week&#39;s prompts", _bullets(lessons, "#1565c0"))}
-          {_section("Config changes applied to config.py", changes_block)}
+          {_section("Proposed config changes", changes_block)}
           {rejected_block}
           {_build_diagnostics_section(test_report)}
 

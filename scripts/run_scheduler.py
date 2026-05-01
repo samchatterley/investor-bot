@@ -1,14 +1,11 @@
 """
-Runs the trading bot three times per trading day:
+Runs the trading bot three times per trading day (all times America/New_York):
   09:31 ET — full open cycle  (new buys + position management)
   12:00 ET — midday check     (partial exits, no new buys)
   15:30 ET — pre-close check  (final position review)
 
-UK times (BST, UTC+1):
-  14:31 / 17:00 / 20:30
-
+Times are scheduled in NYSE timezone directly — no BST/GMT conversion needed.
 Leave this process running in a terminal or tmux session.
-Alternatively, use cron (see README or inline comments below).
 """
 import os
 import sys
@@ -90,14 +87,15 @@ def _weekly_review():
 
 
 if __name__ == "__main__":
+    _ET = "America/New_York"
     for _day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
-        getattr(schedule.every(), _day).at("14:31").do(_open)    # 09:31 ET  (BST)
-        getattr(schedule.every(), _day).at("17:00").do(_midday)  # 12:00 ET  (BST)
-        getattr(schedule.every(), _day).at("20:30").do(_close)   # 15:30 ET  (BST)
+        getattr(schedule.every(), _day).at("09:31", _ET).do(_open)
+        getattr(schedule.every(), _day).at("12:00", _ET).do(_midday)
+        getattr(schedule.every(), _day).at("15:30", _ET).do(_close)
 
-    schedule.every().sunday.at("20:00").do(_weekly_review)  # Sunday 20:00 BST
+    schedule.every().sunday.at("15:00", _ET).do(_weekly_review)
 
-    logger.info("Scheduler running — Mon–Fri at 14:31 / 17:00 / 20:30 UK time (BST)")
+    logger.info("Scheduler running — Mon–Fri at 09:31 / 12:00 / 15:30 ET (America/New_York)")
     logger.info("Ctrl+C to stop.")
 
     while True:

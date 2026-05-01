@@ -175,15 +175,17 @@ class TestFetchStockData(unittest.TestCase):
         if empty:
             mock_ticker.history.return_value = pd.DataFrame()
         else:
-            closes = [100.0 + i * 0.5 for i in range(rows)]
+            idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=rows)
+            actual_rows = len(idx)
+            closes = [100.0 + i * 0.5 for i in range(actual_rows)]
             # Use recent dates so the stale-data guard (> 3 days) doesn't reject the fixture.
             df = pd.DataFrame({
                 "Open":   closes,
                 "High":   [c + 1 for c in closes],
                 "Low":    [c - 1 for c in closes],
                 "Close":  closes,
-                "Volume": [1_000_000] * rows,
-            }, index=pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=rows))
+                "Volume": [1_000_000] * actual_rows,
+            }, index=idx)
             mock_ticker.history.return_value = df
         return mock_ticker
 

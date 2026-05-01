@@ -238,8 +238,9 @@ class TestHandlePartialExits(unittest.TestCase):
     def test_partial_exit_triggered_at_threshold(self):
         from main import _handle_partial_exits
         with patch("main.trader.cancel_open_orders"), \
+             patch("main.trader.get_position_meta", return_value={}), \
              patch("main.trader.place_partial_sell", return_value=OrderResult(OrderStatus.FILLED, "AAPL", broker_order_id="x", filled_qty=5.0)), \
-             patch("main.trader.wait_for_fill", return_value=5.0), \
+             patch("main.trader.record_partial_exit"), \
              patch("main.trader.place_trailing_stop"), \
              patch("main.audit_log.log_order_placed"), \
              patch("main.audit_log.log_order_filled"):
@@ -276,8 +277,9 @@ class TestHandlePartialExits(unittest.TestCase):
             self._pos("NVDA", plpc=config.PARTIAL_PROFIT_PCT - 1),
         ]
         with patch("main.trader.cancel_open_orders"), \
+             patch("main.trader.get_position_meta", return_value={}), \
              patch("main.trader.place_partial_sell", return_value=OrderResult(OrderStatus.FILLED, "AAPL", broker_order_id="x", filled_qty=5.0)), \
-             patch("main.trader.wait_for_fill", return_value=5.0), \
+             patch("main.trader.record_partial_exit"), \
              patch("main.trader.place_trailing_stop"), \
              patch("main.audit_log.log_order_placed"), \
              patch("main.audit_log.log_order_filled"):

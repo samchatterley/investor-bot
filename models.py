@@ -48,7 +48,7 @@ class BuyCandidate(BaseModel):
     reasoning: str = Field(min_length=20, max_length=500)
     key_signal: str | None = None
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     @field_validator("key_signal")
     @classmethod
@@ -63,7 +63,7 @@ class PositionDecision(BaseModel):
     action: Literal["HOLD", "SELL"]
     reasoning: str = ""
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
 
 class DecisionSet(BaseModel):
@@ -71,7 +71,7 @@ class DecisionSet(BaseModel):
     position_decisions: list[PositionDecision]
     buy_candidates: list[BuyCandidate]
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "ignore"}
 
     @model_validator(mode="after")
     def no_duplicate_buy_symbols(self) -> DecisionSet:

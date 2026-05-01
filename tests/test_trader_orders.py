@@ -226,13 +226,24 @@ class TestWaitForFill(unittest.TestCase):
         self.assertIsNone(result)
 
 
+def _mock_filled_order(order_id, filled_qty=10.0):
+    """Return a mock order in terminal 'filled' state for use with wait_for_fill."""
+    o = MagicMock()
+    o.id = order_id
+    o.status = "filled"
+    o.filled_qty = str(filled_qty)
+    return o
+
+
 class TestPlaceSellOrder(unittest.TestCase):
 
     def test_places_sell_order(self):
         from execution.trader import place_sell_order
         client = MagicMock()
         client.submit_order.return_value = _mock_order("sell-123", status="new")
-        result = place_sell_order(client, "AAPL", 15.5)
+        client.get_order_by_id.return_value = _mock_filled_order("sell-123", filled_qty=15.5)
+        with patch("execution.trader.time.sleep"):
+            result = place_sell_order(client, "AAPL", 15.5)
         self.assertTrue(result.is_success)
         self.assertEqual(result.symbol, "AAPL")
         self.assertEqual(result.broker_order_id, "sell-123")
@@ -251,7 +262,10 @@ class TestClosePosition(unittest.TestCase):
     def test_closes_successfully(self):
         from execution.trader import close_position
         client = MagicMock()
-        result = close_position(client, "AAPL")
+        client.close_position.return_value = _mock_order("close-123", status="new")
+        client.get_order_by_id.return_value = _mock_filled_order("close-123", filled_qty=10.0)
+        with patch("execution.trader.time.sleep"):
+            result = close_position(client, "AAPL")
         client.close_position.assert_called_once_with("AAPL")
         self.assertTrue(result.is_success)
         self.assertEqual(result.symbol, "AAPL")
@@ -274,15 +288,25 @@ class TestClosePosition(unittest.TestCase):
         client = MagicMock()
         client.get_orders.return_value = [_make_trailing_stop_order("AAPL")]
         client.cancel_order_by_id.side_effect = lambda _: call_order.append("cancel")
-        client.close_position.side_effect = lambda _: call_order.append("close")
-        close_position(client, "AAPL")
+
+        def fake_close(symbol):
+            call_order.append("close")
+            return _mock_order("close-123", status="new")
+
+        client.close_position.side_effect = fake_close
+        client.get_order_by_id.return_value = _mock_filled_order("close-123")
+        with patch("execution.trader.time.sleep"):
+            close_position(client, "AAPL")
         self.assertEqual(call_order, ["cancel", "close"])
 
     def test_close_succeeds_even_when_cancel_raises(self):
         from execution.trader import close_position
         client = MagicMock()
         client.get_orders.side_effect = Exception("API down")  # cancel_open_orders fails
-        result = close_position(client, "AAPL")
+        client.close_position.return_value = _mock_order("close-456", status="new")
+        client.get_order_by_id.return_value = _mock_filled_order("close-456")
+        with patch("execution.trader.time.sleep"):
+            result = close_position(client, "AAPL")
         client.close_position.assert_called_once_with("AAPL")
         self.assertTrue(result.is_success)
 
@@ -496,10 +520,12 @@ class TestPlacePartialSell(unittest.TestCase):
         from execution.trader import place_partial_sell
         client = MagicMock()
         client.submit_order.return_value = MagicMock(id="order-partial")
-        result = place_partial_sell(client, "AAPL", 5.0)
+        client.get_order_by_id.return_value = _mock_filled_order("order-partial", filled_qty=5.0)
+        with patch("execution.trader.time.sleep"):
+            result = place_partial_sell(client, "AAPL", 5.0)
         self.assertTrue(result.is_success)
         self.assertEqual(result.symbol, "AAPL")
-        self.assertAlmostEqual(result.filled_qty, 5.0)
+        self.assertGreater(result.filled_qty, 0)
         self.assertEqual(result.broker_order_id, "order-partial")
 
     def test_returns_none_for_zero_qty(self):

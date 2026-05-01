@@ -18,6 +18,7 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import UTC, datetime
 
 from config import LOG_DIR
 
@@ -26,13 +27,25 @@ logger = logging.getLogger(__name__)
 _DB_PATH = os.path.join(LOG_DIR, "investorbot.db")
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS positions (
-    symbol       TEXT PRIMARY KEY,
-    entry_date   TEXT NOT NULL,
-    entry_price  REAL NOT NULL DEFAULT 0.0,
-    signal       TEXT NOT NULL DEFAULT 'unknown',
-    regime       TEXT NOT NULL DEFAULT 'UNKNOWN',
-    confidence   INTEGER NOT NULL DEFAULT 0
+    symbol                TEXT PRIMARY KEY,
+    entry_date            TEXT NOT NULL,
+    entry_price           REAL NOT NULL DEFAULT 0.0,
+    signal                TEXT NOT NULL DEFAULT 'unknown',
+    regime                TEXT NOT NULL DEFAULT 'UNKNOWN',
+    confidence            INTEGER NOT NULL DEFAULT 0,
+    partial_exit_taken_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS daily_notional (
+    market_date  TEXT PRIMARY KEY,
+    buy_notional REAL NOT NULL DEFAULT 0,
+    updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -99,6 +112,7 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -120,15 +134,48 @@ _initialized = False
 
 
 def init_db():
-    """Create schema (idempotent) and migrate any existing JSON-file state."""
+    """Create schema (idempotent), run numbered migrations, import legacy JSON state."""
     global _initialized
     if _initialized:
         return
     with get_db() as conn:
         conn.executescript(_SCHEMA)
+    _run_migrations()
     _migrate_json_state()
     _initialized = True
     logger.debug(f"Database ready: {_DB_PATH}")
+
+
+_MIGRATIONS: list[tuple[int, str]] = [
+    (1, "ALTER TABLE positions ADD COLUMN partial_exit_taken_at TEXT"),
+    (2, (
+        "CREATE TABLE IF NOT EXISTS daily_notional ("
+        "market_date TEXT PRIMARY KEY, "
+        "buy_notional REAL NOT NULL DEFAULT 0, "
+        "updated_at TEXT NOT NULL)"
+    )),
+]
+
+
+def _run_migrations():
+    """Apply any pending numbered migrations in order. Safe to call repeatedly."""
+    try:
+        with get_db() as conn:
+            applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
+            for version, sql in _MIGRATIONS:
+                if version in applied:
+                    continue
+                try:
+                    conn.execute(sql)
+                    conn.execute(
+                        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                        (version, datetime.now(UTC).isoformat()),
+                    )
+                    logger.info(f"Applied DB migration v{version}")
+                except Exception as e:
+                    logger.warning(f"Migration v{version} skipped: {e}")
+    except Exception as e:
+        logger.warning(f"_run_migrations failed: {e}")
 
 
 # ── Migration from legacy JSON files ─────────────────────────────────────────
@@ -154,7 +201,9 @@ def _migrate_positions():
             for sym, data in meta.items():
                 if sym not in existing:
                     conn.execute(
-                        "INSERT OR IGNORE INTO positions VALUES (?,?,?,?,?,?)",
+                        "INSERT OR IGNORE INTO positions "
+                        "(symbol, entry_date, entry_price, signal, regime, confidence) "
+                        "VALUES (?,?,?,?,?,?)",
                         (sym, data.get("entry_date", ""), data.get("entry_price", 0.0),
                          data.get("signal", "unknown"), data.get("regime", "UNKNOWN"),
                          data.get("confidence", 0)),

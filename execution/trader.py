@@ -133,7 +133,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
                     symbol=symbol,
                     qty=whole_qty,
                     side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
+                    time_in_force=TimeInForce.GTC,
                     stop_price=stop_price,
                 )
             )
@@ -153,7 +153,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
                     symbol=symbol,
                     qty=safe_qty,
                     side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
+                    time_in_force=TimeInForce.GTC,
                     trail_percent=TRAILING_STOP_PCT,
                 )
             )
@@ -166,7 +166,7 @@ def place_trailing_stop(client: TradingClient, symbol: str, qty: float, current_
 
 
 def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderResult:
-    """Sell an entire position (by quantity)."""
+    """Sell an entire position (by quantity). Polls for fill confirmation."""
     try:
         order = client.submit_order(
             MarketOrderRequest(
@@ -178,7 +178,9 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
         )
         order_id = str(order.id)
         logger.info(f"SELL order placed: {symbol} qty={qty} | order_id={order_id}")
-        return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=qty)
+        filled_qty = wait_for_fill(client, order_id) or 0.0
+        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
+        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
     except Exception as e:
         logger.error(f"Failed to place SELL for {symbol}: {e}")
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
@@ -186,19 +188,19 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
 
 def close_position(client: TradingClient, symbol: str) -> OrderResult:
     """Close an entire position. Cancels open orders first (trailing stops hold shares),
-    then retries up to 3 times before returning REJECTED."""
+    then polls until the market order is confirmed filled."""
     cancel_open_orders(client, symbol)
-
-    @with_retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
-    def _attempt():
-        client.close_position(symbol)
-
     try:
-        _attempt()
-        logger.info(f"Position closed: {symbol}")
-        return OrderResult(status=OrderStatus.FILLED, symbol=symbol)
+        order = client.close_position(symbol)
+        order_id = str(order.id)
+        logger.info(f"Close submitted: {symbol} | order_id={order_id}")
+        filled_qty = wait_for_fill(client, order_id) or 0.0
+        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
+        if status == OrderStatus.TIMEOUT:
+            logger.warning(f"Close for {symbol} did not confirm fill within poll window — position may still be open")
+        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
     except Exception as e:
-        logger.error(f"Failed to close position {symbol} after 3 attempts: {e}")
+        logger.error(f"Failed to close position {symbol}: {e}")
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
@@ -240,6 +242,19 @@ def record_buy(symbol: str, entry_price: float, signal: str = "unknown",
 def record_sell(symbol: str):
     with _db() as conn:
         conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+
+
+def record_partial_exit(symbol: str):
+    """Mark that a partial profit exit has been taken for this position."""
+    from datetime import UTC, datetime
+    try:
+        with _db() as conn:
+            conn.execute(
+                "UPDATE positions SET partial_exit_taken_at=? WHERE symbol=?",
+                (datetime.now(UTC).isoformat(), symbol),
+            )
+    except Exception as e:
+        logger.warning(f"record_partial_exit failed for {symbol}: {e}")
 
 
 def get_position_meta(symbol: str) -> dict:
@@ -374,7 +389,7 @@ def cancel_open_orders(client: TradingClient, symbol: str):
 
 
 def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderResult | None:
-    """Sell a partial quantity of a position."""
+    """Sell a partial quantity of a position. Polls for fill confirmation."""
     if qty <= 0:
         return None
     try:
@@ -388,7 +403,38 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderR
         )
         order_id = str(order.id)
         logger.info(f"Partial SELL: {symbol} qty={qty:.6f} | order_id={order_id}")
-        return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=qty)
+        filled_qty = wait_for_fill(client, order_id) or 0.0
+        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
+        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
     except Exception as e:
         logger.error(f"Partial sell failed for {symbol}: {e}")
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
+
+
+# ---------- Daily notional tracking (SQLite) ----------
+
+def get_daily_notional(market_date: str) -> float:
+    """Return total confirmed buy notional for the given market date."""
+    try:
+        with _db() as conn:
+            row = conn.execute(
+                "SELECT buy_notional FROM daily_notional WHERE market_date=?", (market_date,)
+            ).fetchone()
+        return float(row["buy_notional"]) if row else 0.0
+    except Exception:
+        return 0.0
+
+
+def add_daily_notional(market_date: str, amount: float):
+    """Increment the confirmed buy notional for the given market date."""
+    from datetime import UTC, datetime
+    try:
+        with _db() as conn:
+            conn.execute(
+                "INSERT INTO daily_notional (market_date, buy_notional, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(market_date) DO UPDATE SET "
+                "buy_notional=buy_notional+excluded.buy_notional, updated_at=excluded.updated_at",
+                (market_date, amount, datetime.now(UTC).isoformat()),
+            )
+    except Exception as e:
+        logger.warning(f"add_daily_notional failed: {e}")

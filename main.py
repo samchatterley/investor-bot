@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import contextlib
+import json
 import logging
 import math
 import os
@@ -51,23 +52,35 @@ def _lock_file() -> str:
 
 # ── Lock file management ──────────────────────────────────────────────────────
 
-def _acquire_lock() -> bool:
+def _acquire_lock() -> int | None:
+    """Atomically create the lock file. Returns an open fd on success, None if already locked."""
     lock_file = _lock_file()
     os.makedirs(config.LOG_DIR, exist_ok=True)
-    if os.path.exists(lock_file):
+    try:
+        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
         age = time.time() - os.path.getmtime(lock_file)
         if age > _LOCK_MAX_AGE_SECONDS:
             logger.warning(f"Stale lock file found ({age / 3600:.1f}h old) — auto-clearing")
-            os.remove(lock_file)
+            with contextlib.suppress(OSError):
+                os.remove(lock_file)
+            try:
+                fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                logger.warning("Could not acquire lock after stale removal — another run may be in progress.")
+                return None
         else:
             logger.warning("Lock file exists — another run may be in progress. Remove .lock file to override.")
-            return False
-    with open(lock_file, "w"):
-        pass
-    return True
+            return None
+    payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
+    os.write(fd, payload.encode())
+    return fd
 
 
-def _release_lock():
+def _release_lock(fd: int | None = None):
+    if fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(fd)
     with contextlib.suppress(FileNotFoundError):
         os.remove(_lock_file())
 
@@ -125,11 +138,15 @@ def _run_clear_halt():
 # ── Partial exits ─────────────────────────────────────────────────────────────
 
 def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
-    """Sell half of any position up more than PARTIAL_PROFIT_PCT."""
+    """Sell half of any position up more than PARTIAL_PROFIT_PCT (once per position)."""
     executed = []
     for pos in positions:
         if pos["unrealized_plpc"] >= config.PARTIAL_PROFIT_PCT:
             symbol = pos["symbol"]
+            meta = trader.get_position_meta(symbol)
+            if meta.get("partial_exit_taken_at"):
+                logger.info(f"Partial exit already taken for {symbol} — skipping")
+                continue
             half_qty = pos["qty"] / 2
             logger.info(f"Partial exit: {symbol} +{pos['unrealized_plpc']:.1f}% — selling {half_qty:.6f} shares")
             if not dry_run:
@@ -137,10 +154,9 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
                 result = trader.place_partial_sell(client, symbol, half_qty)
                 if result and result.is_success:
                     audit_log.log_order_placed(symbol, "SELL_PARTIAL", pos["market_value"] / 2, result.broker_order_id)
-                    remaining_qty = trader.wait_for_fill(client, result.broker_order_id)
-                    if remaining_qty is not None:
-                        audit_log.log_order_filled(symbol, result.broker_order_id, remaining_qty)
-                        trader.place_trailing_stop(client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"])
+                    audit_log.log_order_filled(symbol, result.broker_order_id, result.filled_qty)
+                    trader.record_partial_exit(symbol)
+                    trader.place_trailing_stop(client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"])
                     executed.append({
                         "symbol": symbol,
                         "action": "PARTIAL SELL",
@@ -185,7 +201,8 @@ def run(dry_run: bool = False, mode: str = "open"):
 
     init_db()
 
-    if not _acquire_lock():
+    lock_fd = _acquire_lock()
+    if lock_fd is None:
         return
 
     try:
@@ -194,7 +211,7 @@ def run(dry_run: bool = False, mode: str = "open"):
         logger.error(f"Unhandled error in trading run: {e}", exc_info=True)
         alerts.alert_error("main.run", str(e))
     finally:
-        _release_lock()
+        _release_lock(lock_fd)
 
 
 def _run_inner(dry_run: bool, mode: str, today: str):
@@ -246,7 +263,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         return
 
     all_trades: list = []
-    daily_notional_spent = 0.0  # tracks total notional for daily cap check
+    daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
     executed_symbols: set[str] = set()
 
     # ── Market context ────────────────────────────────────────────────────────
@@ -508,6 +525,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         if result and result.is_success:
                             orders_placed += 1
                             daily_notional_spent += notional
+                            trader.add_daily_notional(today, notional)
                             snap = next((s for s in snapshots if s["symbol"] == symbol), None)
                             entry_price = snap["current_price"] if snap else 0.0
                             trader.record_buy(

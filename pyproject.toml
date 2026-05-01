@@ -64,7 +64,7 @@ disable_error_code = ["union-attr", "arg-type", "index", "operator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short -q"
+addopts = "--tb=short -q --cov --cov-report=term-missing --cov-fail-under=80"
 log_cli = false
 
 [tool.coverage.run]

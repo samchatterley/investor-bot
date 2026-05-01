@@ -58,7 +58,8 @@ class TestMigratePositions(DbTestBase):
         from utils.db import _migrate_positions, get_db
         with get_db() as conn:
             conn.execute(
-                "INSERT INTO positions VALUES (?,?,?,?,?,?)",
+                "INSERT INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
+                "VALUES (?,?,?,?,?,?)",
                 ("AAPL", "2026-04-01", 180.0, "momentum", "BULL", 8),
             )
         _migrate_positions()
