@@ -263,11 +263,110 @@ class TestMigrateBaseline(DbTestBase):
         _migrate_baseline()  # must not raise
 
 
+class TestRunMigrationsException(DbTestBase):
+
+    def test_inner_migration_sql_failure_is_skipped(self):
+        # Lines 175-176: inner except — bad SQL per migration version → warning, continues
+        import utils.db as db_mod
+        from utils.db import get_db
+        bad_migration = [(999, "THIS IS NOT VALID SQL !!!")]
+        with patch.object(db_mod, "_MIGRATIONS", bad_migration):
+            with get_db() as conn:
+                conn.execute("DELETE FROM schema_migrations")
+            try:
+                db_mod._run_migrations()
+            except Exception as e:
+                self.fail(f"_run_migrations raised on bad migration SQL: {e}")
+
+    def test_outer_migration_failure_is_caught(self):
+        # Lines 177-178: outer except — get_db() itself fails → warning, no raise
+        import utils.db as db_mod
+        with patch.object(db_mod, "get_db", side_effect=RuntimeError("db unavailable")):
+            try:
+                db_mod._run_migrations()
+            except Exception as e:
+                self.fail(f"_run_migrations raised on outer failure: {e}")
+
+
+class TestMigrateRunsMalformedJson(DbTestBase):
+
+    def test_malformed_run_json_is_skipped(self):
+        # Lines 257-258: json.load raises for a malformed run file → warning, continues
+        fname = os.path.join(self.tmpdir, "2026-04-01.json")
+        with open(fname, "w") as f:
+            f.write("{ not valid json {{")
+        from utils.db import _migrate_runs, get_db
+        _migrate_runs()  # must not raise
+        with get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        self.assertEqual(count, 0)
+
+
+class TestMigrateAuditException(DbTestBase):
+
+    def test_corrupt_audit_jsonl_is_skipped(self):
+        # Lines 286-287: json.loads raises for a malformed audit line → warning, continues
+        audit_path = os.path.join(self.tmpdir, "audit.jsonl")
+        with open(audit_path, "w") as f:
+            f.write("{ not valid json\n")
+        from utils.db import _migrate_audit, get_db
+        _migrate_audit()  # must not raise
+        with get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+        self.assertEqual(count, 0)
+
+
+class TestMigrateDecisionsException(DbTestBase):
+
+    def test_corrupt_decisions_jsonl_is_skipped(self):
+        # json.loads raises for a malformed decision line → warning, continues
+        dec_path = os.path.join(self.tmpdir, "decisions.jsonl")
+        with open(dec_path, "w") as f:
+            f.write("{ not valid json\n")
+        from utils.db import _migrate_decisions, get_db
+        _migrate_decisions()  # must not raise
+        with get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_empty_lines_in_decisions_jsonl_are_skipped(self):
+        # Line 304: continue skips empty lines in the decisions JSONL
+        decision = {
+            "run_id": "r1", "date": "2026-04-01", "mode": "open",
+            "ts": "2026-04-01T09:30:00Z", "market_summary": "",
+            "symbol": "AAPL", "action": "BUY", "confidence": 8, "executed": True,
+        }
+        dec_path = os.path.join(self.tmpdir, "decisions.jsonl")
+        with open(dec_path, "w") as f:
+            f.write("\n")
+            f.write(json.dumps(decision) + "\n")
+            f.write("\n")
+        from utils.db import _migrate_decisions, get_db
+        _migrate_decisions()
+        with get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+        self.assertEqual(count, 1)
+
+
+class TestMigrateBaselineException(DbTestBase):
+
+    def test_corrupt_baseline_json_is_skipped(self):
+        # Lines 317-318: json.load raises for a malformed baseline file → warning, continues
+        bl_path = os.path.join(self.tmpdir, "daily_baseline.json")
+        with open(bl_path, "w") as f:
+            f.write("not valid json")
+        from utils.db import _migrate_baseline, get_db
+        _migrate_baseline()  # must not raise
+        with get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM daily_baselines").fetchone()[0]
+        self.assertEqual(count, 0)
+
+
 class TestInitDb(DbTestBase):
 
     def test_tables_exist_after_init(self):
         db_mod._initialized = False
-        from utils.db import init_db, get_db
+        from utils.db import get_db, init_db
         init_db()
         with get_db() as conn:
             tables = {

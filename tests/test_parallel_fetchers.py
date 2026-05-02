@@ -236,3 +236,17 @@ class TestGetSentiment(unittest.TestCase):
             result = get_sentiment(["AAPL", "MSFT"])
         self.assertIn("AAPL", result)
         self.assertNotIn("MSFT", result)
+
+    def test_future_exception_does_not_block_other_symbols(self):
+        # Lines 59-60: future raises in the futures loop → pass, other symbols succeed
+        from data.sentiment import get_sentiment
+
+        def selective_fetch(sym):
+            if sym == "FAIL":
+                raise RuntimeError("forced failure")
+            return (sym, {"bullish_pct": 60, "bearish_pct": 40})
+
+        with patch("data.sentiment._fetch_analyst", side_effect=selective_fetch):
+            result = get_sentiment(["FAIL", "AAPL"])
+        self.assertNotIn("FAIL", result)
+        self.assertIn("AAPL", result)

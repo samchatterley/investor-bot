@@ -23,26 +23,36 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 # If TRADING_MODE is set, the URL is validated against the expected Alpaca endpoint.
 # If unset, falls back to substring detection for backward compatibility.
 _TRADING_MODE = os.getenv("TRADING_MODE", "").lower()
-if _TRADING_MODE == "paper":
-    IS_PAPER = True
-    _expected = "https://paper-api.alpaca.markets"
-    if ALPACA_BASE_URL.rstrip("/") != _expected:
-        raise ValueError(
-            f"ALPACA_BASE_URL={ALPACA_BASE_URL!r} does not match TRADING_MODE=paper. "
-            f"Expected {_expected!r}"
-        )
-elif _TRADING_MODE == "live":
-    IS_PAPER = False
-    _expected = "https://api.alpaca.markets"
-    if ALPACA_BASE_URL.rstrip("/") != _expected:
-        raise ValueError(
-            f"ALPACA_BASE_URL={ALPACA_BASE_URL!r} does not match TRADING_MODE=live. "
-            f"Expected {_expected!r}"
-        )
-elif _TRADING_MODE:
-    raise ValueError(f"TRADING_MODE must be 'paper' or 'live', got {_TRADING_MODE!r}")
-else:
-    IS_PAPER = "paper" in ALPACA_BASE_URL
+
+
+def _validate_trading_mode(mode: str, url: str) -> bool:
+    """Validate TRADING_MODE against ALPACA_BASE_URL. Returns True for paper, False for live.
+
+    Raises ValueError if the mode/URL combination is invalid.
+    """
+    if mode == "paper":
+        _expected = "https://paper-api.alpaca.markets"
+        if url.rstrip("/") != _expected:
+            raise ValueError(
+                f"ALPACA_BASE_URL={url!r} does not match TRADING_MODE=paper. "
+                f"Expected {_expected!r}"
+            )
+        return True
+    elif mode == "live":
+        _expected = "https://api.alpaca.markets"
+        if url.rstrip("/") != _expected:
+            raise ValueError(
+                f"ALPACA_BASE_URL={url!r} does not match TRADING_MODE=live. "
+                f"Expected {_expected!r}"
+            )
+        return False
+    elif mode:
+        raise ValueError(f"TRADING_MODE must be 'paper' or 'live', got {mode!r}")
+    else:
+        return "paper" in url
+
+
+IS_PAPER = _validate_trading_mode(_TRADING_MODE, ALPACA_BASE_URL)
 
 # Position sizing
 MAX_POSITIONS = 5

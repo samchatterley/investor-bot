@@ -83,6 +83,17 @@ class TestApplyConfigChanges(unittest.TestCase):
         self.assertEqual(result[0]["old_value"], cfg.MAX_HOLD_DAYS)
         self.assertEqual(result[0]["new_value"], cfg.MAX_HOLD_DAYS + 2)
 
+    def test_valid_change_with_existing_runtime_config_reads_current_overrides(self):
+        # Line 55: json.load(f) fires when runtime config file exists with valid JSON
+        import json as _json
+        with open(self.runtime_path, "w") as f:
+            _json.dump({"MIN_CONFIDENCE": 8}, f)
+        result = _apply_config_changes([
+            {"parameter": "MAX_HOLD_DAYS", "proposed_value": cfg.MAX_HOLD_DAYS + 1, "reason": "test"}
+        ])
+        self.assertGreater(len(result), 0)
+        self.assertIn(result[0]["status"], ("applied", "clamped", "unchanged"))
+
     def test_multiple_changes_validated_independently(self):
         result = _apply_config_changes([
             {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"},
@@ -247,6 +258,14 @@ class TestRunWeeklyReview(unittest.TestCase):
         with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
              patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
             mock_anthropic.return_value.messages.create.return_value = bad_msg
+            result = run_weekly_review()
+        self.assertIsNone(result)
+
+    def test_returns_none_on_general_exception(self):
+        from analysis.weekly_review import run_weekly_review
+        with patch("analysis.weekly_review.load_history", return_value=[self._make_record("2026-04-27")]), \
+             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value.messages.create.side_effect = RuntimeError("API crashed")
             result = run_weekly_review()
         self.assertIsNone(result)
 

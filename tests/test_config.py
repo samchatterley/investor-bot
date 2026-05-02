@@ -68,6 +68,16 @@ class TestValidate(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.validate()
 
+    def test_max_daily_notional_usd_zero_fails(self):
+        self._patch("MAX_DAILY_NOTIONAL_USD", 0.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_audit_config_event_suppresses_write_error(self):
+        with patch("utils.audit_log._write", side_effect=RuntimeError("disk full")):
+            # Must not raise — the except clause suppresses all exceptions
+            config._audit_config_event("TEST_EVENT", {"key": "value"})
+
     def test_error_message_lists_all_failures(self):
         self._patch("MAX_POSITION_PCT", 2.0)
         self._patch("MIN_CONFIDENCE", 0)
@@ -285,6 +295,44 @@ class TestRuntimeOverrideEdgeCases(TestRuntimeOverrideBase):
         self._load()
         self._load()
         self.assertEqual(config.MIN_CONFIDENCE, 8)
+
+
+class TestValidateTradingMode(unittest.TestCase):
+
+    def test_paper_mode_with_valid_url_returns_true(self):
+        import config
+        result = config._validate_trading_mode("paper", "https://paper-api.alpaca.markets")
+        self.assertTrue(result)
+
+    def test_paper_mode_with_wrong_url_raises(self):
+        import config
+        with self.assertRaises(ValueError):
+            config._validate_trading_mode("paper", "https://api.alpaca.markets")
+
+    def test_live_mode_with_valid_url_returns_false(self):
+        import config
+        result = config._validate_trading_mode("live", "https://api.alpaca.markets")
+        self.assertFalse(result)
+
+    def test_live_mode_with_wrong_url_raises(self):
+        import config
+        with self.assertRaises(ValueError):
+            config._validate_trading_mode("live", "https://paper-api.alpaca.markets")
+
+    def test_invalid_mode_raises(self):
+        import config
+        with self.assertRaises(ValueError):
+            config._validate_trading_mode("staging", "https://paper-api.alpaca.markets")
+
+    def test_empty_mode_with_paper_url_returns_true(self):
+        import config
+        result = config._validate_trading_mode("", "https://paper-api.alpaca.markets")
+        self.assertTrue(result)
+
+    def test_empty_mode_with_live_url_returns_false(self):
+        import config
+        result = config._validate_trading_mode("", "https://api.alpaca.markets")
+        self.assertFalse(result)
 
 
 class TestRuntimeOverrideAuditEvents(TestRuntimeOverrideBase):

@@ -116,3 +116,22 @@ class TestPositionAges(_MetaTestBase):
         from execution.trader import get_position_ages, get_stale_positions
         self.assertEqual(get_position_ages(), {})
         self.assertEqual(get_stale_positions(), [])
+
+
+class TestRecordPartialExit(_MetaTestBase):
+    """Line 281: record_partial_exit happy path sets partial_exit_taken_at."""
+
+    def test_record_partial_exit_sets_timestamp(self):
+        from execution.trader import get_position_meta, record_buy, record_partial_exit
+        record_buy("AAPL", 180.0)
+        record_partial_exit("AAPL")
+        meta = get_position_meta("AAPL")
+        self.assertIsNotNone(meta.get("partial_exit_taken_at"))
+
+    def test_record_partial_exit_unknown_symbol_does_not_raise(self):
+        from execution.trader import record_partial_exit
+        # Symbol not in DB — UPDATE touches no rows but should not raise
+        try:
+            record_partial_exit("GHOST")
+        except Exception:
+            self.fail("record_partial_exit raised on unknown symbol")

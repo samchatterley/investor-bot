@@ -209,6 +209,17 @@ class TestSignalTracking(unittest.TestCase):
         result = _load_stats()
         self.assertEqual(result, {})
 
+    def test_get_win_rates_skips_signal_with_zero_trades(self):
+        # Line 91: the `continue` when data.get("trades", 0) == 0
+        zero_trades_stats = {
+            "momentum": {"trades": 0, "wins": 0, "losses": 0, "total_return_pct": 0.0},
+            "rsi_oversold": {"trades": 2, "wins": 1, "losses": 1, "total_return_pct": 3.0},
+        }
+        with patch("analysis.performance._load_stats", return_value=zero_trades_stats):
+            rates = get_win_rates()
+        self.assertNotIn("momentum", rates)
+        self.assertIn("rsi_oversold", rates)
+
 
 class TestGenerateDashboard(unittest.TestCase):
 

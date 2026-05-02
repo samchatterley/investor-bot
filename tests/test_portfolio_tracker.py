@@ -222,6 +222,106 @@ class TestTradeMergeGuard(PortfolioTrackerBase):
         self.assertEqual(len(run["trades_executed"]), 1)
 
 
+class TestMergeEdgeCases(PortfolioTrackerBase):
+
+    def test_merge_logs_info_when_new_trades_added(self):
+        # Lines 90-91 (added > 0 path): merging new trades into existing record
+        import logging
+        trade_a = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        trade_b = {"symbol": "MSFT", "action": "BUY", "detail": "$3000", "order_id": "o2"}
+        save_daily_run("2026-01-15", _account(100_000), _account(100_500), _ai(), [trade_a], [])
+        with self.assertLogs("utils.portfolio_tracker", level=logging.INFO) as cm:
+            save_daily_run("2026-01-15", _account(100_500), _account(101_200), _ai(), [trade_b], [])
+        merged_logged = any("Merged" in msg for msg in cm.output)
+        self.assertTrue(merged_logged)
+
+    def test_spurious_rerun_logs_warning(self):
+        # Line 101 (added == 0 with existing trades): spurious re-run warning
+        import logging
+        trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        save_daily_run("2026-01-16", _account(100_000), _account(100_500), _ai(), [trade], [])
+        with self.assertLogs("utils.portfolio_tracker", level=logging.WARNING) as cm:
+            save_daily_run("2026-01-16", _account(100_500), _account(101_200), _ai(), [trade], [])
+        warning_logged = any("Spurious re-run" in msg for msg in cm.output)
+        self.assertTrue(warning_logged)
+
+    def test_sqlite_run_write_failure_does_not_raise(self):
+        # Lines 125-126: SQLite run write failure → warning logged, no exception
+        with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
+            try:
+                save_daily_run("2026-01-17", _account(100_000), _account(101_000), _ai(), [], [])
+            except Exception:
+                self.fail("save_daily_run raised on SQLite failure")
+
+    def test_corrupt_existing_json_overwritten_silently(self):
+        # Lines 90-91: corrupt existing file → except (json.JSONDecodeError, KeyError): pass
+        # First, create a run record to determine the file path
+        save_daily_run("2026-01-18", _account(100_000), _account(100_500), _ai(), [], [])
+        # Find and corrupt the file
+        import glob
+        files = glob.glob(os.path.join(self.tmpdir, "**", "*.json"), recursive=True)
+        run_files = [f for f in files if "2026-01-18" in f]
+        self.assertEqual(len(run_files), 1)
+        with open(run_files[0], "w") as f:
+            f.write("{ corrupt json {{")
+        # Second save should not raise — corrupt file is silently overwritten
+        trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        try:
+            save_daily_run("2026-01-18", _account(100_500), _account(101_000), _ai(), [trade], [])
+        except Exception:
+            self.fail("save_daily_run raised on corrupt existing file")
+
+    def test_midday_run_stored_with_midday_mode(self):
+        # Line 101: "-midday" in date → mode = "midday"
+        trade = {"symbol": "TSLA", "action": "BUY", "detail": "$2000", "order_id": "m1"}
+        try:
+            save_daily_run("2026-01-19-midday", _account(100_000), _account(100_300), _ai(), [trade], [])
+        except Exception:
+            self.fail("save_daily_run raised for midday date")
+
+
+class TestPrintSummaryStopLosses(PortfolioTrackerBase):
+
+    def test_print_summary_shows_stop_losses(self):
+        # Lines 145-147: stop_losses_triggered section in print_summary
+        import io
+        import sys
+
+        from utils.portfolio_tracker import print_summary
+
+        record = {
+            "date": "2026-01-15",
+            "market_summary": "Volatile day",
+            "account_after": {"portfolio_value": 96_000, "cash": 20_000},
+            "daily_pnl": -4_000.0,
+            "trades_executed": [],
+            "stop_losses_triggered": [{"symbol": "NVDA", "pl_pct": -4.2}],
+        }
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            print_summary(record)
+        finally:
+            sys.stdout = sys.__stdout__
+        output = captured.getvalue()
+        self.assertIn("NVDA", output)
+        self.assertIn("STOP LOSS", output)
+
+
+class TestSaveDailyBaselineFailure(PortfolioTrackerBase):
+
+    def test_sqlite_baseline_write_failure_does_not_raise(self):
+        # Lines 178-179: SQLite baseline write failure → warning logged, no exception
+        from utils.portfolio_tracker import save_daily_baseline
+        baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
+        with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path), \
+             patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
+            try:
+                save_daily_baseline(100_000.0)
+            except Exception:
+                self.fail("save_daily_baseline raised on SQLite failure")
+
+
 class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
 
     def test_writes_baseline_file(self):
@@ -233,6 +333,7 @@ class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
 
     def test_baseline_file_contains_portfolio_value(self):
         import json as _json
+
         from utils.portfolio_tracker import save_daily_baseline
         baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
         with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path):

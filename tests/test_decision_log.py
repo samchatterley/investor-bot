@@ -123,6 +123,37 @@ class TestLogDecisions(DecisionLogBase):
         self.assertIn("ts", entries[0])
 
 
+class TestDecisionWriteFailures(DecisionLogBase):
+
+    def test_jsonl_write_failure_does_not_raise(self):
+        # Lines 43-44: open() raises → logger.error, no exception propagated
+        import builtins
+
+        from utils import decision_log
+        real_open = builtins.open
+
+        def failing_open(path, *args, **kwargs):
+            if str(path) == decision_log._DECISIONS_PATH:
+                raise OSError("disk full")
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=failing_open):
+            try:
+                from utils.decision_log import log_decisions
+                log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
+            except Exception:
+                self.fail("_write raised on JSONL write failure")
+
+    def test_sqlite_write_failure_does_not_raise(self):
+        # Lines 68-69: get_db() raises → logger.error, no exception propagated
+        from utils.decision_log import log_decisions
+        with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
+            try:
+                log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
+            except Exception:
+                self.fail("_write raised on SQLite failure")
+
+
 class TestLoadDecisions(DecisionLogBase):
 
     def test_returns_empty_when_file_missing(self):
@@ -160,3 +191,22 @@ class TestLoadDecisions(DecisionLogBase):
             f.write('{"also_valid": true}\n')
         result = load_decisions()
         self.assertEqual(len(result), 2)
+
+    def test_load_decisions_suppresses_read_exception(self):
+        # Lines 126-127: open() raises inside the try block → except passes, returns empty list
+        import builtins
+        real_open = builtins.open
+
+        # File must exist for the os.path.exists check to pass
+        with open(self.decisions_path, "w") as f:
+            f.write("")
+
+        def failing_open(path, *args, **kwargs):
+            if str(path) == self.decisions_path:
+                raise OSError("read error")
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=failing_open):
+            from utils.decision_log import load_decisions
+            result = load_decisions()
+        self.assertEqual(result, [])

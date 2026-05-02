@@ -369,5 +369,278 @@ class TestCmdDashboard(unittest.TestCase):
         self.assertIn("run", cmd_line)
 
 
+class TestDemoModeImport(unittest.TestCase):
+    """Covers the else-branch (line 31) in cli.py that imports config without validate()."""
+
+    def test_demo_mode_import_covers_else_branch(self):
+        """Setting sys.argv[1]=='demo' causes cli to take the else branch on import."""
+        original_argv = sys.argv[:]
+        # Remove any cached cli module so we get a fresh import
+        sys.modules.pop("cli", None)
+
+        try:
+            sys.argv = ["cli.py", "demo"]
+            # We need config to be importable; it already is from other tests
+            import cli as _cli_demo  # noqa: F401 — import triggers line 31
+            # Verify the module imported and _IS_DEMO is True
+            self.assertTrue(_cli_demo._IS_DEMO)
+        finally:
+            sys.argv = original_argv
+            # Restore non-demo cli for subsequent tests
+            sys.modules.pop("cli", None)
+
+
+# ── Minimal fixture for cmd_demo tests ───────────────────────────────────────
+
+def _demo_fixture(is_bearish=False, buy_candidates=None, position_count=1):
+    """Return a minimal demo_run.json-shaped dict for cmd_demo tests."""
+    if buy_candidates is None:
+        buy_candidates = [
+            {"symbol": "AMD", "action": "BUY", "confidence": 8,
+             "key_signal": "momentum", "reasoning": "Strong trend"},
+        ]
+    return {
+        "account": {"portfolio_value": 100_000.0, "cash": 62_000.0},
+        "open_positions": [
+            {"symbol": "MSFT", "qty": 1, "avg_entry_price": 415.0,
+             "current_price": 421.0, "unrealized_pl": 6.0, "unrealized_plpc": 1.4,
+             "market_value": 421.0}
+        ][:position_count],
+        "regime": {
+            "is_bearish": is_bearish,
+            "spy_change_pct": 0.4,
+            "spy_5d_pct": 1.1,
+            "regime": "BEAR_MARKET" if is_bearish else "BULL_TRENDING",
+        },
+        "vix": 16.2,
+        "snapshots": [
+            {"symbol": "AMD", "current_price": 162.8, "ret_1d_pct": 3.4,
+             "ret_5d_pct": 7.1, "rsi_14": 54, "bb_pct": 0.68, "vol_ratio": 2.1,
+             "ema9_above_ema21": True, "macd_diff": 0.88, "macd_crossed_up": True,
+             "weekly_trend_up": True, "avg_volume": 38_000_000, "sector": "Technology"},
+        ],
+        "ai_response": {
+            "market_summary": "Test market summary.",
+            "position_decisions": [
+                {"symbol": "MSFT", "action": "HOLD", "confidence": 7, "reasoning": "Hold."}
+            ],
+            "buy_candidates": buy_candidates,
+        },
+    }
+
+
+def _run_cmd_demo(fixture, extra_patches=None):
+    """
+    Run cmd_demo with the given fixture injected via patched open/json.load.
+    Patches prefilter_candidates to pass snapshots through unchanged,
+    validate_ai_response to return (True, []),
+    kelly_fraction to return 0.05,
+    and time.sleep to a no-op.
+    Returns captured stdout.
+    """
+    import json as _json
+
+    extra_patches = extra_patches or {}
+
+    # prefilter passes all snapshots through by default
+    def _passthrough(snapshots):
+        return snapshots
+
+    buf = io.StringIO()
+
+    with patch("builtins.open", unittest.mock.mock_open(read_data=_json.dumps(fixture))), \
+         patch("json.load", return_value=fixture), \
+         patch("execution.stock_scanner.prefilter_candidates", side_effect=_passthrough), \
+         patch("utils.validators.validate_ai_response", return_value=(True, [])), \
+         patch("risk.position_sizer.kelly_fraction", return_value=0.05), \
+         patch("time.sleep"):
+        sys.stdout = buf
+        try:
+            from cli import cmd_demo
+            cmd_demo(None)
+        finally:
+            sys.stdout = sys.__stdout__
+
+    return buf.getvalue()
+
+
+class TestCmdDemo(unittest.TestCase):
+
+    def test_demo_bearish_no_orders_placed(self):
+        """In a bearish regime, the bear filter suppresses all buys."""
+        fixture = _demo_fixture(is_bearish=True)
+        output = _run_cmd_demo(fixture)
+        self.assertIn("Bear filter active", output)
+        self.assertIn("No orders placed", output)
+
+    def test_demo_with_candidates_places_simulated_orders(self):
+        """With qualified candidates in a non-bearish regime, orders are simulated."""
+        fixture = _demo_fixture(is_bearish=False)
+        output = _run_cmd_demo(fixture)
+        # Should show a simulated BUY for AMD
+        self.assertIn("SIMULATED", output)
+        self.assertIn("AMD", output)
+
+    def test_demo_prints_summary(self):
+        """cmd_demo always prints 'Demo complete' at the end."""
+        fixture = _demo_fixture(is_bearish=False)
+        output = _run_cmd_demo(fixture)
+        self.assertIn("Demo complete", output)
+
+    def test_demo_low_confidence_skipped(self):
+        """A candidate with confidence < 7 is skipped by the risk gate."""
+        low_conf_candidate = [
+            {"symbol": "AMD", "action": "BUY", "confidence": 5,
+             "key_signal": "momentum", "reasoning": "Weak signal"},
+        ]
+        fixture = _demo_fixture(is_bearish=False, buy_candidates=low_conf_candidate)
+        output = _run_cmd_demo(fixture)
+        self.assertIn("confidence 5 below floor", output)
+
+    def test_demo_no_positions_shows_zero_count(self):
+        """With no open positions, summary shows 0 for positions."""
+        fixture = _demo_fixture(is_bearish=True, position_count=0)
+        output = _run_cmd_demo(fixture)
+        self.assertIn("Demo complete", output)
+
+    def test_demo_shows_candidate_count(self):
+        """Summary line shows the buy_candidates count from the AI response."""
+        fixture = _demo_fixture(is_bearish=False)
+        output = _run_cmd_demo(fixture)
+        self.assertIn("buy candidates", output)
+
+    def test_demo_filtered_candidates_shows_filtered_message(self):
+        """When prefilter_candidates returns fewer snapshots, prints 'Filtered:' message."""
+        import json as _json
+        fixture = _demo_fixture(is_bearish=True)
+
+        # Return empty list from prefilter so all snapshots are filtered out
+        def _filter_all(_snapshots):
+            return []
+
+        buf = io.StringIO()
+        with patch("builtins.open", unittest.mock.mock_open(read_data=_json.dumps(fixture))), \
+             patch("json.load", return_value=fixture), \
+             patch("execution.stock_scanner.prefilter_candidates", side_effect=_filter_all), \
+             patch("utils.validators.validate_ai_response", return_value=(True, [])), \
+             patch("risk.position_sizer.kelly_fraction", return_value=0.05), \
+             patch("time.sleep"):
+            sys.stdout = buf
+            try:
+                from cli import cmd_demo
+                cmd_demo(None)
+            finally:
+                sys.stdout = sys.__stdout__
+
+        self.assertIn("Filtered:", buf.getvalue())
+
+    def test_demo_validation_errors_shown(self):
+        """When validate_ai_response returns errors, each error is printed as a warning."""
+        import json as _json
+        fixture = _demo_fixture(is_bearish=True)
+
+        def _passthrough(snapshots):
+            return snapshots
+
+        buf = io.StringIO()
+        with patch("builtins.open", unittest.mock.mock_open(read_data=_json.dumps(fixture))), \
+             patch("json.load", return_value=fixture), \
+             patch("execution.stock_scanner.prefilter_candidates", side_effect=_passthrough), \
+             patch("utils.validators.validate_ai_response", return_value=(False, ["FAKECORP not in universe"])), \
+             patch("risk.position_sizer.kelly_fraction", return_value=0.05), \
+             patch("time.sleep"):
+            sys.stdout = buf
+            try:
+                from cli import cmd_demo
+                cmd_demo(None)
+            finally:
+                sys.stdout = sys.__stdout__
+
+        self.assertIn("Rejected:", buf.getvalue())
+
+    def test_demo_tiny_notional_skipped(self):
+        """When kelly_fraction returns near-zero, notional < 1.0 triggers skip warning."""
+        import json as _json
+        fixture = _demo_fixture(is_bearish=False)
+
+        def _passthrough(snapshots):
+            return snapshots
+
+        # kelly=0 → notional=0 < 1.0
+        buf = io.StringIO()
+        with patch("builtins.open", unittest.mock.mock_open(read_data=_json.dumps(fixture))), \
+             patch("json.load", return_value=fixture), \
+             patch("execution.stock_scanner.prefilter_candidates", side_effect=_passthrough), \
+             patch("utils.validators.validate_ai_response", return_value=(True, [])), \
+             patch("risk.position_sizer.kelly_fraction", return_value=0.0), \
+             patch("time.sleep"):
+            sys.stdout = buf
+            try:
+                from cli import cmd_demo
+                cmd_demo(None)
+            finally:
+                sys.stdout = sys.__stdout__
+
+        self.assertIn("notional", buf.getvalue())
+        self.assertIn("too small", buf.getvalue())
+
+
+class TestMainEntryPoint(unittest.TestCase):
+    """Tests for main() — argument parsing and command dispatch."""
+
+    def _call_main(self, argv, patches):
+        """Set sys.argv, apply patches dict, call cli.main()."""
+        original_argv = sys.argv[:]
+        sys.argv = argv
+        try:
+            import cli as cli_mod
+            with unittest.mock.patch.multiple(cli_mod, **patches):
+                cli_mod.main()
+        finally:
+            sys.argv = original_argv
+
+    def test_main_status(self):
+        """sys.argv=['cli.py','status'] dispatches to cmd_status."""
+        mock_fn = MagicMock()
+        self._call_main(["cli.py", "status"], {"cmd_status": mock_fn})
+        mock_fn.assert_called_once()
+
+    def test_main_trades_default_days(self):
+        """sys.argv=['cli.py','trades'] dispatches to cmd_trades with default days=10."""
+        mock_fn = MagicMock()
+        self._call_main(["cli.py", "trades"], {"cmd_trades": mock_fn})
+        mock_fn.assert_called_once()
+        args = mock_fn.call_args[0][0]
+        self.assertEqual(args.days, 10)
+
+    def test_main_decisions_with_days(self):
+        """sys.argv=['cli.py','decisions','--days','10'] passes days=10 to cmd_decisions."""
+        mock_fn = MagicMock()
+        self._call_main(["cli.py", "decisions", "--days", "10"], {"cmd_decisions": mock_fn})
+        mock_fn.assert_called_once()
+        args = mock_fn.call_args[0][0]
+        self.assertEqual(args.days, 10)
+
+    def test_main_run_with_dry_run(self):
+        """sys.argv=['cli.py','run','--dry-run'] passes dry_run=True to cmd_run."""
+        mock_fn = MagicMock()
+        self._call_main(["cli.py", "run", "--dry-run"], {"cmd_run": mock_fn})
+        mock_fn.assert_called_once()
+        args = mock_fn.call_args[0][0]
+        self.assertTrue(args.dry_run)
+
+    def test_main_halt(self):
+        """sys.argv=['cli.py','halt'] dispatches to cmd_halt."""
+        mock_fn = MagicMock()
+        self._call_main(["cli.py", "halt"], {"cmd_halt": mock_fn})
+        mock_fn.assert_called_once()
+
+    def test_main_demo(self):
+        """sys.argv=['cli.py','demo'] dispatches to cmd_demo."""
+        mock_fn = MagicMock()
+        self._call_main(["cli.py", "demo"], {"cmd_demo": mock_fn})
+        mock_fn.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -46,3 +46,19 @@ class TestGetMacroRisk(unittest.TestCase):
         self.assertEqual(len(fomc & cpi), 0)
         self.assertEqual(len(fomc & nfp), 0)
         self.assertEqual(len(cpi & nfp), 0)
+
+    def test_fomc_date_returns_true_and_event_label(self):
+        fomc_day = date(2026, 1, 28)  # a known FOMC announcement date
+        result = get_macro_risk(fomc_day)
+        self.assertTrue(result["is_high_risk"])
+        self.assertIsNotNone(result["event"])
+        self.assertIn("FOMC", result["event"])
+
+    def test_defaults_to_today_when_no_date_passed(self):
+        # Line 44: check_date is None → today_et() is called
+        from unittest.mock import patch
+        fixed_date = date(2026, 2, 10)  # a quiet day
+        with patch("risk.macro_calendar.today_et", return_value=fixed_date):
+            result = get_macro_risk()
+        self.assertFalse(result["is_high_risk"])
+        self.assertIsNone(result["event"])

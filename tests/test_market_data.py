@@ -222,6 +222,62 @@ class TestFetchStockData(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertLessEqual(len(result), 20)
 
+    def test_weekly_trend_fallback_when_insufficient_weekly_data(self):
+        # Lines 79-81: fewer than 22 weekly bars → weekly_trend_up=True, weekly_rsi=50.0
+        from data.market_data import fetch_stock_data
+        # Provide only 40 daily bars — resampled to weekly gives < 22 weekly candles
+        idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=40)
+        closes = [100.0 + i * 0.5 for i in range(len(idx))]
+        df = pd.DataFrame({
+            "Open":   closes,
+            "High":   [c + 1 for c in closes],
+            "Low":    [c - 1 for c in closes],
+            "Close":  closes,
+            "Volume": [1_000_000] * len(idx),
+        }, index=idx)
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = df
+        with patch("data.market_data.yf.Ticker", return_value=mock_ticker):
+            result = fetch_stock_data("AAPL", days=10)
+        self.assertIsNotNone(result)
+        # Fallback values must be present
+        self.assertTrue(result["weekly_trend_up"].iloc[-1])
+        self.assertAlmostEqual(result["weekly_rsi"].iloc[-1], 50.0)
+
+    def test_weekly_trend_exception_fallback(self):
+        # Lines 82-84: exception inside the weekly try block → weekly_trend_up=True, weekly_rsi=50.0
+        from data.market_data import fetch_stock_data
+        # Use enough bars that all daily indicators succeed, but patch RSIIndicator
+        # inside the weekly block to raise (called with weekly_close series argument)
+        idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=200)
+        closes = [100.0 + i * 0.5 for i in range(len(idx))]
+        df = pd.DataFrame({
+            "Open":   closes,
+            "High":   [c + 1 for c in closes],
+            "Low":    [c - 1 for c in closes],
+            "Close":  closes,
+            "Volume": [1_000_000] * len(idx),
+        }, index=idx)
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = df
+
+        # Patch RSIIndicator to raise only when called with a small (weekly) series
+        real_rsi = __import__("ta.momentum", fromlist=["RSIIndicator"]).RSIIndicator
+
+        call_count = [0]
+        def patched_rsi(close, window):
+            call_count[0] += 1
+            if call_count[0] >= 2:  # second call = weekly RSI
+                raise Exception("weekly rsi failed")
+            return real_rsi(close=close, window=window)
+
+        with patch("data.market_data.yf.Ticker", return_value=mock_ticker), \
+             patch("data.market_data.RSIIndicator", side_effect=patched_rsi):
+            result = fetch_stock_data("AAPL", days=10)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["weekly_trend_up"].iloc[-1])
+        self.assertAlmostEqual(result["weekly_rsi"].iloc[-1], 50.0)
+
 
 class TestGetMarketSnapshots(unittest.TestCase):
 

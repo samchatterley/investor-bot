@@ -1003,5 +1003,361 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         close_mock.assert_called()
 
 
+class TestLockFile(unittest.TestCase):
+    """Line 51: _lock_file() uses config.today_et() to build the path."""
+
+    def test_lock_file_contains_today_date(self):
+        from main import _lock_file
+        with patch("main.config.today_et", return_value=config.today_et()), \
+             patch("main.config.LOG_DIR", "/tmp/testlogdir"):
+            result = _lock_file()
+        self.assertIn(config.today_et().isoformat(), result)
+        self.assertIn(".lock_", result)
+
+
+class TestAcquireLockStaleThenSecondFailure(LockBase):
+    """Lines 70-72: stale lock removed, but second O_EXCL open also fails (race)."""
+
+    def test_stale_lock_removal_race_returns_none(self):
+        """If another process grabs the lock between removal and re-creation, return None."""
+        from main import _acquire_lock
+        os.makedirs(self.tmpdir, exist_ok=True)
+        with open(self.lock_file, "w"):
+            pass
+        old_time = time.time() - 7200  # stale
+        os.utime(self.lock_file, (old_time, old_time))
+
+        real_open = os.open
+
+        call_count = [0]
+
+        def patched_open(path, flags, mode=0o644):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise FileExistsError("race condition")
+            return real_open(path, flags, mode)
+
+        with patch("os.open", side_effect=patched_open):
+            result = _acquire_lock()
+        self.assertIsNone(result)
+
+
+class TestHandlePartialExitsAlreadyTaken(unittest.TestCase):
+    """Lines 212-213: partial exit already taken — skip without placing order."""
+
+    def _pos(self, symbol, plpc, qty=10.0, market_value=1000.0, current_price=100.0):
+        return {
+            "symbol": symbol, "unrealized_plpc": plpc,
+            "qty": qty, "market_value": market_value, "current_price": current_price,
+        }
+
+    def test_skips_when_partial_exit_already_taken(self):
+        from main import _handle_partial_exits
+        sell_mock = unittest.mock.MagicMock()
+        # meta includes partial_exit_taken_at — should trigger the skip branch
+        with patch("main.trader.get_position_meta", return_value={"partial_exit_taken_at": "2026-01-15T10:00:00+00:00"}), \
+             patch("main.trader.place_partial_sell", sell_mock):
+            result = _handle_partial_exits(
+                MagicMock(),
+                [self._pos("AAPL", plpc=config.PARTIAL_PROFIT_PCT + 5)],
+                dry_run=False,
+            )
+        # No trade should be executed — the position was already partially exited
+        self.assertEqual(result, [])
+        sell_mock.assert_not_called()
+
+
+class TestRunInnerEarningsExit(RunInnerBase):
+    """Lines 366-383: earnings exit execution path — symbol held AND has earnings risk."""
+
+    def test_earnings_exit_closes_held_position(self):
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        positions = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0,
+                      "qty": 10.0, "market_value": 1500.0, "current_price": 150.0}]
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": positions,
+            "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
+            "main.trader.close_position": close_mock,
+            "main.trader.get_position_meta": MagicMock(return_value={"signal": "momentum", "regime": "BULL_TRENDING", "confidence": 8}),
+            "main._handle_partial_exits": [],
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        close_mock.assert_called()
+        # Verify the call was for AAPL
+        self.assertEqual(close_mock.call_args[0][1], "AAPL")
+
+    def test_earnings_exit_not_triggered_for_unheld_symbol(self):
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        # AAPL has earnings risk but is NOT held
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": [],
+            "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
+            "main.trader.close_position": close_mock,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        close_mock.assert_not_called()
+
+    def test_earnings_exit_failure_logs_error(self):
+        """Line 383: earnings close returns non-success → error logged."""
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="api error"))
+        positions = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0,
+                      "qty": 10.0, "market_value": 1500.0, "current_price": 150.0}]
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": positions,
+            "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
+            "main.trader.close_position": close_mock,
+            "main._handle_partial_exits": [],
+        })
+        with stack, self.assertLogs("main", level="ERROR") as cm:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        log_output = "\n".join(cm.output)
+        self.assertIn("Earnings exit FAILED", log_output)
+        self.assertIn("AAPL", log_output)
+
+
+class TestRunInnerOptionsSignals(RunInnerBase):
+    """Line 425: options_sigs non-empty → logger.info('Options signals fetched...')."""
+
+    def test_options_signals_fetched_log_when_non_empty(self):
+        stack, mocks = self._patch_all(**{
+            "main.options_scanner.get_options_signals": {"AAPL": {"put_call_ratio": 0.5, "unusual_calls": True}},
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+        })
+        with stack, self.assertLogs("main", level="INFO") as cm:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        log_output = "\n".join(cm.output)
+        self.assertIn("Options signals fetched", log_output)
+
+
+class TestRunInnerStaleTimeBased(RunInnerBase):
+    """Lines 508-510: stale symbol NOT in position_decisions → time-based reason."""
+
+    def test_stale_symbol_without_ai_decision_uses_time_based_reason(self):
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        positions = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0,
+                      "qty": 10.0, "market_value": 1500.0, "current_price": 150.0}]
+        # get_position_meta must return a signal so the stale threshold can be looked up
+        meta_mock = MagicMock(return_value={"signal": "momentum", "regime": "BULL_TRENDING", "confidence": 7})
+        # position_ages must be high enough to be >= MAX_HOLD_DAYS
+        ages = {"AAPL": config.MAX_HOLD_DAYS + 10}
+        stack, mocks = self._patch_all(**{
+            # Return positions consistently across all calls inside _run_inner
+            "main.trader.get_open_positions": positions,
+            # No sell decision from AI for AAPL
+            "main.ai_analyst.get_trading_decisions": _decisions(sells=[]),
+            "main.trader.get_position_ages": ages,
+            "main.trader.close_position": close_mock,
+            "main.trader.get_position_meta": meta_mock,
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # AAPL should be closed via the time-based path
+        close_mock.assert_called()
+
+
+class TestRunInnerSellFailed(RunInnerBase):
+    """Lines 527-531: sell execution where result is NOT success → error logged."""
+
+    def test_failed_sell_logs_error_and_alert(self):
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="not found"))
+        alert_mock = MagicMock()
+        positions = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0,
+                      "qty": 10.0, "market_value": 1500.0, "current_price": 150.0}]
+        decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": positions,
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.close_position": close_mock,
+            "main.alerts.alert_error": alert_mock,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        alert_mock.assert_called()
+        # The alert should mention the sell failure
+        call_args_str = str(alert_mock.call_args)
+        self.assertIn("AAPL", call_args_str)
+
+
+class TestRunInnerDryRunSell(RunInnerBase):
+    """Lines 530-531: dry_run=True sell → executed_symbols.add + all_trades.append."""
+
+    def test_dry_run_sell_records_trade_without_closing(self):
+        close_mock = MagicMock()
+        positions = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0,
+                      "qty": 10.0, "market_value": 1500.0, "current_price": 150.0}]
+        decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
+        save_mock = MagicMock(return_value=_saved_record())
+        stack, mocks = self._patch_all(**{
+            "main.trader.get_open_positions": positions,
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.close_position": close_mock,
+            "main.portfolio_tracker.save_daily_run": save_mock,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+        close_mock.assert_not_called()
+        # save_daily_run should have been called with a trade recorded
+        call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
+        trades = call_kwargs.get("trades_executed", [])
+        symbols = [t["symbol"] for t in trades]
+        self.assertIn("AAPL", symbols)
+
+
+class TestRunInnerRegimeMaxOrders(RunInnerBase):
+    """Lines 561-562: HIGH_VOL regime → regime_max_orders = 2, regime_conf_bump = 1."""
+
+    def test_high_vol_regime_takes_high_vol_branch(self):
+        """Lines 561-562: HIGH_VOL path sets regime_max_orders=2 and conf_bump=1."""
+        buy_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0))
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "HIGH_VOL", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": buy_mock,
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called()
+
+    def test_normal_regime_uses_max_orders_per_run(self):
+        buy_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0))
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        # Use a normal regime (not CHOPPY, not HIGH_VOL)
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "BULL_TRENDING", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": buy_mock,
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called()
+
+
+class TestRunInnerPreTradeCheckFailed(RunInnerBase):
+    """Lines 608-609: pre-trade check fails → warning logged and buy skipped."""
+
+    def test_pre_trade_check_failure_skips_buy(self):
+        buy_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "BULL_TRENDING", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": buy_mock,
+            "main.check_pre_trade": (False, "daily notional exceeded"),
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+
+
+class TestRunInnerStopFailedAfterBuy(RunInnerBase):
+    """Stop placement failure after buy → error logged."""
+
+    def test_stop_failure_after_buy_logs_error(self):
+        alert_mock = MagicMock()
+        buy_result = OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=5.0)
+        stop_result = OrderResult(status=OrderStatus.STOP_FAILED, symbol="AAPL", rejection_reason="api error")
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "BULL_TRENDING", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": MagicMock(return_value=buy_result),
+            "main.trader.place_trailing_stop": MagicMock(return_value=stop_result),
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+            "main.alerts.alert_error": alert_mock,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # alert_error should have been called for STOP FAILED
+        alert_calls = [str(c) for c in alert_mock.call_args_list]
+        self.assertTrue(any("STOP" in c for c in alert_calls),
+                        f"Expected STOP FAILED alert, got: {alert_calls}")
+
+
+class TestRunInnerBuyZeroFilledQty(RunInnerBase):
+    """Lines 636-637: successful buy with zero filled_qty → no stop placed."""
+
+    def test_zero_filled_qty_does_not_place_stop(self):
+        stop_mock = MagicMock()
+        # filled_qty=0.0 means no shares were actually filled
+        buy_result = OrderResult(status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=0.0)
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "BULL_TRENDING", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": MagicMock(return_value=buy_result),
+            "main.trader.place_trailing_stop": stop_mock,
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+        })
+        with stack:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # No stop should be placed when filled_qty == 0
+        stop_mock.assert_not_called()
+
+
+class TestRunInnerNotionalTooSmall(RunInnerBase):
+    """Line 647: notional < 1.0 → logger.warning('Skipping ...: $X too small')."""
+
+    def test_too_small_notional_logs_warning_and_skips(self):
+        buy_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "BULL_TRENDING", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": buy_mock,
+            # risk_budget_size returns tiny notional below 1.0
+            "main.position_sizer.risk_budget_size": 0.50,
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+        })
+        with stack, self.assertLogs("main", level="WARNING") as cm:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+        log_output = "\n".join(cm.output)
+        self.assertIn("too small", log_output)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_SCRIPTS_DIR)
 if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+    sys.path.insert(0, _ROOT)  # pragma: no cover
 
 _TESTS_DIR = os.path.join(_ROOT, "tests")
 

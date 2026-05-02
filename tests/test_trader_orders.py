@@ -904,3 +904,214 @@ class TestPlaceTrailingStop(unittest.TestCase):
         result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
         self.assertEqual(result.status, OrderStatus.STOP_FAILED)
         self.assertFalse(result.is_success)
+
+    def test_whole_shares_trailing_stop_success_returns_filled(self):
+        """GTC trailing stop path (non-fractional qty) — success branch."""
+        from execution.trader import place_trailing_stop
+        client = MagicMock()
+        client.submit_order.return_value = self._make_order("stop-gtc-123")
+        result = place_trailing_stop(client, "MSFT", 5.0, current_price=300.0)
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertEqual(result.stop_order_id, "stop-gtc-123")
+
+    def test_whole_shares_trailing_stop_exception_returns_stop_failed(self):
+        """GTC trailing stop path (non-fractional qty) — exception branch (lines 175-177)."""
+        from execution.trader import place_trailing_stop
+        client = MagicMock()
+        client.submit_order.side_effect = Exception("trailing stop rejected")
+        result = place_trailing_stop(client, "MSFT", 5.0, current_price=300.0)
+        self.assertEqual(result.status, OrderStatus.STOP_FAILED)
+        self.assertFalse(result.is_success)
+        self.assertIn("trailing stop rejected", result.rejection_reason)
+
+    def test_fractional_stop_exception_returns_stop_failed(self):
+        """Fixed stop path (fractional qty) — exception branch (lines 158-160)."""
+        from execution.trader import place_trailing_stop
+        client = MagicMock()
+        client.submit_order.side_effect = Exception("stop order api error")
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
+        self.assertEqual(result.status, OrderStatus.STOP_FAILED)
+        self.assertFalse(result.is_success)
+        self.assertIn("stop order api error", result.rejection_reason)
+
+
+class TestReconcilePositionsMissingSymbol(unittest.TestCase):
+    """Test reconcile_positions adds placeholder for symbol in broker but not in DB."""
+
+    def setUp(self):
+        import utils.db as db_module
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        db_module._initialized = False
+        from utils.db import init_db
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_adds_placeholder_metadata_for_broker_symbol_not_in_db(self):
+        """Lines 364-365: symbols in broker but not in DB get a placeholder INSERT."""
+        from execution.trader import get_position_meta, reconcile_positions
+        client = MagicMock()
+        client.get_all_positions.return_value = [_mock_position("TSLA", 5)]
+        reconcile_positions(client)
+        meta = get_position_meta("TSLA")
+        # Placeholder entry created — entry_date must be present
+        self.assertIn("entry_date", meta)
+        self.assertEqual(meta["signal"], "unknown")
+
+    def test_reconcile_db_exception_does_not_crash(self):
+        """Lines 364-365: db exception inside the inner block is caught."""
+        from execution.trader import reconcile_positions
+        client = MagicMock()
+        client.get_all_positions.return_value = [_mock_position("AAPL", 10)]
+        with patch("execution.trader._db", side_effect=Exception("db error")):
+            try:
+                reconcile_positions(client)
+            except Exception:
+                self.fail("reconcile_positions raised on DB error")
+
+
+class TestGetPositionSignalException(unittest.TestCase):
+    """Lines 257-258: get_position_signal exception path returns 'unknown'."""
+
+    def test_returns_unknown_when_db_raises(self):
+        from execution.trader import get_position_signal
+        with patch("execution.trader._db", side_effect=Exception("db down")):
+            result = get_position_signal("AAPL")
+        self.assertEqual(result, "unknown")
+
+
+class TestRecordPartialExitException(unittest.TestCase):
+    """Lines 278-286: record_partial_exit exception path — no raise, warning logged."""
+
+    def test_does_not_raise_when_db_raises(self):
+        from execution.trader import record_partial_exit
+        with patch("execution.trader._db", side_effect=Exception("db error")):
+            try:
+                record_partial_exit("AAPL")
+            except Exception:
+                self.fail("record_partial_exit raised unexpectedly on DB error")
+
+
+class TestGetPositionMetaException(unittest.TestCase):
+    """Lines 299-300: get_position_meta exception path returns defaults."""
+
+    def test_returns_defaults_when_db_raises(self):
+        from execution.trader import get_position_meta
+        with patch("execution.trader._db", side_effect=Exception("db error")):
+            meta = get_position_meta("AAPL")
+        self.assertEqual(meta["signal"], "unknown")
+        self.assertEqual(meta["regime"], "UNKNOWN")
+        self.assertEqual(meta["confidence"], 0)
+        self.assertEqual(meta["entry_price"], 0.0)
+
+
+class TestLoadAllPositionsException(unittest.TestCase):
+    """Lines 310-311: _load_all_positions exception path returns empty dict."""
+
+    def test_returns_empty_dict_when_db_raises(self):
+        from execution.trader import _load_all_positions
+        with patch("execution.trader._db", side_effect=Exception("db error")):
+            result = _load_all_positions()
+        self.assertEqual(result, {})
+
+
+class TestGetPositionAgesException(unittest.TestCase):
+    """Lines 327-328: get_position_ages exception on bad entry_date — defaults to age 1."""
+
+    def setUp(self):
+        import utils.db as db_module
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        db_module._initialized = False
+        from utils.db import init_db
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_bad_entry_date_defaults_to_age_one(self):
+        """Lines 327-328: bad entry_date causes Exception → age defaults to 1."""
+        from execution.trader import get_position_ages
+
+        # Insert a row with a bad entry_date that cannot be parsed
+        from utils.db import get_db
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
+                "VALUES (?,?,?,?,?,?)",
+                ("BADDATE", "not-a-date", 100.0, "unknown", "UNKNOWN", 0),
+            )
+        ages = get_position_ages()
+        self.assertIn("BADDATE", ages)
+        self.assertEqual(ages["BADDATE"], 1)
+
+
+class TestEnsureStopsAttachedException(unittest.TestCase):
+    """Line 397: ensure_stops_attached exception path and sub-share continue."""
+
+    def test_does_not_raise_when_get_all_positions_raises(self):
+        from execution.trader import ensure_stops_attached
+        client = MagicMock()
+        client.get_all_positions.side_effect = Exception("broker unavailable")
+        try:
+            ensure_stops_attached(client)
+        except Exception:
+            self.fail("ensure_stops_attached raised unexpectedly")
+
+    def test_does_not_raise_when_get_orders_raises(self):
+        from execution.trader import ensure_stops_attached
+        client = MagicMock()
+        client.get_all_positions.return_value = [_mock_position("AAPL", 10)]
+        client.get_orders.side_effect = Exception("orders API down")
+        try:
+            ensure_stops_attached(client)
+        except Exception:
+            self.fail("ensure_stops_attached raised unexpectedly on get_orders error")
+
+    def test_sub_share_uncovered_skips_without_placing_stop(self):
+        """Line 397: whole_uncovered < 1 (entirely sub-share) → continue, no stop placed."""
+        from execution.trader import ensure_stops_attached
+        # Position of 0.5 shares — entirely sub-share, whole_uncovered = floor(0.5) = 0
+        pos = MagicMock()
+        pos.symbol = "AAPL"
+        pos.qty = "0.5"  # entirely sub-share
+        pos.current_price = "150.0"
+        client = MagicMock()
+        client.get_all_positions.return_value = [pos]
+        client.get_orders.return_value = []  # no existing stops → uncovered = 0.5
+        with patch("execution.trader.place_trailing_stop") as stop_mock:
+            ensure_stops_attached(client)
+        stop_mock.assert_not_called()
+
+
+class TestGetDailyNotionalException(unittest.TestCase):
+    """Lines 462-463: get_daily_notional exception path returns 0.0."""
+
+    def test_returns_zero_when_db_raises(self):
+        from execution.trader import get_daily_notional
+        with patch("execution.trader._db", side_effect=Exception("db error")):
+            result = get_daily_notional("2026-01-15")
+        self.assertEqual(result, 0.0)
+
+
+class TestAddDailyNotionalException(unittest.TestCase):
+    """Lines 477-478: add_daily_notional exception path — no raise, warning logged."""
+
+    def test_does_not_raise_when_db_raises(self):
+        from execution.trader import add_daily_notional
+        with patch("execution.trader._db", side_effect=Exception("db error")):
+            try:
+                add_daily_notional("2026-01-15", 500.0)
+            except Exception:
+                self.fail("add_daily_notional raised unexpectedly on DB error")

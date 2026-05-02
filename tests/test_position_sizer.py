@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -123,6 +126,82 @@ class TestRiskBudgetSize(unittest.TestCase):
         with patch("risk.position_sizer._empirical_win_rate", return_value=0.10):
             result = risk_budget_size(10_000, confidence=8)
         self.assertGreater(result, 0.0)  # floor at 25% of base, never zero
+
+
+class TestEmpiricalWinRate(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.stats_path = os.path.join(self.tmpdir, "signal_stats.json")
+        self.patcher = patch("risk.position_sizer._SIGNAL_STATS_PATH", self.stats_path)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        import shutil
+        self.addCleanup(shutil.rmtree, self.tmpdir)
+
+    def _write_stats(self, data):
+        with open(self.stats_path, "w") as f:
+            json.dump(data, f)
+
+    def test_load_signal_stats_missing_file_returns_empty(self):
+        # Lines 27-28: FileNotFoundError → return {}
+        from risk.position_sizer import _load_signal_stats
+        # stats_path does not exist (setUp doesn't create it)
+        result = _load_signal_stats()
+        self.assertEqual(result, {})
+
+    def test_load_signal_stats_corrupt_json_returns_empty(self):
+        # Lines 27-28: json.JSONDecodeError → return {}
+        from risk.position_sizer import _load_signal_stats
+        with open(self.stats_path, "w") as f:
+            f.write("{ not valid json {{")
+        result = _load_signal_stats()
+        self.assertEqual(result, {})
+
+    def test_regime_bucket_with_enough_samples_used(self):
+        # Line 44: regime bucket has >= _MIN_SAMPLE_SIZE (5) trades → return regime win rate
+        from risk.position_sizer import _empirical_win_rate
+        stats = {
+            "momentum": {
+                "trades": 10, "wins": 6, "losses": 4, "total_return_pct": 20.0,
+                "by_regime": {
+                    "BULL_TRENDING": {"trades": 5, "wins": 4, "losses": 1, "total_return_pct": 10.0}
+                },
+            }
+        }
+        self._write_stats(stats)
+        result = _empirical_win_rate("momentum", "BULL_TRENDING")
+        self.assertAlmostEqual(result, 4 / 5)
+
+    def test_signal_level_fallback_when_regime_insufficient(self):
+        # Line 47: regime bucket < 5 samples, signal-level has >= 5 → uses signal-level
+        from risk.position_sizer import _empirical_win_rate
+        stats = {
+            "momentum": {
+                "trades": 8, "wins": 5, "losses": 3, "total_return_pct": 15.0,
+                "by_regime": {
+                    "BULL_TRENDING": {"trades": 2, "wins": 1, "losses": 1, "total_return_pct": 2.0}
+                },
+            }
+        }
+        self._write_stats(stats)
+        result = _empirical_win_rate("momentum", "BULL_TRENDING")
+        self.assertAlmostEqual(result, 5 / 8)
+
+    def test_returns_none_when_insufficient_samples(self):
+        # Line 49: both regime and signal-level have < 5 samples → return None
+        from risk.position_sizer import _empirical_win_rate
+        stats = {
+            "momentum": {
+                "trades": 2, "wins": 1, "losses": 1, "total_return_pct": 3.0,
+                "by_regime": {
+                    "BULL_TRENDING": {"trades": 1, "wins": 1, "losses": 0, "total_return_pct": 5.0}
+                },
+            }
+        }
+        self._write_stats(stats)
+        result = _empirical_win_rate("momentum", "BULL_TRENDING")
+        self.assertIsNone(result)
 
 
 class TestGetMaxPositions(unittest.TestCase):

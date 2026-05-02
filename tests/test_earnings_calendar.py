@@ -41,6 +41,21 @@ class TestGetNextEarningsDate(unittest.TestCase):
             result = get_next_earnings_date("AAPL")
         self.assertIsNone(result)
 
+    def test_returns_none_on_unexpected_exception(self):
+        # except Exception as e — covers unexpected errors beyond API failures
+        with patch("risk.earnings_calendar.yf.Ticker", side_effect=AttributeError("unexpected attr")):
+            result = get_next_earnings_date("AAPL")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_raw_earnings_date_is_none(self):
+        # Line 35: raw is None inside the try block → return None
+        mock = MagicMock()
+        # Dict calendar with no Earnings Date key → raw = None
+        mock.calendar = {}
+        with patch("risk.earnings_calendar.yf.Ticker", return_value=mock):
+            result = get_next_earnings_date("AAPL")
+        self.assertIsNone(result)
+
 
 class TestDaysUntilEarnings(unittest.TestCase):
 

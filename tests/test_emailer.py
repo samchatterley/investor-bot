@@ -65,6 +65,11 @@ class TestHumaniseDetail(unittest.TestCase):
         self.assertIn("Upward momentum", result)
         self.assertIn("8/10", result)
 
+    def test_dry_run_part_within_multi_part_string(self):
+        # Line 107-108: part.startswith("dry run") inside the parts loop
+        result = _humanise_detail("dry run $100")
+        self.assertIn("Simulated", result)
+
 
 class TestBuildHtml(unittest.TestCase):
 
@@ -158,6 +163,34 @@ class TestBuildWeeklyHtml(unittest.TestCase):
         html = _build_weekly_html(self._review(), test_report=report)
         self.assertIn("FAIL", html)
         self.assertIn("test_baz", html)
+
+    def test_bullets_with_empty_list_shows_none_noted(self):
+        # Line 393: _bullets([]) returns the "None noted" placeholder paragraph
+        review = self._review(what_worked=[], what_didnt=[], lessons=[])
+        html = _build_weekly_html(review)
+        self.assertIn("None noted this week", html)
+
+    def test_no_rejected_changes_omits_rejected_block(self):
+        # Line 443: else branch — rejected is empty so rejected_block stays ""
+        review = self._review(applied_changes=[{
+            "parameter": "MIN_CONFIDENCE",
+            "old_value": 7, "new_value": 8,
+            "reason": "test", "status": "applied",
+        }])
+        html = _build_weekly_html(review)
+        self.assertNotIn("Suggestions outside safe bounds", html)
+
+    def test_rejected_changes_section_included(self):
+        # Line 443: rejected is non-empty → _section called to build rejected_block
+        review = self._review(applied_changes=[{
+            "parameter": "SUPER_LEVER",
+            "old_value": 0, "new_value": 99,
+            "reason": "test", "status": "rejected",
+            "rejection_reason": "not in the safe-to-modify list",
+        }])
+        html = _build_weekly_html(review)
+        self.assertIn("Suggestions outside safe bounds", html)
+        self.assertIn("SUPER_LEVER", html)
 
 
 class TestBuildDiagnosticsSection(unittest.TestCase):

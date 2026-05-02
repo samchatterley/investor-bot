@@ -198,6 +198,17 @@ def _fmt_usd(v: float) -> str:
     return f"+${v:,.2f}" if v >= 0 else f"-${abs(v):,.2f}"
 
 
+def _age_label(age_seconds: float) -> str:
+    if age_seconds < 60:
+        return "just now"
+    elif age_seconds < 3600:
+        return f"{int(age_seconds // 60)}m ago"
+    elif age_seconds < 86400:
+        return f"{int(age_seconds // 3600)}h ago"
+    else:
+        return f"{int(age_seconds // 86400)}d ago"
+
+
 def _equity_fig(dates, values, color=C_ACCENT):
     r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
     fig = go.Figure()
@@ -579,14 +590,7 @@ elif page == "Diagnostics":
             run_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             now    = datetime.now(UTC)
             age_s  = (now - run_dt).total_seconds()
-            if age_s < 60:
-                age_str = "just now"
-            elif age_s < 3600:
-                age_str = f"{int(age_s // 60)}m ago"
-            elif age_s < 86400:
-                age_str = f"{int(age_s // 3600)}h ago"
-            else:
-                age_str = f"{int(age_s // 86400)}d ago"
+            age_str = _age_label(age_s)
             friendly_ts = run_dt.strftime("%-d %b %Y at %H:%M UTC")
             st.caption(f"Last run: {friendly_ts}  ·  {age_str}")
         except Exception:

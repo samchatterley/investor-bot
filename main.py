@@ -28,6 +28,7 @@ from analysis.weekly_review import get_latest_review
 from data import market_data, news_fetcher, options_scanner, sector_data
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
+from models import OrderResult
 from notifications import alerts, emailer
 from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
 from utils import audit_log, decision_log, portfolio_tracker
@@ -104,10 +105,7 @@ def _run_kill_switch():
 
     # 2. Attempt to close all open positions; track per-symbol order result
     positions = trader.get_open_positions(client)
-    pl_by_symbol: dict[str, tuple[float, float]] = {
-        p["symbol"]: (p["unrealized_pl"], p["unrealized_plpc"]) for p in positions
-    }
-    close_results: dict[str, "OrderResult"] = {}
+    close_results: dict[str, OrderResult] = {}
     for pos in positions:
         result = trader.close_position(client, pos["symbol"])
         close_results[pos["symbol"]] = result

@@ -162,6 +162,36 @@ class TestRunIdInjection(AuditLogBase):
             audit_log._run_id = original
 
 
+class TestAuditWriteFailures(AuditLogBase):
+
+    def test_jsonl_write_failure_does_not_raise(self):
+        # Lines 43-44: open() raises during JSONL write → logger.error, no exception propagated
+        import builtins
+
+        from utils import audit_log
+        real_open = builtins.open
+
+        def failing_open(path, *args, **kwargs):
+            if str(path) == audit_log._AUDIT_PATH:
+                raise OSError("disk full")
+            return real_open(path, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=failing_open):
+            try:
+                audit_log._write("TEST_EVENT", {"key": "value"})
+            except Exception:
+                self.fail("_write raised on JSONL write failure")
+
+    def test_sqlite_write_failure_does_not_raise(self):
+        # Lines 54-55: get_db() raises → logger.error, no exception propagated
+        from utils import audit_log
+        with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
+            try:
+                audit_log._write("TEST_EVENT", {"key": "value"})
+            except Exception:
+                self.fail("_write raised on SQLite failure")
+
+
 class TestConfigOverrideLogs(AuditLogBase):
 
     def test_log_config_override_applied(self):

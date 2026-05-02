@@ -131,5 +131,197 @@ class TestSchedulerJobRegistration(unittest.TestCase):
         self.assertEqual(str(sunday_jobs[0].at_time), "20:00:00")
 
 
+class TestRunFunction(unittest.TestCase):
+    """Tests for _run(mode) in run_scheduler.py."""
+
+    def _make_mod(self, halt_file_exists=False):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        with patch("os.path.exists", return_value=halt_file_exists):
+            return mod
+
+    def test_halt_file_exists_skips_run(self):
+        """When halt file is present, bot.run must NOT be called."""
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_bot = MagicMock()
+        mod.bot = mock_bot
+        with patch("os.path.exists", return_value=True):
+            mod._run("open")
+        mock_bot.run.assert_not_called()
+
+    def test_no_halt_file_calls_bot_run(self):
+        """Without halt file, bot.run is called with the correct mode."""
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_bot = MagicMock()
+        mod.bot = mock_bot
+        with patch("os.path.exists", return_value=False):
+            mod._run("open")
+        mock_bot.run.assert_called_once_with(mode="open")
+
+    def test_run_mode_passed_through(self):
+        """_run passes the mode argument unchanged to bot.run."""
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_bot = MagicMock()
+        mod.bot = mock_bot
+        for mode in ("open_sells", "open", "midday", "close"):
+            mock_bot.reset_mock()
+            with patch("os.path.exists", return_value=False):
+                mod._run(mode)
+            mod.bot.run.assert_called_once_with(mode=mode)
+
+    def test_bot_run_exception_is_caught_and_logged(self):
+        """If bot.run raises, the exception must not propagate out of _run."""
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_bot = MagicMock()
+        mock_bot.run.side_effect = RuntimeError("broker error")
+        mod.bot = mock_bot
+        with patch("os.path.exists", return_value=False):
+            # Should not raise
+            try:
+                mod._run("open")
+            except Exception as exc:
+                self.fail(f"_run raised unexpectedly: {exc}")
+
+    def test_bot_run_exception_does_not_propagate(self):
+        """Exception in bot.run is swallowed — _run returns None."""
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_bot = MagicMock()
+        mock_bot.run.side_effect = ValueError("bad mode")
+        mod.bot = mock_bot
+        with patch("os.path.exists", return_value=False):
+            result = mod._run("open")
+        self.assertIsNone(result)
+
+
+class TestWeeklyReview(unittest.TestCase):
+    """Tests for _weekly_review() in run_scheduler.py."""
+
+    def _get_mod(self):
+        return _load_scheduler_module()
+
+    def test_halt_file_skips_review(self):
+        """When halt file exists, run_diagnostics and run_weekly_review must NOT be called."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_run_diagnostics = MagicMock()
+        mock_run_weekly_review = MagicMock()
+        mod.run_diagnostics = mock_run_diagnostics
+        mod.run_weekly_review = mock_run_weekly_review
+        with patch("os.path.exists", return_value=True):
+            mod._weekly_review()
+        mock_run_diagnostics.assert_not_called()
+        mock_run_weekly_review.assert_not_called()
+
+    def test_no_halt_calls_diagnostics_and_review(self):
+        """Without halt file, both run_diagnostics and run_weekly_review are called."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_diag = MagicMock(return_value={"status": "PASS"})
+        mock_review = MagicMock(return_value={"summary": "good week"})
+        mock_send = MagicMock()
+        mod.run_diagnostics = mock_diag
+        mod.run_weekly_review = mock_review
+        mod.send_weekly_review = mock_send
+        with patch("os.path.exists", return_value=False):
+            mod._weekly_review()
+        mock_diag.assert_called_once()
+        mock_review.assert_called_once()
+
+    def test_review_result_triggers_send(self):
+        """A truthy review result causes send_weekly_review to be called."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        diag_report = {"status": "PASS"}
+        review_result = {"summary": "good week"}
+        mock_diag = MagicMock(return_value=diag_report)
+        mock_review = MagicMock(return_value=review_result)
+        mock_send = MagicMock()
+        mod.run_diagnostics = mock_diag
+        mod.run_weekly_review = mock_review
+        mod.send_weekly_review = mock_send
+        with patch("os.path.exists", return_value=False):
+            mod._weekly_review()
+        mock_send.assert_called_once_with(review_result, test_report=diag_report)
+
+    def test_diagnostics_exception_still_runs_review(self):
+        """If run_diagnostics raises, _weekly_review still calls run_weekly_review."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_diag = MagicMock(side_effect=RuntimeError("diagnostics boom"))
+        mock_review = MagicMock(return_value={"summary": "ok"})
+        mock_send = MagicMock()
+        mod.run_diagnostics = mock_diag
+        mod.run_weekly_review = mock_review
+        mod.send_weekly_review = mock_send
+        with patch("os.path.exists", return_value=False):
+            mod._weekly_review()
+        mock_review.assert_called_once()
+
+    def test_review_none_with_test_report_sends_diagnostics_email(self):
+        """When review returns None but test_report exists, sends a diagnostics-only email."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        diag_report_mock = MagicMock()
+        diag_report_mock.get.return_value = "FAIL"
+
+        mock_diag = MagicMock(return_value=diag_report_mock)
+        mock_review = MagicMock(return_value=None)
+        mock_send = MagicMock()
+        mock_send_html = MagicMock()
+        mock_build_html = MagicMock(return_value="<html/>")
+        mod.run_diagnostics = mock_diag
+        mod.run_weekly_review = mock_review
+        mod.send_weekly_review = mock_send
+
+        with patch("os.path.exists", return_value=False), \
+             patch.dict("sys.modules", {
+                 "notifications.emailer": MagicMock(
+                     _send_html=mock_send_html,
+                     _build_weekly_html=mock_build_html,
+                 ),
+             }):
+            mod._weekly_review()
+
+        # send_weekly_review should NOT be called (review was None)
+        mock_send.assert_not_called()
+        # _send_html should be called once (diagnostics-only path)
+        mock_send_html.assert_called_once()
+
+    def test_both_none_nothing_sent(self):
+        """When both review and test_report are None, no email is sent."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_diag = MagicMock(return_value=None)
+        mock_review = MagicMock(return_value=None)
+        mock_send = MagicMock()
+        mod.run_diagnostics = mock_diag
+        mod.run_weekly_review = mock_review
+        mod.send_weekly_review = mock_send
+        with patch("os.path.exists", return_value=False):
+            mod._weekly_review()
+        mock_send.assert_not_called()
+
+    def test_weekly_review_exception_caught(self):
+        """If run_weekly_review raises, _weekly_review logs and does not propagate."""
+        mod = self._get_mod()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        mock_diag = MagicMock(return_value={"status": "PASS"})
+        mock_review = MagicMock(side_effect=RuntimeError("review explosion"))
+        mock_send = MagicMock()
+        mod.run_diagnostics = mock_diag
+        mod.run_weekly_review = mock_review
+        mod.send_weekly_review = mock_send
+        with patch("os.path.exists", return_value=False):
+            try:
+                mod._weekly_review()
+            except Exception as exc:
+                self.fail(f"_weekly_review raised unexpectedly: {exc}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -119,3 +119,17 @@ class TestGetOptionsSignals(unittest.TestCase):
         from data.options_scanner import get_options_signals
         result = get_options_signals([])
         self.assertEqual(result, {})
+
+    def test_future_exception_does_not_block_other_symbols(self):
+        # Lines 62-63: future.result() raises → logs debug, continues
+        from data.options_scanner import get_options_signals
+
+        def selective_signal(sym):
+            if sym == "FAIL":
+                raise RuntimeError("forced failure")
+            return {"put_call_ratio": 0.5, "unusual_calls": False}
+
+        with patch("data.options_scanner._get_signal", side_effect=selective_signal):
+            result = get_options_signals(["FAIL", "AAPL"])
+        self.assertNotIn("FAIL", result)
+        self.assertIn("AAPL", result)

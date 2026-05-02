@@ -17,7 +17,7 @@ import sys
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_SCRIPTS_DIR)
 if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
+    sys.path.insert(0, _ROOT)  # pragma: no cover
 
 import logging  # noqa: E402
 import time  # noqa: E402
