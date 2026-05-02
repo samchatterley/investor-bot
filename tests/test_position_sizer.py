@@ -71,13 +71,15 @@ class TestRiskBudgetSize(unittest.TestCase):
             self.assertGreaterEqual(risk_budget_size(10_000, confidence=conf), 0.0)
 
     def test_formula_matches_expected_value(self):
-        # notional = equity * RISK_PER_TRADE_PCT / (TRAILING_STOP_PCT / 100)
-        # then capped at equity * MAX_POSITION_WEIGHT
+        # base = equity * RISK_PER_TRADE_PCT / (TRAILING_STOP_PCT / 100), capped at MAX_POSITION_WEIGHT
+        # scaled by conviction: at conf=8, MIN_CONFIDENCE=7 → scale = 0.5 + 0.5*(8-7)/(10-7) = 0.667
         equity = 10_000
         risk_usd = equity * config.RISK_PER_TRADE_PCT
         stop_pct = config.TRAILING_STOP_PCT / 100.0
-        expected = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
-        self.assertAlmostEqual(risk_budget_size(equity, confidence=8), expected, places=4)
+        base = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
+        span = max(10 - config.MIN_CONFIDENCE, 1)
+        scale = 0.5 + 0.5 * (8 - config.MIN_CONFIDENCE) / span
+        self.assertAlmostEqual(risk_budget_size(equity, confidence=8), base * scale, places=4)
 
     def test_notional_unaffected_when_kelly_unavailable(self):
         """Kelly is telemetry only — risk_budget_size returns valid notional even if kelly_fraction fails."""
@@ -87,14 +89,40 @@ class TestRiskBudgetSize(unittest.TestCase):
             result = risk_budget_size(10_000, confidence=8)
         self.assertGreater(result, 0.0)
 
-    def test_confidence_does_not_change_notional(self):
-        # Confidence affects Kelly telemetry only — risk-budget notional is identical
-        # for confidence=7 and confidence=9 (both above MIN_CONFIDENCE gate)
+    def test_higher_confidence_gives_larger_notional(self):
         equity = 20_000
-        self.assertEqual(
-            risk_budget_size(equity, confidence=7),
+        self.assertGreater(
             risk_budget_size(equity, confidence=9),
+            risk_budget_size(equity, confidence=7),
         )
+
+    def test_min_confidence_gives_half_base_notional(self):
+        equity = 10_000
+        risk_usd = equity * config.RISK_PER_TRADE_PCT
+        stop_pct = config.TRAILING_STOP_PCT / 100.0
+        base = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
+        result = risk_budget_size(equity, confidence=config.MIN_CONFIDENCE)
+        self.assertAlmostEqual(result, base * 0.5, places=4)
+
+    def test_max_confidence_gives_full_base_notional(self):
+        equity = 10_000
+        risk_usd = equity * config.RISK_PER_TRADE_PCT
+        stop_pct = config.TRAILING_STOP_PCT / 100.0
+        base = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
+        result = risk_budget_size(equity, confidence=10)
+        self.assertAlmostEqual(result, base * 1.0, places=4)
+
+    def test_empirical_win_rate_scales_notional(self):
+        with patch("risk.position_sizer._empirical_win_rate", return_value=0.65):
+            full = risk_budget_size(10_000, confidence=8)
+        with patch("risk.position_sizer._empirical_win_rate", return_value=0.40):
+            smaller = risk_budget_size(10_000, confidence=8)
+        self.assertGreater(full, smaller)
+
+    def test_poor_empirical_win_rate_is_floored(self):
+        with patch("risk.position_sizer._empirical_win_rate", return_value=0.10):
+            result = risk_budget_size(10_000, confidence=8)
+        self.assertGreater(result, 0.0)  # floor at 25% of base, never zero
 
 
 class TestGetMaxPositions(unittest.TestCase):

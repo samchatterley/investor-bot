@@ -1,9 +1,12 @@
 """
-Runs the trading bot three times per trading day (all times America/New_York):
-  09:31 ET — full open cycle  (new buys + position management)
+Runs the trading bot four times per trading day (all times America/New_York):
+  09:31 ET — open sells       (earnings exits, AI sell decisions, no new buys)
+  10:00 ET — open buys        (fresh AI buy analysis after open noise settles)
   12:00 ET — midday check     (partial exits, no new buys)
   15:30 ET — pre-close check  (final position review)
 
+Splitting open into two windows avoids buying into the noisy first 30 minutes
+of the session while still executing time-sensitive exits at the bell.
 Times are scheduled in NYSE timezone directly — no BST/GMT conversion needed.
 Leave this process running in a terminal or tmux session.
 """
@@ -48,9 +51,10 @@ def _run(mode: str):
         logger.error(f"Run failed ({mode}): {e}", exc_info=True)
 
 
-def _open():   _run("open")
-def _midday(): _run("midday")
-def _close():  _run("close")
+def _open_sells(): _run("open_sells")
+def _open():       _run("open")
+def _midday():     _run("midday")
+def _close():      _run("close")
 
 
 def _weekly_review():
@@ -89,13 +93,14 @@ def _weekly_review():
 if __name__ == "__main__":
     _ET = "America/New_York"
     for _day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
-        getattr(schedule.every(), _day).at("09:31", _ET).do(_open)
+        getattr(schedule.every(), _day).at("09:31", _ET).do(_open_sells)
+        getattr(schedule.every(), _day).at("10:00", _ET).do(_open)
         getattr(schedule.every(), _day).at("12:00", _ET).do(_midday)
         getattr(schedule.every(), _day).at("15:30", _ET).do(_close)
 
     schedule.every().sunday.at("15:00", _ET).do(_weekly_review)
 
-    logger.info("Scheduler running — Mon–Fri at 09:31 / 12:00 / 15:30 ET (America/New_York)")
+    logger.info("Scheduler running — Mon–Fri at 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)")
     logger.info("Ctrl+C to stop.")
 
     while True:

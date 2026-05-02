@@ -130,11 +130,11 @@ def _build_trade_cards(record: dict) -> str:
         reasoning = ""
         for b in record.get("buy_candidates", []):
             if b["symbol"] == t["symbol"]:
-                reasoning = b.get("reasoning", "")
+                reasoning = b.get("summary") or b.get("reasoning", "")
                 break
         for d in record.get("position_decisions", []):
             if d["symbol"] == t["symbol"] and action == "SELL":
-                reasoning = d.get("reasoning", "")
+                reasoning = d.get("summary") or d.get("reasoning", "")
                 break
 
         if action == "BUY":

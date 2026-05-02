@@ -7,6 +7,7 @@ from config import (
     LOG_DIR,
     MAX_POSITION_PCT,
     MAX_POSITION_WEIGHT,
+    MIN_CONFIDENCE,
     RISK_PER_TRADE_PCT,
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
@@ -77,32 +78,40 @@ def risk_budget_size(
     regime: str = "UNKNOWN",
 ) -> float:
     """
-    Risk-budget position sizing.
+    Risk-budget position sizing, scaled by conviction.
 
-    Sizes a position so that if the trailing stop triggers, the loss equals
-    RISK_PER_TRADE_PCT of equity. Result is capped at MAX_POSITION_WEIGHT of equity.
-
-    Kelly fraction is computed and logged as calibration telemetry but never
-    used to increase size above the risk-budget cap.
+    Base notional: if trailing stop triggers → RISK_PER_TRADE_PCT of equity lost.
+    Conviction scale: multiplier derived from empirical win rate (when ≥5 samples exist)
+    or from AI confidence score (linear from 0.5× at MIN_CONFIDENCE to 1.0× at 10).
+    Result is capped at MAX_POSITION_WEIGHT of equity.
     """
     if equity <= 0:
         return 0.0
 
     risk_usd = equity * RISK_PER_TRADE_PCT
     stop_pct = TRAILING_STOP_PCT / 100.0
-    notional = risk_usd / max(stop_pct, 1e-6)
-    notional = min(notional, equity * MAX_POSITION_WEIGHT)
+    base_notional = risk_usd / max(stop_pct, 1e-6)
+    base_notional = min(base_notional, equity * MAX_POSITION_WEIGHT)
+
+    emp = _empirical_win_rate(signal, regime)
+    if emp is not None:
+        # 60%+ win rate → full size; lower → proportionally smaller; floor at 25%
+        conviction_scale = max(0.25, min(emp / 0.60, 1.0))
+    else:
+        # Linear scale: MIN_CONFIDENCE → 0.5×, confidence 10 → 1.0×
+        span = max(10 - MIN_CONFIDENCE, 1)
+        conviction_scale = 0.5 + 0.5 * (confidence - MIN_CONFIDENCE) / span
 
     try:
         kelly = kelly_fraction(confidence, signal, regime)
         logger.debug(
-            f"risk_budget_size: notional={notional:.2f} kelly_telemetry={kelly:.3f} "
-            f"conf={confidence} {signal}/{regime}"
+            f"risk_budget_size: base={base_notional:.2f} kelly_telemetry={kelly:.3f} "
+            f"conviction_scale={conviction_scale:.2f} conf={confidence} {signal}/{regime}"
         )
     except Exception as e:
         logger.debug(f"kelly_fraction unavailable (telemetry only): {e}")
 
-    return max(0.0, notional)
+    return max(0.0, base_notional * conviction_scale)
 
 
 def get_max_positions(portfolio_value: float) -> int:

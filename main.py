@@ -387,7 +387,13 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     open_positions = trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
     position_ages = trader.get_position_ages()
-    stale = trader.get_stale_positions(config.MAX_HOLD_DAYS)
+    stale = [
+        sym for sym, age in position_ages.items()
+        if age >= config.SIGNAL_MAX_HOLD_DAYS.get(
+            trader.get_position_meta(sym).get("signal", "unknown"),
+            config.MAX_HOLD_DAYS,
+        )
+    ]
 
     # ── Scan universe ─────────────────────────────────────────────────────────
     logger.info("Scanning for top movers...")
@@ -498,7 +504,12 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     for symbol in symbols_to_sell:
         decision = next((d for d in decisions.get("position_decisions", []) if d["symbol"] == symbol), None)
-        reason = decision["reasoning"] if decision else f"Time-based exit (≥{config.MAX_HOLD_DAYS} days)"
+        if decision:
+            reason = decision["reasoning"]
+        else:
+            signal = trader.get_position_meta(symbol).get("signal", "unknown")
+            limit = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
+            reason = f"Time-based exit (≥{limit} days for {signal} signal)"
         logger.info(f"  SELL {symbol} — {reason}")
         if not dry_run:
             pos = next((p for p in open_positions if p["symbol"] == symbol), None)
@@ -522,7 +533,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
 
     # ── Execute buys (open mode only; midday/close are position-management runs) ──
-    skip_buys = mode in ("midday", "close") or cb_triggered or regime.get("is_bearish") or macro.get("is_high_risk")
+    skip_buys = mode in ("midday", "close", "open_sells") or cb_triggered or regime.get("is_bearish") or macro.get("is_high_risk")
     if skip_buys:
         reasons = []
         if mode in ("midday", "close"):
@@ -543,7 +554,23 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         logger.info(f"Position slots: {len(open_positions)}/{max_positions}")
 
         if slots > 0:
-            min_confidence = config.MIN_CONFIDENCE + (1 if vix and vix > 25 else 0)
+            regime_name = regime.get("regime", "UNKNOWN")
+            # Mechanical regime gates — tighter than verbal prompt advice alone
+            if regime_name == "CHOPPY":
+                regime_max_orders = 1
+                regime_conf_bump = 1
+            elif regime_name == "HIGH_VOL":
+                regime_max_orders = 2
+                regime_conf_bump = 1
+            else:
+                regime_max_orders = config.MAX_ORDERS_PER_RUN
+                regime_conf_bump = 0
+            effective_max_orders = min(config.MAX_ORDERS_PER_RUN, regime_max_orders)
+
+            min_confidence = config.MIN_CONFIDENCE + regime_conf_bump + (1 if vix and vix > 25 else 0)
+            if regime_conf_bump:
+                logger.info(f"Regime {regime_name}: min_confidence raised to {min_confidence}, max_orders capped at {effective_max_orders}")
+
             raw_candidates = [
                 c for c in decisions.get("buy_candidates", [])
                 if c["confidence"] >= min_confidence
@@ -559,7 +586,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
             orders_placed = 0
             for candidate in valid_candidates:
-                if orders_placed >= config.MAX_ORDERS_PER_RUN:
+                if orders_placed >= effective_max_orders:
                     logger.warning(f"MAX_ORDERS_PER_RUN ({config.MAX_ORDERS_PER_RUN}) reached — no more buys this run")
                     break
                 symbol = candidate["symbol"]

@@ -65,6 +65,19 @@ MIN_CONFIDENCE = 7           # Min confidence score (1-10) to open a position
 # Position hold limit — auto-exit after this many trading days
 MAX_HOLD_DAYS = 3
 
+# Per-signal hold limits override MAX_HOLD_DAYS for specific entry types.
+# Momentum and trend trades need room to develop; mean-reversion and news
+# catalysts play out faster and should be exited sooner.
+SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
+    "mean_reversion":     2,
+    "rsi_oversold":       2,
+    "news_catalyst":      2,
+    "macd_crossover":     4,
+    "momentum":           5,
+    "trend_continuation": 5,
+    "unknown":            3,  # conservative default
+}
+
 # Bear market filter — skip new buys when SPY drops more than this % in a single day
 BEAR_MARKET_SPY_THRESHOLD = -1.5
 
@@ -98,16 +111,24 @@ MARKET_TIMEZONE = "America/New_York"
 STOCK_UNIVERSE = [
     # Mega-cap tech
     "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
-    # Mid-cap tech & growth
-    "AMD", "NFLX", "CRM", "ADBE", "UBER",
+    # Semiconductors (high momentum sector)
+    "AMD", "AVGO", "QCOM", "MU", "INTC", "TSM", "AMAT",
+    # Software & growth tech
+    "NFLX", "CRM", "ADBE", "UBER", "SHOP", "SNOW", "PLTR",
+    # Fintech
+    "PYPL", "SQ", "V", "MA",
     # Financials
-    "JPM", "BAC", "GS",
+    "JPM", "BAC", "GS", "MS",
+    # Healthcare & pharma
+    "LLY", "UNH", "JNJ", "ABBV", "MRK",
     # Energy
-    "XOM", "CVX",
-    # Broad market ETFs (low price, fractional)
-    "SPY", "QQQ", "IWM",
-    # Consumer
-    "COST", "WMT", "HD",
+    "XOM", "CVX", "OXY",
+    # Consumer discretionary
+    "COST", "WMT", "HD", "MCD", "NKE", "SBUX",
+    # Industrials
+    "CAT", "DE", "GE",
+    # Broad market & sector ETFs
+    "SPY", "QQQ", "IWM", "XLK", "XLE", "XLF",
 ]
 
 # Email notifications

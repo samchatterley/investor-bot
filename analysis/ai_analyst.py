@@ -25,11 +25,11 @@ You are disciplined: you only recommend trades with high conviction. You do NOT 
 already-extended moves. You protect capital — recommending SELL on positions showing
 weakness is as important as finding new BUYs.
 
-IMPORTANT: Write all reasoning in plain English that a non-technical reader can understand.
-Do NOT use acronyms or jargon. Instead of "RSI at 49", say "the momentum indicator shows
-the stock is neither overbought nor oversold". Instead of "MACD crossed up", say "momentum
-just shifted upward". Instead of "EMA9 above EMA21", say "the short-term trend is above the
-medium-term trend, confirming an uptrend". Keep reasoning to 2-3 sentences maximum."""
+For each decision provide TWO fields:
+- reasoning: precise technical rationale. Use exact indicator values, levels, and signal
+  confluence (e.g. "RSI at 31 with MACD diff crossing positive on 1.8x average volume;
+  EMA9 recrossed EMA21 — classic mean-reversion setup with volume confirmation"). Be specific.
+- summary: one plain-English sentence (no jargon) suitable for a non-technical reader."""
 
 
 # Tool schema — forces Claude to return structured data matching this shape.
@@ -52,9 +52,10 @@ _DECISION_TOOL = {
                         "symbol": {"type": "string"},
                         "action": {"type": "string", "enum": ["HOLD", "SELL"]},
                         "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
-                        "reasoning": {"type": "string"},
+                        "reasoning": {"type": "string", "description": "Precise technical rationale with indicator values"},
+                        "summary": {"type": "string", "description": "One plain-English sentence for non-technical readers"},
                     },
-                    "required": ["symbol", "action", "confidence", "reasoning"],
+                    "required": ["symbol", "action", "confidence", "reasoning", "summary"],
                 },
             },
             "buy_candidates": {
@@ -65,7 +66,8 @@ _DECISION_TOOL = {
                     "properties": {
                         "symbol": {"type": "string"},
                         "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
-                        "reasoning": {"type": "string"},
+                        "reasoning": {"type": "string", "description": "Precise technical rationale with indicator values"},
+                        "summary": {"type": "string", "description": "One plain-English sentence for non-technical readers"},
                         "key_signal": {
                             "type": "string",
                             "enum": [
@@ -74,7 +76,7 @@ _DECISION_TOOL = {
                             ],
                         },
                     },
-                    "required": ["symbol", "confidence", "reasoning", "key_signal"],
+                    "required": ["symbol", "confidence", "reasoning", "summary", "key_signal"],
                 },
             },
         },
