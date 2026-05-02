@@ -216,21 +216,25 @@ Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [
 After validation, position-level risk checks are applied independently of Claude's recommendations:
 
 - **Kelly Criterion sizing** — position size is a function of historical win rate, not Claude's stated confidence alone
-- **Hard position limits** — maximum 5 positions, maximum 45% in any single name, always 10% cash reserve
+- **Hard position limits** — up to 5 positions (scaled to 3–4 for smaller accounts), capped at 5% of portfolio per position, 10% cash reserve always maintained
 - **Fat-finger guard** — single orders above $50,000 are rejected regardless of instruction
 - **Daily notional cap** — total new deployment above $150,000 in one day halts buying
 - **Sector concentration** — maximum 2 positions in any sector
 - **Bear filter** — no new buys when SPY drops more than 1.5% in a session
-- **VIX adjustment** — trailing stops widen automatically above VIX 25
+- **VIX-tiered stop adjustment** — trailing stop trail widens automatically: 3% (VIX ≤ 18) → 4% (VIX ≤ 25) → 5.5% (VIX ≤ 35) → 7% (VIX > 35)
 - **Earnings guard** — positions with earnings within 2 calendar days are exited pre-emptively
+- **Circuit breaker** — new buys halted when the portfolio drops 12% from its 5-day peak
+- **Daily loss limit** — all positions closed and halt file created when the portfolio loses 5% from the session open; requires manual `python cli.py resume`
+- **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8%; the remaining half runs with the trailing stop
+- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, RSI oversold, and news catalyst (2 days); MACD crossover (4 days); momentum and trend continuation (5 days)
 
 ### Constrained parameter recommendation engine
 
 The weekly self-review enables Claude to propose adjustments to four operating parameters. This is a **constrained recommendation** mechanism — not self-modification. Every proposal:
 
-1. Is checked against hard-coded bounds that cannot be exceeded regardless of what Claude proposes
-2. Is written to `logs/runtime_config.json` with evidence-based reasoning (never edits source code)
-3. Appears in the Sunday email for operator review
+1. Is validated against hard-coded bounds that cannot be exceeded regardless of what Claude proposes
+2. Is recorded in `logs/weekly_review_YYYY-MM-DD.json` and included in the Sunday email as a proposal — never applied automatically
+3. Can be applied by the operator by manually editing `logs/runtime_config.json`; config loads and bounds-checks this file at every startup
 
 | Parameter | Allowed range |
 |-----------|---------------|
@@ -469,7 +473,8 @@ By signal:
 | News headline contains injected instructions | Headline is dropped, warning logged | Automatic; review logs if frequent |
 | SQLite locked or corrupt | Falls back to in-memory state for the run; alert sent | Automatic recovery on next run |
 | Both API keys invalid | Run fails at client initialisation, alert sent | Fix `.env` and resume |
-| Daily loss limit hit | All positions liquidated, halt file created, alert sent | Manual resume required: `python cli.py resume` |
+| Circuit breaker triggered (−12% from 5-day peak) | New buys halted for the rest of the session; existing positions and stops untouched | Resets automatically at next run |
+| Daily loss limit hit (−5% from open) | All positions liquidated, halt file created, alert sent | Manual resume required: `python cli.py resume` |
 
 ---
 
@@ -668,6 +673,15 @@ The current system deliberately keeps deployment local and execution synchronous
 ---
 
 ## Version History
+
+### 1.7 — May 2026 — 100% test coverage & code quality
+
+- **100% line coverage.** Test count grew from 460+ to 981 across 3,017 executable statements. All branches covered including exception paths, ThreadPoolExecutor error handling, and dashboard page rendering.
+- **New test files.** Added `tests/test_dashboard.py` (all five dashboard page branches via module-reload testing with mocked Streamlit/plotly) and `tests/test_run_diagnostics.py`.
+- **Zero ruff violations.** Fixed 5 linting violations in production files (unused variable, unquoted type annotation, undefined name, import ordering). Enforced across all test files.
+- **Config refactors.** Extracted `_validate_trading_mode()` in `config.py` and `_age_label()` in `dashboard.py` as standalone testable functions.
+
+---
 
 ### 1.6 — April 2026 — FDE hardening
 
