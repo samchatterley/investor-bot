@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from itertools import product
 
 import pandas as pd
 import yfinance as yf
@@ -23,6 +24,27 @@ from config import LOG_DIR, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
+
+# Default signal thresholds — match the prefilter rules in stock_scanner.py
+_DEFAULT_PARAMS: dict[str, float] = {
+    "rsi_threshold": 35.0,
+    "bb_threshold": 0.25,
+    "mr_vol_threshold": 1.2,
+    "mom_vol_threshold": 1.3,
+    "mom_ret5d_threshold": 1.0,
+}
+
+# Search space for walk-forward parameter optimisation
+_DEFAULT_PARAM_GRID: dict[str, list] = {
+    "rsi_threshold": [25, 30, 35, 40],
+    "bb_threshold": [0.15, 0.20, 0.25, 0.30],
+    "mr_vol_threshold": [1.0, 1.2, 1.5],
+    "mom_vol_threshold": [1.1, 1.3, 1.5],
+    "mom_ret5d_threshold": [0.5, 1.0, 1.5, 2.0],
+}
+
+# Minimum trades in the train window for a param set to be considered valid
+_MIN_TRAIN_TRADES = 5
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -41,58 +63,35 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna()
 
 
-def _entry_signal(row: pd.Series) -> str | None:
+def _entry_signal(row: pd.Series, params: dict | None = None) -> str | None:
     """
     Simplified entry rules (proxy for Claude's analysis):
-    - Mean reversion: RSI < 35 AND bb_pct < 0.25 AND vol_ratio > 1.2
-    - Momentum: ema9 > ema21 AND macd_diff > 0 AND ret_5d > 1 AND vol_ratio > 1.3
+    - Mean reversion: RSI < rsi_threshold AND bb_pct < bb_threshold AND vol_ratio > mr_vol_threshold
+    - Momentum: ema9 > ema21 AND macd_diff > 0 AND ret_5d > mom_ret5d_threshold AND vol_ratio > mom_vol_threshold
     """
-    if row["rsi"] < 35 and row["bb_pct"] < 0.25 and row["vol_ratio"] > 1.2:
+    p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
+    if row["rsi"] < p["rsi_threshold"] and row["bb_pct"] < p["bb_threshold"] and row["vol_ratio"] > p["mr_vol_threshold"]:
         return "mean_reversion"
     if (row["ema9"] > row["ema21"] and row["macd_diff"] > 0
-            and row["ret_5d"] > 1.0 and row["vol_ratio"] > 1.3):
+            and row["ret_5d"] > p["mom_ret5d_threshold"] and row["vol_ratio"] > p["mom_vol_threshold"]):
         return "momentum"
     return None
 
 
-def run_backtest(
-    symbols: list[str],
-    start_date: str,
-    end_date: str,
-    initial_capital: float = 100000.0,
+def _run_simulation(
+    indicators: dict[str, pd.DataFrame],
+    trading_dates: pd.DatetimeIndex,
+    initial_capital: float = 100_000.0,
     max_positions: int = 5,
     max_hold_days: int = 3,
+    params: dict | None = None,
 ) -> dict:
-
-    logger.info(f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital")
-
-    # Fetch historical data (extra buffer for indicator warmup)
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
-    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
-    if raw.empty:
-        logger.error("No data fetched")
-        return {}
-
-    close_all = raw["Close"]
-    volume_all = raw["Volume"]
-
-    # Compute indicators per symbol
-    indicators = {}
-    for sym in symbols:
-        try:
-            df = pd.DataFrame({"Close": close_all[sym], "Volume": volume_all[sym]}).dropna()
-            df = _compute_indicators(df)
-            indicators[sym] = df
-        except Exception:
-            pass
-
-    # Simulate trading
+    """Core trading simulation on pre-computed indicators. Called by both run_backtest
+    and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
     cash = initial_capital
-    positions: dict[str, dict] = {}   # {symbol: {entry_price, entry_date, signal}}
+    positions: dict[str, dict] = {}
     trades: list[dict] = []
     equity_curve: list[tuple[str, float]] = []
-
-    trading_dates = pd.bdate_range(start=start_date, end=end_date)
 
     for today in trading_dates:
         today_str = today.strftime("%Y-%m-%d")
@@ -115,7 +114,7 @@ def run_backtest(
             except Exception:
                 continue
             pnl_pct = (px / pos["entry_price"] - 1)
-            trading_days_held = sum(1 for d in pd.bdate_range(pos["entry_date"], today)) - 1
+            trading_days_held = sum(1 for _ in pd.bdate_range(pos["entry_date"], today)) - 1
 
             reason = None
             if pnl_pct <= -STOP_LOSS_PCT:
@@ -126,16 +125,11 @@ def run_backtest(
                 reason = "time_exit"
 
             if reason:
-                proceeds = pos["shares"] * px
-                cash += proceeds
+                cash += pos["shares"] * px
                 trades.append({
-                    "date": today_str,
-                    "symbol": sym,
-                    "action": "SELL",
-                    "reason": reason,
-                    "entry_price": pos["entry_price"],
-                    "exit_price": px,
-                    "pnl_pct": round(pnl_pct * 100, 2),
+                    "date": today_str, "symbol": sym, "action": "SELL",
+                    "reason": reason, "entry_price": pos["entry_price"],
+                    "exit_price": px, "pnl_pct": round(pnl_pct * 100, 2),
                     "signal": pos["signal"],
                 })
                 to_close.append(sym)
@@ -143,7 +137,7 @@ def run_backtest(
         for sym in to_close:
             del positions[sym]
 
-        # Look for entries
+        # Look for entries (signal from bar T-1, enter at bar T — no lookahead)
         slots = max_positions - len(positions)
         if slots <= 0:
             continue
@@ -156,11 +150,10 @@ def run_backtest(
             if today_loc == 0:
                 continue
             prev_row = df.iloc[today_loc - 1]
-            signal = _entry_signal(prev_row)
+            signal = _entry_signal(prev_row, params)
             if signal:
                 candidates.append((sym, signal, float(prev_row["rsi"])))
 
-        # Sort by RSI ascending (most oversold first for mean reversion)
         candidates.sort(key=lambda x: x[2])
         for sym, signal, _ in candidates[:slots]:
             try:
@@ -172,28 +165,27 @@ def run_backtest(
                     continue
                 cash -= cost
                 positions[sym] = {
-                    "entry_price": px,
-                    "entry_date": today,
-                    "shares": shares,
-                    "signal": signal,
+                    "entry_price": px, "entry_date": today,
+                    "shares": shares, "signal": signal,
                 }
                 trades.append({
-                    "date": today_str,
-                    "symbol": sym,
-                    "action": "BUY",
-                    "price": px,
-                    "signal": signal,
+                    "date": today_str, "symbol": sym, "action": "BUY",
+                    "price": px, "signal": signal,
                 })
             except Exception:
                 continue
 
-    # Close remaining positions at end
+    # Close remaining positions at end of window
     for sym, pos in positions.items():
         try:
             px = float(indicators[sym].iloc[-1]["Close"])
             cash += pos["shares"] * px
             pnl_pct = (px / pos["entry_price"] - 1) * 100
-            trades.append({"date": "end", "symbol": sym, "action": "SELL", "reason": "end_of_backtest", "pnl_pct": round(pnl_pct, 2), "signal": pos["signal"]})
+            trades.append({
+                "date": "end", "symbol": sym, "action": "SELL",
+                "reason": "end_of_backtest", "pnl_pct": round(pnl_pct, 2),
+                "signal": pos["signal"],
+            })
         except Exception:
             cash += pos["shares"] * pos["entry_price"]
 
@@ -206,7 +198,7 @@ def run_backtest(
     avg_return = sum(t["pnl_pct"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
 
     eq_values = [v for _, v in equity_curve]
-    peak = eq_values[0]
+    peak = eq_values[0] if eq_values else initial_capital
     max_dd = 0.0
     for v in eq_values:
         if v > peak:
@@ -225,14 +217,10 @@ def run_backtest(
         else:
             by_signal[s]["losses"] += 1
 
-    # Sharpe ratio (annualised, daily returns, risk-free ≈ 0)
-    eq_values = [v for _, v in equity_curve]
     daily_rets = pd.Series(eq_values).pct_change().dropna()
     sharpe = float(daily_rets.mean() / daily_rets.std() * (252 ** 0.5)) if daily_rets.std() > 0 else 0.0
 
-    results = {
-        "start": start_date,
-        "end": end_date,
+    return {
         "initial_capital": initial_capital,
         "final_value": round(final_value, 2),
         "total_return_pct": round(total_return, 2),
@@ -246,9 +234,185 @@ def run_backtest(
         "trades": trades,
     }
 
+
+def run_backtest(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+) -> dict:
+
+    logger.info(f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital")
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    close_all = raw["Close"]
+    volume_all = raw["Volume"]
+
+    indicators = {}
+    for sym in symbols:
+        try:
+            df = pd.DataFrame({"Close": close_all[sym], "Volume": volume_all[sym]}).dropna()
+            df = _compute_indicators(df)
+            indicators[sym] = df
+        except Exception:
+            pass
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    results = _run_simulation(indicators, trading_dates, initial_capital, max_positions, max_hold_days, params)
+    results["start"] = start_date
+    results["end"] = end_date
+
     _print_results(results)
     _save_results(results)
     return results
+
+
+def run_walk_forward_optimized(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    train_days: int = 120,
+    test_days: int = 60,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    param_grid: dict | None = None,
+) -> dict:
+    """
+    Walk-forward optimised backtest — genuine out-of-sample validation.
+
+    For each fold:
+      1. Grid-search all param combinations on the train window (Sharpe objective).
+      2. Apply the best params to the immediately following test window.
+      3. Record only the test-window (OOS) results.
+
+    Because the test window never influences param selection, the OOS metrics are
+    not contaminated by look-ahead. yfinance data is downloaded once and indicators
+    are computed once; the grid search reuses both across all combos in a fold.
+
+    Returns a dict with:
+      - folds: per-fold OOS results + the params that were selected
+      - summary: mean OOS return/win-rate/Sharpe and consistency (% profitable folds)
+    """
+    grid = param_grid or _DEFAULT_PARAM_GRID
+    keys = list(grid.keys())
+    all_combos = [dict(zip(keys, vals, strict=True)) for vals in product(*[grid[k] for k in keys])]
+
+    logger.info(
+        f"Walk-forward: {start_date} → {end_date} | train={train_days}d test={test_days}d "
+        f"| {len(all_combos)} param combos | {len(symbols)} symbols"
+    )
+
+    # Download once — indicators are computed once and reused across all folds and combos
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched for walk-forward")
+        return {}
+
+    close_all = raw["Close"]
+    volume_all = raw["Volume"]
+
+    indicators = {}
+    for sym in symbols:
+        try:
+            df = pd.DataFrame({"Close": close_all[sym], "Volume": volume_all[sym]}).dropna()
+            df = _compute_indicators(df)
+            indicators[sym] = df
+        except Exception:
+            pass
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    if len(trading_dates) < train_days + test_days:
+        logger.warning(
+            f"Date range too short: {len(trading_dates)} bdays available, "
+            f"{train_days + test_days} required for one fold"
+        )
+        return {}
+
+    # Generate non-overlapping test windows (train windows can overlap)
+    folds_meta = []
+    i = 0
+    while i + train_days + test_days <= len(trading_dates):
+        folds_meta.append({
+            "train_start": trading_dates[i].strftime("%Y-%m-%d"),
+            "train_end": trading_dates[i + train_days - 1].strftime("%Y-%m-%d"),
+            "test_start": trading_dates[i + train_days].strftime("%Y-%m-%d"),
+            "test_end": trading_dates[i + train_days + test_days - 1].strftime("%Y-%m-%d"),
+            "train_slice": slice(i, i + train_days),
+            "test_slice": slice(i + train_days, i + train_days + test_days),
+        })
+        i += test_days
+
+    logger.info(f"Walk-forward: {len(folds_meta)} folds")
+
+    fold_results = []
+    for fold in folds_meta:
+        train_dates = trading_dates[fold["train_slice"]]
+        test_dates = trading_dates[fold["test_slice"]]
+
+        # Grid search: find params with best Sharpe on the train window
+        best_params = _DEFAULT_PARAMS.copy()
+        best_score = -float("inf")
+
+        for combo in all_combos:
+            r = _run_simulation(indicators, train_dates, initial_capital, max_positions, max_hold_days, combo)
+            if r["total_trades"] < _MIN_TRAIN_TRADES:
+                continue
+            if r["sharpe_ratio"] > best_score:
+                best_score = r["sharpe_ratio"]
+                best_params = combo
+
+        # OOS test — test window data was never seen during param selection
+        oos = _run_simulation(indicators, test_dates, initial_capital, max_positions, max_hold_days, best_params)
+
+        fold_results.append({
+            "train_start": fold["train_start"],
+            "train_end": fold["train_end"],
+            "test_start": fold["test_start"],
+            "test_end": fold["test_end"],
+            "best_params": best_params,
+            "train_sharpe": round(best_score, 2) if best_score != -float("inf") else 0.0,
+            "oos_total_return_pct": oos["total_return_pct"],
+            "oos_win_rate_pct": oos["win_rate_pct"],
+            "oos_total_trades": oos["total_trades"],
+            "oos_sharpe": oos["sharpe_ratio"],
+        })
+
+        logger.info(
+            f"  Fold {fold['test_start']}–{fold['test_end']}: "
+            f"params={best_params} | OOS return={oos['total_return_pct']:+.1f}% "
+            f"WR={oos['win_rate_pct']:.0f}% trades={oos['total_trades']}"
+        )
+
+    if not fold_results:
+        return {"folds": [], "summary": {}}
+
+    n = len(fold_results)
+    profitable = sum(1 for f in fold_results if f["oos_total_return_pct"] > 0)
+    summary = {
+        "n_folds": n,
+        "mean_oos_return_pct": round(sum(f["oos_total_return_pct"] for f in fold_results) / n, 2),
+        "mean_oos_win_rate_pct": round(sum(f["oos_win_rate_pct"] for f in fold_results) / n, 1),
+        "mean_oos_sharpe": round(sum(f["oos_sharpe"] for f in fold_results) / n, 2),
+        "profitable_folds": profitable,
+        "consistency_pct": round(profitable / n * 100, 1),
+    }
+
+    logger.info(
+        f"Walk-forward summary: {n} folds | mean OOS return {summary['mean_oos_return_pct']:+.2f}% "
+        f"| consistency {summary['consistency_pct']:.0f}%"
+    )
+
+    return {"folds": fold_results, "summary": summary}
 
 
 def _save_results(r: dict):
@@ -256,7 +420,6 @@ def _save_results(r: dict):
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         path = os.path.join(LOG_DIR, "backtest_results.json")
-        # equity_curve contains datetime objects — convert to strings
         saveable = {k: v for k, v in r.items() if k != "equity_curve"}
         saveable["equity_curve"] = [[str(d), v] for d, v in r.get("equity_curve", [])]
         with open(path, "w") as f:

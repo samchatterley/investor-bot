@@ -1,4 +1,5 @@
-"""Tests for backtest/engine.py — _compute_indicators, _entry_signal, run_backtest."""
+"""Tests for backtest/engine.py — _compute_indicators, _entry_signal, run_backtest,
+_run_simulation, run_walk_forward_optimized."""
 import json
 import os
 import tempfile
@@ -8,11 +9,14 @@ from unittest.mock import patch
 import pandas as pd
 
 from backtest.engine import (
+    _DEFAULT_PARAMS,
     _compute_indicators,
     _entry_signal,
     _print_results,
+    _run_simulation,
     _save_results,
     run_backtest,
+    run_walk_forward_optimized,
 )
 
 
@@ -23,7 +27,8 @@ def _make_ohlcv(n: int = 60) -> pd.DataFrame:
 
 
 def _make_raw(n: int = 100, symbols: tuple = ("AAPL", "FLAT")) -> pd.DataFrame:
-    """Build a realistic multi-symbol yfinance download mock (MultiIndex columns)."""
+    """Build a realistic multi-symbol yfinance download mock (MultiIndex columns).
+    n=100 spans 2024-11-01 through ~2025-03-12, covering the test trading windows."""
     idx = pd.bdate_range("2024-11-01", periods=n)
     data: dict = {}
     for i, sym in enumerate(symbols):
@@ -139,6 +144,104 @@ class TestEntrySignal(unittest.TestCase):
         self.assertEqual(_entry_signal(row), "mean_reversion")
 
 
+class TestEntrySignalWithParams(unittest.TestCase):
+    """Custom params override the hardcoded defaults."""
+
+    def test_looser_rsi_threshold_fires_where_default_would_not(self):
+        # RSI=38 is above the default threshold of 35, so default → no signal
+        row = _make_row(rsi=38, bb_pct=0.20, vol_ratio=1.5)
+        self.assertIsNone(_entry_signal(row))
+        self.assertEqual(_entry_signal(row, {"rsi_threshold": 40}), "mean_reversion")
+
+    def test_looser_mom_ret5d_fires_where_default_would_not(self):
+        row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=0.7, vol_ratio=1.5)
+        self.assertIsNone(_entry_signal(row))
+        self.assertEqual(_entry_signal(row, {"mom_ret5d_threshold": 0.5}), "momentum")
+
+    def test_looser_mom_vol_fires_where_default_would_not(self):
+        row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.1)
+        self.assertIsNone(_entry_signal(row))
+        self.assertEqual(_entry_signal(row, {"mom_vol_threshold": 1.0}), "momentum")
+
+    def test_partial_params_merge_with_defaults(self):
+        # Override only rsi_threshold; other defaults (bb, vol) still apply
+        row = _make_row(rsi=38, bb_pct=0.20, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row, {"rsi_threshold": 40}), "mean_reversion")
+
+    def test_stricter_rsi_threshold_blocks_signal(self):
+        row = _make_row(rsi=34, bb_pct=0.20, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row), "mean_reversion")  # fires on default
+        self.assertIsNone(_entry_signal(row, {"rsi_threshold": 30}))  # blocked by strict threshold
+
+    def test_none_params_uses_defaults(self):
+        row = _make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row, None), _entry_signal(row))
+
+    def test_default_params_dict_matches_hardcoded_behaviour(self):
+        row = _make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row, _DEFAULT_PARAMS), _entry_signal(row))
+
+
+# ── _run_simulation ───────────────────────────────────────────────────────────
+
+class TestRunSimulation(unittest.TestCase):
+    """Direct tests of the extracted simulation core."""
+
+    def _build_indicators(self, n=100):
+        raw = _make_raw(n=n)
+        indicators = {}
+        for sym in ("AAPL", "FLAT"):
+            close = raw["Close"][sym]
+            volume = raw["Volume"][sym]
+            df = pd.DataFrame({"Close": close, "Volume": volume}).dropna()
+            df = _compute_indicators(df)
+            if not df.empty:
+                indicators[sym] = df
+        return indicators
+
+    def test_returns_dict_with_expected_keys(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
+        for key in ("initial_capital", "final_value", "total_return_pct", "total_trades",
+                    "win_rate_pct", "sharpe_ratio", "by_signal", "equity_curve", "trades"):
+            self.assertIn(key, result)
+
+    def test_equity_curve_length_matches_trading_days(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-03", "2025-03-07")
+        result = _run_simulation(indicators, dates)
+        self.assertEqual(len(result["equity_curve"]), len(dates))
+
+    def test_no_trades_with_tight_params(self):
+        # Params so tight nothing can fire
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        tight = {"rsi_threshold": 1, "bb_threshold": 0.01, "mr_vol_threshold": 999,
+                 "mom_vol_threshold": 999, "mom_ret5d_threshold": 999}
+        result = _run_simulation(indicators, dates, params=tight)
+        self.assertEqual(result["total_trades"], 0)
+
+    def test_loose_params_fire_momentum_signal(self):
+        # Uptrend data: EMA9 > EMA21, macd_diff > 0; loosen vol and ret5d thresholds
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-02-03", "2025-02-28")
+        loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0,
+                                 max_hold_days=3, params=loose)
+        self.assertGreater(result["total_trades"], 0)
+
+    def test_custom_params_produce_different_trades_than_defaults(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-02-03", "2025-02-28")
+        default_result = _run_simulation(indicators, dates, initial_capital=10_000.0, max_hold_days=3)
+        loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
+        loose_result = _run_simulation(indicators, dates, initial_capital=10_000.0,
+                                       max_hold_days=3, params=loose)
+        # Loose params should produce at least as many trades as defaults
+        self.assertGreaterEqual(loose_result["total_trades"], default_result["total_trades"])
+
+
 # ── run_backtest ──────────────────────────────────────────────────────────────
 
 _EXPECTED_RESULT_KEYS = {
@@ -176,7 +279,6 @@ class TestRunBacktest(unittest.TestCase):
             self.assertIn(key, result)
 
     def test_no_trades_with_steady_uptrend(self):
-        # Uptrend gives RSI ≈ 100 (no mean_reversion) and constant volume (no momentum)
         result = self._run()
         self.assertEqual(result["total_trades"], 0)
 
@@ -215,13 +317,158 @@ class TestRunBacktest(unittest.TestCase):
         self.assertIsInstance(self._run()["trades"], list)
 
     def test_sharpe_ratio_is_zero_when_no_equity_variance(self):
-        # Flat equity → std = 0 → Sharpe = 0
         result = self._run()
         self.assertEqual(result["sharpe_ratio"], 0.0)
 
     def test_max_drawdown_is_zero_when_equity_flat(self):
         result = self._run()
         self.assertEqual(result["max_drawdown_pct"], 0.0)
+
+    def test_custom_params_passed_through(self):
+        # Tight params → 0 trades regardless of price action
+        tight = {"rsi_threshold": 1, "bb_threshold": 0.01,
+                 "mr_vol_threshold": 999, "mom_vol_threshold": 999,
+                 "mom_ret5d_threshold": 999}
+        result = self._run(params=tight)
+        self.assertEqual(result["total_trades"], 0)
+
+
+# ── run_walk_forward_optimized ────────────────────────────────────────────────
+
+# Tiny param grid: 4 combos (fast grid search); vol/ret thresholds loose enough
+# that momentum fires on the uptrend data used in _make_raw
+_LOOSE_PARAM_GRID: dict = {
+    "rsi_threshold": [35],
+    "bb_threshold": [0.25],
+    "mr_vol_threshold": [1.2],
+    "mom_vol_threshold": [0.9],   # fires with vol_ratio=1.0
+    "mom_ret5d_threshold": [0.3], # fires with ret_5d≈0.47% on 0.1/bar uptrend
+}
+
+_TIGHT_PARAM_GRID: dict = {
+    "rsi_threshold": [35, 40],
+    "bb_threshold": [0.25],
+    "mr_vol_threshold": [1.2],
+    "mom_vol_threshold": [999.0],  # nothing fires
+    "mom_ret5d_threshold": [999.0],
+}
+
+_WF_FOLD_KEYS = {
+    "train_start", "train_end", "test_start", "test_end",
+    "best_params", "train_sharpe",
+    "oos_total_return_pct", "oos_win_rate_pct", "oos_total_trades", "oos_sharpe",
+}
+
+_WF_SUMMARY_KEYS = {
+    "n_folds", "mean_oos_return_pct", "mean_oos_win_rate_pct",
+    "mean_oos_sharpe", "profitable_folds", "consistency_pct",
+}
+
+
+class TestRunWalkForwardOptimized(unittest.TestCase):
+    """
+    Uses small train_days=10 / test_days=5 and a one-combo param grid to keep
+    the grid search fast. _make_raw(n=100) spans 2024-11-01 → ~2025-03-12,
+    covering the test trading window of 2025-02-01 → 2025-03-07.
+    """
+
+    def setUp(self):
+        self._raw = _make_raw(n=100)
+
+    def _run_wf(self, param_grid=None, **kwargs):
+        defaults = {
+            "symbols": ["AAPL", "FLAT"],
+            "start_date": "2025-02-01",
+            "end_date": "2025-03-07",
+            "train_days": 10,
+            "test_days": 5,
+            "initial_capital": 10_000.0,
+            "param_grid": param_grid or _LOOSE_PARAM_GRID,
+        }
+        defaults.update(kwargs)
+        with patch("backtest.engine.yf.download", return_value=self._raw):
+            return run_walk_forward_optimized(**defaults)
+
+    def test_returns_dict_with_folds_and_summary_keys(self):
+        result = self._run_wf()
+        self.assertIn("folds", result)
+        self.assertIn("summary", result)
+
+    def test_returns_empty_when_range_too_short_for_one_fold(self):
+        result = self._run_wf(train_days=50, test_days=50)
+        self.assertEqual(result, {})
+
+    def test_returns_empty_on_empty_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_walk_forward_optimized(
+                ["AAPL"], "2025-02-01", "2025-03-07", train_days=10, test_days=5
+            )
+        self.assertEqual(result, {})
+
+    def test_produces_at_least_one_fold(self):
+        result = self._run_wf()
+        self.assertGreater(len(result["folds"]), 0)
+
+    def test_each_fold_has_expected_keys(self):
+        result = self._run_wf()
+        for fold in result["folds"]:
+            for key in _WF_FOLD_KEYS:
+                self.assertIn(key, fold, f"Missing key '{key}' in fold")
+
+    def test_summary_has_expected_keys(self):
+        result = self._run_wf()
+        for key in _WF_SUMMARY_KEYS:
+            self.assertIn(key, result["summary"])
+
+    def test_summary_n_folds_matches_folds_list_length(self):
+        result = self._run_wf()
+        self.assertEqual(result["summary"]["n_folds"], len(result["folds"]))
+
+    def test_consistency_pct_is_valid_percentage(self):
+        result = self._run_wf()
+        pct = result["summary"]["consistency_pct"]
+        self.assertGreaterEqual(pct, 0.0)
+        self.assertLessEqual(pct, 100.0)
+
+    def test_test_window_starts_after_train_window_ends(self):
+        result = self._run_wf()
+        for fold in result["folds"]:
+            self.assertGreater(fold["test_start"], fold["train_end"])
+
+    def test_test_windows_do_not_overlap(self):
+        result = self._run_wf()
+        folds = result["folds"]
+        for i in range(len(folds) - 1):
+            self.assertGreater(folds[i + 1]["test_start"], folds[i]["test_end"])
+
+    def test_loose_params_produce_trades_in_oos_window(self):
+        result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
+        total_oos_trades = sum(f["oos_total_trades"] for f in result["folds"])
+        self.assertGreater(total_oos_trades, 0)
+
+    def test_tight_params_produce_zero_oos_trades(self):
+        result = self._run_wf(param_grid=_TIGHT_PARAM_GRID)
+        total_oos_trades = sum(f["oos_total_trades"] for f in result["folds"])
+        self.assertEqual(total_oos_trades, 0)
+
+    def test_best_params_keys_match_param_grid_keys(self):
+        result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
+        for fold in result["folds"]:
+            self.assertEqual(set(fold["best_params"].keys()), set(_LOOSE_PARAM_GRID.keys()))
+
+    def test_best_params_values_come_from_param_grid_when_trades_fire(self):
+        # With loose grid (signals fire → total_trades ≥ MIN_TRAIN_TRADES),
+        # best_params should be set to the grid combo, not the fallback defaults
+        result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
+        for fold in result["folds"]:
+            if fold["oos_total_trades"] > 0:
+                self.assertEqual(fold["best_params"]["mom_vol_threshold"], 0.9)
+                self.assertEqual(fold["best_params"]["mom_ret5d_threshold"], 0.3)
+                break
+
+    def test_summary_profitable_folds_le_n_folds(self):
+        result = self._run_wf()
+        self.assertLessEqual(result["summary"]["profitable_folds"], result["summary"]["n_folds"])
 
 
 # ── _save_results ─────────────────────────────────────────────────────────────
