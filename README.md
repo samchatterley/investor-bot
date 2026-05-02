@@ -4,40 +4,50 @@ An autonomous AI decision-support system for US equities portfolio management. C
 
 **Paper trading by default.** The system runs in Alpaca's simulation environment until the operator explicitly confirms live mode with a required acknowledgement string. There is no fast path to real orders.
 
-> **Portfolio framing:** This project demonstrates the skills most relevant to forward-deployed engineering — integrating multiple third-party APIs behind fault-tolerant adapters, treating AI output as untrusted input that must be validated before action, building operator-facing tooling, handling real runtime failures, and designing for auditability. See the [FDE skills section](#why-this-demonstrates-fde-skills) below.
+---
+
+## Table of Contents
+
+1. [Quick Start](#quick-start)
+2. [How It Works](#how-it-works)
+3. [Architecture](#architecture)
+4. [AI Governance](#ai-governance)
+5. [Setup](#setup)
+6. [Using the System](#using-the-system)
+7. [Deployment & Operations](#deployment--operations)
+8. [Evaluation Evidence](#evaluation-evidence)
+9. [LLM Eval Fixtures](#llm-eval-fixtures)
+10. [Production Story — Day One Incidents](#production-story--day-one-incidents)
+11. [What's Next](#whats-next)
+12. [Why This Demonstrates FDE Skills](#why-this-demonstrates-fde-skills)
+13. [Notes of Interest](#notes-of-interest)
+14. [Version History](#version-history)
 
 ---
 
-## Why this demonstrates FDE skills
+## Quick Start
 
-| FDE skill | How it shows up here |
-|-----------|----------------------|
-| Ambiguous problem → working product | Defined scope, constraints, and tradeoffs for an autonomous system operating on a schedule with no human in the loop |
-| Multiple third-party API integrations | Alpaca (brokerage), Anthropic (LLM), yfinance (market data), Gmail (SMTP) — each behind a fault-tolerant adapter with retry logic |
-| AI output treated as untrusted | Every Claude response schema-checked, domain-validated, and risk-gated before any order is placed |
-| Operator dashboard and CLI | Non-code workflows for halt, resume, status, decisions, backtest — all without touching source |
-| Paper-first deployment model | Default `.env.example` points to paper endpoint; live mode requires explicit opt-in with safeguards |
-| Real incident handling | Six production failures on day one, all diagnosed from logs and fixed same session — documented with root cause and fix |
-| Audit trail for every action | Append-only SQLite record for every recommendation, order, and risk event — whether executed or not |
-| Demo mode, no credentials needed | `python cli.py demo` runs a complete simulated cycle on static fixtures for reviewers who don't have API keys |
+No credentials needed:
+
+```bash
+git clone https://github.com/samchatterley/investor-bot
+cd investor-bot
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python cli.py demo
+```
+
+`demo` mode runs a complete simulated open cycle using static fixture data — no Alpaca account, no Anthropic key, no Gmail. It shows the market context build, AI decision parsing, validation, risk gate, simulated order placement, and audit log output in real time.
 
 ---
 
-## Case study
-
-### Problem
+## How It Works
 
 Most retail algorithmic trading tools fall into one of two failure modes: they either require constant manual intervention (defeating the purpose of automation), or they hand full autonomy to an ML model with no interpretability, no human override, and no audit trail.
 
-The goal here was to build something in between — a system where an AI model does the analytical heavy lifting, but every decision it makes is validated, logged, bounded, and reversible before it touches real capital.
+InvestorBot sits in between — Claude does the analytical heavy lifting, but every decision it makes is validated, logged, bounded, and reversible before it touches real capital.
 
-### Who it's for
-
-- Personal use: an autonomous portfolio manager that runs while you're at work
-- Portfolio demonstration: evidence of production-grade system design with AI in the loop
-- Research: a reproducible framework for testing AI-driven trading strategies in a safe environment
-
-### Workflow
+### Decision pipeline
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'fontSize': '15px', 'lineColor': '#94a3b8'}}}%%
@@ -76,7 +86,23 @@ flowchart TD
     A --> B --> C --> D --> E --> F
 ```
 
-### Architecture
+### Daily schedule
+
+The scheduler fires four times on every trading day (all times America/New_York):
+
+| Time | Mode | What happens |
+|------|------|-------------|
+| 09:31 | `open_sells` | Earnings exits and AI sell decisions — no new buys into open noise |
+| 10:00 | `open` | Full cycle: market context → Claude → validate → risk gate → orders |
+| 12:00 | `midday` | Partial profit exits and stop checks |
+| 15:30 | `close` | Final position review before market close |
+| 15:00 Sun | `weekly_review` | AI self-review, parameter proposals, diagnostics email |
+
+---
+
+## Architecture
+
+### Module map
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'fontSize': '15px', 'lineColor': '#94a3b8'}}}%%
@@ -118,6 +144,27 @@ flowchart TB
     UTILS --> NOTIF
 ```
 
+### Project structure
+
+```
+├── analysis/          AI analyst, performance tracking, weekly review
+├── backtest/          Rule-based backtesting engine
+├── data/              Market data, news, options, sentiment, sectors
+├── docs/adr/          Architecture Decision Records (5 design decisions)
+├── evals/             LLM eval fixtures — prompt injection, hallucinated tickers, bear market, etc.
+├── execution/         Order placement, stock scanner
+├── notifications/     Email and alert system
+├── risk/              Position sizing, earnings/macro calendar, risk checks
+├── scripts/           Scheduler and diagnostics runner
+├── tests/             Unit test suite (981 tests, 100% coverage)
+├── utils/             Audit log, portfolio tracker, decision log, validators
+├── cli.py             Command-line interface (includes demo mode)
+├── config.py          All configuration and environment variables
+├── dashboard.py       Streamlit web dashboard
+├── main.py            Core trading logic
+└── start              Launcher shortcut (./start dashboard, ./start status, etc.)
+```
+
 ### Architecture tradeoffs
 
 | Decision | Rationale | Tradeoff accepted |
@@ -133,7 +180,7 @@ Full rationale for each decision is in [docs/adr/](docs/adr/).
 
 ---
 
-## AI governance
+## AI Governance
 
 This section describes how the system constrains Claude's decision-making authority. It is the most important section for understanding the design.
 
@@ -162,7 +209,7 @@ Every Claude response is validated before it reaches the execution layer:
 
 If validation fails, the run continues with the remaining valid decisions. Partial failures are logged; complete failures abort the run and send an alert.
 
-Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [LLM eval section](#llm-eval-fixtures).
+Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [LLM Eval Fixtures](#llm-eval-fixtures) section.
 
 ### Risk layer (`risk/`)
 
@@ -213,7 +260,220 @@ Every order placed is recorded with timestamp, symbol, action, price, quantity, 
 
 ---
 
-## LLM eval fixtures
+## Setup
+
+**Requirements:** Python 3.12, a free [Alpaca Markets](https://alpaca.markets) account, an [Anthropic API](https://console.anthropic.com) key, and a Gmail account with an App Password.
+
+### Option A — local (Python venv)
+
+```bash
+git clone https://github.com/samchatterley/investor-bot
+cd investor-bot
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Fill in .env with your keys
+python scripts/run_scheduler.py
+```
+
+### Option B — Docker
+
+```bash
+cp .env.example .env
+# Fill in .env with your keys
+docker-compose up -d
+```
+
+This starts two containers: the trading scheduler (`investorbot`) and the web dashboard (`investorbot-dashboard`) at `http://localhost:8501`. Logs are persisted to `./logs/` via a volume mount.
+
+### `.env` keys
+
+| Variable | Description |
+|----------|-------------|
+| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Alpaca credentials |
+| `ALPACA_BASE_URL` | `https://paper-api.alpaca.markets` for paper (default), `https://api.alpaca.markets` for live |
+| `ANTHROPIC_API_KEY` | Claude API key |
+| `EMAIL_FROM` | Gmail address the bot sends from |
+| `EMAIL_TO` | Owner address — emergency alerts only |
+| `EMAIL_RECIPIENTS` | Named recipients for daily summary + weekly review: `Sam:sam@gmail.com,Harri:harri@outlook.com` |
+| `EMAIL_APP_PASSWORD` | Gmail App Password (not your login password) |
+
+**Live trading:** The system is designed as a paper-trading governance and simulation framework. Live mode (changing `ALPACA_BASE_URL` to the live endpoint) additionally requires setting `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` in your `.env`. Do this only after extended paper trading, after reviewing all risk parameters, and with full understanding of every circuit breaker and kill switch in the system.
+
+---
+
+## Using the System
+
+### CLI
+
+```bash
+python cli.py demo                # Complete simulated run — no credentials needed
+python cli.py status              # Account value, open positions, halt state
+python cli.py positions           # Live positions with P&L
+python cli.py trades --days 10    # Recent trade history
+python cli.py decisions --days 5  # AI decision log with reasoning
+python cli.py run --mode open     # Trigger a trading run
+python cli.py run --dry-run       # Analyse only, no orders placed
+python cli.py halt                # Emergency kill switch
+python cli.py resume              # Clear halt and resume
+python cli.py backtest --start 2025-01-01
+python cli.py dashboard           # Launch web dashboard
+```
+
+### Web dashboard
+
+```bash
+python cli.py dashboard
+```
+
+Opens at `http://localhost:8501`. Five pages:
+
+| Page | Contents |
+|------|----------|
+| Overview | Live portfolio value, equity curve, daily P&L bar chart, open positions |
+| Trades | Full trade history table across all sessions |
+| AI Decisions | Every Claude recommendation — confidence, signal type, reasoning, executed flag |
+| Backtest | Equity curve, Sharpe ratio, win rate, signal breakdown |
+| Diagnostics | Unit test results with pass/fail counts and a run-now button |
+
+### Backtesting
+
+```bash
+python cli.py backtest --start 2025-01-01 --capital 25000
+```
+
+Replays rule-based entry signals on historical OHLCV data without calling Claude. Reports total return, win rate, Sharpe ratio, max drawdown, and performance by signal type. Results are saved to `logs/backtest_results.json` and rendered in the dashboard. See the [Evaluation Evidence](#evaluation-evidence) section for results and caveats.
+
+### Notifications
+
+Each person listed in `EMAIL_RECIPIENTS` receives a personalised email addressed by name.
+
+| Event | Recipients |
+|-------|-----------|
+| End-of-day summary | All `EMAIL_RECIPIENTS` |
+| Sunday weekly review + diagnostics | All `EMAIL_RECIPIENTS` |
+| Circuit breaker / daily loss limit / errors | `EMAIL_TO` only |
+
+---
+
+## Deployment & Operations
+
+### Where it runs
+
+Currently running on a local Mac in a `tmux` session with `caffeinate` to prevent sleep. This is intentional for paper-trading — there is no cost, no infrastructure, and no blast radius if something goes wrong. For a production deployment the natural next step would be a small VPS (Hetzner, DigitalOcean) or a Docker container on a cloud host with a persistent volume for `logs/`.
+
+The scheduler (`scripts/run_scheduler.py`) is the single production runner — it handles all four daily runs plus the Sunday weekly review. Do not use cron alongside it; doing so will double-fire every run.
+
+### Secrets handling
+
+All secrets live in `.env` which is gitignored and never committed. The `.env.example` file documents every required variable with descriptions but no values. Inside the application, credentials are read from environment variables at startup via `python-dotenv` — they are never logged, never included in prompts, and never written to disk.
+
+### Persistence and recovery
+
+- **Lock file** (`logs/.lock_YYYY-MM-DD`): prevents two scheduler instances running simultaneously on the same day. Date-scoped to avoid midnight-crossing races.
+- **Halt file** (`logs/.HALTED`): persists across restarts. If the bot is halted by a circuit breaker, it stays halted until manually resumed — it will not auto-resume after a crash.
+- **SQLite database** (`logs/investorbot.db`): all position metadata, run records, audit events, and AI decisions. Reconciled against live Alpaca positions at the start of every open run. ACID transactions prevent the partial-write races that affected the earlier JSON-file implementation.
+
+### Monitoring
+
+- **Email alerts**: circuit breaker triggers, daily loss limit hits, and run errors all send an immediate email to `EMAIL_TO`.
+- **Daily email**: end-of-day summary to all recipients — acts as a daily heartbeat. If the email doesn't arrive, the bot didn't run.
+- **Dashboard**: `http://localhost:8501` shows live portfolio, equity curve, and recent decisions.
+- **Structured logs**: every run emits JSON-structured log lines with `run_id`, `ts`, `event`, and `payload` — queryable via `logs/investorbot.db`.
+- **run_id correlation**: every audit event, AI decision, and order carries the same `run_id` (UUID), making it possible to reconstruct the full causal chain for any trade.
+- **LLM cost tracking**: token usage for each Claude call is logged (input tokens, output tokens, estimated cost) to the `llm_usage` table.
+- **Diagnostics**: `python scripts/run_diagnostics.py` runs the full unit test suite and saves a report to `logs/test_report_YYYY-MM-DD.json`. Also runs automatically every Sunday.
+
+### Cost
+
+| Component | Cost |
+|-----------|------|
+| Alpaca paper trading | Free |
+| Claude API (sonnet-4-6) | ~$0.03–0.08 per trading day (4 runs × ~500 token prompt + response) |
+| Infrastructure (local) | $0 |
+| Gmail SMTP | Free |
+
+At current rates, running costs are approximately **$1–2/month** in API fees.
+
+### Runbook
+
+**Bot isn't running / missed a scheduled time**
+```bash
+tmux attach -t investorbot       # Check if process is alive
+python cli.py status             # Check halt state and account
+python scripts/run_scheduler.py  # Restart if needed
+```
+
+**Unexpected position opened**
+```bash
+python cli.py decisions --days 1  # See what Claude decided and why
+python cli.py halt                 # Kill switch if needed
+```
+
+**Email not arriving**
+```bash
+python cli.py run --dry-run       # Triggers email flow without placing orders
+# Check logs/investorbot.db for error details
+```
+
+**Suspicious behaviour / want to inspect decisions**
+```bash
+python cli.py decisions --days 5  # Last 5 days of AI reasoning
+python cli.py dashboard           # Full decision log with filters
+```
+
+**Full reset**
+```bash
+python cli.py halt                # Liquidates positions, creates halt file
+python cli.py resume              # Clear halt when ready
+```
+
+---
+
+## Evaluation Evidence
+
+### Backtest results (Jan 2025 → Apr 2026)
+
+The backtester replays the strategy's rule-based entry signals on historical OHLCV data. This is a **proxy for the strategy's signal quality** — it does not call Claude, so it measures whether the underlying technical signals have edge, not whether Claude interprets them well.
+
+```
+Initial capital:   $25,000
+Final value:       $29,486
+Total return:      +17.9%
+Total trades:      290
+Win rate:          53%
+Avg return/trade:  +0.37%
+Max drawdown:      -10.7%
+Sharpe ratio:      0.94
+
+By signal:
+  momentum        158 trades  WR 58%  avg +0.48%
+  mean_reversion  132 trades  WR 48%  avg +0.23%
+```
+
+### Backtest caveats
+
+- **Rule-based proxy, not live Claude decisions.** The backtester uses hardcoded signal rules (RSI < 35, EMA crossover, etc.) as a proxy for what Claude would recommend. Live Claude decisions will differ — sometimes better, sometimes worse.
+- **No transaction costs or slippage.** Real fills, especially on momentum signals, will be worse than the backtested prices.
+- **Look-ahead bias risk.** Indicator warmup windows are buffered by 90 days, but subtle data leakage is possible.
+- **Survivorship bias.** The universe is fixed to the current symbol list, which contains names that have survived and grown. Pre-2025 signals on this list are upward-biased.
+- **Past performance.** 2025 included the DeepSeek shock (January), tariff volatility (April), and a significant drawdown. Sharpe of 0.94 over this period is reasonable but not exceptional.
+
+### Known failure modes
+
+| Scenario | What happens | Recovery |
+|----------|-------------|----------|
+| Claude returns malformed JSON | Validator rejects response, run aborts, alert email sent | Automatic retry on next scheduled run |
+| Claude recommends a symbol outside the universe | Validator rejects that recommendation, others proceed | Logged; no action needed |
+| Alpaca API timeout | Order attempt fails, position not opened, error logged | Bot continues; retried next run |
+| News headline contains injected instructions | Headline is dropped, warning logged | Automatic; review logs if frequent |
+| SQLite locked or corrupt | Falls back to in-memory state for the run; alert sent | Automatic recovery on next run |
+| Both API keys invalid | Run fails at client initialisation, alert sent | Fix `.env` and resume |
+| Daily loss limit hit | All positions liquidated, halt file created, alert sent | Manual resume required: `python cli.py resume` |
+
+---
+
+## LLM Eval Fixtures
 
 The [`evals/`](evals/) directory contains structured test fixtures for the AI governance layer. Each fixture covers a scenario where Claude's output or input is adversarial, edge-case, or safety-critical:
 
@@ -230,11 +490,9 @@ Run with: `pytest evals/`
 
 ---
 
-## Live testing — day one incidents (2026-04-27)
+## Production Story — Day One Incidents
 
 The bot went live on paper trading on 27 April 2026. Six distinct failures surfaced in the first two hours, none of which appeared in local testing. Each is documented below with root cause and fix — this section is kept in the README because the failures reveal design assumptions worth being explicit about.
-
----
 
 ### Incident 1 — Python 3.9 crash at scheduler startup
 
@@ -337,7 +595,7 @@ insufficient qty available for order (requested: 64.075232, available: 64.075231
 
 ### Incident 6 — Midday and close runs never scheduled
 
-**Symptom:** No 17:00 or 20:45 run despite the system being described as running three cycles per day.
+**Symptom:** No midday or pre-close run despite the system being described as running multiple cycles per day.
 
 **Root cause:** The crontab had only been configured for the open run during initial setup. The scheduler script (`scripts/run_scheduler.py`) was correct, but the cron entries for midday and close had never been added.
 
@@ -349,7 +607,7 @@ insufficient qty available for order (requested: 64.075232, available: 64.075231
 
 ---
 
-### Summary
+### Incidents summary
 
 | # | Failure | Category | Time to fix |
 |---|---------|----------|-------------|
@@ -364,260 +622,7 @@ All six were diagnosed from logs alone without needing to reproduce locally. The
 
 ---
 
-## Evaluation evidence
-
-### Backtest results (Jan 2025 → Apr 2026)
-
-The backtester replays the strategy's rule-based entry signals on historical OHLCV data. This is a **proxy for the strategy's signal quality** — it does not call Claude, so it measures whether the underlying technical signals have edge, not whether Claude interprets them well.
-
-```
-Initial capital:   $25,000
-Final value:       $29,486
-Total return:      +17.9%
-Total trades:      290
-Win rate:          53%
-Avg return/trade:  +0.37%
-Max drawdown:      -10.7%
-Sharpe ratio:      0.94
-
-By signal:
-  momentum        158 trades  WR 58%  avg +0.48%
-  mean_reversion  132 trades  WR 48%  avg +0.23%
-```
-
-### Backtest caveats
-
-- **Rule-based proxy, not live Claude decisions.** The backtester uses hardcoded signal rules (RSI < 35, EMA crossover, etc.) as a proxy for what Claude would recommend. Live Claude decisions will differ — sometimes better, sometimes worse.
-- **No transaction costs or slippage.** Real fills, especially on momentum signals, will be worse than the backtested prices.
-- **Look-ahead bias risk.** Indicator warmup windows are buffered by 90 days, but subtle data leakage is possible.
-- **Survivorship bias.** The universe is fixed to the current symbol list, which contains names that have survived and grown. Pre-2025 signals on this list are upward-biased.
-- **Past performance.** 2025 included the DeepSeek shock (January), tariff volatility (April), and a significant drawdown. Sharpe of 0.94 over this period is reasonable but not exceptional.
-
-### Known failure modes
-
-| Scenario | What happens | Recovery |
-|----------|-------------|----------|
-| Claude returns malformed JSON | Validator rejects response, run aborts, alert email sent | Automatic retry on next scheduled run |
-| Claude recommends a symbol outside the universe | Validator rejects that recommendation, others proceed | Logged; no action needed |
-| Alpaca API timeout | Order attempt fails, position not opened, error logged | Bot continues; retried next run |
-| News headline contains injected instructions | Headline is dropped, warning logged | Automatic; review logs if frequent |
-| SQLite locked or corrupt | Falls back to in-memory state for the run; alert sent | Automatic recovery on next run |
-| Both API keys invalid | Run fails at client initialisation, alert sent | Fix `.env` and resume |
-| Daily loss limit hit | All positions liquidated, halt file created, alert sent | Manual resume required: `python cli.py resume` |
-
----
-
-## Deployment story
-
-### Where it runs
-
-Currently running on a local Mac in a `tmux` session with `caffeinate` to prevent sleep. This is intentional for paper-trading — there is no cost, no infrastructure, and no blast radius if something goes wrong. For a production deployment the natural next step would be a small VPS (Hetzner, DigitalOcean) or a Docker container on a cloud host with a persistent volume for `logs/`.
-
-The scheduler (`scripts/run_scheduler.py`) is the single production runner — it handles all three daily runs plus the Sunday weekly review. Do not use cron alongside it; doing so will double-fire every run.
-
-### Secrets handling
-
-All secrets live in `.env` which is gitignored and never committed. The `.env.example` file documents every required variable with descriptions but no values. Inside the application, credentials are read from environment variables at startup via `python-dotenv` — they are never logged, never included in prompts, and never written to disk.
-
-### Persistence and recovery
-
-- **Lock file** (`logs/.lock_YYYY-MM-DD`): prevents two scheduler instances running simultaneously on the same day. Date-scoped to avoid midnight-crossing races.
-- **Halt file** (`logs/.HALTED`): persists across restarts. If the bot is halted by a circuit breaker, it stays halted until manually resumed — it will not auto-resume after a crash.
-- **SQLite database** (`logs/investorbot.db`): all position metadata, run records, audit events, and AI decisions. Reconciled against live Alpaca positions at the start of every open run. ACID transactions prevent the partial-write races that affected the earlier JSON-file implementation.
-
-### Monitoring
-
-- **Email alerts**: circuit breaker triggers, daily loss limit hits, and run errors all send an immediate email to `EMAIL_TO`.
-- **Daily email**: end-of-day summary to all recipients — acts as a daily heartbeat. If the email doesn't arrive, the bot didn't run.
-- **Dashboard**: `http://localhost:8501` shows live portfolio, equity curve, and recent decisions.
-- **Structured logs**: every run emits JSON-structured log lines with `run_id`, `ts`, `event`, and `payload` — queryable via `logs/investorbot.db`.
-- **run_id correlation**: every audit event, AI decision, and order carries the same `run_id` (UUID), making it possible to reconstruct the full causal chain for any trade.
-- **LLM cost tracking**: token usage for each Claude call is logged (input tokens, output tokens, estimated cost) to the `llm_usage` table.
-- **Diagnostics**: `python scripts/run_diagnostics.py` runs the full unit test suite and saves a report to `logs/test_report_YYYY-MM-DD.json`. Also runs automatically every Sunday.
-
-### Cost
-
-| Component | Cost |
-|-----------|------|
-| Alpaca paper trading | Free |
-| Claude API (sonnet-4-6) | ~$0.03–0.08 per trading day (3 runs × ~500 token prompt + response) |
-| Infrastructure (local) | $0 |
-| Gmail SMTP | Free |
-
-At current rates, running costs are approximately **$1–2/month** in API fees.
-
-### Runbook
-
-**Bot isn't running / missed a scheduled time**
-```bash
-tmux attach -t investorbot       # Check if process is alive
-python cli.py status             # Check halt state and account
-python scripts/run_scheduler.py  # Restart if needed
-```
-
-**Unexpected position opened**
-```bash
-python cli.py decisions --days 1  # See what Claude decided and why
-python cli.py halt                 # Kill switch if needed
-```
-
-**Email not arriving**
-```bash
-python cli.py run --dry-run       # Triggers email flow without placing orders
-# Check logs/investorbot.db for error details
-```
-
-**Suspicious behaviour / want to inspect decisions**
-```bash
-python cli.py decisions --days 5  # Last 5 days of AI reasoning
-python cli.py dashboard           # Full decision log with filters
-```
-
-**Full reset**
-```bash
-python cli.py halt                # Liquidates positions, creates halt file
-python cli.py resume              # Clear halt when ready
-```
-
----
-
-## Try it — no credentials needed
-
-```bash
-git clone https://github.com/samchatterley/investor-bot
-cd investor-bot
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python cli.py demo
-```
-
-`demo` mode runs a complete simulated open cycle using static fixture data — no Alpaca account, no Anthropic key, no Gmail. It shows the market context build, AI decision parsing, validation, risk gate, simulated order placement, and audit log output in real time.
-
----
-
-## Setup
-
-**Requirements:** Python 3.12, a free [Alpaca Markets](https://alpaca.markets) account, an [Anthropic API](https://console.anthropic.com) key, and a Gmail account with an App Password.
-
-### Option A — local (Python venv)
-
-```bash
-git clone https://github.com/samchatterley/investor-bot
-cd investor-bot
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Fill in .env with your keys
-python scripts/run_scheduler.py
-```
-
-### Option B — Docker
-
-```bash
-cp .env.example .env
-# Fill in .env with your keys
-docker-compose up -d
-```
-
-This starts two containers: the trading scheduler (`investorbot`) and the web dashboard (`investorbot-dashboard`) at `http://localhost:8501`. Logs are persisted to `./logs/` via a volume mount.
-
-### `.env` keys
-
-| Variable | Description |
-|----------|-------------|
-| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Alpaca credentials |
-| `ALPACA_BASE_URL` | `https://paper-api.alpaca.markets` for paper (default), `https://api.alpaca.markets` for live |
-| `ANTHROPIC_API_KEY` | Claude API key |
-| `EMAIL_FROM` | Gmail address the bot sends from |
-| `EMAIL_TO` | Owner address — emergency alerts only |
-| `EMAIL_RECIPIENTS` | Named recipients for daily summary + weekly review: `Sam:sam@gmail.com,Harri:harri@outlook.com` |
-| `EMAIL_APP_PASSWORD` | Gmail App Password (not your login password) |
-
-**Live trading:** The system is designed as a paper-trading governance and simulation framework. Live mode (changing `ALPACA_BASE_URL` to the live endpoint) additionally requires setting `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` in your `.env`. Do this only after extended paper trading, after reviewing all risk parameters, and with full understanding of every circuit breaker and kill switch in the system. Additional compliance, monitoring, and approval layers are strongly recommended before operating with real capital.
-
-### CLI
-
-```bash
-python cli.py demo                # Complete simulated run — no credentials needed
-python cli.py status              # Account value, open positions, halt state
-python cli.py positions           # Live positions with P&L
-python cli.py trades --days 10    # Recent trade history
-python cli.py decisions --days 5  # AI decision log with reasoning
-python cli.py run --mode open     # Trigger a trading run
-python cli.py run --dry-run       # Analyse only, no orders placed
-python cli.py halt                # Emergency kill switch
-python cli.py resume              # Clear halt and resume
-python cli.py backtest --start 2025-01-01
-python cli.py dashboard           # Launch web dashboard
-```
-
-### Web dashboard
-
-```bash
-python cli.py dashboard
-```
-
-Opens at `http://localhost:8501`. Five pages:
-
-| Page | Contents |
-|------|----------|
-| Overview | Live portfolio value, equity curve, daily P&L bar chart, open positions |
-| Trades | Full trade history table across all sessions |
-| AI Decisions | Every Claude recommendation — confidence, signal type, reasoning, executed flag |
-| Backtest | Equity curve, Sharpe ratio, win rate, signal breakdown |
-| Diagnostics | Unit test results with pass/fail counts and a run-now button |
-
-### Backtesting
-
-```bash
-python cli.py backtest --start 2025-01-01 --capital 25000
-```
-
-Replays rule-based entry signals on historical OHLCV data without calling Claude. Reports total return, win rate, Sharpe ratio, max drawdown, and performance by signal type. Results are saved to `logs/backtest_results.json` and rendered in the dashboard. See the Evaluation Evidence section for results and caveats.
-
-### Kill switch
-
-```bash
-python cli.py halt     # Interactive — prompts for confirmation, then liquidates all positions
-python cli.py resume   # Clear halt file and resume
-```
-
-### Project structure
-
-```
-├── analysis/          AI analyst, performance tracking, weekly review
-├── backtest/          Rule-based backtesting engine
-├── data/              Market data, news, options, sentiment, sectors
-├── docs/adr/          Architecture Decision Records (5 design decisions)
-├── evals/             LLM eval fixtures — prompt injection, hallucinated tickers, bear market, etc.
-├── execution/         Order placement, stock scanner
-├── notifications/     Email and alert system
-├── risk/              Position sizing, earnings/macro calendar, risk checks
-├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (580 tests)
-├── utils/             Audit log, portfolio tracker, decision log, validators
-├── cli.py             Command-line interface (includes demo mode)
-├── config.py          All configuration and environment variables
-├── dashboard.py       Streamlit web dashboard
-├── main.py            Core trading logic
-└── start              Launcher shortcut (./start dashboard, ./start status, etc.)
-```
-
----
-
-## Notifications
-
-Each person listed in `EMAIL_RECIPIENTS` receives a personalised email addressed by name.
-
-| Event | Recipients |
-|-------|-----------|
-| End-of-day summary | All `EMAIL_RECIPIENTS` |
-| Sunday weekly review + diagnostics | All `EMAIL_RECIPIENTS` |
-| Circuit breaker / daily loss limit / errors | `EMAIL_TO` only |
-
----
-
-## What's next
+## What's Next
 
 The current system deliberately keeps deployment local and execution synchronous. The natural next steps, in priority order:
 
@@ -629,7 +634,22 @@ The current system deliberately keeps deployment local and execution synchronous
 
 ---
 
-## Notes of interest
+## Why This Demonstrates FDE Skills
+
+| FDE skill | How it shows up here |
+|-----------|----------------------|
+| Ambiguous problem → working product | Defined scope, constraints, and tradeoffs for an autonomous system operating on a schedule with no human in the loop |
+| Multiple third-party API integrations | Alpaca (brokerage), Anthropic (LLM), yfinance (market data), Gmail (SMTP) — each behind a fault-tolerant adapter with retry logic |
+| AI output treated as untrusted | Every Claude response schema-checked, domain-validated, and risk-gated before any order is placed |
+| Operator dashboard and CLI | Non-code workflows for halt, resume, status, decisions, backtest — all without touching source |
+| Paper-first deployment model | Default `.env.example` points to paper endpoint; live mode requires explicit opt-in with safeguards |
+| Real incident handling | Six production failures on day one, all diagnosed from logs and fixed same session — documented with root cause and fix |
+| Audit trail for every action | Append-only SQLite record for every recommendation, order, and risk event — whether executed or not |
+| Demo mode, no credentials needed | `python cli.py demo` runs a complete simulated cycle on static fixtures for reviewers who don't have API keys |
+
+---
+
+## Notes of Interest
 
 - **Paper-first by design.** The `.env.example` points to Alpaca's paper endpoint. Live trading requires a conscious URL change, a required confirmation string, a re-read of the risk parameters, and an understanding of every circuit breaker in the system.
 
@@ -643,11 +663,11 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **580 unit tests.** The test suite covers every public function and every unhappy path across all core modules, and runs automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **981 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
-## Version history
+## Version History
 
 ### 1.6 — April 2026 — FDE hardening
 
@@ -662,6 +682,7 @@ The current system deliberately keeps deployment local and execution synchronous
 ---
 
 ### 1.5 — April 2026 — Pre-live hardening
+
 Four bugs discovered through log review after the first live paper-trading session, fixed before leaving the system unattended for a full week:
 
 - **Trailing stops never attached for fractional positions at buy time.** `place_trailing_stop` requires `current_price` to place a fixed stop when quantity is fractional. Both call sites (buy and partial-exit) were not passing it — the function silently returned `None`. Fixed by passing `snap["current_price"]` and `pos["current_price"]` at each site.
@@ -669,11 +690,12 @@ Four bugs discovered through log review after the first live paper-trading sessi
 - **`wait_for_fill` too short for paper API.** Default timeout was 10 seconds; Alpaca's paper environment can take 15–20 seconds to confirm fills. Both orders on day one returned `filled_qty = None`. Increased default to 30 seconds.
 - **`conf=` not humanised in email.** The detail string was built with `conf=8` but `_humanise_detail` only matched `confidence=`. Confidence showed as raw text instead of "Confidence: 8/10". Fixed in both the builder and the translator.
 
-Consolidated on `scripts/run_scheduler.py` as the single production runner. Cron entries removed — the scheduler handles all three daily runs plus the Sunday weekly review. Recommended launch command: `caffeinate -i .venv/bin/python scripts/run_scheduler.py` inside a `tmux` session to prevent Mac sleep.
+Consolidated on `scripts/run_scheduler.py` as the single production runner. Cron entries removed — the scheduler handles all four daily runs plus the Sunday weekly review. Recommended launch command: `caffeinate -i .venv/bin/python scripts/run_scheduler.py` inside a `tmux` session to prevent Mac sleep.
 
 ---
 
 ### 1.4 — April 2026 — Python 3.12 standardisation
+
 - **Standardised entire stack on Python 3.12.** Venv, Dockerfile (`python:3.12-slim`), and scheduler all now use the same interpreter. Cron entries updated to use `.venv/bin/python` explicitly, which also fixed the root cause of Incident 1 (system Python 3.9 being invoked by cron).
 - **Removed `from __future__ import annotations` shims** from all 12 production files. These were added as a Python 3.9 compatibility workaround (v1.2); with the full stack on 3.12 they are dead weight.
 - **Upgraded all dependencies** to latest: pandas 3.0.2, numpy 2.4.4, yfinance 1.3.0, curl_cffi 0.15.0, requests 2.33.1. Full test suite confirmed clean on upgraded stack.
@@ -681,17 +703,21 @@ Consolidated on `scripts/run_scheduler.py` as the single production runner. Cron
 ---
 
 ### 1.3 — April 2026 — Full test coverage
+
 Comprehensive test pass covering every public function and every unhappy path across all modules. Test count: 203 → 460.
 
 ---
 
 ### 1.2 — April 2026 — Day-one incident fixes
-Six failures surfaced in the first two hours of live paper trading on 27 April 2026. All diagnosed from logs alone; all fixed within the same session. See the **Live testing — day one incidents** section for full details.
+
+Six failures surfaced in the first two hours of live paper trading on 27 April 2026. All diagnosed from logs alone; all fixed within the same session. See the [Production Story](#production-story--day-one-incidents) section for full details.
 
 ---
 
 ### 1.1 — April 2026
+
 Added web dashboard (Streamlit, 5 pages), CLI (`cli.py`), Docker deploy, AI decision log, personalised email greetings per recipient, Sharpe ratio in backtester, backtest results persisted for the dashboard, file locking on position metadata, and dynamic backtest end date.
 
 ### 1.0 — April 2026
+
 Initial release. Full autonomous paper-trading capability with AI-driven decision making, Kelly Criterion sizing, multi-layer risk management, regime-aware signal tracking, weekly self-review with bounded parameter recommendations, and multi-recipient email reporting.
