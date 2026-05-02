@@ -120,35 +120,73 @@ def _run_kill_switch():
             audit_log.log_position_closed(pos["symbol"], "kill_switch", pos["unrealized_plpc"])
 
     # 3. Verify — re-query broker to confirm what actually closed
-    remaining = {p["symbol"] for p in trader.get_open_positions(client)}
-    confirmed_closed = [s for s in close_results if s not in remaining]
-    still_open = [s for s in close_results if s in remaining]
-
-    liquidation_complete = len(still_open) == 0
-    if still_open:
-        logger.critical(
-            f"LIQUIDATION INCOMPLETE — {len(still_open)} position(s) still open "
-            f"at broker: {still_open}"
+    verification_error: str | None = None
+    remaining: set[str] = set()
+    try:
+        remaining = {p["symbol"] for p in trader.get_open_positions(client)}
+    except Exception as e:
+        verification_error = str(e)
+        logger.error(
+            f"Post-liquidation broker re-query failed: {e} — "
+            "liquidation status is UNKNOWN; check broker immediately"
         )
-    else:
-        logger.critical("Broker confirms: all positions liquidated")
 
-    # 4. Write HALT file with per-symbol broker-verified status
+    if verification_error:
+        liquidation_complete: bool | str = "UNKNOWN"
+        confirmed_closed: list[str] = []
+        still_open: list[str] = []
+    else:
+        confirmed_closed = [s for s in close_results if s not in remaining]
+        still_open = [s for s in close_results if s in remaining]
+        liquidation_complete = len(still_open) == 0
+        if still_open:
+            logger.critical(
+                f"LIQUIDATION INCOMPLETE — {len(still_open)} position(s) still open "
+                f"at broker: {still_open}"
+            )
+        else:
+            logger.critical("Broker confirms: all positions liquidated")
+
+    # 4. Write HALT file as machine-readable JSON
     os.makedirs(config.LOG_DIR, exist_ok=True)
+    symbols_detail = {
+        symbol: {
+            "order_status": result.status.name,
+            "broker_status": (
+                "unknown" if verification_error
+                else ("open" if symbol in remaining else "closed")
+            ),
+        }
+        for symbol, result in close_results.items()
+    }
+    halt_data: dict = {
+        "halted": True,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "liquidation_complete": liquidation_complete,
+        "symbols": symbols_detail,
+    }
+    if verification_error:
+        halt_data["verification_error"] = verification_error
+    else:
+        halt_data["positions_remaining"] = still_open
+
     with open(config.HALT_FILE, "w") as f:
-        f.write(f"HALTED: {datetime.now(UTC).isoformat()}\n")
-        f.write(f"Liquidation complete: {liquidation_complete}\n")
-        for symbol, result in close_results.items():
-            broker_status = "open" if symbol in remaining else "closed"
-            f.write(f"  {symbol}: order={result.status.name} broker={broker_status}\n")
-        f.write("To resume trading: python main.py --clear-halt\n")
+        json.dump(halt_data, f, indent=2)
+        f.write("\n")
 
     closed = len(confirmed_closed)
     total = len(close_results)
     audit_log.log_kill_switch(closed)
-    alert_msg = f"Emergency halt activated. {closed}/{total} positions broker-confirmed closed."
-    if still_open:
-        alert_msg += f" WARNING: {still_open} may still be open — verify at broker."
+    if verification_error:
+        alert_msg = (
+            f"Emergency halt activated. {total} close attempt(s) made. "
+            f"WARNING: Could not verify broker state — {verification_error}. "
+            "Check broker immediately."
+        )
+    else:
+        alert_msg = f"Emergency halt activated. {closed}/{total} positions broker-confirmed closed."
+        if still_open:
+            alert_msg += f" WARNING: {still_open} may still be open — verify at broker."
     alerts.alert_error("KILL SWITCH", alert_msg)
     logger.critical(f"Kill switch complete. {closed}/{total} positions confirmed closed.")
     logger.critical("To resume: python main.py --clear-halt")

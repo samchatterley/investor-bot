@@ -208,14 +208,74 @@ class TestWaitForFill(unittest.TestCase):
             result = wait_for_fill(client, "order-123", max_wait=3)
         self.assertIsNone(result)
 
-    def test_returns_qty_on_partial_fill(self):
+    def test_does_not_return_early_on_partially_filled(self):
+        """partially_filled is not a terminal success — must keep polling until filled."""
         from execution.trader import wait_for_fill
-        partial_order = _mock_order(status="partially_filled", filled_qty="10.0")
+        calls = [
+            _mock_order(status="partially_filled", filled_qty="5.0"),
+            _mock_order(status="partially_filled", filled_qty="8.0"),
+            _mock_order(status="filled", filled_qty="10.0"),
+        ]
         client = MagicMock()
-        client.get_order_by_id.return_value = partial_order
+        client.get_order_by_id.side_effect = calls
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=5)
+        self.assertAlmostEqual(result, 10.0)
+        self.assertEqual(client.get_order_by_id.call_count, 3)
+
+    def test_returns_none_when_partially_filled_then_times_out(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.return_value = _mock_order(status="partially_filled", filled_qty="5.0")
         with patch("execution.trader.time.sleep"):
             result = wait_for_fill(client, "order-123", max_wait=3)
+        self.assertIsNone(result)
+
+    def test_exits_early_on_rejected(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.return_value = _mock_order(status="rejected", filled_qty=None)
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=30)
+        self.assertIsNone(result)
+        self.assertEqual(client.get_order_by_id.call_count, 1)
+
+    def test_exits_early_on_cancelled(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.return_value = _mock_order(status="cancelled", filled_qty=None)
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=30)
+        self.assertIsNone(result)
+        self.assertEqual(client.get_order_by_id.call_count, 1)
+
+    def test_exits_early_on_expired(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.return_value = _mock_order(status="expired", filled_qty=None)
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=30)
+        self.assertIsNone(result)
+        self.assertEqual(client.get_order_by_id.call_count, 1)
+
+    def test_retries_after_api_error_and_succeeds(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.side_effect = [
+            Exception("transient"),
+            _mock_order(status="filled", filled_qty="10.0"),
+        ]
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=5)
         self.assertAlmostEqual(result, 10.0)
+
+    def test_returns_none_when_api_errors_until_timeout(self):
+        from execution.trader import wait_for_fill
+        client = MagicMock()
+        client.get_order_by_id.side_effect = Exception("API down")
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-123", max_wait=3)
+        self.assertIsNone(result)
 
     def test_poll_exception_handled_gracefully(self):
         from execution.trader import wait_for_fill
@@ -548,6 +608,233 @@ class TestPlacePartialSell(unittest.TestCase):
         client.submit_order.side_effect = Exception("insufficient shares")
         result = place_partial_sell(client, "AAPL", 5.0)
         self.assertEqual(result.status, OrderStatus.REJECTED)
+        self.assertFalse(result.is_success)
+
+
+# ── Shared terminal-state invariant: only FILLED → is_success ────────────────
+#
+# For each of close_position, place_sell_order, place_partial_sell:
+#   submitted → filled                    → FILLED, is_success
+#   submitted → partially_filled → filled → FILLED, is_success (polls past partial)
+#   submitted → partially_filled → timeout→ PARTIAL, not success, qty recorded
+#   submitted → rejected                  → REJECTED, not success
+#   submitted → cancelled                 → TIMEOUT, not success
+#   submitted → expired                   → TIMEOUT, not success
+
+
+def _seq(*statuses_and_qtys):
+    """Build a list of mock orders from (status, filled_qty) pairs."""
+    orders = []
+    for status, qty in statuses_and_qtys:
+        o = MagicMock()
+        o.status = status
+        o.filled_qty = str(qty) if qty is not None else None
+        orders.append(o)
+    return orders
+
+
+class TestClosePositionTerminalStates(unittest.TestCase):
+
+    def _close(self, order_sequence, final_order=None):
+        """Run close_position with a given sequence of get_order_by_id responses."""
+        from execution.trader import close_position
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "close-001"
+        client.close_position.return_value = submitted
+        client.get_orders.return_value = []
+        if final_order is not None:
+            client.get_order_by_id.side_effect = order_sequence + [final_order]
+        else:
+            client.get_order_by_id.side_effect = order_sequence
+        with patch("execution.trader.time.sleep"):
+            return close_position(client, "AAPL")
+
+    def test_submitted_then_filled_is_success(self):
+        result = self._close(_seq(("new", None), ("filled", 10.0)))
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 10.0)
+
+    def test_partially_filled_then_filled_is_success(self):
+        """Must keep polling past partial fill — only full fill is success."""
+        result = self._close(_seq(("partially_filled", 5.0), ("filled", 10.0)))
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 10.0)
+
+    def test_partially_filled_then_timeout_is_partial_not_success(self):
+        """Timeout while partially filled → PARTIAL status, qty recorded, not success."""
+        from execution.trader import close_position
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "close-001"
+        client.close_position.return_value = submitted
+        client.get_orders.return_value = []
+        partial_order = MagicMock()
+        partial_order.status = "partially_filled"
+        partial_order.filled_qty = "7.0"
+        client.get_order_by_id.return_value = partial_order
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = close_position(client, "AAPL")
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.status, OrderStatus.PARTIAL)
+        self.assertAlmostEqual(result.filled_qty, 7.0)
+
+    def test_rejected_is_not_success(self):
+        result = self._close(_seq(("rejected", None)))
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.status, OrderStatus.TIMEOUT)
+
+    def test_cancelled_is_not_success(self):
+        result = self._close(_seq(("cancelled", None)))
+        self.assertFalse(result.is_success)
+
+    def test_expired_is_not_success(self):
+        result = self._close(_seq(("expired", None)))
+        self.assertFalse(result.is_success)
+
+    def test_submit_exception_is_rejected(self):
+        from execution.trader import close_position
+        client = MagicMock()
+        client.get_orders.return_value = []
+        client.close_position.side_effect = Exception("position not found")
+        result = close_position(client, "AAPL")
+        self.assertEqual(result.status, OrderStatus.REJECTED)
+        self.assertFalse(result.is_success)
+        self.assertIsNotNone(result.rejection_reason)
+
+
+class TestPlaceSellOrderTerminalStates(unittest.TestCase):
+
+    def _sell(self, order_sequence, final_order=None, qty=10.0):
+        from execution.trader import place_sell_order
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "sell-001"
+        client.submit_order.return_value = submitted
+        if final_order is not None:
+            client.get_order_by_id.side_effect = order_sequence + [final_order]
+        else:
+            client.get_order_by_id.side_effect = order_sequence
+        with patch("execution.trader.time.sleep"):
+            return place_sell_order(client, "AAPL", qty)
+
+    def test_submitted_then_filled_is_success(self):
+        result = self._sell(_seq(("new", None), ("filled", 10.0)))
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+
+    def test_partially_filled_then_filled_is_success(self):
+        result = self._sell(_seq(("partially_filled", 5.0), ("filled", 10.0)))
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+
+    def test_partially_filled_then_timeout_is_partial_not_success(self):
+        from execution.trader import place_sell_order
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "sell-001"
+        client.submit_order.return_value = submitted
+        partial_order = MagicMock()
+        partial_order.status = "partially_filled"
+        partial_order.filled_qty = "4.0"
+        client.get_order_by_id.return_value = partial_order
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_sell_order(client, "AAPL", 10.0)
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.status, OrderStatus.PARTIAL)
+        self.assertAlmostEqual(result.filled_qty, 4.0)
+
+    def test_rejected_is_not_success(self):
+        result = self._sell(_seq(("rejected", None)))
+        self.assertFalse(result.is_success)
+
+    def test_cancelled_is_not_success(self):
+        result = self._sell(_seq(("cancelled", None)))
+        self.assertFalse(result.is_success)
+
+    def test_expired_is_not_success(self):
+        result = self._sell(_seq(("expired", None)))
+        self.assertFalse(result.is_success)
+
+    def test_api_error_once_then_filled(self):
+        from execution.trader import place_sell_order
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "sell-001"
+        client.submit_order.return_value = submitted
+        client.get_order_by_id.side_effect = [
+            Exception("transient"),
+            _mock_filled_order("sell-001", filled_qty=10.0),
+        ]
+        with patch("execution.trader.time.sleep"):
+            result = place_sell_order(client, "AAPL", 10.0)
+        self.assertTrue(result.is_success)
+
+    def test_api_errors_until_timeout(self):
+        from execution.trader import place_sell_order
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "sell-001"
+        client.submit_order.return_value = submitted
+        client.get_order_by_id.side_effect = Exception("API down")
+        with patch("execution.trader.time.sleep"):
+            result = place_sell_order(client, "AAPL", 10.0)
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.status, OrderStatus.TIMEOUT)
+
+
+class TestPlacePartialSellTerminalStates(unittest.TestCase):
+
+    def _partial_sell(self, order_sequence, final_order=None, qty=5.0):
+        from execution.trader import place_partial_sell
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "psell-001"
+        client.submit_order.return_value = submitted
+        if final_order is not None:
+            client.get_order_by_id.side_effect = order_sequence + [final_order]
+        else:
+            client.get_order_by_id.side_effect = order_sequence
+        with patch("execution.trader.time.sleep"):
+            return place_partial_sell(client, "AAPL", qty)
+
+    def test_submitted_then_filled_is_success(self):
+        result = self._partial_sell(_seq(("new", None), ("filled", 5.0)))
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+
+    def test_partially_filled_then_filled_is_success(self):
+        result = self._partial_sell(_seq(("partially_filled", 2.0), ("filled", 5.0)))
+        self.assertTrue(result.is_success)
+
+    def test_partially_filled_then_timeout_is_partial_not_success(self):
+        from execution.trader import place_partial_sell
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "psell-001"
+        client.submit_order.return_value = submitted
+        partial_order = MagicMock()
+        partial_order.status = "partially_filled"
+        partial_order.filled_qty = "3.0"
+        client.get_order_by_id.return_value = partial_order
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_partial_sell(client, "AAPL", 5.0)
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.status, OrderStatus.PARTIAL)
+        self.assertAlmostEqual(result.filled_qty, 3.0)
+
+    def test_rejected_is_not_success(self):
+        result = self._partial_sell(_seq(("rejected", None)))
+        self.assertFalse(result.is_success)
+
+    def test_cancelled_is_not_success(self):
+        result = self._partial_sell(_seq(("cancelled", None)))
+        self.assertFalse(result.is_success)
+
+    def test_expired_is_not_success(self):
+        result = self._partial_sell(_seq(("expired", None)))
         self.assertFalse(result.is_success)
 
 

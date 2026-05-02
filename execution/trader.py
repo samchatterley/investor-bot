@@ -83,13 +83,25 @@ def place_buy_order(client: TradingClient, symbol: str, notional_usd: float) -> 
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
+_TERMINAL_FAIL_STATUSES = frozenset({"rejected", "cancelled", "expired", "done_for_day", "stopped"})
+
+
 def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> float | None:
-    """Poll until a market order is filled. Returns filled qty or None on timeout."""
+    """Poll until a market order reaches 'filled'. Returns filled qty on success, None otherwise.
+
+    Exits early on terminal failure statuses (rejected/cancelled/expired) rather than
+    burning the full poll window. Does NOT return early on 'partially_filled' — callers
+    must check for partial fill qty themselves after this returns None.
+    """
     for _ in range(max_wait):
         try:
             o = client.get_order_by_id(order_id)
-            if str(o.status) in ("filled", "partially_filled") and o.filled_qty:
+            status_str = str(o.status)
+            if status_str == "filled" and o.filled_qty:
                 return float(o.filled_qty)
+            if status_str in _TERMINAL_FAIL_STATUSES:
+                logger.info(f"Order {order_id} reached terminal state: {status_str}")
+                return None
         except Exception:
             pass
         time.sleep(1)
@@ -178,9 +190,18 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
         )
         order_id = str(order.id)
         logger.info(f"SELL order placed: {symbol} qty={qty} | order_id={order_id}")
-        filled_qty = wait_for_fill(client, order_id) or 0.0
-        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
-        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
+        filled_qty = wait_for_fill(client, order_id)
+        if filled_qty is not None:
+            return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
+        try:
+            final = client.get_order_by_id(order_id)
+            if str(final.status) == "partially_filled" and final.filled_qty:
+                partial_qty = float(final.filled_qty)
+                logger.warning(f"SELL for {symbol} partially filled {partial_qty} of {qty}")
+                return OrderResult(status=OrderStatus.PARTIAL, symbol=symbol, broker_order_id=order_id, filled_qty=partial_qty)
+        except Exception:
+            pass
+        return OrderResult(status=OrderStatus.TIMEOUT, symbol=symbol, broker_order_id=order_id, filled_qty=0.0)
     except Exception as e:
         logger.error(f"Failed to place SELL for {symbol}: {e}")
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
@@ -194,11 +215,19 @@ def close_position(client: TradingClient, symbol: str) -> OrderResult:
         order = client.close_position(symbol)
         order_id = str(order.id)
         logger.info(f"Close submitted: {symbol} | order_id={order_id}")
-        filled_qty = wait_for_fill(client, order_id) or 0.0
-        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
-        if status == OrderStatus.TIMEOUT:
-            logger.warning(f"Close for {symbol} did not confirm fill within poll window — position may still be open")
-        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
+        filled_qty = wait_for_fill(client, order_id)
+        if filled_qty is not None:
+            return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
+        try:
+            final = client.get_order_by_id(order_id)
+            if str(final.status) == "partially_filled" and final.filled_qty:
+                partial_qty = float(final.filled_qty)
+                logger.warning(f"Close for {symbol} partially filled {partial_qty} — position may still be open")
+                return OrderResult(status=OrderStatus.PARTIAL, symbol=symbol, broker_order_id=order_id, filled_qty=partial_qty)
+        except Exception:
+            pass
+        logger.warning(f"Close for {symbol} did not confirm fill within poll window — position may still be open")
+        return OrderResult(status=OrderStatus.TIMEOUT, symbol=symbol, broker_order_id=order_id, filled_qty=0.0)
     except Exception as e:
         logger.error(f"Failed to close position {symbol}: {e}")
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
@@ -403,9 +432,18 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderR
         )
         order_id = str(order.id)
         logger.info(f"Partial SELL: {symbol} qty={qty:.6f} | order_id={order_id}")
-        filled_qty = wait_for_fill(client, order_id) or 0.0
-        status = OrderStatus.FILLED if filled_qty else OrderStatus.TIMEOUT
-        return OrderResult(status=status, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
+        filled_qty = wait_for_fill(client, order_id)
+        if filled_qty is not None:
+            return OrderResult(status=OrderStatus.FILLED, symbol=symbol, broker_order_id=order_id, filled_qty=filled_qty)
+        try:
+            final = client.get_order_by_id(order_id)
+            if str(final.status) == "partially_filled" and final.filled_qty:
+                partial_qty = float(final.filled_qty)
+                logger.warning(f"Partial sell for {symbol} itself partially filled: {partial_qty} of {qty}")
+                return OrderResult(status=OrderStatus.PARTIAL, symbol=symbol, broker_order_id=order_id, filled_qty=partial_qty)
+        except Exception:
+            pass
+        return OrderResult(status=OrderStatus.TIMEOUT, symbol=symbol, broker_order_id=order_id, filled_qty=0.0)
     except Exception as e:
         logger.error(f"Partial sell failed for {symbol}: {e}")
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))

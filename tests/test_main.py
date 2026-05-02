@@ -110,21 +110,33 @@ class TestRunKillSwitch(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
 
-    def _run(self, positions=None, cancel_raises=False, remaining_after=None):
-        """Helper: run kill switch with optional position list and post-close broker state.
+    def _run(self, positions=None, cancel_raises=False, remaining_after=None,
+             requery_raises=False):
+        """Run kill switch and return the mock client.
 
-        remaining_after: list of positions still open at broker after close attempts.
-                         Defaults to [] (all positions confirmed closed).
+        remaining_after: broker positions still open after close attempts (default: []).
+        requery_raises: make the post-liquidation get_open_positions raise.
         """
         mock_client = MagicMock()
         if cancel_raises:
             mock_client.cancel_orders.side_effect = Exception("API down")
         pos = positions or []
-        remaining = remaining_after if remaining_after is not None else []
         close_results = [OrderResult(status=OrderStatus.FILLED, symbol=p["symbol"]) for p in pos]
 
+        if requery_raises:
+            get_pos_side_effect = [pos, Exception("broker offline")]
+        else:
+            remaining = remaining_after if remaining_after is not None else []
+            get_pos_side_effect = [pos, remaining]
+
+        def get_positions_mock(client_arg):
+            val = get_pos_side_effect.pop(0)
+            if isinstance(val, Exception):
+                raise val
+            return val
+
         with patch("main.trader.get_client", return_value=mock_client), \
-             patch("main.trader.get_open_positions", side_effect=[pos, remaining]), \
+             patch("main.trader.get_open_positions", side_effect=get_positions_mock), \
              patch("main.trader.close_position", side_effect=close_results or [OrderResult(OrderStatus.REJECTED, "X")]), \
              patch("main.audit_log.log_position_closed"), \
              patch("main.audit_log.log_kill_switch"), \
@@ -135,79 +147,47 @@ class TestRunKillSwitch(unittest.TestCase):
             _run_kill_switch()
         return mock_client
 
+    def _halt_json(self) -> dict:
+        import json
+        with open(self.halt_file) as _f:
+            return json.load(_f)
+
+    # ── Basic smoke tests ──────────────────────────────────────────────────────
+
     def test_writes_halt_file(self):
         self._run()
         self.assertTrue(os.path.exists(self.halt_file))
 
-    def test_halt_file_contains_halted_marker(self):
+    def test_halt_file_is_valid_json(self):
         self._run()
-        with open(self.halt_file) as _f:
-            self.assertIn("HALTED", _f.read())
+        data = self._halt_json()
+        self.assertTrue(data["halted"])
 
-    def test_halt_file_contains_liquidation_complete_true(self):
-        positions = [{"symbol": "AAPL", "unrealized_pl": 100.0, "unrealized_plpc": 2.0}]
-        self._run(positions=positions, remaining_after=[])
-        with open(self.halt_file) as _f:
-            content = _f.read()
-        self.assertIn("Liquidation complete: True", content)
+    def test_halt_file_has_timestamp(self):
+        self._run()
+        self.assertIn("timestamp", self._halt_json())
 
-    def test_halt_file_contains_per_symbol_status(self):
-        positions = [{"symbol": "AAPL", "unrealized_pl": 100.0, "unrealized_plpc": 2.0}]
-        self._run(positions=positions, remaining_after=[])
-        with open(self.halt_file) as _f:
-            content = _f.read()
-        self.assertIn("AAPL", content)
-        self.assertIn("broker=closed", content)
+    def test_cancels_all_orders(self):
+        client = self._run()
+        client.cancel_orders.assert_called_once()
 
-    def test_halt_file_marks_still_open_positions(self):
-        positions = [
-            {"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0},
-            {"symbol": "NVDA", "unrealized_pl": 0.0, "unrealized_plpc": 0.0},
-        ]
-        close_results = [
-            OrderResult(status=OrderStatus.FILLED, symbol="AAPL"),
-            OrderResult(status=OrderStatus.TIMEOUT, symbol="NVDA"),
-        ]
-        remaining_after = [{"symbol": "NVDA", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
-        with patch("main.trader.get_client", return_value=MagicMock()), \
-             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
-             patch("main.trader.close_position", side_effect=close_results), \
-             patch("main.audit_log.log_position_closed"), \
-             patch("main.audit_log.log_kill_switch"), \
-             patch("main.alerts.alert_error"), \
-             patch("main.config.HALT_FILE", self.halt_file), \
-             patch("main.config.LOG_DIR", self.tmpdir):
-            from main import _run_kill_switch
-            _run_kill_switch()
-        with open(self.halt_file) as _f:
-            content = _f.read()
-        self.assertIn("Liquidation complete: False", content)
-        self.assertIn("NVDA", content)
-        self.assertIn("broker=open", content)
-        self.assertIn("AAPL", content)
-        self.assertIn("broker=closed", content)
-
-    def test_alert_warns_when_positions_remain_open(self):
-        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
-        close_results = [OrderResult(status=OrderStatus.TIMEOUT, symbol="AAPL")]
-        remaining_after = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+    def test_sends_alert_email(self):
         alert_mock = MagicMock()
         with patch("main.trader.get_client", return_value=MagicMock()), \
-             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
-             patch("main.trader.close_position", side_effect=close_results), \
-             patch("main.audit_log.log_position_closed"), \
+             patch("main.trader.get_open_positions", side_effect=[[], []]), \
+             patch("main.trader.close_position"), \
              patch("main.audit_log.log_kill_switch"), \
              patch("main.alerts.alert_error", alert_mock), \
              patch("main.config.HALT_FILE", self.halt_file), \
              patch("main.config.LOG_DIR", self.tmpdir):
             from main import _run_kill_switch
             _run_kill_switch()
-        call_args = alert_mock.call_args[0][1]
-        self.assertIn("WARNING", call_args)
+        alert_mock.assert_called_once()
 
-    def test_cancels_all_orders(self):
-        client = self._run()
-        client.cancel_orders.assert_called_once()
+    def test_cancel_failure_does_not_abort_position_close(self):
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        self._run(positions=positions, cancel_raises=True)
+        self.assertTrue(os.path.exists(self.halt_file))
 
     def test_closes_each_open_position(self):
         positions = [
@@ -230,23 +210,186 @@ class TestRunKillSwitch(unittest.TestCase):
             _run_kill_switch()
         self.assertEqual(close_mock.call_count, 2)
 
-    def test_cancel_failure_does_not_abort_position_close(self):
-        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
-        self._run(positions=positions, cancel_raises=True)
-        self.assertTrue(os.path.exists(self.halt_file))
+    # ── Liquidation-complete matrix ────────────────────────────────────────────
 
-    def test_sends_alert_email(self):
-        alert_mock = MagicMock()
+    def test_liquidation_complete_true_when_all_positions_gone(self):
+        positions = [{"symbol": "AAPL", "unrealized_pl": 100.0, "unrealized_plpc": 2.0}]
+        self._run(positions=positions, remaining_after=[])
+        self.assertTrue(self._halt_json()["liquidation_complete"])
+
+    def test_liquidation_complete_false_when_position_remains_after_filled_order(self):
+        """Regression: order API says FILLED but broker still shows the position."""
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        remaining_after = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        close_results = [OrderResult(status=OrderStatus.FILLED, symbol="AAPL")]
         with patch("main.trader.get_client", return_value=MagicMock()), \
-             patch("main.trader.get_open_positions", side_effect=[[], []]), \
-             patch("main.trader.close_position"), \
+             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
+             patch("main.trader.close_position", side_effect=close_results), \
+             patch("main.audit_log.log_position_closed"), \
+             patch("main.audit_log.log_kill_switch"), \
+             patch("main.alerts.alert_error"), \
+             patch("main.config.HALT_FILE", self.halt_file), \
+             patch("main.config.LOG_DIR", self.tmpdir):
+            from main import _run_kill_switch
+            _run_kill_switch()
+        data = self._halt_json()
+        self.assertFalse(data["liquidation_complete"])
+        self.assertIn("AAPL", data["positions_remaining"])
+
+    def test_liquidation_complete_false_when_timeout_and_position_remains(self):
+        positions = [{"symbol": "MSFT", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        remaining_after = [{"symbol": "MSFT", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        close_results = [OrderResult(status=OrderStatus.TIMEOUT, symbol="MSFT")]
+        with patch("main.trader.get_client", return_value=MagicMock()), \
+             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
+             patch("main.trader.close_position", side_effect=close_results), \
+             patch("main.audit_log.log_position_closed"), \
+             patch("main.audit_log.log_kill_switch"), \
+             patch("main.alerts.alert_error"), \
+             patch("main.config.HALT_FILE", self.halt_file), \
+             patch("main.config.LOG_DIR", self.tmpdir):
+            from main import _run_kill_switch
+            _run_kill_switch()
+        data = self._halt_json()
+        self.assertFalse(data["liquidation_complete"])
+
+    def test_liquidation_complete_false_when_rejected_and_position_remains(self):
+        positions = [{"symbol": "NVDA", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        remaining_after = [{"symbol": "NVDA", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        close_results = [OrderResult(status=OrderStatus.REJECTED, symbol="NVDA", rejection_reason="not found")]
+        with patch("main.trader.get_client", return_value=MagicMock()), \
+             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
+             patch("main.trader.close_position", side_effect=close_results), \
+             patch("main.audit_log.log_position_closed"), \
+             patch("main.audit_log.log_kill_switch"), \
+             patch("main.alerts.alert_error"), \
+             patch("main.config.HALT_FILE", self.halt_file), \
+             patch("main.config.LOG_DIR", self.tmpdir):
+            from main import _run_kill_switch
+            _run_kill_switch()
+        data = self._halt_json()
+        self.assertFalse(data["liquidation_complete"])
+
+    def test_mixed_symbols_partial_incomplete(self):
+        """Two positions: AAPL closed, MSFT still open — incomplete."""
+        positions = [
+            {"symbol": "AAPL", "unrealized_pl": 100.0, "unrealized_plpc": 2.0},
+            {"symbol": "MSFT", "unrealized_pl": -20.0, "unrealized_plpc": -0.5},
+        ]
+        close_results = [
+            OrderResult(status=OrderStatus.FILLED, symbol="AAPL"),
+            OrderResult(status=OrderStatus.TIMEOUT, symbol="MSFT"),
+        ]
+        remaining_after = [{"symbol": "MSFT", "unrealized_pl": -20.0, "unrealized_plpc": -0.5}]
+        with patch("main.trader.get_client", return_value=MagicMock()), \
+             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
+             patch("main.trader.close_position", side_effect=close_results), \
+             patch("main.audit_log.log_position_closed"), \
+             patch("main.audit_log.log_kill_switch"), \
+             patch("main.alerts.alert_error"), \
+             patch("main.config.HALT_FILE", self.halt_file), \
+             patch("main.config.LOG_DIR", self.tmpdir):
+            from main import _run_kill_switch
+            _run_kill_switch()
+        data = self._halt_json()
+        self.assertFalse(data["liquidation_complete"])
+        self.assertEqual(data["positions_remaining"], ["MSFT"])
+        self.assertEqual(data["symbols"]["AAPL"]["broker_status"], "closed")
+        self.assertEqual(data["symbols"]["MSFT"]["broker_status"], "open")
+
+    def test_order_timeout_but_broker_confirms_closed(self):
+        """Broker says position is gone even though order API timed out — treat as closed."""
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        close_results = [OrderResult(status=OrderStatus.TIMEOUT, symbol="AAPL")]
+        with patch("main.trader.get_client", return_value=MagicMock()), \
+             patch("main.trader.get_open_positions", side_effect=[positions, []]), \
+             patch("main.trader.close_position", side_effect=close_results), \
+             patch("main.audit_log.log_position_closed"), \
+             patch("main.audit_log.log_kill_switch"), \
+             patch("main.alerts.alert_error"), \
+             patch("main.config.HALT_FILE", self.halt_file), \
+             patch("main.config.LOG_DIR", self.tmpdir):
+            from main import _run_kill_switch
+            _run_kill_switch()
+        data = self._halt_json()
+        self.assertTrue(data["liquidation_complete"])
+        self.assertEqual(data["symbols"]["AAPL"]["broker_status"], "closed")
+
+    # ── Re-query failure ───────────────────────────────────────────────────────
+
+    def test_requery_failure_sets_liquidation_complete_unknown(self):
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        self._run(positions=positions, requery_raises=True)
+        data = self._halt_json()
+        self.assertEqual(data["liquidation_complete"], "UNKNOWN")
+
+    def test_requery_failure_records_verification_error(self):
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        self._run(positions=positions, requery_raises=True)
+        data = self._halt_json()
+        self.assertIn("verification_error", data)
+        self.assertTrue(len(data["verification_error"]) > 0)
+
+    def test_requery_failure_sets_broker_status_unknown_per_symbol(self):
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        self._run(positions=positions, requery_raises=True)
+        data = self._halt_json()
+        self.assertEqual(data["symbols"]["AAPL"]["broker_status"], "unknown")
+
+    def test_requery_failure_alert_warns_cannot_verify(self):
+        positions = [{"symbol": "AAPL", "unrealized_pl": 0.0, "unrealized_plpc": 0.0}]
+        alert_mock = MagicMock()
+
+        def get_positions_mock(client_arg):
+            calls = getattr(get_positions_mock, "_calls", 0)
+            get_positions_mock._calls = calls + 1
+            if calls == 0:
+                return positions
+            raise Exception("broker offline")
+
+        with patch("main.trader.get_client", return_value=MagicMock()), \
+             patch("main.trader.get_open_positions", side_effect=get_positions_mock), \
+             patch("main.trader.close_position", return_value=OrderResult(OrderStatus.FILLED, "AAPL")), \
+             patch("main.audit_log.log_position_closed"), \
              patch("main.audit_log.log_kill_switch"), \
              patch("main.alerts.alert_error", alert_mock), \
              patch("main.config.HALT_FILE", self.halt_file), \
              patch("main.config.LOG_DIR", self.tmpdir):
             from main import _run_kill_switch
             _run_kill_switch()
-        alert_mock.assert_called_once()
+        msg = alert_mock.call_args[0][1]
+        self.assertIn("WARNING", msg)
+        self.assertIn("verify", msg.lower())
+
+    # ── Regression: order API optimism cannot override broker state ────────────
+
+    def test_kill_switch_does_not_report_complete_when_close_order_submitted_but_position_remains_open(self):
+        """Regression test: if close_position returns FILLED but the broker still shows the
+        position in get_open_positions, the HALT file must say incomplete and the alert must
+        warn the operator. The kill switch may not report liquidation as complete based solely
+        on the order API response."""
+        positions = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0}]
+        remaining_after = [{"symbol": "AAPL", "unrealized_pl": 50.0, "unrealized_plpc": 1.0}]
+        close_results = [OrderResult(status=OrderStatus.FILLED, symbol="AAPL", filled_qty=10.0)]
+        alert_mock = MagicMock()
+        with patch("main.trader.get_client", return_value=MagicMock()), \
+             patch("main.trader.get_open_positions", side_effect=[positions, remaining_after]), \
+             patch("main.trader.close_position", side_effect=close_results), \
+             patch("main.audit_log.log_position_closed"), \
+             patch("main.audit_log.log_kill_switch"), \
+             patch("main.alerts.alert_error", alert_mock), \
+             patch("main.config.HALT_FILE", self.halt_file), \
+             patch("main.config.LOG_DIR", self.tmpdir):
+            from main import _run_kill_switch
+            _run_kill_switch()
+
+        data = self._halt_json()
+        self.assertFalse(data["liquidation_complete"], "HALT file must not claim complete when position remains")
+        self.assertIn("AAPL", data.get("positions_remaining", []))
+        self.assertEqual(data["symbols"]["AAPL"]["broker_status"], "open")
+
+        alert_msg = alert_mock.call_args[0][1]
+        self.assertIn("WARNING", alert_msg, "Alert must warn operator when position remains open")
 
 
 # ── Clear halt tests ───────────────────────────────────────────────────────────
