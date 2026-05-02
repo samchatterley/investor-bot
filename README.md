@@ -98,6 +98,31 @@ The scheduler fires four times on every trading day (all times America/New_York)
 | 15:30 | `close` | Final position review before market close |
 | 15:00 Sun | `weekly_review` | AI self-review, parameter proposals, diagnostics email |
 
+### Scan universe
+
+The daily scan universe is built dynamically at runtime rather than from a fixed list. `execution/universe.py` fetches Alpaca's full US equity asset catalog (~11,000 names), filters to tradable + fractionable symbols on major exchanges (NYSE, NASDAQ, ARCA, AMEX, BATS), then applies a fast price (≥ $5) and daily volume (≥ 500K shares) screen via the Alpaca snapshot API. The result — up to 500 symbols — is cached for 24 hours. The static core list in `config.STOCK_UNIVERSE` is always included as a fallback and is merged into the dynamic result.
+
+### Signal types
+
+The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of twelve signal patterns before Claude sees it. This keeps Claude's input focused on genuine technical setups and prevents it from making decisions on featureless data.
+
+| Signal | Entry conditions | Hold limit |
+|--------|-----------------|------------|
+| `mean_reversion` | RSI < 38 + BB < 0.30 + vol spike | 2 days |
+| `rsi_oversold` | RSI < 30 sharp bounce | 2 days |
+| `news_catalyst` | Company-specific news + volume | 2 days |
+| `macd_crossover` | MACD line crosses above signal line + volume | 4 days |
+| `bb_squeeze` | Bollinger bandwidth at 20th percentile of last 20 bars → coiling; directional confirmation + volume | 4 days |
+| `inside_day_breakout` | Prior candle's full range contains today's; breaks with directional confirmation + volume | 3 days |
+| `trend_pullback` | EMA9 > EMA21, price 0.5–3% below EMA21, RSI 40–58 — buying the dip in a healthy trend | 3 days |
+| `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume | 5 days |
+| `trend_continuation` | AI-classified continuation of an established trend | 5 days |
+| `breakout_52w` | Within 3% of 52-week high + above-average volume + weekly trend intact | 5 days |
+| `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment — sustained market leader | 5 days |
+| `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
+
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`), and **catalyst** (`news_catalyst`).
+
 ---
 
 ## Architecture
@@ -131,7 +156,7 @@ flowchart TB
     earnings · macro calendar"]:::risk
 
     EXEC["🚀 &nbsp;execution/
-    trader · stock_scanner"]:::exec
+    trader · stock_scanner · universe"]:::exec
 
     UTILS["🔧 &nbsp;utils/
     audit_log · decision_log · portfolio · validators"]:::utils
@@ -152,11 +177,11 @@ flowchart TB
 ├── data/              Market data, news, options, sentiment, sectors
 ├── docs/adr/          Architecture Decision Records (5 design decisions)
 ├── evals/             LLM eval fixtures — prompt injection, hallucinated tickers, bear market, etc.
-├── execution/         Order placement, stock scanner
+├── execution/         Order placement, stock scanner, dynamic universe builder
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (981 tests, 100% coverage)
+├── tests/             Unit test suite (1042 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -226,7 +251,7 @@ After validation, position-level risk checks are applied independently of Claude
 - **Circuit breaker** — new buys halted when the portfolio drops 12% from its 5-day peak
 - **Daily loss limit** — all positions closed and halt file created when the portfolio loses 5% from the session open; requires manual `python cli.py resume`
 - **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8%; the remaining half runs with the trailing stop
-- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, RSI oversold, and news catalyst (2 days); MACD crossover (4 days); momentum and trend continuation (5 days)
+- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, RSI oversold, news catalyst (2 days); inside-day breakout, trend pullback (3 days); MACD crossover, BB squeeze (4 days); momentum, trend continuation, 52-week breakout, RS leader (5 days)
 
 ### Constrained parameter recommendation engine
 
@@ -633,7 +658,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 1. **Live paper-trading evidence** — currently running a full week of live paper trading (w/c 28 April 2026) before committing real capital. The Sunday weekly review will produce an automated performance analysis and parameter adjustment. The backtest is signal evidence; paper trading is execution evidence.
 2. **Drawdown-based position sizing** — reduce Kelly fraction automatically when the portfolio is in a drawdown, not just when individual signals are weak.
-3. **Multi-timeframe signals** — the current 30-day lookback is a single timeframe. Adding weekly trend confirmation would reduce false positives on the momentum signal.
+3. **Post-earnings momentum (PEAD)** — the bot currently blocks buys near earnings; adding a PEAD signal would flip that to an entry trigger when earnings beat + gap up, holding for 2–3 days of drift.
 4. **Centralised logging** — move from local SQLite to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
 5. **Account-level performance attribution** — track alpha vs SPY benchmark, not just absolute return. The current metrics don't adjust for beta.
 
@@ -668,11 +693,21 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **981 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1042 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
 ## Version History
+
+### 1.8 — May 2026 — Dynamic universe + 5 new strategies
+
+- **Dynamic scan universe.** Replaced the hardcoded 42-stock `STOCK_UNIVERSE` with a daily-refreshed set drawn from Alpaca's full asset catalog. `execution/universe.py` fetches all tradable + fractionable US equity symbols, screens them by price (≥ $5) and volume (≥ 500K) via the Alpaca snapshot API, and caches up to 500 symbols for 24 hours. Falls back to the static core list on any failure.
+- **Five new signal types.** Added `bb_squeeze` (Bollinger Band compression → directional expansion), `breakout_52w` (within 3% of yearly high with volume), `rs_leader` (sustained SPY outperformance over 5d and 10d), `inside_day_breakout` (range coil then expansion), and `trend_pullback` (EMA-aligned dip entry). The bot now operates across 12 distinct signal types covering mean-reversion, momentum, trend, volatility expansion, and catalyst families.
+- **New indicators.** Added `bb_squeeze`, `bb_bandwidth`, `price_vs_52w_high_pct`, `is_inside_day`, `price_vs_ema21_pct`, and `rel_strength_10d` to the per-symbol snapshot; `get_spy_10d_return()` added to `market_data.py`.
+- **AI analyst updated.** System prompt documents all new signal families; `key_signal` enum in the structured tool call extended to include all five new types; indicator guide updated with descriptions of every new field.
+- **1042 tests, 100% coverage, zero ruff violations.**
+
+---
 
 ### 1.7 — May 2026 — 100% test coverage & code quality
 
