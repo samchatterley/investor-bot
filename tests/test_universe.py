@@ -242,15 +242,16 @@ class TestApplySnapshotFilter(unittest.TestCase):
             result = self.mod._apply_snapshot_filter(["NOBAR"])
         self.assertNotIn("NOBAR", result)
 
-    def test_chunk_error_includes_chunk_symbols(self):
+    def test_chunk_error_excludes_chunk_symbols(self):
         mock_dc = MagicMock()
         mock_dc.get_stock_snapshots.side_effect = RuntimeError("API error")
         mock_cls = MagicMock(return_value=mock_dc)
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["AAPL", "MSFT"])
-        # On error the chunk is passed through rather than silently dropped
-        self.assertIn("AAPL", result)
-        self.assertIn("MSFT", result)
+        # Fail-closed: on error the chunk is dropped, not passed through
+        self.assertNotIn("AAPL", result)
+        self.assertNotIn("MSFT", result)
+        self.assertEqual(result, [])
 
     def test_multiple_chunks_processed(self):
         """With chunk size 3 and 5 symbols, 2 API calls are made."""

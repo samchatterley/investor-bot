@@ -108,8 +108,7 @@ def _apply_snapshot_filter(symbols: list[str]) -> list[str]:
                     passed.append(sym)
         except Exception as e:
             logger.error(f"Snapshot filter chunk {i}–{i + _SNAPSHOT_CHUNK_SIZE} failed: {e}")
-            # Include chunk symbols rather than silently drop them
-            passed.extend(chunk)
+            # Fail-closed: skip unvalidated chunk rather than admitting unscreened symbols
 
     logger.info(f"Snapshot filter: {len(symbols)} → {len(passed)} symbols")
     return passed

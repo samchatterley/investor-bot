@@ -69,7 +69,7 @@ log_cli = false
 
 [tool.coverage.run]
 source = ["."]
-omit = ["tests/*", ".venv/*", "backtest/*"]
+omit = ["tests/*", ".venv/*"]
 
 [tool.coverage.report]
 exclude_lines = [

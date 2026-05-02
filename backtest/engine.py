@@ -152,10 +152,13 @@ def run_backtest(
         for sym, df in indicators.items():
             if sym in positions or today not in df.index:
                 continue
-            row = df.loc[today]
-            signal = _entry_signal(row)
+            today_loc = df.index.get_loc(today)
+            if today_loc == 0:
+                continue
+            prev_row = df.iloc[today_loc - 1]
+            signal = _entry_signal(prev_row)
             if signal:
-                candidates.append((sym, signal, float(row["rsi"])))
+                candidates.append((sym, signal, float(prev_row["rsi"])))
 
         # Sort by RSI ascending (most oversold first for mean reversion)
         candidates.sort(key=lambda x: x[2])

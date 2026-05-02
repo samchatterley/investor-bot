@@ -39,6 +39,11 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset({
     "rsi_oversold",
     "news_catalyst",
     "unknown",
+    "bb_squeeze",
+    "breakout_52w",
+    "rs_leader",
+    "inside_day_breakout",
+    "trend_pullback",
 })
 
 
