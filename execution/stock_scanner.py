@@ -107,7 +107,43 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         momentum = ema_up and macd_diff > 0 and ret_5d > 0 and vol > 1.2
         fresh_breakout = macd_cross and vol > 1.2
 
-        if not (mean_reversion or momentum or fresh_breakout):
+        # ── New signals ───────────────────────────────────────────────────────
+        # Volatility squeeze: bands contracting → expansion imminent
+        bb_squeeze_breakout = (
+            s.get("bb_squeeze", False)
+            and (ema_up or macd_diff > 0)
+            and vol > 1.2
+        )
+        # Near 52-week high with volume: growth / breakout momentum
+        breakout_52w = (
+            s.get("price_vs_52w_high_pct", -999) >= -3.0
+            and vol > 1.2
+            and weekly_up
+        )
+        # Consistent SPY outperformance: market leader in sustained uptrend
+        rs_leader = (
+            s.get("rel_strength_5d", 0) > 2.0
+            and s.get("rel_strength_10d", 0) > 3.0
+            and ema_up
+        )
+        # Inside day followed by directional confirmation: coiled spring
+        inside_day_breakout = (
+            s.get("is_inside_day", False)
+            and (ema_up or macd_diff > 0)
+            and vol > 1.1
+        )
+        # Pullback to EMA21 within an established uptrend
+        pct_ema21 = s.get("price_vs_ema21_pct", 0)
+        trend_pullback = (
+            ema_up
+            and -3.0 <= pct_ema21 <= -0.5
+            and 40 <= rsi <= 58
+            and vol > 1.0
+        )
+
+        if not (mean_reversion or momentum or fresh_breakout
+                or bb_squeeze_breakout or breakout_52w or rs_leader
+                or inside_day_breakout or trend_pullback):
             continue
 
         # Block buys against the weekly trend unless the stock is deeply oversold

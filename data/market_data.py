@@ -55,6 +55,11 @@ def fetch_stock_data(symbol: str, days: int = 30) -> pd.DataFrame | None:
         df["bb_upper"] = bb.bollinger_hband()
         df["bb_lower"] = bb.bollinger_lband()
         df["bb_pct"] = bb.bollinger_pband()  # 0=at lower band, 1=at upper band
+        df["bb_mid"] = bb.bollinger_mavg()
+        df["bb_bandwidth"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
+        # Squeeze: bandwidth in the lowest quintile of the last 20 bars
+        bw_q20 = df["bb_bandwidth"].rolling(20, min_periods=5).quantile(0.2)
+        df["bb_squeeze"] = df["bb_bandwidth"] <= bw_q20
 
         # Volume vs 20-day average
         df["avg_volume_20"] = volume.rolling(20).mean()
@@ -66,6 +71,12 @@ def fetch_stock_data(symbol: str, days: int = 30) -> pd.DataFrame | None:
         df["ret_10d"] = close.pct_change(10) * 100
 
         df = df.dropna(subset=["rsi", "macd"])
+
+        # 52-week high (rolling 252-day max; min_periods=1 so short histories still work)
+        df["high_52w"] = df["High"].rolling(252, min_periods=1).max()
+
+        # Inside day: today's entire range is contained within the previous day's range
+        df["is_inside_day"] = (df["High"] < df["High"].shift(1)) & (df["Low"] > df["Low"].shift(1))
 
         # Weekly trend — resample daily to weekly, compute EMA9/EMA21/RSI on weekly candles
         try:
@@ -111,8 +122,13 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame) -> dict:
         "vol_ratio": round(float(latest["vol_ratio"]), 2),  # >1.5 = high volume
         "avg_volume": int(float(_av)) if (_av := latest.get("avg_volume_20")) is not None and not pd.isna(_av) else 0,
         "price_vs_ema9_pct": round((float(latest["Close"]) / float(latest["ema9"]) - 1) * 100, 2),
+        "price_vs_ema21_pct": round((float(latest["Close"]) / float(latest["ema21"]) - 1) * 100, 2),
         "weekly_trend_up": bool(latest.get("weekly_trend_up", True)),
         "weekly_rsi": float(latest.get("weekly_rsi", 50.0)),
+        "bb_squeeze": bool(latest.get("bb_squeeze", False)) if pd.notna(latest.get("bb_squeeze", False)) else False,
+        "is_inside_day": bool(latest.get("is_inside_day", False)) if pd.notna(latest.get("is_inside_day", False)) else False,
+        "price_vs_52w_high_pct": round((float(latest["Close"]) / float(_h52w) - 1) * 100, 2)
+            if (_h52w := latest.get("high_52w")) is not None and pd.notna(_h52w) else 0.0,
     }
 
 
@@ -138,9 +154,21 @@ def get_spy_5d_return() -> float | None:
     return None
 
 
+def get_spy_10d_return() -> float | None:
+    """Return SPY's 10-day return % for relative strength calculation."""
+    try:
+        hist = yf.Ticker("SPY").history(period="25d")
+        if len(hist) >= 11:
+            return round((float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-11]) - 1) * 100, 2)
+    except Exception:
+        pass
+    return None
+
+
 def get_market_snapshots(symbols: list[str], days: int = 30) -> list[dict]:
     """Fetch and summarise data for all symbols in parallel."""
     spy_5d = get_spy_5d_return()
+    spy_10d = get_spy_10d_return()
 
     def _fetch_one(sym: str):
         df = fetch_stock_data(sym, days)
@@ -149,6 +177,8 @@ def get_market_snapshots(symbols: list[str], days: int = 30) -> list[dict]:
         snap = summarise_for_ai(sym, df)
         if spy_5d is not None:
             snap["rel_strength_5d"] = round(snap["ret_5d_pct"] - spy_5d, 2)
+        if spy_10d is not None:
+            snap["rel_strength_10d"] = round(snap["ret_10d_pct"] - spy_10d, 2)
         return snap
 
     snapshots = []

@@ -19,6 +19,13 @@ def _snap(**kwargs):
         "ema9_above_ema21": False, "macd_diff": 0, "macd_crossed_up": False,
         "weekly_trend_up": True, "ret_5d_pct": 0,
         "avg_volume": 1_000_000,  # above MIN_VOLUME = 500_000
+        # New strategy fields
+        "bb_squeeze": False,
+        "price_vs_52w_high_pct": -10.0,  # 10% below high (default — not near breakout)
+        "rel_strength_5d": 0.0,
+        "rel_strength_10d": 0.0,
+        "is_inside_day": False,
+        "price_vs_ema21_pct": 0.0,
     }
     defaults.update(kwargs)
     return defaults
@@ -135,6 +142,120 @@ class TestPrefilterCandidates(unittest.TestCase):
         result = prefilter_candidates([good, bad])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["symbol"], "GOOD")
+
+    # ── bb_squeeze_breakout ──────────────────────────────────────────────────
+
+    def test_bb_squeeze_with_ema_up_and_volume_passes(self):
+        snap = _snap(bb_squeeze=True, ema9_above_ema21=True, vol_ratio=1.5)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_bb_squeeze_with_positive_macd_passes(self):
+        snap = _snap(bb_squeeze=True, macd_diff=0.3, vol_ratio=1.3)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_bb_squeeze_without_directional_confirmation_fails(self):
+        # bb_squeeze True but ema not up and macd_diff <= 0
+        snap = _snap(bb_squeeze=True, ema9_above_ema21=False, macd_diff=-0.1, vol_ratio=1.5)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_bb_squeeze_without_volume_fails(self):
+        snap = _snap(bb_squeeze=True, ema9_above_ema21=True, vol_ratio=0.9)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    # ── breakout_52w ─────────────────────────────────────────────────────────
+
+    def test_breakout_52w_near_high_with_volume_passes(self):
+        snap = _snap(price_vs_52w_high_pct=-1.5, vol_ratio=1.5, weekly_trend_up=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_breakout_52w_at_high_passes(self):
+        snap = _snap(price_vs_52w_high_pct=0.0, vol_ratio=1.3, weekly_trend_up=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_breakout_52w_too_far_from_high_fails(self):
+        snap = _snap(price_vs_52w_high_pct=-5.0, vol_ratio=1.5, weekly_trend_up=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_breakout_52w_against_weekly_trend_fails(self):
+        snap = _snap(price_vs_52w_high_pct=-1.0, vol_ratio=1.5, weekly_trend_up=False)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_breakout_52w_low_volume_fails(self):
+        snap = _snap(price_vs_52w_high_pct=-1.0, vol_ratio=0.9, weekly_trend_up=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    # ── rs_leader ────────────────────────────────────────────────────────────
+
+    def test_rs_leader_strong_outperformance_ema_up_passes(self):
+        snap = _snap(rel_strength_5d=3.0, rel_strength_10d=4.0, ema9_above_ema21=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_rs_leader_weak_5d_fails(self):
+        snap = _snap(rel_strength_5d=1.0, rel_strength_10d=4.0, ema9_above_ema21=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_rs_leader_weak_10d_fails(self):
+        snap = _snap(rel_strength_5d=3.0, rel_strength_10d=2.0, ema9_above_ema21=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_rs_leader_ema_not_up_fails(self):
+        snap = _snap(rel_strength_5d=3.0, rel_strength_10d=4.0, ema9_above_ema21=False)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    # ── inside_day_breakout ──────────────────────────────────────────────────
+
+    def test_inside_day_ema_up_and_volume_passes(self):
+        snap = _snap(is_inside_day=True, ema9_above_ema21=True, vol_ratio=1.2)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_inside_day_positive_macd_passes(self):
+        snap = _snap(is_inside_day=True, macd_diff=0.5, vol_ratio=1.2)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_inside_day_no_directional_confirmation_fails(self):
+        snap = _snap(is_inside_day=True, ema9_above_ema21=False, macd_diff=-0.1, vol_ratio=1.2)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_inside_day_insufficient_volume_fails(self):
+        snap = _snap(is_inside_day=True, ema9_above_ema21=True, vol_ratio=0.9)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    # ── trend_pullback ───────────────────────────────────────────────────────
+
+    def test_trend_pullback_in_buy_zone_passes(self):
+        # EMA up, price 2% below EMA21, RSI 50 (mid-range), normal volume
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-2.0,
+                     rsi_14=50, vol_ratio=1.1)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_trend_pullback_just_below_ema21_passes(self):
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-0.6, rsi_14=45, vol_ratio=1.1)
+        self.assertEqual(len(prefilter_candidates([snap])), 1)
+
+    def test_trend_pullback_ema_not_up_fails(self):
+        snap = _snap(ema9_above_ema21=False, price_vs_ema21_pct=-2.0, rsi_14=50, vol_ratio=1.1)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_trend_pullback_too_deep_fails(self):
+        # price_vs_ema21_pct < -3.0 — too extended downward
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-4.0, rsi_14=50, vol_ratio=1.1)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_trend_pullback_too_close_fails(self):
+        # price_vs_ema21_pct > -0.5 — not pulled back enough
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-0.3, rsi_14=50, vol_ratio=1.1)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_trend_pullback_overbought_rsi_fails(self):
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-2.0, rsi_14=65, vol_ratio=1.1)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_trend_pullback_oversold_rsi_fails(self):
+        # RSI < 40 → likely mean_reversion territory, not a pullback
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-2.0, rsi_14=35, vol_ratio=1.1)
+        # This may pass mean_reversion if bb_pct is also low, but with defaults it fails both
+        # (default bb_pct=0.5, so mean_reversion doesn't fire; trend_pullback rsi guard blocks it)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
 
 
 class TestGetTopMovers(unittest.TestCase):

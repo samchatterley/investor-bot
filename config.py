@@ -79,13 +79,18 @@ MAX_HOLD_DAYS = 3
 # Momentum and trend trades need room to develop; mean-reversion and news
 # catalysts play out faster and should be exited sooner.
 SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
-    "mean_reversion":     2,
-    "rsi_oversold":       2,
-    "news_catalyst":      2,
-    "macd_crossover":     4,
-    "momentum":           5,
-    "trend_continuation": 5,
-    "unknown":            3,  # conservative default
+    "mean_reversion":      2,
+    "rsi_oversold":        2,
+    "news_catalyst":       2,
+    "macd_crossover":      4,
+    "momentum":            5,
+    "trend_continuation":  5,
+    "bb_squeeze":          4,  # volatility squeeze → expansion; hold for the move
+    "breakout_52w":        5,  # 52-week breakout has room to run
+    "rs_leader":           5,  # sustained relative strength leader
+    "inside_day_breakout": 3,  # short-duration coil play
+    "trend_pullback":      3,  # quick bounce off EMA in uptrend
+    "unknown":             3,  # conservative default
 }
 
 # Bear market filter — skip new buys when SPY drops more than this % in a single day

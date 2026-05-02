@@ -16,10 +16,20 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 SYSTEM_PROMPT = """You are a quantitative short-term equity trader. Your goal is to identify
 stocks likely to gain 5-15% over the next 1-5 trading days using technical analysis signals.
 
-You focus on:
+You focus on these signal families:
 - Momentum: strong recent performance with volume confirmation
 - Mean reversion: oversold conditions + Bollinger Band low + catalyst volume spike
 - Trend confirmation: moving average crossovers, momentum signals aligning
+- Volatility squeeze (bb_squeeze): Bollinger Bands contract to a multi-week low, then expand
+  with directional confirmation — enter on the breakout
+- 52-week high breakout (breakout_52w): price within 3% of yearly high, above-average volume,
+  weekly trend intact — growth/momentum continuation
+- Relative strength leader (rs_leader): stock consistently outperforming SPY over both 5 and 10
+  days with EMA alignment — buy the market leader, not the laggard
+- Inside-day breakout (inside_day_breakout): the prior bar's full range contained today's; when
+  price breaks out of that compression with volume, it often accelerates
+- Trend pullback (trend_pullback): uptrend intact (EMA9 > EMA21), price has pulled back to
+  within 0.5–3% below EMA21, RSI between 40–58 — buy the dip in a healthy trend
 
 You are disciplined: you only recommend trades with high conviction. You do NOT chase
 already-extended moves. You protect capital — recommending SELL on positions showing
@@ -72,7 +82,10 @@ _DECISION_TOOL = {
                             "type": "string",
                             "enum": [
                                 "mean_reversion", "momentum", "trend_continuation",
-                                "macd_crossover", "rsi_oversold", "news_catalyst", "unknown",
+                                "macd_crossover", "rsi_oversold", "news_catalyst",
+                                "bb_squeeze", "breakout_52w", "rs_leader",
+                                "inside_day_breakout", "trend_pullback",
+                                "unknown",
                             ],
                         },
                     },
@@ -253,8 +266,14 @@ INDICATOR GUIDE:
 - macd_diff: positive = bullish momentum; macd_crossed_up = fresh buy signal
 - ema9_above_ema21: true = uptrend confirmed
 - bb_pct: 0.0 = at lower band (oversold), 1.0 = at upper band (overbought)
+- bb_squeeze: true = Bollinger Bands compressed to multi-week low — volatility expansion imminent
 - vol_ratio: >1.5 = elevated volume confirms the move, <0.7 = low conviction
 - price_vs_ema9_pct: distance from 9-day EMA
+- price_vs_ema21_pct: distance from 21-day EMA (negative = below EMA21; -0.5 to -3% = pullback zone)
+- price_vs_52w_high_pct: distance from 52-week high (0 = at high; -3% to 0 = near-high breakout zone)
+- rel_strength_5d: 5-day return minus SPY return (positive = outperforming market)
+- rel_strength_10d: 10-day return minus SPY return (positive = sustained outperformance)
+- is_inside_day: true = today's range was contained within the previous day's range (coiling)
 - weekly_trend_up: true = weekly trend is upward (buy candidates failing this are blocked upstream)
 
 PRE-FILTER NOTE: All buy candidates in the snapshots below have already passed a rule-based
