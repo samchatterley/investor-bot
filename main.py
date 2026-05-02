@@ -28,6 +28,7 @@ from analysis.weekly_review import get_latest_review
 from data import market_data, news_fetcher, options_scanner, sector_data
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
+from execution.universe import build_scan_universe
 from models import OrderResult
 from notifications import alerts, emailer
 from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
@@ -396,7 +397,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     # ── Scan universe ─────────────────────────────────────────────────────────
     logger.info("Scanning for top movers...")
     top_movers = stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
-    scan_symbols = list(set(config.STOCK_UNIVERSE) | held_symbols | set(top_movers))
+    scan_symbols = list(set(build_scan_universe(client)) | held_symbols | set(top_movers))
     logger.info(f"Scanning {len(scan_symbols)} symbols")
 
     # ── Market data (parallel) ────────────────────────────────────────────────
