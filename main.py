@@ -102,27 +102,55 @@ def _run_kill_switch():
     except Exception as e:
         logger.error(f"Failed to cancel orders: {e}")
 
-    # 2. Close all open positions
+    # 2. Attempt to close all open positions; track per-symbol order result
     positions = trader.get_open_positions(client)
-    closed = 0
+    pl_by_symbol: dict[str, tuple[float, float]] = {
+        p["symbol"]: (p["unrealized_pl"], p["unrealized_plpc"]) for p in positions
+    }
+    close_results: dict[str, "OrderResult"] = {}
     for pos in positions:
         result = trader.close_position(client, pos["symbol"])
+        close_results[pos["symbol"]] = result
+        pl = pos["unrealized_pl"]
+        logger.critical(
+            f"  {pos['symbol']}: order={result.status.name}  "
+            f"P&L: {'+' if pl >= 0 else ''}{pl:.2f}"
+        )
         if result.is_success:
-            closed += 1
-            pl = pos["unrealized_pl"]
-            logger.critical(f"  Closed {pos['symbol']}  P&L: {'+' if pl >= 0 else ''}{pl:.2f}")
             audit_log.log_position_closed(pos["symbol"], "kill_switch", pos["unrealized_plpc"])
 
-    # 3. Write HALT file
+    # 3. Verify — re-query broker to confirm what actually closed
+    remaining = {p["symbol"] for p in trader.get_open_positions(client)}
+    confirmed_closed = [s for s in close_results if s not in remaining]
+    still_open = [s for s in close_results if s in remaining]
+
+    liquidation_complete = len(still_open) == 0
+    if still_open:
+        logger.critical(
+            f"LIQUIDATION INCOMPLETE — {len(still_open)} position(s) still open "
+            f"at broker: {still_open}"
+        )
+    else:
+        logger.critical("Broker confirms: all positions liquidated")
+
+    # 4. Write HALT file with per-symbol broker-verified status
     os.makedirs(config.LOG_DIR, exist_ok=True)
     with open(config.HALT_FILE, "w") as f:
         f.write(f"HALTED: {datetime.now(UTC).isoformat()}\n")
-        f.write(f"Positions closed: {closed}\n")
+        f.write(f"Liquidation complete: {liquidation_complete}\n")
+        for symbol, result in close_results.items():
+            broker_status = "open" if symbol in remaining else "closed"
+            f.write(f"  {symbol}: order={result.status.name} broker={broker_status}\n")
         f.write("To resume trading: python main.py --clear-halt\n")
 
+    closed = len(confirmed_closed)
+    total = len(close_results)
     audit_log.log_kill_switch(closed)
-    alerts.alert_error("KILL SWITCH", f"Emergency halt activated. {closed} positions liquidated. Delete HALT file to resume.")
-    logger.critical(f"Kill switch complete. {closed} positions closed.")
+    alert_msg = f"Emergency halt activated. {closed}/{total} positions broker-confirmed closed."
+    if still_open:
+        alert_msg += f" WARNING: {still_open} may still be open — verify at broker."
+    alerts.alert_error("KILL SWITCH", alert_msg)
+    logger.critical(f"Kill switch complete. {closed}/{total} positions confirmed closed.")
     logger.critical("To resume: python main.py --clear-halt")
 
 
