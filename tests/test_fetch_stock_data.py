@@ -130,3 +130,84 @@ class TestGetMarketSnapshots(unittest.TestCase):
         with patch("data.market_data.get_spy_5d_return", return_value=None):
             result = get_market_snapshots([])
         self.assertEqual(result, [])
+
+    def test_preloaded_as_of_uses_spy_from_preloaded_not_live(self):
+        from data.market_data import get_market_snapshots
+        snap = self._snap("AAPL")
+        spy_df = _make_ohlcv(60, base=400.0)
+        preloaded = {"AAPL": _make_ohlcv(200), "SPY": spy_df}
+        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()) as mock_fetch, \
+             patch("data.market_data.summarise_for_ai", return_value=snap), \
+             patch("data.market_data.get_spy_5d_return") as live_spy:
+            get_market_snapshots(["AAPL"], preloaded=preloaded, as_of="2025-01-10")
+        live_spy.assert_not_called()
+
+    def test_preloaded_as_of_passes_args_to_fetch_stock_data(self):
+        from data.market_data import get_market_snapshots
+        snap = self._snap("NVDA")
+        preloaded = {"NVDA": _make_ohlcv(200), "SPY": _make_ohlcv(60, base=400.0)}
+        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()) as mock_fetch, \
+             patch("data.market_data.summarise_for_ai", return_value=snap):
+            get_market_snapshots(["NVDA"], preloaded=preloaded, as_of="2025-06-01")
+        _, kwargs = mock_fetch.call_args
+        self.assertEqual(kwargs.get("as_of") or mock_fetch.call_args[0][3] if len(mock_fetch.call_args[0]) > 3 else kwargs.get("as_of"), "2025-06-01")
+
+
+class TestFetchStockDataPreloaded(unittest.TestCase):
+
+    def _make_preloaded(self, n=200, base=100.0):
+        idx = pd.bdate_range(end="2025-06-01", periods=n)
+        prices = [base + i * 0.1 for i in range(len(idx))]
+        return pd.DataFrame({
+            "Open":   prices,
+            "High":   [p + 1 for p in prices],
+            "Low":    [p - 1 for p in prices],
+            "Close":  prices,
+            "Volume": [1_000_000] * len(idx),
+        }, index=idx)
+
+    def test_preloaded_path_does_not_call_yfinance(self):
+        from data.market_data import fetch_stock_data
+        df = self._make_preloaded(200)
+        with patch("data.market_data.yf.Ticker") as mock_yf:
+            result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        mock_yf.assert_not_called()
+        self.assertIsNotNone(result)
+
+    def test_preloaded_as_of_slices_to_date(self):
+        from data.market_data import fetch_stock_data
+        df = self._make_preloaded(200)
+        cutoff = df.index[99]  # middle of the range
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df}, as_of=str(cutoff.date()))
+        self.assertIsNotNone(result)
+        self.assertTrue((result.index <= cutoff).all())
+
+    def test_preloaded_returns_none_when_symbol_missing(self):
+        from data.market_data import fetch_stock_data
+        with patch("data.market_data.yf.Ticker", return_value=MagicMock()) as mock_yf:
+            mock_yf.return_value.history.return_value = pd.DataFrame()
+            result = fetch_stock_data("MISSING", days=30, preloaded={"AAPL": self._make_preloaded()})
+        # Falls through to live path; live path returns None on empty df
+        self.assertIsNone(result)
+
+    def test_preloaded_returns_none_on_insufficient_rows(self):
+        from data.market_data import fetch_stock_data
+        df = self._make_preloaded(10)  # too few rows
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        self.assertIsNone(result)
+
+    def test_preloaded_result_has_indicator_columns(self):
+        from data.market_data import fetch_stock_data
+        df = self._make_preloaded(200)
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        if result is None:
+            self.skipTest("preloaded path returned None — indicator warmup failed")
+        for col in ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio"]:
+            self.assertIn(col, result.columns)
+
+    def test_preloaded_result_capped_at_days_param(self):
+        from data.market_data import fetch_stock_data
+        df = self._make_preloaded(200)
+        result = fetch_stock_data("AAPL", days=15, preloaded={"AAPL": df})
+        if result is not None:
+            self.assertLessEqual(len(result), 15)

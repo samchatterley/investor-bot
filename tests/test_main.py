@@ -1333,6 +1333,31 @@ class TestRunInnerBuyZeroFilledQty(RunInnerBase):
         stop_mock.assert_not_called()
 
 
+class TestRunInnerSubShareGuard(RunInnerBase):
+    """Sub-share guard: notional ≥ 1.0 but notional/price < 1 share → skip and warn."""
+
+    def test_sub_share_position_skips_buy(self):
+        buy_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(**{
+            "main.stock_scanner.get_market_regime": {"regime": "BULL_TRENDING", "is_bearish": False},
+            "main.ai_analyst.get_trading_decisions": decisions,
+            "main.trader.place_buy_order": buy_mock,
+            # $5 notional at $10/share = 0.5 shares — sub-share, cannot be stop-protected
+            "main.position_sizer.risk_budget_size": 5.0,
+            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 10.0}],
+            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 10.0}],
+            "main.trader.get_account_info": _account(100_000, 50_000),
+            "main.trader.get_open_positions": [],
+            "main.position_sizer.get_max_positions": 5,
+        })
+        with stack, self.assertLogs("main", level="WARNING") as cm:
+            from main import _run_inner
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+        self.assertTrue(any("sub-share" in line for line in cm.output))
+
+
 class TestRunInnerNotionalTooSmall(RunInnerBase):
     """Line 647: notional < 1.0 → logger.warning('Skipping ...: $X too small')."""
 

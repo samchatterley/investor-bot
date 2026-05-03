@@ -611,14 +611,21 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
                 logger.info(f"  BUY {symbol}: ${notional:.2f} | conf={confidence}")
 
+                snap = next((s for s in snapshots if s["symbol"] == symbol), None)
                 if notional >= 1.0:
+                    # Guard: skip if notional buys < 1 whole share — Alpaca cannot stop-protect sub-share positions
+                    if snap and notional / snap["current_price"] < 1.0:
+                        logger.warning(
+                            f"  Skipping {symbol}: ${notional:.2f} at ${snap['current_price']:.2f}"
+                            f" = {notional / snap['current_price']:.3f} shares — sub-share position cannot be stop-protected"
+                        )
+                        continue
                     if not dry_run:
                         result = trader.place_buy_order(client, symbol, notional)
                         if result and result.is_success:
                             orders_placed += 1
                             daily_notional_spent += notional
                             trader.add_daily_notional(today, notional)
-                            snap = next((s for s in snapshots if s["symbol"] == symbol), None)
                             entry_price = snap["current_price"] if snap else 0.0
                             trader.record_buy(
                                 symbol, entry_price,

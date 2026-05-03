@@ -10,6 +10,7 @@ import pandas as pd
 
 from backtest.engine import (
     _DEFAULT_PARAMS,
+    _MIN_TRAIN_TRADES,
     _compute_indicators,
     _entry_signal,
     _print_results,
@@ -32,7 +33,9 @@ def _make_raw(n: int = 100, symbols: tuple = ("AAPL", "FLAT")) -> pd.DataFrame:
     idx = pd.bdate_range("2024-11-01", periods=n)
     data: dict = {}
     for i, sym in enumerate(symbols):
-        data[("Close", sym)] = [100.0 + j * 0.1 + i * 50 for j in range(n)]
+        closes = [100.0 + j * 0.1 + i * 50 for j in range(n)]
+        data[("Close", sym)] = closes
+        data[("Open", sym)] = [c * 0.999 for c in closes]
         data[("Volume", sym)] = [1_000_000] * n
     raw = pd.DataFrame(data, index=idx)
     raw.columns = pd.MultiIndex.from_tuples(raw.columns)
@@ -192,8 +195,9 @@ class TestRunSimulation(unittest.TestCase):
         indicators = {}
         for sym in ("AAPL", "FLAT"):
             close = raw["Close"][sym]
+            open_ = raw["Open"][sym]
             volume = raw["Volume"][sym]
-            df = pd.DataFrame({"Close": close, "Volume": volume}).dropna()
+            df = pd.DataFrame({"Close": close, "Open": open_, "Volume": volume}).dropna()
             df = _compute_indicators(df)
             if not df.empty:
                 indicators[sym] = df
@@ -240,6 +244,17 @@ class TestRunSimulation(unittest.TestCase):
                                        max_hold_days=3, params=loose)
         # Loose params should produce at least as many trades as defaults
         self.assertGreaterEqual(loose_result["total_trades"], default_result["total_trades"])
+
+    def test_slippage_reduces_final_value_when_trades_fire(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-02-03", "2025-02-28")
+        loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
+        zero = _run_simulation(indicators, dates, initial_capital=10_000.0,
+                               max_hold_days=3, params=loose, slippage_bps=0, spread_bps=0)
+        costly = _run_simulation(indicators, dates, initial_capital=10_000.0,
+                                 max_hold_days=3, params=loose, slippage_bps=20, spread_bps=10)
+        if zero["total_trades"] > 0:
+            self.assertGreaterEqual(zero["final_value"], costly["final_value"])
 
 
 # ── run_backtest ──────────────────────────────────────────────────────────────
@@ -355,13 +370,15 @@ _TIGHT_PARAM_GRID: dict = {
 
 _WF_FOLD_KEYS = {
     "train_start", "train_end", "test_start", "test_end",
-    "best_params", "train_sharpe",
+    "best_params", "train_sharpe", "train_total_trades",
     "oos_total_return_pct", "oos_win_rate_pct", "oos_total_trades", "oos_sharpe",
+    "oos_degradation", "random_baseline_return_pct",
 }
 
 _WF_SUMMARY_KEYS = {
     "n_folds", "mean_oos_return_pct", "mean_oos_win_rate_pct",
     "mean_oos_sharpe", "profitable_folds", "consistency_pct",
+    "param_stability_pct", "mean_oos_degradation", "random_baseline_return_pct",
 }
 
 
@@ -442,7 +459,8 @@ class TestRunWalkForwardOptimized(unittest.TestCase):
             self.assertGreater(folds[i + 1]["test_start"], folds[i]["test_end"])
 
     def test_loose_params_produce_trades_in_oos_window(self):
-        result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
+        with patch("backtest.engine._MIN_TRAIN_TRADES", 1):
+            result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
         total_oos_trades = sum(f["oos_total_trades"] for f in result["folds"])
         self.assertGreater(total_oos_trades, 0)
 
@@ -457,9 +475,9 @@ class TestRunWalkForwardOptimized(unittest.TestCase):
             self.assertEqual(set(fold["best_params"].keys()), set(_LOOSE_PARAM_GRID.keys()))
 
     def test_best_params_values_come_from_param_grid_when_trades_fire(self):
-        # With loose grid (signals fire → total_trades ≥ MIN_TRAIN_TRADES),
-        # best_params should be set to the grid combo, not the fallback defaults
-        result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
+        # Patch _MIN_TRAIN_TRADES to 1 so tiny 10-day train windows can satisfy the threshold
+        with patch("backtest.engine._MIN_TRAIN_TRADES", 1):
+            result = self._run_wf(param_grid=_LOOSE_PARAM_GRID)
         for fold in result["folds"]:
             if fold["oos_total_trades"] > 0:
                 self.assertEqual(fold["best_params"]["mom_vol_threshold"], 0.9)
@@ -469,6 +487,31 @@ class TestRunWalkForwardOptimized(unittest.TestCase):
     def test_summary_profitable_folds_le_n_folds(self):
         result = self._run_wf()
         self.assertLessEqual(result["summary"]["profitable_folds"], result["summary"]["n_folds"])
+
+    def test_param_stability_pct_is_valid_percentage(self):
+        result = self._run_wf()
+        pct = result["summary"]["param_stability_pct"]
+        self.assertGreaterEqual(pct, 0.0)
+        self.assertLessEqual(pct, 100.0)
+
+    def test_random_baseline_return_pct_is_numeric(self):
+        result = self._run_wf()
+        self.assertIsInstance(result["summary"]["random_baseline_return_pct"], float)
+
+    def test_fold_train_total_trades_is_non_negative(self):
+        result = self._run_wf()
+        for fold in result["folds"]:
+            self.assertGreaterEqual(fold["train_total_trades"], 0)
+
+    def test_fold_oos_degradation_is_numeric(self):
+        result = self._run_wf()
+        for fold in result["folds"]:
+            self.assertIsInstance(fold["oos_degradation"], float)
+
+    def test_fold_random_baseline_is_numeric(self):
+        result = self._run_wf()
+        for fold in result["folds"]:
+            self.assertIsInstance(fold["random_baseline_return_pct"], float)
 
 
 # ── _save_results ─────────────────────────────────────────────────────────────

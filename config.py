@@ -67,6 +67,8 @@ MAX_POSITION_WEIGHT = 0.05   # 5% of portfolio per position (hard cap)
 STOP_LOSS_PCT = 0.04         # 4% trailing stop (tighter than old fixed stop)
 TAKE_PROFIT_PCT = 0.15       # 15% take profit target (let winners run a bit further)
 TRAILING_STOP_PCT = 4.0      # percent trail below highest price (Alpaca native order)
+SLIPPAGE_BPS = 5             # one-way market impact estimate (basis points)
+SPREAD_BPS = 3               # half-spread applied to each side (basis points)
 KELLY_MULTIPLIER = 0.5       # half-Kelly — kept for research telemetry only
 
 # AI decision threshold

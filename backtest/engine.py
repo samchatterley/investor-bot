@@ -20,7 +20,7 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands
 
-from config import LOG_DIR, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from config import LOG_DIR, SLIPPAGE_BPS, SPREAD_BPS, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ _DEFAULT_PARAM_GRID: dict[str, list] = {
 }
 
 # Minimum trades in the train window for a param set to be considered valid
-_MIN_TRAIN_TRADES = 5
+_MIN_TRAIN_TRADES = 20
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -85,9 +85,15 @@ def _run_simulation(
     max_positions: int = 5,
     max_hold_days: int = 3,
     params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
+    s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
+    sp_bps = SPREAD_BPS if spread_bps is None else spread_bps
+    buy_factor = 1.0 + (s_bps + sp_bps / 2) / 10_000
+    sell_factor = 1.0 - (s_bps + sp_bps / 2) / 10_000
     cash = initial_capital
     positions: dict[str, dict] = {}
     trades: list[dict] = []
@@ -125,11 +131,13 @@ def _run_simulation(
                 reason = "time_exit"
 
             if reason:
-                cash += pos["shares"] * px
+                exit_px = px * sell_factor
+                cash += pos["shares"] * exit_px
                 trades.append({
                     "date": today_str, "symbol": sym, "action": "SELL",
                     "reason": reason, "entry_price": pos["entry_price"],
-                    "exit_price": px, "pnl_pct": round(pnl_pct * 100, 2),
+                    "exit_price": exit_px,
+                    "pnl_pct": round((exit_px / pos["entry_price"] - 1) * 100, 2),
                     "signal": pos["signal"],
                 })
                 to_close.append(sym)
@@ -157,20 +165,24 @@ def _run_simulation(
         candidates.sort(key=lambda x: x[2])
         for sym, signal, _ in candidates[:slots]:
             try:
-                px = float(indicators[sym].loc[today, "Close"])
+                try:
+                    entry_px = float(indicators[sym].loc[today, "Open"])
+                except (KeyError, TypeError):
+                    entry_px = float(indicators[sym].loc[today, "Close"])
+                fill_px = entry_px * buy_factor
                 notional = (cash / slots) * 0.9
-                shares = notional / px
-                cost = shares * px
+                shares = notional / fill_px
+                cost = shares * fill_px
                 if cost > cash or cost < 0.5:
                     continue
                 cash -= cost
                 positions[sym] = {
-                    "entry_price": px, "entry_date": today,
+                    "entry_price": fill_px, "entry_date": today,
                     "shares": shares, "signal": signal,
                 }
                 trades.append({
                     "date": today_str, "symbol": sym, "action": "BUY",
-                    "price": px, "signal": signal,
+                    "price": fill_px, "signal": signal,
                 })
             except Exception:
                 continue
@@ -179,8 +191,9 @@ def _run_simulation(
     for sym, pos in positions.items():
         try:
             px = float(indicators[sym].iloc[-1]["Close"])
-            cash += pos["shares"] * px
-            pnl_pct = (px / pos["entry_price"] - 1) * 100
+            exit_px = px * sell_factor
+            cash += pos["shares"] * exit_px
+            pnl_pct = (exit_px / pos["entry_price"] - 1) * 100
             trades.append({
                 "date": "end", "symbol": sym, "action": "SELL",
                 "reason": "end_of_backtest", "pnl_pct": round(pnl_pct, 2),
@@ -243,6 +256,8 @@ def run_backtest(
     max_positions: int = 5,
     max_hold_days: int = 3,
     params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
 ) -> dict:
 
     logger.info(f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital")
@@ -254,19 +269,25 @@ def run_backtest(
         return {}
 
     close_all = raw["Close"]
+    open_all = raw["Open"]
     volume_all = raw["Volume"]
 
     indicators = {}
     for sym in symbols:
         try:
-            df = pd.DataFrame({"Close": close_all[sym], "Volume": volume_all[sym]}).dropna()
+            df = pd.DataFrame({
+                "Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]
+            }).dropna()
             df = _compute_indicators(df)
             indicators[sym] = df
         except Exception:
             pass
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
-    results = _run_simulation(indicators, trading_dates, initial_capital, max_positions, max_hold_days, params)
+    results = _run_simulation(
+        indicators, trading_dates, initial_capital, max_positions, max_hold_days, params,
+        slippage_bps=slippage_bps, spread_bps=spread_bps,
+    )
     results["start"] = start_date
     results["end"] = end_date
 
@@ -285,6 +306,8 @@ def run_walk_forward_optimized(
     max_positions: int = 5,
     max_hold_days: int = 3,
     param_grid: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
 ) -> dict:
     """
     Walk-forward optimised backtest — genuine out-of-sample validation.
@@ -319,12 +342,15 @@ def run_walk_forward_optimized(
         return {}
 
     close_all = raw["Close"]
+    open_all = raw["Open"]
     volume_all = raw["Volume"]
 
     indicators = {}
     for sym in symbols:
         try:
-            df = pd.DataFrame({"Close": close_all[sym], "Volume": volume_all[sym]}).dropna()
+            df = pd.DataFrame({
+                "Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]
+            }).dropna()
             df = _compute_indicators(df)
             indicators[sym] = df
         except Exception:
@@ -362,35 +388,54 @@ def run_walk_forward_optimized(
         # Grid search: find params with best Sharpe on the train window
         best_params = _DEFAULT_PARAMS.copy()
         best_score = -float("inf")
+        best_train_trades = 0
 
         for combo in all_combos:
-            r = _run_simulation(indicators, train_dates, initial_capital, max_positions, max_hold_days, combo)
+            r = _run_simulation(indicators, train_dates, initial_capital, max_positions, max_hold_days, combo,
+                                slippage_bps=slippage_bps, spread_bps=spread_bps)
             if r["total_trades"] < _MIN_TRAIN_TRADES:
                 continue
             if r["sharpe_ratio"] > best_score:
                 best_score = r["sharpe_ratio"]
                 best_params = combo
+                best_train_trades = r["total_trades"]
 
         # OOS test — test window data was never seen during param selection
-        oos = _run_simulation(indicators, test_dates, initial_capital, max_positions, max_hold_days, best_params)
+        oos = _run_simulation(indicators, test_dates, initial_capital, max_positions, max_hold_days, best_params,
+                              slippage_bps=slippage_bps, spread_bps=spread_bps)
 
+        # Buy-and-hold baseline: equal-weight all symbols over the OOS window
+        baseline_rets = []
+        for sym, df in indicators.items():
+            try:
+                start_px = float(df.loc[df.index >= test_dates[0]].iloc[0]["Close"])
+                end_px = float(df.loc[df.index <= test_dates[-1]].iloc[-1]["Close"])
+                baseline_rets.append((end_px / start_px - 1) * 100)
+            except Exception:
+                pass
+        fold_baseline = round(sum(baseline_rets) / len(baseline_rets), 2) if baseline_rets else 0.0
+
+        train_sharpe_val = round(best_score, 2) if best_score != -float("inf") else 0.0
         fold_results.append({
             "train_start": fold["train_start"],
             "train_end": fold["train_end"],
             "test_start": fold["test_start"],
             "test_end": fold["test_end"],
             "best_params": best_params,
-            "train_sharpe": round(best_score, 2) if best_score != -float("inf") else 0.0,
+            "train_sharpe": train_sharpe_val,
+            "train_total_trades": best_train_trades,
             "oos_total_return_pct": oos["total_return_pct"],
             "oos_win_rate_pct": oos["win_rate_pct"],
             "oos_total_trades": oos["total_trades"],
             "oos_sharpe": oos["sharpe_ratio"],
+            "oos_degradation": round(train_sharpe_val - oos["sharpe_ratio"], 2),
+            "random_baseline_return_pct": fold_baseline,
         })
 
         logger.info(
             f"  Fold {fold['test_start']}–{fold['test_end']}: "
             f"params={best_params} | OOS return={oos['total_return_pct']:+.1f}% "
-            f"WR={oos['win_rate_pct']:.0f}% trades={oos['total_trades']}"
+            f"vs baseline={fold_baseline:+.1f}% | WR={oos['win_rate_pct']:.0f}% trades={oos['total_trades']}"
         )
 
     if not fold_results:
@@ -398,6 +443,14 @@ def run_walk_forward_optimized(
 
     n = len(fold_results)
     profitable = sum(1 for f in fold_results if f["oos_total_return_pct"] > 0)
+
+    # Param stability: % of folds that selected the modal (most common) param set
+    sig_counts: dict = {}
+    for f in fold_results:
+        key = tuple(sorted(f["best_params"].items()))
+        sig_counts[key] = sig_counts.get(key, 0) + 1
+    modal_count = max(sig_counts.values()) if sig_counts else 0
+
     summary = {
         "n_folds": n,
         "mean_oos_return_pct": round(sum(f["oos_total_return_pct"] for f in fold_results) / n, 2),
@@ -405,11 +458,15 @@ def run_walk_forward_optimized(
         "mean_oos_sharpe": round(sum(f["oos_sharpe"] for f in fold_results) / n, 2),
         "profitable_folds": profitable,
         "consistency_pct": round(profitable / n * 100, 1),
+        "param_stability_pct": round(modal_count / n * 100, 1),
+        "mean_oos_degradation": round(sum(f["oos_degradation"] for f in fold_results) / n, 2),
+        "random_baseline_return_pct": round(sum(f["random_baseline_return_pct"] for f in fold_results) / n, 2),
     }
 
     logger.info(
         f"Walk-forward summary: {n} folds | mean OOS return {summary['mean_oos_return_pct']:+.2f}% "
-        f"| consistency {summary['consistency_pct']:.0f}%"
+        f"vs baseline {summary['random_baseline_return_pct']:+.2f}% "
+        f"| consistency {summary['consistency_pct']:.0f}% | param stability {summary['param_stability_pct']:.0f}%"
     )
 
     return {"folds": fold_results, "summary": summary}

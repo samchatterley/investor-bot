@@ -11,28 +11,47 @@ from ta.volatility import BollingerBands
 logger = logging.getLogger(__name__)
 
 
-def fetch_stock_data(symbol: str, days: int = 30) -> pd.DataFrame | None:
-    """Fetch OHLCV data and compute technical indicators for a symbol."""
+def fetch_stock_data(
+    symbol: str,
+    days: int = 30,
+    preloaded: dict | None = None,
+    as_of: str | None = None,
+) -> pd.DataFrame | None:
+    """Fetch OHLCV data and compute technical indicators for a symbol.
+
+    If ``preloaded`` is provided, uses the pre-downloaded DataFrame sliced to
+    ``as_of`` date instead of a live yfinance call (for historical replay).
+    """
     try:
-        end = datetime.now()
-        # Weekly EMA21 needs 21 weeks (~150 calendar days); fetch enough for both daily and weekly indicators
-        fetch_days = max(days + 150, 200)
-        start = end - timedelta(days=fetch_days)
+        if preloaded is not None and symbol in preloaded:
+            df = preloaded[symbol]
+            if as_of is not None:
+                df = df[df.index <= pd.Timestamp(as_of)].copy()
+            else:
+                df = df.copy()
+            if df.empty or len(df) < 35:
+                logger.warning(f"Insufficient preloaded data for {symbol} as_of {as_of}")
+                return None
+        else:
+            end = datetime.now()
+            # Weekly EMA21 needs 21 weeks (~150 calendar days); fetch enough for both daily and weekly indicators
+            fetch_days = max(days + 150, 200)
+            start = end - timedelta(days=fetch_days)
 
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
 
-        if df.empty or len(df) < 35:
-            logger.warning(f"Insufficient data for {symbol}")
-            return None
+            if df.empty or len(df) < 35:
+                logger.warning(f"Insufficient data for {symbol}")
+                return None
 
-        last_date = df.index[-1].date()
-        staleness = (datetime.now().date() - last_date).days
-        if staleness > 3:
-            logger.warning(f"{symbol}: last data point {last_date} is {staleness} days old — skipping stale feed")
-            return None
+            last_date = df.index[-1].date()
+            staleness = (datetime.now().date() - last_date).days
+            if staleness > 3:
+                logger.warning(f"{symbol}: last data point {last_date} is {staleness} days old — skipping stale feed")
+                return None
 
-        df = df.copy()
+            df = df.copy()
 
         close = df["Close"]
         volume = df["Volume"]
@@ -165,13 +184,36 @@ def get_spy_10d_return() -> float | None:
     return None
 
 
-def get_market_snapshots(symbols: list[str], days: int = 30) -> list[dict]:
+def _spy_return_from_preloaded(preloaded: dict, as_of: str, lookback: int) -> float | None:
+    """Compute SPY N-day return from preloaded data up to as_of date."""
+    spy_df = preloaded.get("SPY")
+    if spy_df is None:
+        return None
+    try:
+        sliced = spy_df[spy_df.index <= pd.Timestamp(as_of)]["Close"].dropna()
+        if len(sliced) < lookback + 1:
+            return None
+        return round((float(sliced.iloc[-1]) / float(sliced.iloc[-(lookback + 1)]) - 1) * 100, 2)
+    except Exception:
+        return None
+
+
+def get_market_snapshots(
+    symbols: list[str],
+    days: int = 30,
+    preloaded: dict | None = None,
+    as_of: str | None = None,
+) -> list[dict]:
     """Fetch and summarise data for all symbols in parallel."""
-    spy_5d = get_spy_5d_return()
-    spy_10d = get_spy_10d_return()
+    if preloaded is not None and as_of is not None:
+        spy_5d = _spy_return_from_preloaded(preloaded, as_of, 5)
+        spy_10d = _spy_return_from_preloaded(preloaded, as_of, 10)
+    else:
+        spy_5d = get_spy_5d_return()
+        spy_10d = get_spy_10d_return()
 
     def _fetch_one(sym: str):
-        df = fetch_stock_data(sym, days)
+        df = fetch_stock_data(sym, days, preloaded=preloaded, as_of=as_of)
         if df is None:
             return None
         snap = summarise_for_ai(sym, df)
