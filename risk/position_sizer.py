@@ -125,3 +125,20 @@ def get_max_positions(portfolio_value: float) -> int:
         return 4
     else:
         return 3
+
+
+def small_account_size(portfolio_value: float, max_single_order: float = 55.0) -> float:
+    """
+    Explicit-notional sizing for small-account experiment mode (<$200 account).
+
+    Targets 1-2 positions of $40-$55 rather than risk-budget math that produces
+    unusable $5-$8 orders on a £150-scale account. Each position is sized to
+    allow at least one whole share for stop protection on names up to $55.
+
+    Returns a notional capped at max_single_order and floored at $40.
+    """
+    if portfolio_value <= 0:
+        return 0.0
+    # Aim for 2 equal positions spending ~80% of portfolio
+    per_position = (portfolio_value * 0.80) / 2.0
+    return max(40.0, min(per_position, max_single_order))

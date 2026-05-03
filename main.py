@@ -204,6 +204,97 @@ def _run_clear_halt():
         logger.info("No halt file found — trading is already active.")
 
 
+# ── Broker account safety assertions ─────────────────────────────────────────
+
+
+def _assert_account_safety(client) -> None:
+    """Verify broker account type matches safety config. Raises RuntimeError if violated.
+
+    Only enforced in live mode (IS_PAPER=False). Paper accounts may not expose
+    the same account flags, so assertions are skipped there.
+    """
+    if config.IS_PAPER:
+        return
+    try:
+        account = client.get_account()
+        if not config.ALLOW_MARGIN:
+            if getattr(account, "pattern_day_trader", False):
+                raise RuntimeError(
+                    "Broker account has PDT/margin flag. "
+                    "Set ALLOW_MARGIN=true to override or switch to a cash account."
+                )
+            # Buying power > 2× equity implies margin. Cash accounts have 1× buying power.
+            equity = float(account.equity or 0)
+            buying_power = float(account.buying_power or 0)
+            if equity > 0 and buying_power > equity * 2.1:
+                raise RuntimeError(
+                    f"Broker buying_power (${buying_power:.0f}) > 2× equity (${equity:.0f}) "
+                    "suggests margin enabled. Set ALLOW_MARGIN=true to override."
+                )
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning(f"_assert_account_safety: could not verify account type — {e}")
+
+
+# ── Stop failure → flatten helper ────────────────────────────────────────────
+
+
+def _handle_stop_failure(client, symbol: str, dry_run: bool) -> None:
+    """When stop placement fails, alert immediately and flatten in live mode.
+
+    In paper/dry-run mode: alert only (no real money at risk).
+    In live mode: flatten the position immediately. If flatten also fails,
+    write a halt file — a live unprotected position is a fatal condition.
+    """
+    if dry_run:
+        logger.warning(f"  [DRY RUN] Stop failed for {symbol} — would flatten in live mode")
+        return
+    logger.error(f"Stop placement FAILED for {symbol} — position unprotected!")
+    alerts.alert_error(
+        "STOP FAILED",
+        f"{symbol}: trailing stop placement failed after buy — position has no downside protection.",
+    )
+    if config.IS_PAPER:
+        return
+    logger.critical(
+        f"Stop placement FAILED for {symbol} — attempting emergency flatten to remove exposure"
+    )
+    alerts.alert_error(
+        "STOP FAILED — FLATTENING",
+        f"{symbol}: trailing stop placement failed after buy. Attempting to flatten position.",
+    )
+    flatten_result = trader.close_position(client, symbol)
+    if flatten_result.is_success:
+        trader.record_sell(symbol)
+        logger.critical(f"  Emergency flatten of {symbol} succeeded — position closed")
+        alerts.alert_error(
+            "POSITION FLATTENED",
+            f"{symbol}: emergency flatten succeeded after stop failure.",
+        )
+    else:
+        logger.critical(
+            f"  Emergency flatten of {symbol} FAILED ({flatten_result.rejection_reason}) — "
+            "writing halt file. Manual broker action required immediately."
+        )
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+        halt_data = {
+            "halted": True,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "reason": "stop_failure_and_flatten_failure",
+            "symbol": symbol,
+            "flatten_rejection": flatten_result.rejection_reason,
+        }
+        with open(config.HALT_FILE, "w") as f:
+            json.dump(halt_data, f, indent=2)
+            f.write("\n")
+        alerts.alert_error(
+            "HALT — UNPROTECTED POSITION",
+            f"{symbol}: stop failed AND flatten failed. Bot halted. "
+            "Check broker immediately — position may still be open.",
+        )
+
+
 # ── Partial exits ─────────────────────────────────────────────────────────────
 
 
@@ -262,6 +353,14 @@ def run(dry_run: bool = False, mode: str = "open"):
         )
         sys.exit(1)
 
+    if config.SMALL_ACCOUNT_MODE:
+        logger.info(
+            f"SMALL_ACCOUNT_MODE active: max_order=${config.MAX_SINGLE_ORDER_USD:.0f} "
+            f"max_daily=${config.MAX_DAILY_NOTIONAL_USD:.0f} "
+            f"max_deployed=${config.MAX_DEPLOYED_USD:.0f} "
+            f"max_positions={config.MAX_POSITIONS}"
+        )
+
     try:
         config.validate()
     except ValueError as e:
@@ -303,6 +402,14 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     client = trader.get_client()
 
+    # ── Broker account safety assertions (live only) ──────────────────────────
+    if not config.IS_PAPER and not dry_run:
+        try:
+            _assert_account_safety(client)
+        except RuntimeError as e:
+            logger.critical(f"Account safety check failed: {e}")
+            sys.exit(1)
+
     if not trader.is_market_open(client):
         logger.info("Market is closed. Nothing to do.")
         return
@@ -321,7 +428,27 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     # ── Reconcile position metadata ───────────────────────────────────────────
     trader.reconcile_positions(client)
-    trader.ensure_stops_attached(client)
+    stops_ok = trader.ensure_stops_attached(client)
+    if not stops_ok and not config.IS_PAPER and not dry_run:
+        logger.critical(
+            "ensure_stops_attached reported uncovered live positions — halting to prevent "
+            "unprotected exposure. Resolve stops manually, then run --clear-halt."
+        )
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+        halt_data = {
+            "halted": True,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "reason": "uncovered_positions_at_startup",
+        }
+        with open(config.HALT_FILE, "w") as f:
+            json.dump(halt_data, f, indent=2)
+            f.write("\n")
+        alerts.alert_error(
+            "HALT — UNCOVERED POSITIONS",
+            "Bot halted at startup: one or more live positions have no stop protection. "
+            "Attach stops manually, then run --clear-halt.",
+        )
+        sys.exit(1)
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
     history = portfolio_tracker.load_history()
@@ -336,6 +463,16 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     dl_triggered, dl_pct = risk_manager.check_daily_loss(
         _baseline, account_before["portfolio_value"]
     )
+    # Dollar-denominated daily loss cap (active when MAX_DAILY_LOSS_USD > 0)
+    if not dl_triggered and config.MAX_DAILY_LOSS_USD > 0:
+        daily_loss_usd = _baseline - account_before["portfolio_value"]
+        if daily_loss_usd >= config.MAX_DAILY_LOSS_USD:
+            dl_triggered = True
+            dl_pct = (account_before["portfolio_value"] / _baseline - 1) * 100
+            logger.warning(
+                f"Dollar daily loss limit hit: ${daily_loss_usd:.2f} >= "
+                f"${config.MAX_DAILY_LOSS_USD:.2f}"
+            )
     if dl_triggered:
         audit_log.log_daily_loss_limit(dl_pct)
         alerts.alert_daily_loss(dl_pct)
@@ -442,6 +579,22 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in held_symbols]
     candidate_snaps = [s for s in snapshots if s["symbol"] not in held_symbols]
+
+    # Small-account universe price filter — restricts to names where one whole share
+    # can be stop-protected within the per-order cap.
+    if config.MIN_PRICE_USD > 0 or config.MAX_PRICE_USD > 0:
+        before_price_filter = len(candidate_snaps)
+        candidate_snaps = [
+            s
+            for s in candidate_snaps
+            if (config.MIN_PRICE_USD == 0 or s.get("current_price", 0) >= config.MIN_PRICE_USD)
+            and (config.MAX_PRICE_USD == 0 or s.get("current_price", 0) <= config.MAX_PRICE_USD)
+        ]
+        logger.info(
+            f"Price filter (${config.MIN_PRICE_USD:.0f}–${config.MAX_PRICE_USD:.0f}): "
+            f"{before_price_filter} → {len(candidate_snaps)} candidates"
+        )
+
     filtered_candidates = stock_scanner.prefilter_candidates(candidate_snaps)
     ai_snapshots = held_snaps + filtered_candidates
     logger.info(
@@ -638,6 +791,14 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             valid_candidates.sort(key=lambda x: x["confidence"], reverse=True)
             valid_candidates = valid_candidates[:slots]
 
+            # VIX-adjusted trail percent — wider stops in high-vol regimes
+            vix_trail_pct = risk_manager.check_vix_stop_adjustment(vix)
+            if abs(vix_trail_pct - config.TRAILING_STOP_PCT) > 0.01:
+                logger.info(
+                    f"VIX-adjusted trail: {config.TRAILING_STOP_PCT}% → {vix_trail_pct}% "
+                    f"(VIX={vix})"
+                )
+
             orders_placed = 0
             for candidate in valid_candidates:
                 if orders_placed >= effective_max_orders:
@@ -647,23 +808,44 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     break
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
-                notional = min(
-                    position_sizer.risk_budget_size(
-                        account_now["portfolio_value"],
-                        confidence,
-                        signal=candidate.get("key_signal", "unknown"),
-                        regime=regime.get("regime", "UNKNOWN"),
-                    ),
-                    available_cash,
-                )
 
-                # Pre-trade controls (MiFID II)
+                # Pending-order guard — prevents duplicate buys after timeout/restart
+                if not dry_run and trader.has_pending_buy(client, symbol):
+                    logger.warning(
+                        f"  Skipping {symbol}: broker already has a pending buy order for this symbol"
+                    )
+                    continue
+
+                # Size order
+                if config.SMALL_ACCOUNT_MODE:
+                    notional = min(
+                        position_sizer.small_account_size(
+                            account_now["portfolio_value"],
+                            max_single_order=config.MAX_SINGLE_ORDER_USD,
+                        ),
+                        available_cash,
+                    )
+                else:
+                    notional = min(
+                        position_sizer.risk_budget_size(
+                            account_now["portfolio_value"],
+                            confidence,
+                            signal=candidate.get("key_signal", "unknown"),
+                            regime=regime.get("regime", "UNKNOWN"),
+                        ),
+                        available_cash,
+                    )
+
+                # Pre-trade controls (MiFID II) — includes open-exposure cap when configured
+                open_exposure = trader.get_total_open_exposure(client) if not dry_run else 0.0
                 approved, rejection_reason = check_pre_trade(
                     symbol,
                     notional,
                     daily_notional_spent,
                     config.MAX_SINGLE_ORDER_USD,
                     config.MAX_DAILY_NOTIONAL_USD,
+                    open_exposure_usd=open_exposure,
+                    max_deployed_usd=config.MAX_DEPLOYED_USD,
                 )
                 if not approved:
                     logger.warning(f"  Pre-trade check failed: {rejection_reason}")
@@ -681,7 +863,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         )
                         continue
                     if not dry_run:
-                        result = trader.place_buy_order(client, symbol, notional, run_id=run_id)
+                        result = trader.place_buy_order(client, symbol, notional)
                         if result and result.is_success:
                             orders_placed += 1
                             daily_notional_spent += notional
@@ -706,19 +888,19 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                                 stop_qty = int(math.floor(result.filled_qty))
                                 stop_result = (
                                     trader.place_trailing_stop(
-                                        client, symbol, stop_qty, current_price=current_price
+                                        client,
+                                        symbol,
+                                        stop_qty,
+                                        current_price=current_price,
+                                        trail_percent=vix_trail_pct,
                                     )
                                     if stop_qty >= 1
                                     else None
                                 )
                                 if stop_result is None or not stop_result.is_success:
-                                    logger.error(
-                                        f"  Stop placement FAILED for {symbol} — position unprotected!"
-                                    )
-                                    alerts.alert_error(
-                                        "STOP FAILED",
-                                        f"{symbol}: trailing stop placement failed after buy — position has no downside protection.",
-                                    )
+                                    _handle_stop_failure(client, symbol, dry_run)
+                                    # Position may now be closed or halted — don't count as successful trade
+                                    continue
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})

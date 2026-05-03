@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1151 tests, 100% coverage)
+├── tests/             Unit test suite (1202 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -689,15 +689,74 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **Dependencies are version-pinned.** `requirements.txt` pins exact versions to prevent silent behaviour changes from upstream updates. Test in paper mode before upgrading any dependency.
 
-- **MiFID II-style pre-trade controls.** The fat-finger guard (`MAX_SINGLE_ORDER_USD`) and runaway algorithm guard (`MAX_DAILY_NOTIONAL_USD`) are modelled on Article 17 algorithmic trading obligations — limits that apply regardless of what Claude decides.
+- **MiFID II-style pre-trade controls.** The fat-finger guard (`MAX_SINGLE_ORDER_USD`), runaway algorithm guard (`MAX_DAILY_NOTIONAL_USD`), and open-exposure cap (`MAX_DEPLOYED_USD`) are modelled on Article 17 algorithmic trading obligations — limits that apply regardless of what Claude decides.
+
+- **Small-account experiment mode.** Set `SMALL_ACCOUNT_MODE=true` to activate a £150-scale live experiment profile. This caps single orders at $55, daily notional at $75, max deployed at $125, max positions at 2, orders per run at 1, and uses explicit-notional sizing instead of risk-budget sizing. See [small account profile](#small-account-experiment-profile) below.
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1151 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1202 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+
+---
+
+## Small-Account Experiment Profile
+
+To run a live experiment with £150 (~$190), set the following in `.env`:
+
+```env
+SMALL_ACCOUNT_MODE=true
+TRADING_MODE=live
+ALPACA_BASE_URL=https://api.alpaca.markets
+LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK
+```
+
+When `SMALL_ACCOUNT_MODE=true`, all caps default to small-account safe values (any explicit env var still wins):
+
+| Parameter | Default | Small-account default |
+|-----------|---------|----------------------|
+| `MAX_SINGLE_ORDER_USD` | $50,000 | $55 |
+| `MAX_DAILY_NOTIONAL_USD` | $150,000 | $75 |
+| `MAX_DEPLOYED_USD` | disabled | $125 |
+| `MAX_DAILY_LOSS_USD` | disabled | $20 |
+| `MAX_EXPERIMENT_DRAWDOWN_USD` | disabled | $50 |
+| `MAX_ORDERS_PER_RUN` | 3 | 1 |
+| `MAX_POSITIONS` | 5 | 2 |
+| `TRAILING_STOP_PCT` | 4% | 7% |
+| `STOP_LOSS_PCT` | 4% | 7% |
+| `MIN_PRICE_USD` | disabled | $5 |
+| `MAX_PRICE_USD` | disabled | $60 |
+
+Sizing switches from risk-budget formula (which produces unusable $5–$8 orders on a $150 account) to explicit-notional: ~$40–$55 per position depending on portfolio value.
+
+Additional live-mode safety gates active in all modes:
+- **Pending-order guard**: before every buy, broker open orders are checked — if a pending buy for that symbol already exists, the order is skipped.
+- **Idempotent client_order_id**: orders use `ib-{SYMBOL}-BUY-{DATE}` as the Alpaca client order ID. Same-day reruns produce the same ID; Alpaca deduplicates.
+- **Stop failure → flatten**: if trailing stop placement fails after a live buy, the position is immediately closed. If that also fails, a halt file is written and the bot stops.
+- **Broker account assertions**: at live startup, the bot verifies buying power does not imply margin and flags PDT status.
+- **VIX-adjusted trailing stop**: the stop width widens automatically (up to 7%) as VIX rises above 25.
 
 ---
 
 ## Version History
+
+### 2.0 — May 2026 — Live-safety hardening for £150 experiment
+
+Three critical blockers identified in a pre-live code review have been resolved:
+
+- **Capital containment bounded.** `SMALL_ACCOUNT_MODE=true` activates a complete small-account cap profile: per-order, daily notional, open-exposure, daily-loss-USD, and experiment-drawdown limits all default to values appropriate for a £150 live experiment. All caps are env-overridable.
+- **Duplicate-buy prevention.** `has_pending_buy()` queries broker open orders before every buy; if a pending/accepted/partially-filled buy exists for the symbol, the order is skipped. `client_order_id` now uses `{SYMBOL}-BUY-{DATE}` (symbol + date) instead of run_id, making it stable across same-day restarts so Alpaca deduplicates.
+- **Stop failure is fatal.** When trailing stop placement fails after a live fill, `_handle_stop_failure()` immediately attempts to flatten the position. If the flatten also fails, a halt file is written and the bot refuses to continue. In paper mode, the failure is alerted and logged but no flatten occurs.
+- **VIX-adjusted stop wired.** `place_trailing_stop()` now accepts a `trail_percent` override; `main.py` passes the VIX-adjusted trail (from `risk_manager.check_vix_stop_adjustment`) on every stop placement.
+- **`ensure_stops_attached()` returns fatal bool.** If stop re-attachment fails for a whole-share live position at startup, the bot writes a halt file and exits rather than continuing with unprotected exposure.
+- **Dollar daily loss cap.** `MAX_DAILY_LOSS_USD` (default $20 in small-account mode) triggers close-all independently of the percentage cap.
+- **Open-exposure cap in pre-trade.** `check_pre_trade()` now accepts `open_exposure_usd` + `max_deployed_usd`; the buy loop passes the current broker market value to enforce the deployed-capital hard limit.
+- **Broker account assertions.** At live startup, the bot checks that buying power ≤ 2× equity (cash account, no margin) and that the PDT flag is not set. Raises `RuntimeError` if violated.
+- **Universe price filter.** `MIN_PRICE_USD` / `MAX_PRICE_USD` filter candidates before the AI scan. Active by default in small-account mode ($5–$60) to ensure whole-share stop protection is possible within the per-order cap.
+- **Small-account explicit-notional sizing.** `position_sizer.small_account_size()` targets $40–$55 per position rather than the risk-budget formula that produces unusable sub-$10 orders on a £150 account.
+- **`test_live_safety.py` — 51 new tests.** Covers all three blockers and all supporting changes end-to-end.
+- **1202 tests, 100% coverage, zero ruff violations.**
+
+---
 
 ### 1.9 — May 2026 — Backtest integrity + risk hardening
 
@@ -720,6 +779,7 @@ The current system deliberately keeps deployment local and execution synchronous
 ---
 
 ### 1.8 — May 2026 — Dynamic universe + 5 new strategies
+
 
 - **Dynamic scan universe.** Replaced the hardcoded 42-stock `STOCK_UNIVERSE` with a daily-refreshed set drawn from Alpaca's full asset catalog. `execution/universe.py` fetches all tradable + fractionable US equity symbols, screens them by price (≥ $5) and volume (≥ 500K) via the Alpaca snapshot API, and caches up to 500 symbols for 24 hours. Falls back to the static core list on any failure.
 - **Five new signal types.** Added `bb_squeeze` (Bollinger Band compression → directional expansion), `breakout_52w` (within 3% of yearly high with volume), `rs_leader` (sustained SPY outperformance over 5d and 10d), `inside_day_breakout` (range coil then expansion), and `trend_pullback` (EMA-aligned dip entry). The bot now operates across 12 distinct signal types covering mean-reversion, momentum, trend, volatility expansion, and catalyst families.

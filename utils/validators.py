@@ -125,6 +125,8 @@ def check_pre_trade(
     daily_notional_so_far: float,
     max_single_order: float,
     max_daily_notional: float,
+    open_exposure_usd: float = 0.0,
+    max_deployed_usd: float = 0.0,
 ) -> tuple[bool, str]:
     """
     Pre-trade risk checks applied before every order.
@@ -133,6 +135,7 @@ def check_pre_trade(
     Aligned with MiFID II Article 17 pre-trade controls:
     - Maximum single-order size (fat-finger guard)
     - Maximum daily notional cap (runaway algorithm guard)
+    - Maximum deployed capital cap (small-account experiment guard; active when max_deployed_usd > 0)
     """
     if not math.isfinite(notional) or notional <= 0:
         return False, f"{symbol}: invalid notional {notional!r}"
@@ -144,5 +147,10 @@ def check_pre_trade(
         return False, (
             f"{symbol}: would breach daily notional cap ${max_daily_notional:.2f} "
             f"(already traded ${daily_notional_so_far:.2f} today)"
+        )
+    if max_deployed_usd > 0 and (open_exposure_usd + notional) > max_deployed_usd:
+        return False, (
+            f"{symbol}: would breach max deployed cap ${max_deployed_usd:.2f} "
+            f"(${open_exposure_usd:.2f} already open + ${notional:.2f} new order)"
         )
     return True, ""

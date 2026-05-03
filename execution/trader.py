@@ -59,13 +59,43 @@ def get_open_positions(client: TradingClient) -> list[dict]:
     return result
 
 
+def has_pending_buy(client: TradingClient, symbol: str) -> bool:
+    """Return True if broker has a pending/active buy order for this symbol.
+
+    Used as a pre-buy gate to prevent duplicate orders after timeout/restart.
+    """
+    try:
+        orders = client.get_orders()
+        for o in orders:
+            if (
+                o.symbol == symbol
+                and o.side == OrderSide.BUY
+                and str(o.status)
+                in (
+                    "new",
+                    "accepted",
+                    "pending_new",
+                    "partially_filled",
+                )
+            ):
+                return True
+    except Exception as e:
+        logger.warning(f"has_pending_buy: could not query orders for {symbol}: {e}")
+    return False
+
+
 def place_buy_order(
     client: TradingClient,
     symbol: str,
     notional_usd: float,
     run_id: str | None = None,
 ) -> OrderResult | None:
-    """Place a fractional market buy, wait for fill, return OrderResult."""
+    """Place a fractional market buy, wait for fill, return OrderResult.
+
+    client_order_id is symbol+date-stable so reruns on the same day reuse the
+    same ID. Alpaca will 409 a duplicate submission, which surfaces as a
+    REJECTED result that the caller treats as a no-op.
+    """
     if notional_usd < 1.0:
         logger.warning(f"Order too small for {symbol}: ${notional_usd:.2f}")
         return None
@@ -76,9 +106,8 @@ def place_buy_order(
             "notional": round(notional_usd, 2),
             "side": OrderSide.BUY,
             "time_in_force": TimeInForce.DAY,
+            "client_order_id": f"ib-{symbol}-BUY-{today_et().isoformat()}",
         }
-        if run_id:
-            req_kwargs["client_order_id"] = f"ib-{run_id[:8]}-{symbol}-BUY"
         order = client.submit_order(MarketOrderRequest(**req_kwargs))
         order_id = str(order.id)
         logger.info(f"BUY order placed: {symbol} ${notional_usd:.2f} | order_id={order_id}")
@@ -141,7 +170,11 @@ def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> f
 
 
 def place_trailing_stop(
-    client: TradingClient, symbol: str, qty: float, current_price: float | None = None
+    client: TradingClient,
+    symbol: str,
+    qty: float,
+    current_price: float | None = None,
+    trail_percent: float | None = None,
 ) -> OrderResult | None:
     """Attach a stop to an open position.
 
@@ -151,11 +184,14 @@ def place_trailing_stop(
     run unprotected. If floor(qty) < 1 (entire position is sub-share), no stop can
     be placed and UNPROTECTED is returned.
 
+    trail_percent overrides config.TRAILING_STOP_PCT when provided (used for VIX adjustment).
+
     Returns None only for the qty <= 0 pre-condition violation. All real attempts
     return an OrderResult (FILLED on success, STOP_FAILED/UNPROTECTED on failure).
     """
     if not qty or qty <= 0:
         return None
+    effective_trail = trail_percent if trail_percent is not None else TRAILING_STOP_PCT
     # Truncate (not round) to avoid requesting more qty than Alpaca reports available
     safe_qty = math.floor(qty * 1_000_000) / 1_000_000
     is_fractional = abs(safe_qty - round(safe_qty)) > 0.000001
@@ -174,7 +210,7 @@ def place_trailing_stop(
             return OrderResult(
                 status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason="no current price"
             )
-        stop_price = round(current_price * (1 - TRAILING_STOP_PCT / 100), 2)
+        stop_price = round(current_price * (1 - effective_trail / 100), 2)
         try:
             order = client.submit_order(
                 StopOrderRequest(
@@ -220,11 +256,11 @@ def place_trailing_stop(
                     qty=safe_qty,
                     side=OrderSide.SELL,
                     time_in_force=TimeInForce.GTC,
-                    trail_percent=TRAILING_STOP_PCT,
+                    trail_percent=effective_trail,
                 )
             )
             order_id = str(order.id)
-            logger.info(f"Trailing stop: {symbol} {TRAILING_STOP_PCT}% trail | order_id={order_id}")
+            logger.info(f"Trailing stop: {symbol} {effective_trail}% trail | order_id={order_id}")
             return OrderResult(status=OrderStatus.FILLED, symbol=symbol, stop_order_id=order_id)
         except Exception as e:
             logger.error(f"Failed to place trailing stop for {symbol}: {e}")
@@ -453,18 +489,22 @@ def reconcile_positions(client: TradingClient):
         logger.error(f"reconcile_positions: database error — {e}")
 
 
-def ensure_stops_attached(client: TradingClient):
+def ensure_stops_attached(client: TradingClient) -> bool:
     """
     Detect open positions with no active trailing stop and attach one.
 
     Guards against the gap where place_buy_order timed out waiting for fill
     but the order subsequently filled — leaving a live position unprotected.
     Called at the start of every run after reconcile_positions.
+
+    Returns True when all positions are protected (or only sub-share remainder unprotectable).
+    Returns False when a stop attachment attempt fails for a whole-share position — caller
+    should treat this as a fatal condition in live mode and write a halt file.
     """
     try:
         positions = client.get_all_positions()
         if not positions:
-            return
+            return True
         open_orders = client.get_orders()
 
         # Sum protected qty per symbol across all active sell stop orders
@@ -476,6 +516,7 @@ def ensure_stops_attached(client: TradingClient):
             ):
                 stop_qty[o.symbol] = stop_qty.get(o.symbol, 0.0) + float(o.qty or 0)
 
+        all_protected = True
         for pos in positions:
             pos_qty = float(pos.qty)
             covered = stop_qty.get(pos.symbol, 0.0)
@@ -490,11 +531,29 @@ def ensure_stops_attached(client: TradingClient):
                     f"Position {pos.symbol}: {pos_qty:.6f} shares, "
                     f"{covered:.6f} covered by stops — attaching stop for {whole_uncovered}"
                 )
-                place_trailing_stop(
+                result = place_trailing_stop(
                     client, pos.symbol, whole_uncovered, current_price=current_price
                 )
+                if result is None or not result.is_success:
+                    logger.error(
+                        f"ensure_stops_attached: FAILED to protect {pos.symbol} "
+                        f"({whole_uncovered} shares uncovered)"
+                    )
+                    all_protected = False
+        return all_protected
     except Exception as e:
         logger.error(f"ensure_stops_attached failed: {e}")
+        return False
+
+
+def get_total_open_exposure(client: TradingClient) -> float:
+    """Return sum of current market value of all open broker positions."""
+    try:
+        positions = client.get_all_positions()
+        return sum(float(p.market_value) for p in positions)
+    except Exception as e:
+        logger.warning(f"get_total_open_exposure failed: {e}")
+        return 0.0
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):

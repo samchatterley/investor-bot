@@ -203,17 +203,9 @@ class TestPlaceBuyOrder(unittest.TestCase):
         self.assertEqual(result.status, OrderStatus.PARTIAL)
         self.assertAlmostEqual(result.filled_qty, 5.0)
 
-    def test_buy_client_order_id_set_when_run_id_provided(self):
-        from execution.trader import place_buy_order
-
-        client = MagicMock()
-        client.submit_order.return_value = _mock_order("order-xyz")
-        with patch("execution.trader.wait_for_fill", return_value=10.0):
-            place_buy_order(client, "AAPL", 3_000.0, run_id="abcdef12-1234-5678-abcd-000000000000")
-        submitted = client.submit_order.call_args[0][0]
-        self.assertEqual(submitted.client_order_id, "ib-abcdef12-AAPL-BUY")
-
-    def test_buy_no_client_order_id_without_run_id(self):
+    def test_buy_client_order_id_is_symbol_date_stable(self):
+        """client_order_id must be stable across same-day reruns for idempotency."""
+        from config import today_et
         from execution.trader import place_buy_order
 
         client = MagicMock()
@@ -221,7 +213,19 @@ class TestPlaceBuyOrder(unittest.TestCase):
         with patch("execution.trader.wait_for_fill", return_value=10.0):
             place_buy_order(client, "AAPL", 3_000.0)
         submitted = client.submit_order.call_args[0][0]
-        self.assertFalse(hasattr(submitted, "client_order_id") and submitted.client_order_id)
+        expected = f"ib-AAPL-BUY-{today_et().isoformat()}"
+        self.assertEqual(submitted.client_order_id, expected)
+
+    def test_buy_client_order_id_always_set(self):
+        """client_order_id is always set regardless of run_id arg."""
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-xyz")
+        with patch("execution.trader.wait_for_fill", return_value=10.0):
+            place_buy_order(client, "AAPL", 3_000.0)
+        submitted = client.submit_order.call_args[0][0]
+        self.assertTrue(submitted.client_order_id)
 
     def test_order_includes_broker_order_id(self):
         from execution.trader import place_buy_order

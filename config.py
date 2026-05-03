@@ -53,8 +53,15 @@ def _validate_trading_mode(mode: str, url: str) -> bool:
 
 IS_PAPER = _validate_trading_mode(_TRADING_MODE, ALPACA_BASE_URL)
 
+# Small-account experiment mode — set SMALL_ACCOUNT_MODE=true in .env for a £150-scale live run.
+# When active, caps and risk parameters default to values appropriate for a <$200 account.
+# Any individual env var still overrides the small-account default.
+# Defined here (before position sizing) so _SAM is available for all inline defaults below.
+SMALL_ACCOUNT_MODE = os.getenv("SMALL_ACCOUNT_MODE", "false").lower() == "true"
+_SAM = SMALL_ACCOUNT_MODE  # shorthand for inline defaults below
+
 # Position sizing
-MAX_POSITIONS = 5
+MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "2" if _SAM else "5"))
 MAX_POSITION_PCT = 0.45  # Deprecated — legacy Kelly cap; kept only for config.validate(). Superseded by MAX_POSITION_WEIGHT.
 CASH_RESERVE_PCT = 0.10  # Always keep 10% as cash buffer
 
@@ -63,9 +70,9 @@ RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity risked per trade
 MAX_POSITION_WEIGHT = 0.05  # 5% of portfolio per position (hard cap)
 
 # Risk management
-STOP_LOSS_PCT = 0.04  # 4% trailing stop (tighter than old fixed stop)
-TAKE_PROFIT_PCT = 0.15  # 15% take profit target (let winners run a bit further)
-TRAILING_STOP_PCT = 4.0  # percent trail below highest price (Alpaca native order)
+STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.07" if _SAM else "0.04"))
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "0.20" if _SAM else "0.15"))
+TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "7.0" if _SAM else "4.0"))
 SLIPPAGE_BPS = 5  # one-way market impact estimate (basis points)
 SPREAD_BPS = 3  # half-spread applied to each side (basis points)
 KELLY_MULTIPLIER = 0.5  # half-Kelly — kept for research telemetry only
@@ -74,7 +81,7 @@ KELLY_MULTIPLIER = 0.5  # half-Kelly — kept for research telemetry only
 MIN_CONFIDENCE = 7  # Min confidence score (1-10) to open a position
 
 # Position hold limit — auto-exit after this many trading days
-MAX_HOLD_DAYS = 3
+MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5" if _SAM else "3"))
 
 # Per-signal hold limits override MAX_HOLD_DAYS for specific entry types.
 # Momentum and trend trades need room to develop; mean-reversion and news
@@ -101,7 +108,7 @@ BEAR_MARKET_SPY_THRESHOLD = -1.5
 TOP_MOVERS_COUNT = 15
 
 # Partial profit taking — sell half position when unrealised gain hits this %
-PARTIAL_PROFIT_PCT = 8.0
+PARTIAL_PROFIT_PCT = float(os.getenv("PARTIAL_PROFIT_PCT", "15.0" if _SAM else "8.0"))
 
 # Earnings guard — exit positions with earnings within this many calendar days
 EARNINGS_WARNING_DAYS = 2
@@ -205,9 +212,26 @@ LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
 # Pre-trade controls (MiFID II Article 17)
 # Fat-finger guard: reject any single order above this USD value
-MAX_SINGLE_ORDER_USD = 50000.0
+MAX_SINGLE_ORDER_USD = float(os.getenv("MAX_SINGLE_ORDER_USD", "55.0" if _SAM else "50000.0"))
 # Runaway algorithm guard: halt new buys once this much notional has been deployed today
-MAX_DAILY_NOTIONAL_USD = 150000.0
+MAX_DAILY_NOTIONAL_USD = float(os.getenv("MAX_DAILY_NOTIONAL_USD", "75.0" if _SAM else "150000.0"))
+# Maximum total open position exposure at any one time (0 = disabled)
+MAX_DEPLOYED_USD = float(os.getenv("MAX_DEPLOYED_USD", "125.0" if _SAM else "0.0"))
+# Maximum intraday loss in USD before all positions are closed (0 = use % only)
+MAX_DAILY_LOSS_USD = float(os.getenv("MAX_DAILY_LOSS_USD", "20.0" if _SAM else "0.0"))
+# Maximum experiment drawdown from starting capital before halt (0 = disabled)
+MAX_EXPERIMENT_DRAWDOWN_USD = float(
+    os.getenv("MAX_EXPERIMENT_DRAWDOWN_USD", "50.0" if _SAM else "0.0")
+)
+
+# Account type assertions — verified against broker at startup in live mode
+LONG_ONLY = os.getenv("LONG_ONLY", "true").lower() == "true"
+ALLOW_MARGIN = os.getenv("ALLOW_MARGIN", "false").lower() == "true"
+
+# Universe price filter (0 = disabled). In small account mode, restricts to names
+# where a single whole share can be stop-protected within the per-order cap.
+MIN_PRICE_USD = float(os.getenv("MIN_PRICE_USD", "5.0" if _SAM else "0.0"))
+MAX_PRICE_USD = float(os.getenv("MAX_PRICE_USD", "60.0" if _SAM else "0.0"))
 
 # Operations
 # Kill switch creates this file; bot refuses to run while it exists.
@@ -215,7 +239,7 @@ MAX_DAILY_NOTIONAL_USD = 150000.0
 HALT_FILE = os.path.join(LOG_DIR, ".HALTED")
 
 # Max new buy orders placed in a single run — guards against runaway loops
-MAX_ORDERS_PER_RUN = 3
+MAX_ORDERS_PER_RUN = int(os.getenv("MAX_ORDERS_PER_RUN", "1" if _SAM else "3"))
 
 # Minimum average daily volume — filters out illiquid stocks
 MIN_VOLUME = 500_000
@@ -347,5 +371,16 @@ def validate():
         errors.append("MAX_SINGLE_ORDER_USD must be positive")
     if MAX_DAILY_NOTIONAL_USD <= 0:
         errors.append("MAX_DAILY_NOTIONAL_USD must be positive")
+    if MAX_DEPLOYED_USD < 0:
+        errors.append("MAX_DEPLOYED_USD must be >= 0")
+    if MAX_DAILY_LOSS_USD < 0:
+        errors.append("MAX_DAILY_LOSS_USD must be >= 0")
+    if MAX_EXPERIMENT_DRAWDOWN_USD < 0:
+        errors.append("MAX_EXPERIMENT_DRAWDOWN_USD must be >= 0")
+    if SMALL_ACCOUNT_MODE and MAX_SINGLE_ORDER_USD > MAX_DAILY_NOTIONAL_USD:
+        errors.append(
+            f"MAX_SINGLE_ORDER_USD ({MAX_SINGLE_ORDER_USD}) > MAX_DAILY_NOTIONAL_USD "
+            f"({MAX_DAILY_NOTIONAL_USD}) in SMALL_ACCOUNT_MODE"
+        )
     if errors:
         raise ValueError("Config errors:\n" + "\n".join(f"  - {e}" for e in errors))
