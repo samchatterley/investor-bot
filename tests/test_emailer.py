@@ -2,6 +2,7 @@
 Tests for the HTML-building logic in notifications/emailer.py.
 SMTP is mocked — connections are never established.
 """
+
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -21,7 +22,7 @@ def _record(pnl=1000.0, trades=None, stops=None):
         "date": "2026-04-26",
         "daily_pnl": pnl,
         "account_before": {"portfolio_value": 100_000.0, "cash": 20_000.0},
-        "account_after":  {"portfolio_value": 100_000.0 + pnl, "cash": 18_000.0},
+        "account_after": {"portfolio_value": 100_000.0 + pnl, "cash": 18_000.0},
         "market_summary": "Steady upward day.",
         "trades_executed": trades or [],
         "stop_losses_triggered": stops or [],
@@ -32,7 +33,6 @@ def _record(pnl=1000.0, trades=None, stops=None):
 
 
 class TestHumaniseDetail(unittest.TestCase):
-
     def test_empty_string_returns_simulated(self):
         self.assertEqual(_humanise_detail(""), "Simulated — no real order placed")
 
@@ -72,7 +72,6 @@ class TestHumaniseDetail(unittest.TestCase):
 
 
 class TestBuildHtml(unittest.TestCase):
-
     def test_returns_string(self):
         html = _build_html(_record())
         self.assertIsInstance(html, str)
@@ -109,7 +108,6 @@ class TestBuildHtml(unittest.TestCase):
 
 
 class TestBuildWeeklyHtml(unittest.TestCase):
-
     def _review(self, **kwargs):
         base = {
             "week_summary": "Good week overall.",
@@ -133,12 +131,17 @@ class TestBuildWeeklyHtml(unittest.TestCase):
         self.assertIn("Avoid CHOPPY regime", html)
 
     def test_applied_config_change_appears(self):
-        review = self._review(applied_changes=[{
-            "parameter": "MIN_CONFIDENCE",
-            "old_value": 7, "new_value": 8,
-            "reason": "low conf trades underperformed",
-            "status": "applied",
-        }])
+        review = self._review(
+            applied_changes=[
+                {
+                    "parameter": "MIN_CONFIDENCE",
+                    "old_value": 7,
+                    "new_value": 8,
+                    "reason": "low conf trades underperformed",
+                    "status": "applied",
+                }
+            ]
+        )
         html = _build_weekly_html(review)
         self.assertIn("MIN_CONFIDENCE", html)
         self.assertIn("config.py", html)
@@ -148,17 +151,26 @@ class TestBuildWeeklyHtml(unittest.TestCase):
         self.assertIn("No parameter changes", html)
 
     def test_diagnostic_section_included_when_provided(self):
-        report = {"status": "PASS", "passed": 50, "total": 50,
-                  "duration_seconds": 1.2, "failures": []}
+        report = {
+            "status": "PASS",
+            "passed": 50,
+            "total": 50,
+            "duration_seconds": 1.2,
+            "failures": [],
+        }
         html = _build_weekly_html(self._review(), test_report=report)
         self.assertIn("PASS", html)
         self.assertIn("50/50", html)
 
     def test_diagnostic_fail_included(self):
         report = {
-            "status": "FAIL", "passed": 48, "total": 50,
+            "status": "FAIL",
+            "passed": 48,
+            "total": 50,
             "duration_seconds": 1.5,
-            "failures": [{"test": "test_foo.TestBar.test_baz", "message": "AssertionError: 1 != 2"}],
+            "failures": [
+                {"test": "test_foo.TestBar.test_baz", "message": "AssertionError: 1 != 2"}
+            ],
         }
         html = _build_weekly_html(self._review(), test_report=report)
         self.assertIn("FAIL", html)
@@ -172,128 +184,169 @@ class TestBuildWeeklyHtml(unittest.TestCase):
 
     def test_no_rejected_changes_omits_rejected_block(self):
         # Line 443: else branch — rejected is empty so rejected_block stays ""
-        review = self._review(applied_changes=[{
-            "parameter": "MIN_CONFIDENCE",
-            "old_value": 7, "new_value": 8,
-            "reason": "test", "status": "applied",
-        }])
+        review = self._review(
+            applied_changes=[
+                {
+                    "parameter": "MIN_CONFIDENCE",
+                    "old_value": 7,
+                    "new_value": 8,
+                    "reason": "test",
+                    "status": "applied",
+                }
+            ]
+        )
         html = _build_weekly_html(review)
         self.assertNotIn("Suggestions outside safe bounds", html)
 
     def test_rejected_changes_section_included(self):
         # Line 443: rejected is non-empty → _section called to build rejected_block
-        review = self._review(applied_changes=[{
-            "parameter": "SUPER_LEVER",
-            "old_value": 0, "new_value": 99,
-            "reason": "test", "status": "rejected",
-            "rejection_reason": "not in the safe-to-modify list",
-        }])
+        review = self._review(
+            applied_changes=[
+                {
+                    "parameter": "SUPER_LEVER",
+                    "old_value": 0,
+                    "new_value": 99,
+                    "reason": "test",
+                    "status": "rejected",
+                    "rejection_reason": "not in the safe-to-modify list",
+                }
+            ]
+        )
         html = _build_weekly_html(review)
         self.assertIn("Suggestions outside safe bounds", html)
         self.assertIn("SUPER_LEVER", html)
 
 
 class TestBuildDiagnosticsSection(unittest.TestCase):
-
     def test_none_returns_empty_string(self):
         self.assertEqual(_build_diagnostics_section(None), "")
 
     def test_pass_shows_green(self):
-        report = {"status": "PASS", "passed": 30, "total": 30,
-                  "duration_seconds": 0.5, "failures": []}
+        report = {
+            "status": "PASS",
+            "passed": 30,
+            "total": 30,
+            "duration_seconds": 0.5,
+            "failures": [],
+        }
         html = _build_diagnostics_section(report)
         self.assertIn("PASS", html)
         self.assertIn("#2e7d32", html)
 
     def test_fail_shows_red(self):
-        report = {"status": "FAIL", "passed": 28, "total": 30,
-                  "duration_seconds": 0.5,
-                  "failures": [{"test": "test_x", "message": "oops"}]}
+        report = {
+            "status": "FAIL",
+            "passed": 28,
+            "total": 30,
+            "duration_seconds": 0.5,
+            "failures": [{"test": "test_x", "message": "oops"}],
+        }
         html = _build_diagnostics_section(report)
         self.assertIn("FAIL", html)
         self.assertIn("#c62828", html)
 
     def test_failure_details_rendered(self):
         report = {
-            "status": "FAIL", "passed": 9, "total": 10,
+            "status": "FAIL",
+            "passed": 9,
+            "total": 10,
             "duration_seconds": 1.0,
-            "failures": [{"test": "test_module.TestClass.test_my_check", "message": "Expected True"}],
+            "failures": [
+                {"test": "test_module.TestClass.test_my_check", "message": "Expected True"}
+            ],
         }
         html = _build_diagnostics_section(report)
         self.assertIn("test_my_check", html)
 
 
 class TestAllRecipients(unittest.TestCase):
-
     def test_returns_owner_when_no_cc(self):
         from unittest.mock import patch
-        with patch("notifications.emailer.EMAIL_TO", "owner@example.com"), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+
+        with (
+            patch("notifications.emailer.EMAIL_TO", "owner@example.com"),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _all_recipients()
         self.assertEqual(result, ["owner@example.com"])
 
     def test_includes_cc_addresses(self):
         from unittest.mock import patch
-        with patch("notifications.emailer.EMAIL_TO", "owner@example.com"), \
-             patch("notifications.emailer.EMAIL_CC", "a@example.com, b@example.com"):
+
+        with (
+            patch("notifications.emailer.EMAIL_TO", "owner@example.com"),
+            patch("notifications.emailer.EMAIL_CC", "a@example.com, b@example.com"),
+        ):
             result = _all_recipients()
         self.assertIn("a@example.com", result)
         self.assertIn("b@example.com", result)
         self.assertEqual(len(result), 3)
 
     def test_returns_empty_when_no_email_to(self):
-        with patch("notifications.emailer.EMAIL_TO", None), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+        with (
+            patch("notifications.emailer.EMAIL_TO", None),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _all_recipients()
         self.assertEqual(result, [])
 
 
 class TestNamedRecipients(unittest.TestCase):
-
     def test_name_colon_email_format(self):
-        with patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@example.com"), \
-             patch("notifications.emailer.EMAIL_TO", "sam@example.com"), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+        with (
+            patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@example.com"),
+            patch("notifications.emailer.EMAIL_TO", "sam@example.com"),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _named_recipients()
         self.assertEqual(result, [("Sam", "sam@example.com")])
 
     def test_email_only_format_uses_there(self):
-        with patch("notifications.emailer.EMAIL_RECIPIENTS", "sam@example.com"), \
-             patch("notifications.emailer.EMAIL_TO", "sam@example.com"), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+        with (
+            patch("notifications.emailer.EMAIL_RECIPIENTS", "sam@example.com"),
+            patch("notifications.emailer.EMAIL_TO", "sam@example.com"),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _named_recipients()
         self.assertEqual(result, [("there", "sam@example.com")])
 
     def test_multiple_recipients(self):
-        with patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@a.com,Jo:jo@b.com"), \
-             patch("notifications.emailer.EMAIL_TO", ""), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+        with (
+            patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@a.com,Jo:jo@b.com"),
+            patch("notifications.emailer.EMAIL_TO", ""),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _named_recipients()
         self.assertEqual(len(result), 2)
         self.assertIn(("Sam", "sam@a.com"), result)
         self.assertIn(("Jo", "jo@b.com"), result)
 
     def test_falls_back_to_all_recipients_when_no_email_recipients(self):
-        with patch("notifications.emailer.EMAIL_RECIPIENTS", ""), \
-             patch("notifications.emailer.EMAIL_TO", "owner@example.com"), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+        with (
+            patch("notifications.emailer.EMAIL_RECIPIENTS", ""),
+            patch("notifications.emailer.EMAIL_TO", "owner@example.com"),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _named_recipients()
         self.assertEqual(result, [("there", "owner@example.com")])
 
     def test_whitespace_stripped_from_parts(self):
-        with patch("notifications.emailer.EMAIL_RECIPIENTS", " Sam : sam@example.com "), \
-             patch("notifications.emailer.EMAIL_TO", ""), \
-             patch("notifications.emailer.EMAIL_CC", ""):
+        with (
+            patch("notifications.emailer.EMAIL_RECIPIENTS", " Sam : sam@example.com "),
+            patch("notifications.emailer.EMAIL_TO", ""),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
             result = _named_recipients()
         self.assertEqual(result[0], ("Sam", "sam@example.com"))
 
 
 class TestBuildTradeCards(unittest.TestCase):
-
     def test_no_trades_returns_no_trades_message(self):
         record = {
-            "trades_executed": [], "stop_losses_triggered": [],
-            "buy_candidates": [], "position_decisions": [],
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [],
         }
         html = _build_trade_cards(record)
         self.assertIn("No trades", html)
@@ -343,23 +396,28 @@ class TestBuildTradeCards(unittest.TestCase):
 
 
 class TestSendHtml(unittest.TestCase):
-
     def test_skips_when_no_credentials(self):
-        with patch("notifications.emailer.EMAIL_FROM", ""), \
-             patch("notifications.emailer.EMAIL_APP_PASSWORD", ""), \
-             patch("notifications.emailer.smtplib.SMTP_SSL") as mock_smtp:
+        with (
+            patch("notifications.emailer.EMAIL_FROM", ""),
+            patch("notifications.emailer.EMAIL_APP_PASSWORD", ""),
+            patch("notifications.emailer.smtplib.SMTP_SSL") as mock_smtp,
+        ):
             from notifications.emailer import _send_html
+
             _send_html("Test", lambda name: "<p>hi</p>")
         mock_smtp.assert_not_called()
 
     def test_skips_when_no_recipients(self):
-        with patch("notifications.emailer.EMAIL_FROM", "bot@example.com"), \
-             patch("notifications.emailer.EMAIL_APP_PASSWORD", "secret"), \
-             patch("notifications.emailer.EMAIL_RECIPIENTS", ""), \
-             patch("notifications.emailer.EMAIL_TO", ""), \
-             patch("notifications.emailer.EMAIL_CC", ""), \
-             patch("notifications.emailer.smtplib.SMTP_SSL") as mock_smtp:
+        with (
+            patch("notifications.emailer.EMAIL_FROM", "bot@example.com"),
+            patch("notifications.emailer.EMAIL_APP_PASSWORD", "secret"),
+            patch("notifications.emailer.EMAIL_RECIPIENTS", ""),
+            patch("notifications.emailer.EMAIL_TO", ""),
+            patch("notifications.emailer.EMAIL_CC", ""),
+            patch("notifications.emailer.smtplib.SMTP_SSL") as mock_smtp,
+        ):
             from notifications.emailer import _send_html
+
             _send_html("Test", lambda name: "<p>hi</p>")
         mock_smtp.assert_not_called()
 
@@ -367,20 +425,26 @@ class TestSendHtml(unittest.TestCase):
         mock_server = MagicMock()
         mock_server.__enter__ = MagicMock(return_value=mock_server)
         mock_server.__exit__ = MagicMock(return_value=False)
-        with patch("notifications.emailer.EMAIL_FROM", "bot@example.com"), \
-             patch("notifications.emailer.EMAIL_APP_PASSWORD", "secret"), \
-             patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@example.com"), \
-             patch("notifications.emailer.smtplib.SMTP_SSL", return_value=mock_server) as mock_ssl:
+        with (
+            patch("notifications.emailer.EMAIL_FROM", "bot@example.com"),
+            patch("notifications.emailer.EMAIL_APP_PASSWORD", "secret"),
+            patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@example.com"),
+            patch("notifications.emailer.smtplib.SMTP_SSL", return_value=mock_server) as mock_ssl,
+        ):
             from notifications.emailer import _send_html
+
             _send_html("Subject", lambda name: f"<p>Hi {name}</p>")
         mock_ssl.assert_called_once_with("smtp.gmail.com", 465)
 
     def test_handles_smtp_exception_gracefully(self):
-        with patch("notifications.emailer.EMAIL_FROM", "bot@example.com"), \
-             patch("notifications.emailer.EMAIL_APP_PASSWORD", "secret"), \
-             patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@example.com"), \
-             patch("notifications.emailer.smtplib.SMTP_SSL", side_effect=Exception("conn refused")):
+        with (
+            patch("notifications.emailer.EMAIL_FROM", "bot@example.com"),
+            patch("notifications.emailer.EMAIL_APP_PASSWORD", "secret"),
+            patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@example.com"),
+            patch("notifications.emailer.smtplib.SMTP_SSL", side_effect=Exception("conn refused")),
+        ):
             from notifications.emailer import _send_html
+
             try:
                 _send_html("Subject", lambda name: "<p>hi</p>")
             except Exception:
@@ -388,69 +452,91 @@ class TestSendHtml(unittest.TestCase):
 
 
 class TestSendSummary(unittest.TestCase):
-
     def _record(self, pnl=1000.0):
         return {
             "date": "2026-04-27",
             "daily_pnl": pnl,
             "account_before": {"portfolio_value": 100_000.0},
-            "account_after":  {"portfolio_value": 100_000.0 + pnl, "cash": 18_000.0},
+            "account_after": {"portfolio_value": 100_000.0 + pnl, "cash": 18_000.0},
             "market_summary": "Steady day.",
-            "trades_executed": [], "stop_losses_triggered": [],
-            "buy_candidates": [], "position_decisions": [],
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [],
         }
 
     def test_positive_pnl_subject_has_plus(self):
         subjects = []
+
         def capture_send(subject, html_fn):
             subjects.append(subject)
+
         with patch("notifications.emailer._send_html", side_effect=capture_send):
             from notifications.emailer import send_summary
+
             send_summary(self._record(pnl=500.0))
         self.assertTrue(subjects[0].startswith("Trading Bot 2026-04-27 — +"))
 
     def test_negative_pnl_subject_has_minus(self):
         subjects = []
+
         def capture_send(subject, html_fn):
             subjects.append(subject)
+
         with patch("notifications.emailer._send_html", side_effect=capture_send):
             from notifications.emailer import send_summary
+
             send_summary(self._record(pnl=-300.0))
         self.assertIn("300", subjects[0])
         self.assertNotIn("+", subjects[0].split("—")[1])
 
 
 class TestSendWeeklyReview(unittest.TestCase):
-
     def _review(self, applied=None):
         return {
             "week_summary": "Good week.",
-            "what_worked": [], "what_didnt": [], "lessons": [],
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
             "applied_changes": applied or [],
         }
 
     def test_calls_send_html(self):
         with patch("notifications.emailer._send_html") as mock_send:
             from notifications.emailer import send_weekly_review
+
             send_weekly_review(self._review())
         mock_send.assert_called_once()
 
     def test_subject_includes_change_count_when_applied(self):
         subjects = []
+
         def capture(subject, html_fn):
             subjects.append(subject)
-        applied = [{"parameter": "MIN_CONFIDENCE", "old_value": 7, "new_value": 8,
-                    "reason": "test", "status": "applied"}]
+
+        applied = [
+            {
+                "parameter": "MIN_CONFIDENCE",
+                "old_value": 7,
+                "new_value": 8,
+                "reason": "test",
+                "status": "applied",
+            }
+        ]
         with patch("notifications.emailer._send_html", side_effect=capture):
             from notifications.emailer import send_weekly_review
+
             send_weekly_review(self._review(applied=applied))
         self.assertIn("1 config change", subjects[0])
 
     def test_subject_includes_test_status_when_provided(self):
         subjects = []
+
         def capture(subject, html_fn):
             subjects.append(subject)
+
         with patch("notifications.emailer._send_html", side_effect=capture):
             from notifications.emailer import send_weekly_review
+
             send_weekly_review(self._review(), test_report={"status": "PASS"})
         self.assertIn("PASS", subjects[0])

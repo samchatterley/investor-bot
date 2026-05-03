@@ -7,7 +7,6 @@ from config import (
     LOG_DIR,
     MAX_POSITION_PCT,
     MAX_POSITION_WEIGHT,
-    MIN_CONFIDENCE,
     RISK_PER_TRADE_PCT,
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
@@ -62,7 +61,9 @@ def kelly_fraction(confidence: int, signal: str = "unknown", regime: str = "UNKN
         logger.debug(f"kelly_fraction: empirical p={p:.2f} for {signal}/{regime}")
     else:
         p = confidence / 10.0
-        logger.debug(f"kelly_fraction: no empirical data for {signal}/{regime} — using LLM confidence p={p:.2f}")
+        logger.debug(
+            f"kelly_fraction: no empirical data for {signal}/{regime} — using LLM confidence p={p:.2f}"
+        )
 
     q = 1.0 - p
     b = TAKE_PROFIT_PCT / max(STOP_LOSS_PCT, 1e-6)
@@ -98,9 +99,8 @@ def risk_budget_size(
         # 60%+ win rate → full size; lower → proportionally smaller; floor at 25%
         conviction_scale = max(0.25, min(emp / 0.60, 1.0))
     else:
-        # Linear scale: MIN_CONFIDENCE → 0.5×, confidence 10 → 1.0×
-        span = max(10 - MIN_CONFIDENCE, 1)
-        conviction_scale = 0.5 + 0.5 * (confidence - MIN_CONFIDENCE) / span
+        # Neutral scale until empirical history accrues — LLM confidence does not drive size
+        conviction_scale = 0.75
 
     try:
         kelly = kelly_fraction(confidence, signal, regime)

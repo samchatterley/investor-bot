@@ -24,7 +24,6 @@ def _mock_ticker(earnings_date):
 
 
 class TestGetNextEarningsDate(unittest.TestCase):
-
     def test_returns_future_date(self):
         future = date(2026, 5, 15)
         with patch("risk.earnings_calendar.yf.Ticker", return_value=_mock_ticker(future)):
@@ -43,7 +42,9 @@ class TestGetNextEarningsDate(unittest.TestCase):
 
     def test_returns_none_on_unexpected_exception(self):
         # except Exception as e — covers unexpected errors beyond API failures
-        with patch("risk.earnings_calendar.yf.Ticker", side_effect=AttributeError("unexpected attr")):
+        with patch(
+            "risk.earnings_calendar.yf.Ticker", side_effect=AttributeError("unexpected attr")
+        ):
             result = get_next_earnings_date("AAPL")
         self.assertIsNone(result)
 
@@ -58,7 +59,6 @@ class TestGetNextEarningsDate(unittest.TestCase):
 
 
 class TestDaysUntilEarnings(unittest.TestCase):
-
     def test_future_earnings_returns_positive(self):
         future = date(2026, 4, 28)
         with (
@@ -92,7 +92,6 @@ class TestDaysUntilEarnings(unittest.TestCase):
 
 
 class TestGetEarningsRiskPositions(unittest.TestCase):
-
     def test_position_within_warning_days_flagged(self):
         tomorrow = date(2026, 4, 27)
         with (
@@ -135,28 +134,27 @@ class TestGetNextEarningsDateFormats(unittest.TestCase):
     def test_dataframe_with_earnings_date_column(self):
         future = date(2026, 5, 20)
         df = pd.DataFrame({"Earnings Date": [pd.Timestamp(future.isoformat())]})
-        with patch("risk.earnings_calendar.yf.Ticker",
-                   return_value=self._ticker_with_calendar(df)):
+        with patch("risk.earnings_calendar.yf.Ticker", return_value=self._ticker_with_calendar(df)):
             result = get_next_earnings_date("AAPL")
         self.assertEqual(result, future)
 
     def test_dataframe_without_earnings_date_column_uses_first_cell(self):
         future = date(2026, 5, 20)
         df = pd.DataFrame([[pd.Timestamp(future.isoformat())]], columns=["Date"])
-        with patch("risk.earnings_calendar.yf.Ticker",
-                   return_value=self._ticker_with_calendar(df)):
+        with patch("risk.earnings_calendar.yf.Ticker", return_value=self._ticker_with_calendar(df)):
             result = get_next_earnings_date("AAPL")
         self.assertEqual(result, future)
 
     def test_empty_dataframe_returns_none(self):
         df = pd.DataFrame()
-        with patch("risk.earnings_calendar.yf.Ticker",
-                   return_value=self._ticker_with_calendar(df)):
+        with patch("risk.earnings_calendar.yf.Ticker", return_value=self._ticker_with_calendar(df)):
             result = get_next_earnings_date("AAPL")
         self.assertIsNone(result)
 
     def test_non_dict_non_dataframe_returns_none(self):
-        with patch("risk.earnings_calendar.yf.Ticker",
-                   return_value=self._ticker_with_calendar("unexpected string")):
+        with patch(
+            "risk.earnings_calendar.yf.Ticker",
+            return_value=self._ticker_with_calendar("unexpected string"),
+        ):
             result = get_next_earnings_date("AAPL")
         self.assertIsNone(result)

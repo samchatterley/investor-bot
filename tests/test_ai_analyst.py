@@ -1,13 +1,19 @@
 """Tests for analysis/ai_analyst.py — build_prompt and get_trading_decisions."""
+
 import unittest
 from unittest.mock import MagicMock, patch
 
 
 def _snapshot(symbol="AAPL", price=180.0):
     return {
-        "symbol": symbol, "current_price": price,
-        "rsi_14": 52.0, "macd_diff": 0.05, "ema9_above_ema21": True,
-        "bb_pct": 0.45, "vol_ratio": 1.2, "weekly_trend_up": True,
+        "symbol": symbol,
+        "current_price": price,
+        "rsi_14": 52.0,
+        "macd_diff": 0.05,
+        "ema9_above_ema21": True,
+        "bb_pct": 0.45,
+        "vol_ratio": 1.2,
+        "weekly_trend_up": True,
     }
 
 
@@ -21,9 +27,9 @@ def _decisions_response(market="Quiet", buys=None, positions=None):
 
 
 class TestBuildPrompt(unittest.TestCase):
-
     def _build(self, **kwargs):
         from analysis.ai_analyst import build_prompt
+
         defaults = {
             "snapshots": [_snapshot()],
             "current_positions": [],
@@ -134,7 +140,6 @@ class TestBuildPrompt(unittest.TestCase):
 
 
 class TestGetTradingDecisions(unittest.TestCase):
-
     def _mock_response(self, decisions: dict):
         tool_block = MagicMock()
         tool_block.input = decisions
@@ -144,13 +149,18 @@ class TestGetTradingDecisions(unittest.TestCase):
 
     def test_returns_decisions_dict_on_success(self):
         from analysis.ai_analyst import get_trading_decisions
+
         fake_decisions = _decisions_response(
-            buys=[{"symbol": "AAPL", "confidence": 8, "reasoning": "good", "key_signal": "momentum"}],
+            buys=[
+                {"symbol": "AAPL", "confidence": 8, "reasoning": "good", "key_signal": "momentum"}
+            ],
         )
         mock_response = self._mock_response(fake_decisions)
 
-        with patch("analysis.ai_analyst.client") as mock_client, \
-             patch("analysis.ai_analyst.validate_ai_response", return_value=(True, [])):
+        with (
+            patch("analysis.ai_analyst.client") as mock_client,
+            patch("analysis.ai_analyst.validate_ai_response", return_value=(True, [])),
+        ):
             mock_client.messages.create.return_value = mock_response
             result = get_trading_decisions(
                 snapshots=[_snapshot()],
@@ -163,6 +173,7 @@ class TestGetTradingDecisions(unittest.TestCase):
 
     def test_returns_none_when_no_tool_block(self):
         from analysis.ai_analyst import get_trading_decisions
+
         response = MagicMock()
         response.content = []  # no tool block
 
@@ -180,6 +191,7 @@ class TestGetTradingDecisions(unittest.TestCase):
         import anthropic
 
         from analysis.ai_analyst import get_trading_decisions
+
         with patch("analysis.ai_analyst.client") as mock_client:
             mock_client.messages.create.side_effect = anthropic.APIError(
                 message="Rate limited", request=MagicMock(), body=None
@@ -194,11 +206,16 @@ class TestGetTradingDecisions(unittest.TestCase):
 
     def test_calls_validate_ai_response(self):
         from analysis.ai_analyst import get_trading_decisions
+
         fake_decisions = _decisions_response()
         mock_response = self._mock_response(fake_decisions)
 
-        with patch("analysis.ai_analyst.client") as mock_client, \
-             patch("analysis.ai_analyst.validate_ai_response", return_value=(True, [])) as mock_validate:
+        with (
+            patch("analysis.ai_analyst.client") as mock_client,
+            patch(
+                "analysis.ai_analyst.validate_ai_response", return_value=(True, [])
+            ) as mock_validate,
+        ):
             mock_client.messages.create.return_value = mock_response
             get_trading_decisions(
                 snapshots=[_snapshot("AAPL")],
@@ -214,11 +231,14 @@ class TestGetTradingDecisions(unittest.TestCase):
 
     def test_returns_decisions_even_when_validation_fails(self):
         from analysis.ai_analyst import get_trading_decisions
+
         fake_decisions = _decisions_response()
         mock_response = self._mock_response(fake_decisions)
 
-        with patch("analysis.ai_analyst.client") as mock_client, \
-             patch("analysis.ai_analyst.validate_ai_response", return_value=(False, ["bad symbol"])):
+        with (
+            patch("analysis.ai_analyst.client") as mock_client,
+            patch("analysis.ai_analyst.validate_ai_response", return_value=(False, ["bad symbol"])),
+        ):
             mock_client.messages.create.return_value = mock_response
             result = get_trading_decisions(
                 snapshots=[_snapshot()],
@@ -232,6 +252,7 @@ class TestGetTradingDecisions(unittest.TestCase):
     def test_returns_none_on_generic_exception(self):
         """Lines 380-382: generic Exception in analyse() → returns None."""
         from analysis.ai_analyst import get_trading_decisions
+
         with patch("analysis.ai_analyst.client") as mock_client:
             mock_client.messages.create.side_effect = RuntimeError("unexpected error")
             result = get_trading_decisions(
@@ -245,14 +266,19 @@ class TestGetTradingDecisions(unittest.TestCase):
     def test_llm_usage_db_exception_does_not_propagate(self):
         """Line 296: get_db raises in _record_llm_usage → no exception propagates."""
         from analysis.ai_analyst import get_trading_decisions
+
         fake_decisions = _decisions_response()
         mock_response = self._mock_response(fake_decisions)
         # Attach usage so _record_llm_usage is actually called
         mock_response.usage = MagicMock(input_tokens=100, output_tokens=50)
 
-        with patch("analysis.ai_analyst.client") as mock_client, \
-             patch("analysis.ai_analyst.validate_ai_response", return_value=(True, [])), \
-             patch("analysis.ai_analyst.get_db", side_effect=Exception("db unavailable"), create=True):
+        with (
+            patch("analysis.ai_analyst.client") as mock_client,
+            patch("analysis.ai_analyst.validate_ai_response", return_value=(True, [])),
+            patch(
+                "analysis.ai_analyst.get_db", side_effect=Exception("db unavailable"), create=True
+            ),
+        ):
             mock_client.messages.create.return_value = mock_response
             # Patch the db inside _record_llm_usage by patching its import
             with patch("utils.db.get_db", side_effect=Exception("db unavailable")):
@@ -271,6 +297,7 @@ class TestBuildPromptSectorPerformance(unittest.TestCase):
 
     def _build(self, **kwargs):
         from analysis.ai_analyst import build_prompt
+
         defaults = {
             "snapshots": [_snapshot()],
             "current_positions": [],
@@ -314,6 +341,7 @@ class TestRecordLlmUsageException(unittest.TestCase):
     def test_record_llm_usage_exception_does_not_propagate(self):
         """Line 296 (except path): DB error in _record_llm_usage → warning, no raise."""
         from analysis.ai_analyst import _record_llm_usage
+
         with patch("utils.db.get_db", side_effect=Exception("db unavailable")):
             try:
                 _record_llm_usage("run-123", 1000, 500)
@@ -331,14 +359,18 @@ class TestRecordLlmUsageException(unittest.TestCase):
         tmpdir = tempfile.mkdtemp()
         db_path = os.path.join(tmpdir, "test.db")
         try:
-            with patch.object(db_module, "_DB_PATH", db_path), \
-                 patch.object(db_module, "_initialized", False), \
-                 patch.object(db_module, "_migrate_json_state", lambda: None):
+            with (
+                patch.object(db_module, "_DB_PATH", db_path),
+                patch.object(db_module, "_initialized", False),
+                patch.object(db_module, "_migrate_json_state", lambda: None),
+            ):
                 db_module._initialized = False
                 from utils.db import init_db
+
                 init_db()
 
                 from analysis.ai_analyst import _record_llm_usage
+
                 with self.assertLogs("analysis.ai_analyst", level="INFO") as cm:
                     _record_llm_usage("run-abc", 2000, 800)
             self.assertTrue(any("LLM usage" in line for line in cm.output))
@@ -351,6 +383,7 @@ class TestBuildPromptEarningsBlock(unittest.TestCase):
 
     def _build(self, **kwargs):
         from analysis.ai_analyst import build_prompt
+
         defaults = {
             "snapshots": [_snapshot()],
             "current_positions": [],
@@ -388,6 +421,7 @@ class TestBuildPromptPositionAges(unittest.TestCase):
 
     def _build(self, **kwargs):
         from analysis.ai_analyst import build_prompt
+
         defaults = {
             "snapshots": [_snapshot()],
             "current_positions": [],

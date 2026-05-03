@@ -30,15 +30,15 @@ st.set_page_config(
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 
-C_BG      = "#0b0f1a"
+C_BG = "#0b0f1a"
 C_SURFACE = "#131929"
-C_BORDER  = "rgba(255,255,255,0.08)"
-C_ACCENT  = "#00d4aa"
-C_GREEN   = "#26c281"
-C_RED     = "#e05c5c"
-C_YELLOW  = "#f0b429"
-C_TEXT    = "#e2e8f0"
-C_MUTED   = "#8896a5"
+C_BORDER = "rgba(255,255,255,0.08)"
+C_ACCENT = "#00d4aa"
+C_GREEN = "#26c281"
+C_RED = "#e05c5c"
+C_YELLOW = "#f0b429"
+C_TEXT = "#e2e8f0"
+C_MUTED = "#8896a5"
 
 PLOTLY_LAYOUT = {
     "paper_bgcolor": "rgba(0,0,0,0)",
@@ -52,7 +52,8 @@ PLOTLY_LAYOUT = {
 
 # ── Global CSS — targets native Streamlit elements ────────────────────────────
 
-st.markdown(f"""
+st.markdown(
+    f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -156,10 +157,13 @@ hr {{ border-color: {C_BORDER} !important; }}
     color: {C_TEXT} !important;
 }}
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 @st.fragment(run_every=1)
 def _diagnostics_button(total: int, cooldown_end: float):
@@ -172,12 +176,16 @@ def _diagnostics_button(total: int, cooldown_end: float):
                 result = subprocess.run(
                     [sys.executable, "scripts/run_diagnostics.py"],
                     cwd=os.path.dirname(os.path.abspath(__file__)),
-                    capture_output=True, text=True, timeout=120,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
                 )
             if result.returncode == 0:
                 st.success("Tests complete.")
             else:
-                st.error(f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}")
+                st.error(
+                    f"Test run failed:\n{result.stderr[-500:] if result.stderr else 'unknown error'}"
+                )
             st.rerun()
 
 
@@ -212,14 +220,17 @@ def _age_label(age_seconds: float) -> str:
 def _equity_fig(dates, values, color=C_ACCENT):
     r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dates, y=values,
-        mode="lines",
-        line={"color": color, "width": 2.5},
-        fill="tozeroy",
-        fillcolor=f"rgba({r},{g},{b},0.07)",
-        hovertemplate="<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=dates,
+            y=values,
+            mode="lines",
+            line={"color": color, "width": 2.5},
+            fill="tozeroy",
+            fillcolor=f"rgba({r},{g},{b},0.07)",
+            hovertemplate="<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
+        )
+    )
     fig.update_layout(**PLOTLY_LAYOUT)
     return fig
 
@@ -227,6 +238,7 @@ def _equity_fig(dates, values, color=C_ACCENT):
 def _load_account():
     try:
         from execution import trader
+
         client = trader.get_client()
         acc = trader.get_account_info(client)
         positions = trader.get_open_positions(client)
@@ -238,8 +250,11 @@ def _load_account():
 def _load_diagnostics() -> dict | None:
     try:
         reports = sorted(
-            [f for f in os.listdir(config.LOG_DIR)
-             if f.startswith("test_report_") and f.endswith(".json")],
+            [
+                f
+                for f in os.listdir(config.LOG_DIR)
+                if f.startswith("test_report_") and f.endswith(".json")
+            ],
             reverse=True,
         )
         if not reports:
@@ -291,7 +306,7 @@ if page == "Overview":
 
     if acc:
         pnl_today = open_runs[-1].get("daily_pnl", 0) if open_runs else 0
-        invested  = acc["portfolio_value"] - acc["cash"]
+        invested = acc["portfolio_value"] - acc["cash"]
         invested_pct = invested / acc["portfolio_value"] * 100 if acc["portfolio_value"] else 0
 
         c1, c2, c3, c4 = st.columns(4)
@@ -304,41 +319,62 @@ if page == "Overview":
 
     if open_runs:
         _section("Equity Curve")
-        df = pd.DataFrame([{
-            "Date": pd.to_datetime(r["date"]),
-            "Value": r["account_after"]["portfolio_value"],
-        } for r in open_runs])
-        st.plotly_chart(_equity_fig(df["Date"], df["Value"]),
-                        use_container_width=True, config={"displayModeBar": False})
+        df = pd.DataFrame(
+            [
+                {
+                    "Date": pd.to_datetime(r["date"]),
+                    "Value": r["account_after"]["portfolio_value"],
+                }
+                for r in open_runs
+            ]
+        )
+        st.plotly_chart(
+            _equity_fig(df["Date"], df["Value"]),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
 
         _section("Daily P&L — Last 30 Sessions")
-        pnl_df = pd.DataFrame([{
-            "Date": pd.to_datetime(r["date"]),
-            "PnL": round(r.get("daily_pnl", 0), 2),
-        } for r in open_runs[-30:]])
-        bar_fig = go.Figure(go.Bar(
-            x=pnl_df["Date"], y=pnl_df["PnL"],
-            marker_color=[C_GREEN if v >= 0 else C_RED for v in pnl_df["PnL"]],
-            hovertemplate="<b>%{x}</b><br>%{y:+,.2f}<extra></extra>",
-        ))
+        pnl_df = pd.DataFrame(
+            [
+                {
+                    "Date": pd.to_datetime(r["date"]),
+                    "PnL": round(r.get("daily_pnl", 0), 2),
+                }
+                for r in open_runs[-30:]
+            ]
+        )
+        bar_fig = go.Figure(
+            go.Bar(
+                x=pnl_df["Date"],
+                y=pnl_df["PnL"],
+                marker_color=[C_GREEN if v >= 0 else C_RED for v in pnl_df["PnL"]],
+                hovertemplate="<b>%{x}</b><br>%{y:+,.2f}<extra></extra>",
+            )
+        )
         bar_fig.update_layout(**PLOTLY_LAYOUT)
         st.plotly_chart(bar_fig, use_container_width=True, config={"displayModeBar": False})
 
     if positions:
         _section("Open Positions")
-        pos_df = pd.DataFrame([{
-            "Symbol":       p["symbol"],
-            "Value ($)":    round(p["market_value"], 2),
-            "P&L ($)":      round(p["unrealized_pl"], 2),
-            "P&L (%)":      round(p["unrealized_plpc"], 2),
-        } for p in positions])
+        pos_df = pd.DataFrame(
+            [
+                {
+                    "Symbol": p["symbol"],
+                    "Value ($)": round(p["market_value"], 2),
+                    "P&L ($)": round(p["unrealized_pl"], 2),
+                    "P&L (%)": round(p["unrealized_plpc"], 2),
+                }
+                for p in positions
+            ]
+        )
 
         def _colour_pnl(v):
             return f"color: {C_GREEN}" if v >= 0 else f"color: {C_RED}"
 
-        styled = (pos_df.style
-                  .map(_colour_pnl, subset=["P&L ($)", "P&L (%)"])
-                  .format({"Value ($)": "${:,.2f}", "P&L ($)": "${:+,.2f}", "P&L (%)": "{:+.2f}%"}))
+        styled = pos_df.style.map(_colour_pnl, subset=["P&L ($)", "P&L (%)"]).format(
+            {"Value ($)": "${:,.2f}", "P&L ($)": "${:+,.2f}", "P&L (%)": "{:+.2f}%"}
+        )
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
@@ -355,30 +391,32 @@ elif page == "Trades":
     if not open_runs:
         st.info("No trade history yet.")
     else:
-        all_trades   = [t for r in open_runs for t in r.get("trades_executed", [])]
-        buys         = [t for t in all_trades if t.get("action") == "BUY"]
-        sells        = [t for t in all_trades if "SELL" in t.get("action", "")]
-        total_pnl    = sum(r.get("daily_pnl", 0) for r in open_runs)
+        all_trades = [t for r in open_runs for t in r.get("trades_executed", [])]
+        buys = [t for t in all_trades if t.get("action") == "BUY"]
+        sells = [t for t in all_trades if "SELL" in t.get("action", "")]
+        total_pnl = sum(r.get("daily_pnl", 0) for r in open_runs)
         winning_days = sum(1 for r in open_runs if r.get("daily_pnl", 0) > 0)
-        day_wr       = winning_days / len(open_runs) * 100 if open_runs else 0
+        day_wr = winning_days / len(open_runs) * 100 if open_runs else 0
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Buys",     str(len(buys)))
-        c2.metric("Total Sells",    str(len(sells)))
+        c1.metric("Total Buys", str(len(buys)))
+        c2.metric("Total Sells", str(len(sells)))
         c3.metric("Cumulative P&L", f"${abs(total_pnl):,.2f}", _fmt_usd(total_pnl))
-        c4.metric("Winning Days",   f"{day_wr:.0f}%", f"{winning_days} of {len(open_runs)}")
+        c4.metric("Winning Days", f"{day_wr:.0f}%", f"{winning_days} of {len(open_runs)}")
 
         _section("All Trades")
         rows = []
         for r in reversed(open_runs):
             for t in r.get("trades_executed", []):
-                rows.append({
-                    "Date":   r["date"],
-                    "Action": t.get("action", "?"),
-                    "Symbol": t.get("symbol", "?"),
-                    "Detail": t.get("detail", ""),
-                    "Market": r.get("market_summary", "")[:55],
-                })
+                rows.append(
+                    {
+                        "Date": r["date"],
+                        "Action": t.get("action", "?"),
+                        "Symbol": t.get("symbol", "?"),
+                        "Detail": t.get("detail", ""),
+                        "Market": r.get("market_summary", "")[:55],
+                    }
+                )
 
         if rows:
             df = pd.DataFrame(rows)
@@ -392,7 +430,8 @@ elif page == "Trades":
 
             st.dataframe(
                 df.style.map(_style_action, subset=["Action"]),
-                use_container_width=True, hide_index=True,
+                use_container_width=True,
+                hide_index=True,
             )
         else:
             st.info("No trades executed yet.")
@@ -410,30 +449,41 @@ elif page == "AI Decisions":
     if not entries:
         st.info("No AI decision records yet — they appear after the first trading run.")
     else:
-        buy_entries  = [e for e in entries if e.get("action") == "BUY"]
+        buy_entries = [e for e in entries if e.get("action") == "BUY"]
         exec_entries = [e for e in entries if e.get("executed")]
-        avg_conf     = sum(e.get("confidence", 0) for e in buy_entries) / len(buy_entries) if buy_entries else 0
-        exec_rate    = len(exec_entries) / len(entries) * 100 if entries else 0
+        avg_conf = (
+            sum(e.get("confidence", 0) for e in buy_entries) / len(buy_entries)
+            if buy_entries
+            else 0
+        )
+        exec_rate = len(exec_entries) / len(entries) * 100 if entries else 0
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Decisions", str(len(entries)))
-        c2.metric("Buy Signals",     str(len(buy_entries)))
-        c3.metric("Execution Rate",  f"{exec_rate:.0f}%", f"{len(exec_entries)} executed")
-        c4.metric("Avg Confidence",  f"{avg_conf:.1f} / 10")
+        c2.metric("Buy Signals", str(len(buy_entries)))
+        c3.metric("Execution Rate", f"{exec_rate:.0f}%", f"{len(exec_entries)} executed")
+        c4.metric("Avg Confidence", f"{avg_conf:.1f} / 10")
 
         col_chart, col_donut = st.columns([3, 2])
 
         with col_chart:
             _section("Confidence Distribution (Buy Signals)")
-            conf_vals = [e.get("confidence") for e in buy_entries if e.get("confidence") is not None]
+            conf_vals = [
+                e.get("confidence") for e in buy_entries if e.get("confidence") is not None
+            ]
             if conf_vals:
                 counts = pd.Series(conf_vals).value_counts().sort_index()
-                fig = go.Figure(go.Bar(
-                    x=counts.index, y=counts.values,
-                    marker_color=[C_ACCENT if c >= config.MIN_CONFIDENCE else C_MUTED
-                                  for c in counts.index],
-                    hovertemplate="Score %{x}: %{y} signals<extra></extra>",
-                ))
+                fig = go.Figure(
+                    go.Bar(
+                        x=counts.index,
+                        y=counts.values,
+                        marker_color=[
+                            C_ACCENT if c >= config.MIN_CONFIDENCE else C_MUTED
+                            for c in counts.index
+                        ],
+                        hovertemplate="Score %{x}: %{y} signals<extra></extra>",
+                    )
+                )
                 fig.update_layout(**PLOTLY_LAYOUT, xaxis_title="Confidence Score")
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -442,42 +492,48 @@ elif page == "AI Decisions":
             sig_vals = [e.get("key_signal") for e in buy_entries if e.get("key_signal")]
             if sig_vals:
                 counts = pd.Series(sig_vals).value_counts()
-                pie = go.Figure(go.Pie(
-                    labels=counts.index, values=counts.values,
-                    hole=0.55,
-                    marker_colors=[C_ACCENT, C_GREEN, C_YELLOW, C_RED, C_MUTED],
-                    textfont_size=11,
-                    hovertemplate="%{label}: %{value}<extra></extra>",
-                ))
+                pie = go.Figure(
+                    go.Pie(
+                        labels=counts.index,
+                        values=counts.values,
+                        hole=0.55,
+                        marker_colors=[C_ACCENT, C_GREEN, C_YELLOW, C_RED, C_MUTED],
+                        textfont_size=11,
+                        hovertemplate="%{label}: %{value}<extra></extra>",
+                    )
+                )
                 pie.update_layout(**{**PLOTLY_LAYOUT, "margin": {"l": 0, "r": 0, "t": 10, "b": 0}})
                 st.plotly_chart(pie, use_container_width=True, config={"displayModeBar": False})
 
         _section("Decision Log")
 
         f1, f2, f3 = st.columns(3)
-        action_filter = f1.multiselect("Action",   ["BUY", "SELL", "HOLD"], default=["BUY", "SELL", "HOLD"])
-        exec_filter   = f2.multiselect("Executed", ["Yes", "No"],           default=["Yes", "No"])
-        min_conf      = f3.slider("Min Confidence", 1, 10, 1)
+        action_filter = f1.multiselect(
+            "Action", ["BUY", "SELL", "HOLD"], default=["BUY", "SELL", "HOLD"]
+        )
+        exec_filter = f2.multiselect("Executed", ["Yes", "No"], default=["Yes", "No"])
+        min_conf = f3.slider("Min Confidence", 1, 10, 1)
 
         filtered = [
-            e for e in reversed(entries)
+            e
+            for e in reversed(entries)
             if e.get("action") in action_filter
             and ("Yes" if e.get("executed") else "No") in exec_filter
             and (e.get("confidence") or 0) >= min_conf
         ]
 
         for e in filtered[:60]:
-            action   = e.get("action", "?")
+            action = e.get("action", "?")
             executed = e.get("executed", False)
-            symbol   = e.get("symbol", "")
-            conf     = e.get("confidence", "?")
-            signal   = e.get("key_signal", "")
-            date     = e.get("date", "")
-            reason   = e.get("reasoning", "")
+            symbol = e.get("symbol", "")
+            conf = e.get("confidence", "?")
+            signal = e.get("key_signal", "")
+            date = e.get("date", "")
+            reason = e.get("reasoning", "")
 
             action_icon = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(action, "⚪")
-            exec_label  = "✅ Executed" if executed else "⏭ Skipped"
-            signal_txt  = f" · `{signal}`" if signal else ""
+            exec_label = "✅ Executed" if executed else "⏭ Skipped"
+            signal_txt = f" · `{signal}`" if signal else ""
 
             with st.container(border=True):
                 left, right = st.columns([5, 1])
@@ -502,7 +558,9 @@ elif page == "Backtest":
 
     results = _load_backtest()
     if not results:
-        st.info("No backtest results yet. Run: `python cli.py backtest --start 2025-01-01 --end 2025-12-31`")
+        st.info(
+            "No backtest results yet. Run: `python cli.py backtest --start 2025-01-01 --end 2025-12-31`"
+        )
     else:
         st.caption(
             f"Period: **{results['start']}** → **{results['end']}**  ·  "
@@ -511,12 +569,13 @@ elif page == "Backtest":
 
         ret = results["total_return_pct"]
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Return",    f"{ret:+.1f}%")
-        c2.metric("Win Rate",        f"{results['win_rate_pct']:.0f}%",
-                  f"{results['total_trades']} trades")
-        c3.metric("Sharpe Ratio",    f"{results['sharpe_ratio']:.2f}")
-        c4.metric("Max Drawdown",    f"{results['max_drawdown_pct']:.1f}%")
-        c5.metric("Final Value",     f"${results['final_value']:,.2f}")
+        c1.metric("Total Return", f"{ret:+.1f}%")
+        c2.metric(
+            "Win Rate", f"{results['win_rate_pct']:.0f}%", f"{results['total_trades']} trades"
+        )
+        c3.metric("Sharpe Ratio", f"{results['sharpe_ratio']:.2f}")
+        c4.metric("Max Drawdown", f"{results['max_drawdown_pct']:.1f}%")
+        c5.metric("Final Value", f"${results['final_value']:,.2f}")
 
         if results.get("equity_curve"):
             _section("Equity Curve")
@@ -526,7 +585,9 @@ elif page == "Backtest":
             fig = _equity_fig(eq_df["Date"], eq_df["Value"], color=color)
             fig.add_hline(
                 y=results["initial_capital"],
-                line_dash="dot", line_color=C_MUTED, line_width=1,
+                line_dash="dot",
+                line_color=C_MUTED,
+                line_width=1,
                 annotation_text="Starting capital",
                 annotation_font_color=C_MUTED,
             )
@@ -537,21 +598,24 @@ elif page == "Backtest":
             rows = []
             for sig, data in results["by_signal"].items():
                 total = data["wins"] + data["losses"]
-                wr    = data["wins"] / total * 100 if total else 0
-                avg   = data["total_return"] / total if total else 0
-                rows.append({
-                    "Signal":       sig,
-                    "Trades":       total,
-                    "Win Rate":     f"{wr:.0f}%",
-                    "Avg Return":   f"{avg:+.2f}%",
-                    "Total Return": f"{data['total_return']:+.1f}%",
-                })
+                wr = data["wins"] / total * 100 if total else 0
+                avg = data["total_return"] / total if total else 0
+                rows.append(
+                    {
+                        "Signal": sig,
+                        "Trades": total,
+                        "Win Rate": f"{wr:.0f}%",
+                        "Avg Return": f"{avg:+.2f}%",
+                        "Total Return": f"{data['total_return']:+.1f}%",
+                    }
+                )
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         if results.get("trades"):
             with st.expander("Full trade log"):
-                closed = [t for t in results["trades"]
-                          if t.get("action") == "SELL" and "pnl_pct" in t]
+                closed = [
+                    t for t in results["trades"] if t.get("action") == "SELL" and "pnl_pct" in t
+                ]
                 if closed:
                     st.dataframe(pd.DataFrame(closed), use_container_width=True, hide_index=True)
 
@@ -567,11 +631,11 @@ elif page == "Diagnostics":
     if not report:
         st.info("No diagnostic report yet. Run: `python scripts/run_diagnostics.py`")
     else:
-        status  = report.get("status", "UNKNOWN")
-        passed  = report.get("passed", 0)
-        total   = report.get("total", 0)
-        dur     = report.get("duration_seconds", 0)
-        ts      = report.get("timestamp", "")
+        status = report.get("status", "UNKNOWN")
+        passed = report.get("passed", 0)
+        total = report.get("total", 0)
+        dur = report.get("duration_seconds", 0)
+        ts = report.get("timestamp", "")
 
         if status == "PASS":
             st.success(f"✓  All {total} tests passing — {dur}s")
@@ -579,17 +643,17 @@ elif page == "Diagnostics":
             st.error(f"✗  {passed}/{total} tests passing")
 
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total",    str(total))
-        c2.metric("Passed",   str(passed))
-        c3.metric("Failed",   str(report.get("failed", 0)))
-        c4.metric("Errors",   str(report.get("errors", 0)))
+        c1.metric("Total", str(total))
+        c2.metric("Passed", str(passed))
+        c3.metric("Failed", str(report.get("failed", 0)))
+        c4.metric("Errors", str(report.get("errors", 0)))
         c5.metric("Duration", f"{dur}s")
 
         # Human-readable timestamp + age
         try:
             run_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            now    = datetime.now(UTC)
-            age_s  = (now - run_dt).total_seconds()
+            now = datetime.now(UTC)
+            age_s = (now - run_dt).total_seconds()
             age_str = _age_label(age_s)
             friendly_ts = run_dt.strftime("%-d %b %Y at %H:%M UTC")
             st.caption(f"Last run: {friendly_ts}  ·  {age_str}")

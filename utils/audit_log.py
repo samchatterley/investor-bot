@@ -46,6 +46,7 @@ def _write(event_type: str, payload: dict):
     # SQLite — queryable, correlated by run_id
     try:
         from utils.db import get_db
+
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO audit_events (run_id, ts, event, payload) VALUES (?,?,?,?)",
@@ -57,38 +58,52 @@ def _write(event_type: str, payload: dict):
 
 # ── Run lifecycle ─────────────────────────────────────────────────────────────
 
+
 def log_run_start(mode: str, portfolio_value: float, cash: float, is_paper: bool):
-    _write("RUN_START", {"mode": mode, "portfolio_value": portfolio_value,
-                         "cash": cash, "paper": is_paper})
+    _write(
+        "RUN_START",
+        {"mode": mode, "portfolio_value": portfolio_value, "cash": cash, "paper": is_paper},
+    )
 
 
 def log_run_end(mode: str, pnl: float, trades_executed: int, portfolio_value: float):
-    _write("RUN_END", {"mode": mode, "pnl": round(pnl, 4),
-                       "trades_executed": trades_executed, "portfolio_value": portfolio_value})
+    _write(
+        "RUN_END",
+        {
+            "mode": mode,
+            "pnl": round(pnl, 4),
+            "trades_executed": trades_executed,
+            "portfolio_value": portfolio_value,
+        },
+    )
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────
 
+
 def log_order_placed(symbol: str, side: str, notional: float, order_id: str):
-    _write("ORDER_PLACED", {"symbol": symbol, "side": side,
-                             "notional": round(notional, 4), "order_id": order_id})
+    _write(
+        "ORDER_PLACED",
+        {"symbol": symbol, "side": side, "notional": round(notional, 4), "order_id": order_id},
+    )
 
 
 def log_order_filled(symbol: str, order_id: str, fill_qty: float):
-    _write("ORDER_FILLED", {"symbol": symbol, "order_id": order_id,
-                             "fill_qty": round(fill_qty, 6)})
+    _write("ORDER_FILLED", {"symbol": symbol, "order_id": order_id, "fill_qty": round(fill_qty, 6)})
 
 
 def log_position_closed(symbol: str, reason: str, pl_pct: float):
-    _write("POSITION_CLOSED", {"symbol": symbol, "reason": reason,
-                                "pl_pct": round(pl_pct, 4)})
+    _write("POSITION_CLOSED", {"symbol": symbol, "reason": reason, "pl_pct": round(pl_pct, 4)})
 
 
 # ── AI decisions ──────────────────────────────────────────────────────────────
 
+
 def log_ai_decision(market_summary: str, buy_count: int, sell_count: int):
-    _write("AI_DECISION", {"market_summary": market_summary,
-                            "buy_count": buy_count, "sell_count": sell_count})
+    _write(
+        "AI_DECISION",
+        {"market_summary": market_summary, "buy_count": buy_count, "sell_count": sell_count},
+    )
 
 
 def log_validation_failure(errors: list[str]):
@@ -96,6 +111,7 @@ def log_validation_failure(errors: list[str]):
 
 
 # ── Risk events ───────────────────────────────────────────────────────────────
+
 
 def log_circuit_breaker(drawdown_pct: float):
     _write("CIRCUIT_BREAKER", {"drawdown_pct": round(drawdown_pct, 2)})
@@ -115,6 +131,7 @@ def log_macro_skip(event: str):
 
 # ── Kill switch / halt ────────────────────────────────────────────────────────
 
+
 def log_kill_switch(positions_closed: int):
     _write("KILL_SWITCH", {"positions_closed": positions_closed})
 
@@ -124,6 +141,7 @@ def log_halt_cleared():
 
 
 # ── Runtime config overrides ──────────────────────────────────────────────────
+
 
 def log_config_override_applied(key: str, value) -> None:
     _write("CONFIG_OVERRIDE_APPLIED", {"key": key, "value": value})

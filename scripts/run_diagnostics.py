@@ -2,6 +2,7 @@
 Runs the full unit test suite and returns a structured diagnostic report.
 Called from scripts/run_scheduler.py as part of the Sunday evening job.
 """
+
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class _SilentResult(unittest.TestResult):
     """Collects results without printing to stdout."""
+
     pass
 
 
@@ -41,10 +43,12 @@ def run_diagnostics() -> dict:
 
     failures = []
     for test, traceback in result.failures + result.errors:
-        failures.append({
-            "test": str(test),
-            "message": traceback.strip().split("\n")[-1],
-        })
+        failures.append(
+            {
+                "test": str(test),
+                "message": traceback.strip().split("\n")[-1],
+            }
+        )
 
     passed = result.testsRun - len(result.failures) - len(result.errors)
     status = "PASS" if not failures else "FAIL"
@@ -72,6 +76,7 @@ def run_diagnostics() -> dict:
 def _save_report(report: dict):
     try:
         from config import LOG_DIR
+
         os.makedirs(LOG_DIR, exist_ok=True)
         today = datetime.now(UTC).date().isoformat()
         path = os.path.join(LOG_DIR, f"test_report_{today}.json")
@@ -85,12 +90,14 @@ def _save_report(report: dict):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     report = run_diagnostics()
-    print(f"\n{'='*40}")
-    print(f"  {report['status']}  —  {report['passed']}/{report['total']} tests passed  ({report['duration_seconds']}s)")
+    print(f"\n{'=' * 40}")
+    print(
+        f"  {report['status']}  —  {report['passed']}/{report['total']} tests passed  ({report['duration_seconds']}s)"
+    )
     if report["failures"]:
         print("\n  Failures:")
         for f in report["failures"]:
             print(f"    • {f['test']}")
             print(f"      {f['message']}")
-    print(f"{'='*40}\n")
+    print(f"{'=' * 40}\n")
     sys.exit(0 if report["status"] == "PASS" else 1)

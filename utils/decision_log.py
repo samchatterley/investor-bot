@@ -14,6 +14,7 @@ Fields per entry:
   executed       True if the trade was actually placed
   market_summary overall market tone for that run
 """
+
 import contextlib
 import json
 import logging
@@ -46,6 +47,7 @@ def _write(entry: dict):
     # SQLite
     try:
         from utils.db import get_db
+
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO decisions "
@@ -80,35 +82,39 @@ def log_decisions(decisions: dict, mode: str, executed_symbols: set[str]):
 
     for candidate in decisions.get("buy_candidates", []):
         sym = candidate.get("symbol", "")
-        _write({
-            "run_id": _run_id,
-            "ts": now,
-            "date": date,
-            "mode": mode,
-            "symbol": sym,
-            "action": "BUY",
-            "confidence": candidate.get("confidence"),
-            "reasoning": candidate.get("reasoning", ""),
-            "key_signal": candidate.get("key_signal", ""),
-            "executed": sym in executed_symbols,
-            "market_summary": market_summary,
-        })
+        _write(
+            {
+                "run_id": _run_id,
+                "ts": now,
+                "date": date,
+                "mode": mode,
+                "symbol": sym,
+                "action": "BUY",
+                "confidence": candidate.get("confidence"),
+                "reasoning": candidate.get("reasoning", ""),
+                "key_signal": candidate.get("key_signal", ""),
+                "executed": sym in executed_symbols,
+                "market_summary": market_summary,
+            }
+        )
 
     for decision in decisions.get("position_decisions", []):
         sym = decision.get("symbol", "")
-        _write({
-            "run_id": _run_id,
-            "ts": now,
-            "date": date,
-            "mode": mode,
-            "symbol": sym,
-            "action": decision.get("action", ""),
-            "confidence": decision.get("confidence"),
-            "reasoning": decision.get("reasoning", ""),
-            "key_signal": None,
-            "executed": sym in executed_symbols,
-            "market_summary": market_summary,
-        })
+        _write(
+            {
+                "run_id": _run_id,
+                "ts": now,
+                "date": date,
+                "mode": mode,
+                "symbol": sym,
+                "action": decision.get("action", ""),
+                "confidence": decision.get("confidence"),
+                "reasoning": decision.get("reasoning", ""),
+                "key_signal": None,
+                "executed": sym in executed_symbols,
+                "market_summary": market_summary,
+            }
+        )
 
 
 def load_decisions(n: int = 200) -> list[dict]:

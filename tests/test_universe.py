@@ -1,4 +1,5 @@
 """Tests for execution/universe.py — build_scan_universe and helpers."""
+
 import contextlib
 import json
 import os
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 # Stub out heavy / credential-requiring imports before the module is loaded
 # ---------------------------------------------------------------------------
+
 
 def _make_stubs():
     config_stub = MagicMock()
@@ -74,7 +76,6 @@ def _make_snap(close: float, volume: float):
 
 
 class TestLoadCache(unittest.TestCase):
-
     def setUp(self):
         self.mod = _load_universe_module()
         with contextlib.suppress(FileNotFoundError):
@@ -109,7 +110,6 @@ class TestLoadCache(unittest.TestCase):
 
 
 class TestSaveCache(unittest.TestCase):
-
     def setUp(self):
         self.mod = _load_universe_module()
         with contextlib.suppress(FileNotFoundError):
@@ -140,7 +140,6 @@ class TestSaveCache(unittest.TestCase):
 
 
 class TestGetEligibleSymbols(unittest.TestCase):
-
     def setUp(self):
         self.mod = _load_universe_module()
 
@@ -194,7 +193,6 @@ class TestGetEligibleSymbols(unittest.TestCase):
 
 
 class TestApplySnapshotFilter(unittest.TestCase):
-
     def setUp(self):
         self.mod = _load_universe_module()
         self.mod._MIN_PRICE = 5.0
@@ -274,7 +272,6 @@ class TestApplySnapshotFilter(unittest.TestCase):
 
 
 class TestBuildScanUniverse(unittest.TestCase):
-
     def setUp(self):
         self.mod = _load_universe_module()
         self.mod._MAX_UNIVERSE_SIZE = 10

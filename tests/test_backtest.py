@@ -1,5 +1,6 @@
 """Tests for backtest/engine.py — _compute_indicators, _entry_signal, run_backtest,
 _run_simulation, run_walk_forward_optimized."""
+
 import json
 import os
 import tempfile
@@ -10,7 +11,6 @@ import pandas as pd
 
 from backtest.engine import (
     _DEFAULT_PARAMS,
-    _MIN_TRAIN_TRADES,
     _compute_indicators,
     _entry_signal,
     _print_results,
@@ -44,8 +44,13 @@ def _make_raw(n: int = 100, symbols: tuple = ("AAPL", "FLAT")) -> pd.DataFrame:
 
 def _make_row(**kwargs) -> pd.Series:
     defaults = {
-        "rsi": 50.0, "bb_pct": 0.5, "vol_ratio": 1.0,
-        "ema9": 100.0, "ema21": 100.0, "macd_diff": 0.0, "ret_5d": 0.0,
+        "rsi": 50.0,
+        "bb_pct": 0.5,
+        "vol_ratio": 1.0,
+        "ema9": 100.0,
+        "ema21": 100.0,
+        "macd_diff": 0.0,
+        "ret_5d": 0.0,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -53,11 +58,16 @@ def _make_row(**kwargs) -> pd.Series:
 
 def _make_results_dict() -> dict:
     return {
-        "start": "2025-01-01", "end": "2025-12-31",
-        "initial_capital": 10_000, "final_value": 11_000,
-        "total_return_pct": 10.0, "total_trades": 5,
-        "win_rate_pct": 60.0, "avg_return_per_trade_pct": 1.5,
-        "max_drawdown_pct": -3.0, "sharpe_ratio": 1.2,
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "initial_capital": 10_000,
+        "final_value": 11_000,
+        "total_return_pct": 10.0,
+        "total_trades": 5,
+        "win_rate_pct": 60.0,
+        "avg_return_per_trade_pct": 1.5,
+        "max_drawdown_pct": -3.0,
+        "sharpe_ratio": 1.2,
         "by_signal": {"momentum": {"wins": 3, "losses": 2, "total_return": 7.5}},
         "trades": [],
         "equity_curve": [("2025-01-02", 10000.0), ("2025-01-03", 10100.0)],
@@ -66,8 +76,8 @@ def _make_results_dict() -> dict:
 
 # ── _compute_indicators ───────────────────────────────────────────────────────
 
-class TestComputeIndicators(unittest.TestCase):
 
+class TestComputeIndicators(unittest.TestCase):
     def test_returns_dataframe(self):
         self.assertIsInstance(_compute_indicators(_make_ohlcv(60)), pd.DataFrame)
 
@@ -96,10 +106,12 @@ class TestComputeIndicators(unittest.TestCase):
 
 # ── _entry_signal ─────────────────────────────────────────────────────────────
 
-class TestEntrySignal(unittest.TestCase):
 
+class TestEntrySignal(unittest.TestCase):
     def test_mean_reversion_fires_when_all_conditions_met(self):
-        self.assertEqual(_entry_signal(_make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5)), "mean_reversion")
+        self.assertEqual(
+            _entry_signal(_make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5)), "mean_reversion"
+        )
 
     def test_mean_reversion_fails_rsi_at_boundary(self):
         self.assertIsNone(_entry_signal(_make_row(rsi=35, bb_pct=0.20, vol_ratio=1.5)))
@@ -141,8 +153,13 @@ class TestEntrySignal(unittest.TestCase):
 
     def test_mean_reversion_takes_priority_over_momentum(self):
         row = _make_row(
-            rsi=30, bb_pct=0.20, vol_ratio=1.5,
-            ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0,
+            rsi=30,
+            bb_pct=0.20,
+            vol_ratio=1.5,
+            ema9=105,
+            ema21=100,
+            macd_diff=0.5,
+            ret_5d=2.0,
         )
         self.assertEqual(_entry_signal(row), "mean_reversion")
 
@@ -187,6 +204,7 @@ class TestEntrySignalWithParams(unittest.TestCase):
 
 # ── _run_simulation ───────────────────────────────────────────────────────────
 
+
 class TestRunSimulation(unittest.TestCase):
     """Direct tests of the extracted simulation core."""
 
@@ -207,8 +225,17 @@ class TestRunSimulation(unittest.TestCase):
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-03-01", "2025-03-07")
         result = _run_simulation(indicators, dates, initial_capital=10_000.0)
-        for key in ("initial_capital", "final_value", "total_return_pct", "total_trades",
-                    "win_rate_pct", "sharpe_ratio", "by_signal", "equity_curve", "trades"):
+        for key in (
+            "initial_capital",
+            "final_value",
+            "total_return_pct",
+            "total_trades",
+            "win_rate_pct",
+            "sharpe_ratio",
+            "by_signal",
+            "equity_curve",
+            "trades",
+        ):
             self.assertIn(key, result)
 
     def test_equity_curve_length_matches_trading_days(self):
@@ -221,8 +248,13 @@ class TestRunSimulation(unittest.TestCase):
         # Params so tight nothing can fire
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-03-01", "2025-03-07")
-        tight = {"rsi_threshold": 1, "bb_threshold": 0.01, "mr_vol_threshold": 999,
-                 "mom_vol_threshold": 999, "mom_ret5d_threshold": 999}
+        tight = {
+            "rsi_threshold": 1,
+            "bb_threshold": 0.01,
+            "mr_vol_threshold": 999,
+            "mom_vol_threshold": 999,
+            "mom_ret5d_threshold": 999,
+        }
         result = _run_simulation(indicators, dates, params=tight)
         self.assertEqual(result["total_trades"], 0)
 
@@ -231,17 +263,21 @@ class TestRunSimulation(unittest.TestCase):
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-02-03", "2025-02-28")
         loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
-        result = _run_simulation(indicators, dates, initial_capital=10_000.0,
-                                 max_hold_days=3, params=loose)
+        result = _run_simulation(
+            indicators, dates, initial_capital=10_000.0, max_hold_days=3, params=loose
+        )
         self.assertGreater(result["total_trades"], 0)
 
     def test_custom_params_produce_different_trades_than_defaults(self):
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-02-03", "2025-02-28")
-        default_result = _run_simulation(indicators, dates, initial_capital=10_000.0, max_hold_days=3)
+        default_result = _run_simulation(
+            indicators, dates, initial_capital=10_000.0, max_hold_days=3
+        )
         loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
-        loose_result = _run_simulation(indicators, dates, initial_capital=10_000.0,
-                                       max_hold_days=3, params=loose)
+        loose_result = _run_simulation(
+            indicators, dates, initial_capital=10_000.0, max_hold_days=3, params=loose
+        )
         # Loose params should produce at least as many trades as defaults
         self.assertGreaterEqual(loose_result["total_trades"], default_result["total_trades"])
 
@@ -249,10 +285,24 @@ class TestRunSimulation(unittest.TestCase):
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-02-03", "2025-02-28")
         loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
-        zero = _run_simulation(indicators, dates, initial_capital=10_000.0,
-                               max_hold_days=3, params=loose, slippage_bps=0, spread_bps=0)
-        costly = _run_simulation(indicators, dates, initial_capital=10_000.0,
-                                 max_hold_days=3, params=loose, slippage_bps=20, spread_bps=10)
+        zero = _run_simulation(
+            indicators,
+            dates,
+            initial_capital=10_000.0,
+            max_hold_days=3,
+            params=loose,
+            slippage_bps=0,
+            spread_bps=0,
+        )
+        costly = _run_simulation(
+            indicators,
+            dates,
+            initial_capital=10_000.0,
+            max_hold_days=3,
+            params=loose,
+            slippage_bps=20,
+            spread_bps=10,
+        )
         if zero["total_trades"] > 0:
             self.assertGreaterEqual(zero["final_value"], costly["final_value"])
 
@@ -260,15 +310,23 @@ class TestRunSimulation(unittest.TestCase):
 # ── run_backtest ──────────────────────────────────────────────────────────────
 
 _EXPECTED_RESULT_KEYS = {
-    "start", "end", "initial_capital", "final_value",
-    "total_return_pct", "total_trades", "win_rate_pct",
-    "avg_return_per_trade_pct", "max_drawdown_pct",
-    "sharpe_ratio", "by_signal", "equity_curve", "trades",
+    "start",
+    "end",
+    "initial_capital",
+    "final_value",
+    "total_return_pct",
+    "total_trades",
+    "win_rate_pct",
+    "avg_return_per_trade_pct",
+    "max_drawdown_pct",
+    "sharpe_ratio",
+    "by_signal",
+    "equity_curve",
+    "trades",
 }
 
 
 class TestRunBacktest(unittest.TestCase):
-
     def setUp(self):
         self._save_patcher = patch("backtest.engine._save_results")
         self._print_patcher = patch("backtest.engine._print_results")
@@ -341,9 +399,13 @@ class TestRunBacktest(unittest.TestCase):
 
     def test_custom_params_passed_through(self):
         # Tight params → 0 trades regardless of price action
-        tight = {"rsi_threshold": 1, "bb_threshold": 0.01,
-                 "mr_vol_threshold": 999, "mom_vol_threshold": 999,
-                 "mom_ret5d_threshold": 999}
+        tight = {
+            "rsi_threshold": 1,
+            "bb_threshold": 0.01,
+            "mr_vol_threshold": 999,
+            "mom_vol_threshold": 999,
+            "mom_ret5d_threshold": 999,
+        }
         result = self._run(params=tight)
         self.assertEqual(result["total_trades"], 0)
 
@@ -356,8 +418,8 @@ _LOOSE_PARAM_GRID: dict = {
     "rsi_threshold": [35],
     "bb_threshold": [0.25],
     "mr_vol_threshold": [1.2],
-    "mom_vol_threshold": [0.9],   # fires with vol_ratio=1.0
-    "mom_ret5d_threshold": [0.3], # fires with ret_5d≈0.47% on 0.1/bar uptrend
+    "mom_vol_threshold": [0.9],  # fires with vol_ratio=1.0
+    "mom_ret5d_threshold": [0.3],  # fires with ret_5d≈0.47% on 0.1/bar uptrend
 }
 
 _TIGHT_PARAM_GRID: dict = {
@@ -369,16 +431,31 @@ _TIGHT_PARAM_GRID: dict = {
 }
 
 _WF_FOLD_KEYS = {
-    "train_start", "train_end", "test_start", "test_end",
-    "best_params", "train_sharpe", "train_total_trades",
-    "oos_total_return_pct", "oos_win_rate_pct", "oos_total_trades", "oos_sharpe",
-    "oos_degradation", "random_baseline_return_pct",
+    "train_start",
+    "train_end",
+    "test_start",
+    "test_end",
+    "best_params",
+    "train_sharpe",
+    "train_total_trades",
+    "oos_total_return_pct",
+    "oos_win_rate_pct",
+    "oos_total_trades",
+    "oos_sharpe",
+    "oos_degradation",
+    "random_baseline_return_pct",
 }
 
 _WF_SUMMARY_KEYS = {
-    "n_folds", "mean_oos_return_pct", "mean_oos_win_rate_pct",
-    "mean_oos_sharpe", "profitable_folds", "consistency_pct",
-    "param_stability_pct", "mean_oos_degradation", "random_baseline_return_pct",
+    "n_folds",
+    "mean_oos_return_pct",
+    "mean_oos_win_rate_pct",
+    "mean_oos_sharpe",
+    "profitable_folds",
+    "consistency_pct",
+    "param_stability_pct",
+    "mean_oos_degradation",
+    "random_baseline_return_pct",
 }
 
 
@@ -516,8 +593,8 @@ class TestRunWalkForwardOptimized(unittest.TestCase):
 
 # ── _save_results ─────────────────────────────────────────────────────────────
 
-class TestSaveResults(unittest.TestCase):
 
+class TestSaveResults(unittest.TestCase):
     def test_writes_json_file(self):
         r = _make_results_dict()
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -546,8 +623,8 @@ class TestSaveResults(unittest.TestCase):
 
 # ── _print_results ────────────────────────────────────────────────────────────
 
-class TestPrintResults(unittest.TestCase):
 
+class TestPrintResults(unittest.TestCase):
     def test_prints_without_error(self):
         _print_results(_make_results_dict())
 

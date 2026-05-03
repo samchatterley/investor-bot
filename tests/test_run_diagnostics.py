@@ -1,4 +1,5 @@
 """Tests for scripts/run_diagnostics.py — run_diagnostics() and _save_report()."""
+
 import importlib.util
 import os
 import sys
@@ -53,13 +54,14 @@ def _make_suite(failures=None, errors=None, tests_run=3):
 
 
 class TestRunDiagnosticsAllPass(unittest.TestCase):
-
     def test_returns_pass_status_when_no_failures(self):
         mod = _load_diagnostics_module()
         loader_mock, suite_mock = _make_suite(tests_run=5)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertEqual(report["status"], "PASS")
@@ -68,8 +70,10 @@ class TestRunDiagnosticsAllPass(unittest.TestCase):
         mod = _load_diagnostics_module()
         loader_mock, suite_mock = _make_suite(tests_run=7)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertEqual(report["total"], 7)
@@ -82,8 +86,10 @@ class TestRunDiagnosticsAllPass(unittest.TestCase):
         mod = _load_diagnostics_module()
         loader_mock, suite_mock = _make_suite(tests_run=2)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertIn("timestamp", report)
@@ -95,15 +101,16 @@ class TestRunDiagnosticsAllPass(unittest.TestCase):
         loader_mock, suite_mock = _make_suite(tests_run=3)
         mock_save = MagicMock()
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report", mock_save):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report", mock_save),
+        ):
             mod.run_diagnostics()
 
         mock_save.assert_called_once()
 
 
 class TestRunDiagnosticsWithFailures(unittest.TestCase):
-
     def test_returns_fail_status_when_failures_exist(self):
         mod = _load_diagnostics_module()
         test_obj = MagicMock()
@@ -111,8 +118,10 @@ class TestRunDiagnosticsWithFailures(unittest.TestCase):
         failures = [(test_obj, "AssertionError: 1 != 2\n  assert 1 == 2\nAssertionError: 1 != 2")]
         loader_mock, suite_mock = _make_suite(failures=failures, tests_run=3)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertEqual(report["status"], "FAIL")
@@ -124,8 +133,10 @@ class TestRunDiagnosticsWithFailures(unittest.TestCase):
         failures = [(test_obj, "Traceback...\nAssertionError: expected True")]
         loader_mock, suite_mock = _make_suite(failures=failures, tests_run=4)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertEqual(len(report["failures"]), 1)
@@ -139,8 +150,10 @@ class TestRunDiagnosticsWithFailures(unittest.TestCase):
         errors = [(test_obj, "RuntimeError: something broke")]
         loader_mock, suite_mock = _make_suite(errors=errors, tests_run=5)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertEqual(report["errors"], 1)
@@ -152,25 +165,26 @@ class TestRunDiagnosticsWithFailures(unittest.TestCase):
         test_obj.__str__ = lambda self: "TestFoo.test_x"
         failures = [(test_obj, "AssertionError")]
         errors_list = [(test_obj, "RuntimeError")]
-        loader_mock, suite_mock = _make_suite(
-            failures=failures, errors=errors_list, tests_run=10
-        )
+        loader_mock, suite_mock = _make_suite(failures=failures, errors=errors_list, tests_run=10)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertEqual(report["passed"], 8)  # 10 - 1 failure - 1 error
 
 
 class TestRunDiagnosticsTimings(unittest.TestCase):
-
     def test_duration_is_non_negative(self):
         mod = _load_diagnostics_module()
         loader_mock, suite_mock = _make_suite(tests_run=1)
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+        ):
             report = mod.run_diagnostics()
 
         self.assertGreaterEqual(report["duration_seconds"], 0.0)
@@ -187,16 +201,17 @@ class TestRunDiagnosticsTimings(unittest.TestCase):
             call_count[0] += 1
             return call_count[0] * 0.5
 
-        with patch.object(mod.unittest, "TestLoader", return_value=loader_mock), \
-             patch.object(mod, "_save_report"), \
-             patch.object(mod.time, "monotonic", side_effect=fake_monotonic):
+        with (
+            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod, "_save_report"),
+            patch.object(mod.time, "monotonic", side_effect=fake_monotonic),
+        ):
             report = mod.run_diagnostics()
 
         self.assertAlmostEqual(report["duration_seconds"], 0.5, places=1)
 
 
 class TestSaveReport(unittest.TestCase):
-
     def test_saves_json_to_log_dir(self):
         report = {"status": "PASS", "total": 3, "passed": 3}
 
@@ -205,13 +220,14 @@ class TestSaveReport(unittest.TestCase):
         mock_open.return_value.__enter__ = MagicMock(return_value=mock_file)
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("builtins.open", mock_open), \
-             patch("os.makedirs"), \
-             patch.dict(sys.modules, {"config": MagicMock(LOG_DIR="/tmp/fake_logs")}):
+        with (
+            patch("builtins.open", mock_open),
+            patch("os.makedirs"),
+            patch.dict(sys.modules, {"config": MagicMock(LOG_DIR="/tmp/fake_logs")}),
+        ):
             # Reload to pick up fresh config stub
             mod2 = _load_diagnostics_module()
-            with patch("builtins.open", mock_open), \
-                 patch("os.makedirs"):
+            with patch("builtins.open", mock_open), patch("os.makedirs"):
                 mod2._save_report(report)
 
         mock_open.assert_called_once()
@@ -224,8 +240,7 @@ class TestSaveReport(unittest.TestCase):
         mod = _load_diagnostics_module()
         report = {"status": "PASS"}
 
-        with patch("builtins.open", side_effect=OSError("disk full")), \
-             patch("os.makedirs"):
+        with patch("builtins.open", side_effect=OSError("disk full")), patch("os.makedirs"):
             try:
                 mod._save_report(report)
             except Exception as exc:
@@ -253,9 +268,11 @@ class TestSaveReport(unittest.TestCase):
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
         mock_dump = MagicMock()
 
-        with patch("builtins.open", mock_open), \
-             patch("os.makedirs"), \
-             patch.object(mod.json, "dump", mock_dump):
+        with (
+            patch("builtins.open", mock_open),
+            patch("os.makedirs"),
+            patch.object(mod.json, "dump", mock_dump),
+        ):
             mod._save_report(report)
 
         mock_dump.assert_called_once()

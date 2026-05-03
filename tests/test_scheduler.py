@@ -1,4 +1,5 @@
 """Tests for scripts/run_scheduler.py — job registration and import safety."""
+
 import sys
 import types
 import unittest
@@ -26,6 +27,7 @@ def _load_scheduler_module():
 
         import importlib.util
         import os
+
         spec = importlib.util.spec_from_file_location(
             "scripts.run_scheduler",
             os.path.join(os.path.dirname(__file__), "..", "scripts", "run_scheduler.py"),
@@ -44,6 +46,7 @@ class TestSchedulerImportSafety(unittest.TestCase):
         # If __main__ guard is missing, exec_module blocks forever.
         # The test completing at all is the assertion.
         import threading
+
         result = {}
 
         def _do_import():
@@ -63,6 +66,7 @@ class TestSchedulerImportSafety(unittest.TestCase):
 class TestSchedulerJobRegistration(unittest.TestCase):
     def setUp(self):
         import schedule as _schedule
+
         _schedule.clear()
         self.schedule = _schedule
 
@@ -90,8 +94,9 @@ class TestSchedulerJobRegistration(unittest.TestCase):
             day_jobs = [j for j in self.schedule.jobs if j.start_day == day]
             self.assertEqual(len(day_jobs), 3, f"{day} should have 3 jobs, got {len(day_jobs)}")
             times = {str(j.at_time) for j in day_jobs}
-            self.assertEqual(times, {"14:31:00", "17:00:00", "20:30:00"},
-                             f"{day} job times wrong: {times}")
+            self.assertEqual(
+                times, {"14:31:00", "17:00:00", "20:30:00"}, f"{day} job times wrong: {times}"
+            )
 
     def test_all_job_objects_are_distinct(self):
         """Each job must be a separate object — no shared state between time slots."""
@@ -114,14 +119,21 @@ class TestSchedulerJobRegistration(unittest.TestCase):
                 continue
             t = str(job.at_time)
             if t == "14:31:00":
-                self.assertIs(job.job_func.func, open_fn,
-                              f"14:31 job on {job.start_day} should call open_fn")
+                self.assertIs(
+                    job.job_func.func, open_fn, f"14:31 job on {job.start_day} should call open_fn"
+                )
             elif t == "17:00:00":
-                self.assertIs(job.job_func.func, midday_fn,
-                              f"17:00 job on {job.start_day} should call midday_fn")
+                self.assertIs(
+                    job.job_func.func,
+                    midday_fn,
+                    f"17:00 job on {job.start_day} should call midday_fn",
+                )
             elif t == "20:30:00":
-                self.assertIs(job.job_func.func, close_fn,
-                              f"20:30 job on {job.start_day} should call close_fn")
+                self.assertIs(
+                    job.job_func.func,
+                    close_fn,
+                    f"20:30 job on {job.start_day} should call close_fn",
+                )
 
     def test_sunday_weekly_review_registered(self):
         """Sunday 20:00 weekly review job must exist."""
@@ -278,13 +290,18 @@ class TestWeeklyReview(unittest.TestCase):
         mod.run_weekly_review = mock_review
         mod.send_weekly_review = mock_send
 
-        with patch("os.path.exists", return_value=False), \
-             patch.dict("sys.modules", {
-                 "notifications.emailer": MagicMock(
-                     _send_html=mock_send_html,
-                     _build_weekly_html=mock_build_html,
-                 ),
-             }):
+        with (
+            patch("os.path.exists", return_value=False),
+            patch.dict(
+                "sys.modules",
+                {
+                    "notifications.emailer": MagicMock(
+                        _send_html=mock_send_html,
+                        _build_weekly_html=mock_build_html,
+                    ),
+                },
+            ),
+        ):
             mod._weekly_review()
 
         # send_weekly_review should NOT be called (review was None)

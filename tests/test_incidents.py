@@ -3,6 +3,7 @@ Regression tests for the six incidents found on the first live paper-trading run
 (2026-04-27). Each class maps to one incident. These tests exist to prevent
 silent regressions if the affected code is refactored.
 """
+
 import math
 import unittest
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 # Incident 1 — Python 3.9 compatibility (dict | None annotations)
 # ---------------------------------------------------------------------------
+
 
 class TestPython39Compat(unittest.TestCase):
     """
@@ -51,6 +53,7 @@ class TestPython39Compat(unittest.TestCase):
 # Incident 2 — News fetcher: yfinance API format change
 # ---------------------------------------------------------------------------
 
+
 class TestNewsFetcherTitleFallback(unittest.TestCase):
     """
     yfinance moved news titles from item['title'] to item['content']['title'].
@@ -59,6 +62,7 @@ class TestNewsFetcherTitleFallback(unittest.TestCase):
 
     def _call(self, items, max_headlines=5):
         from data.news_fetcher import _fetch_single
+
         ticker_mock = MagicMock()
         ticker_mock.news = items
         with patch("data.news_fetcher.yf.Ticker", return_value=ticker_mock):
@@ -109,6 +113,7 @@ class TestNewsFetcherTitleFallback(unittest.TestCase):
 # Incident 3 — Sentiment fetcher: Stocktwits replaced with yfinance analyst data
 # ---------------------------------------------------------------------------
 
+
 class TestSentimentAnalystConversion(unittest.TestCase):
     """
     recommendationMean is a 1–5 scale (1=strong buy, 5=strong sell).
@@ -118,6 +123,7 @@ class TestSentimentAnalystConversion(unittest.TestCase):
 
     def _fetch(self, info_dict):
         from data.sentiment import _fetch_analyst
+
         ticker_mock = MagicMock()
         ticker_mock.info = info_dict
         with patch("data.sentiment.yf.Ticker", return_value=ticker_mock):
@@ -157,21 +163,25 @@ class TestSentimentAnalystConversion(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_upside_pct_included_when_target_and_price_available(self):
-        result = self._fetch({
-            "recommendationMean": 2.0,
-            "numberOfAnalystOpinions": 15,
-            "targetMeanPrice": 220.0,
-            "currentPrice": 200.0,
-        })
+        result = self._fetch(
+            {
+                "recommendationMean": 2.0,
+                "numberOfAnalystOpinions": 15,
+                "targetMeanPrice": 220.0,
+                "currentPrice": 200.0,
+            }
+        )
         self.assertIn("upside_pct", result)
         self.assertAlmostEqual(result["upside_pct"], 10.0, places=1)
 
     def test_upside_pct_omitted_when_price_missing(self):
-        result = self._fetch({
-            "recommendationMean": 2.0,
-            "numberOfAnalystOpinions": 15,
-            "targetMeanPrice": 220.0,
-        })
+        result = self._fetch(
+            {
+                "recommendationMean": 2.0,
+                "numberOfAnalystOpinions": 15,
+                "targetMeanPrice": 220.0,
+            }
+        )
         self.assertNotIn("upside_pct", result)
 
     def test_analyst_count_included_in_result(self):
@@ -180,6 +190,7 @@ class TestSentimentAnalystConversion(unittest.TestCase):
 
     def test_exception_returns_empty(self):
         from data.sentiment import _fetch_analyst
+
         with patch("data.sentiment.yf.Ticker", side_effect=Exception("network error")):
             _, result = _fetch_analyst("AAPL")
         self.assertEqual(result, {})
@@ -189,6 +200,7 @@ class TestSentimentAnalystConversion(unittest.TestCase):
 # Incident 4 — Trailing stops rejected for fractional positions
 # Incident 5 — Stop qty rounding above available quantity
 # ---------------------------------------------------------------------------
+
 
 class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
     """
@@ -208,15 +220,18 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
         from alpaca.trading.requests import StopOrderRequest
 
         from execution.trader import place_trailing_stop
+
         client = self._make_client()
         place_trailing_stop(client, "NVDA", qty=132.652248, current_price=210.0)
-        submitted = client.submit_order.call_args[0][0]
-        self.assertIsInstance(submitted, StopOrderRequest)
+        # First call is the stop; second liquidates the fractional remainder
+        stop_req = client.submit_order.call_args_list[0][0][0]
+        self.assertIsInstance(stop_req, StopOrderRequest)
 
     def test_whole_qty_uses_trailing_stop_order(self):
         from alpaca.trading.requests import TrailingStopOrderRequest
 
         from execution.trader import place_trailing_stop
+
         client = self._make_client()
         place_trailing_stop(client, "AAPL", qty=10.0, current_price=180.0)
         submitted = client.submit_order.call_args[0][0]
@@ -225,6 +240,7 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
     def test_fractional_without_current_price_returns_stop_failed(self):
         from execution.trader import place_trailing_stop
         from models import OrderStatus
+
         client = self._make_client()
         result = place_trailing_stop(client, "NVDA", qty=132.652248, current_price=None)
         self.assertIsNotNone(result)
@@ -234,15 +250,18 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
     def test_fractional_stop_price_calculated_from_current_price(self):
         from config import TRAILING_STOP_PCT
         from execution.trader import place_trailing_stop
+
         client = self._make_client()
         current_price = 200.0
         place_trailing_stop(client, "NVDA", qty=5.5, current_price=current_price)
-        submitted = client.submit_order.call_args[0][0]
+        # First call is the stop order
+        stop_req = client.submit_order.call_args_list[0][0][0]
         expected_stop = round(current_price * (1 - TRAILING_STOP_PCT / 100), 2)
-        self.assertAlmostEqual(float(submitted.stop_price), expected_stop, places=2)
+        self.assertAlmostEqual(float(stop_req.stop_price), expected_stop, places=2)
 
     def test_zero_qty_returns_none(self):
         from execution.trader import place_trailing_stop
+
         client = self._make_client()
         result = place_trailing_stop(client, "AAPL", qty=0.0)
         self.assertIsNone(result)
@@ -250,6 +269,7 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
 
     def test_negative_qty_returns_none(self):
         from execution.trader import place_trailing_stop
+
         client = self._make_client()
         result = place_trailing_stop(client, "AAPL", qty=-1.0)
         self.assertIsNone(result)
@@ -286,6 +306,7 @@ class TestStopQtyTruncation(unittest.TestCase):
     def test_submitted_qty_does_not_exceed_position_qty(self):
 
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         order = MagicMock()
         order.id = "x"

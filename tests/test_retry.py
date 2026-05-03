@@ -4,7 +4,6 @@ from utils.retry import with_retry
 
 
 class TestWithRetry(unittest.TestCase):
-
     def test_succeeds_on_first_attempt(self):
         calls = []
 

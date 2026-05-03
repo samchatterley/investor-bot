@@ -41,7 +41,9 @@ def _send_html(subject: str, html_fn):
     html_fn: callable(first_name: str) -> str
     """
     if not EMAIL_FROM or not EMAIL_APP_PASSWORD:
-        logger.warning("Email not configured — skipping. Add EMAIL_FROM and EMAIL_APP_PASSWORD to .env")
+        logger.warning(
+            "Email not configured — skipping. Add EMAIL_FROM and EMAIL_APP_PASSWORD to .env"
+        )
         return
     recipients = _named_recipients()
     if not recipients:
@@ -61,28 +63,62 @@ def _send_html(subject: str, html_fn):
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
 
+
 _SIGNAL_LABELS = {
-    "mean_reversion":      "Oversold bounce",
-    "momentum":            "Upward momentum",
-    "trend_continuation":  "Continuing uptrend",
-    "macd_crossover":      "Momentum shift",
-    "rsi_oversold":        "Oversold reversal",
-    "news_catalyst":       "News-driven move",
-    "unknown":             "Mixed signals",
+    "mean_reversion": "Oversold bounce",
+    "momentum": "Upward momentum",
+    "trend_continuation": "Continuing uptrend",
+    "macd_crossover": "Momentum shift",
+    "rsi_oversold": "Oversold reversal",
+    "news_catalyst": "News-driven move",
+    "unknown": "Mixed signals",
 }
 
 _GLOSSARY = [
-    ("Kelly sizing",          "A maths-based formula that decides how much to invest in each trade — the more confident the signal, the more capital is deployed."),
-    ("Confidence score",      "The bot's self-assessed certainty that a trade will work, scored 1–10. Only scores of 7 or above trigger a trade."),
-    ("Oversold bounce",       "The stock has fallen further than expected and looks likely to recover — the bot buys in anticipation of that recovery."),
-    ("Upward momentum",       "The stock is trending strongly upward with above-average trading volume, suggesting the move has more to run."),
-    ("Continuing uptrend",    "The stock is already in an uptrend and the signals suggest it will keep climbing in the short term."),
-    ("Momentum shift",        "A technical indicator just flipped from negative to positive, suggesting the stock is turning a corner."),
-    ("Trailing stop",         "A stop-loss that automatically moves up as the stock rises — it locks in gains while still giving the stock room to grow."),
-    ("Partial exit",          "The bot sold half the position after reaching the profit target, locking in gains while keeping skin in the game."),
-    ("Circuit breaker",       "A safety rule: if the overall portfolio falls too much in a short period, the bot stops making new trades until things stabilise."),
-    ("Bear market filter",    "If the broader market drops sharply in a day, the bot skips new buys — it's better to sit out than buy into a falling market."),
-    ("Earnings exit",         "Companies report earnings quarterly, which can cause big unexpected price swings. The bot exits before earnings to avoid that risk."),
+    (
+        "Kelly sizing",
+        "A maths-based formula that decides how much to invest in each trade — the more confident the signal, the more capital is deployed.",
+    ),
+    (
+        "Confidence score",
+        "The bot's self-assessed certainty that a trade will work, scored 1–10. Only scores of 7 or above trigger a trade.",
+    ),
+    (
+        "Oversold bounce",
+        "The stock has fallen further than expected and looks likely to recover — the bot buys in anticipation of that recovery.",
+    ),
+    (
+        "Upward momentum",
+        "The stock is trending strongly upward with above-average trading volume, suggesting the move has more to run.",
+    ),
+    (
+        "Continuing uptrend",
+        "The stock is already in an uptrend and the signals suggest it will keep climbing in the short term.",
+    ),
+    (
+        "Momentum shift",
+        "A technical indicator just flipped from negative to positive, suggesting the stock is turning a corner.",
+    ),
+    (
+        "Trailing stop",
+        "A stop-loss that automatically moves up as the stock rises — it locks in gains while still giving the stock room to grow.",
+    ),
+    (
+        "Partial exit",
+        "The bot sold half the position after reaching the profit target, locking in gains while keeping skin in the game.",
+    ),
+    (
+        "Circuit breaker",
+        "A safety rule: if the overall portfolio falls too much in a short period, the bot stops making new trades until things stabilise.",
+    ),
+    (
+        "Bear market filter",
+        "If the broader market drops sharply in a day, the bot skips new buys — it's better to sit out than buy into a falling market.",
+    ),
+    (
+        "Earnings exit",
+        "Companies report earnings quarterly, which can cause big unexpected price swings. The bot exits before earnings to avoid that risk.",
+    ),
 ]
 
 
@@ -115,15 +151,17 @@ def _build_trade_cards(record: dict) -> str:
     all_trades = []
 
     for sl in record.get("stop_losses_triggered", []):
-        all_trades.append({
-            "symbol": sl["symbol"],
-            "action": "STOP LOSS",
-            "detail": _humanise_detail(f"Closed at {sl['pl_pct']:.1f}%"),
-            "reasoning": "Position hit the trailing stop and was automatically closed to protect capital.",
-            "bg": "#fff3e0",
-            "badge_bg": "#e65100",
-            "reasoning_bg": "#fff8f3",
-        })
+        all_trades.append(
+            {
+                "symbol": sl["symbol"],
+                "action": "STOP LOSS",
+                "detail": _humanise_detail(f"Closed at {sl['pl_pct']:.1f}%"),
+                "reasoning": "Position hit the trailing stop and was automatically closed to protect capital.",
+                "bg": "#fff3e0",
+                "badge_bg": "#e65100",
+                "reasoning_bg": "#fff8f3",
+            }
+        )
 
     for t in record.get("trades_executed", []):
         action = t.get("action", "?")
@@ -142,15 +180,17 @@ def _build_trade_cards(record: dict) -> str:
         else:
             bg, badge_bg, reasoning_bg = "#fff5f5", "#c62828", "#fffafa"
 
-        all_trades.append({
-            "symbol": t["symbol"],
-            "action": action,
-            "detail": _humanise_detail(t.get("detail", "")),
-            "reasoning": reasoning,
-            "bg": bg,
-            "badge_bg": badge_bg,
-            "reasoning_bg": reasoning_bg,
-        })
+        all_trades.append(
+            {
+                "symbol": t["symbol"],
+                "action": action,
+                "detail": _humanise_detail(t.get("detail", "")),
+                "reasoning": reasoning,
+                "bg": bg,
+                "badge_bg": badge_bg,
+                "reasoning_bg": reasoning_bg,
+            }
+        )
 
     if not all_trades:
         return """<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px">
@@ -163,32 +203,32 @@ def _build_trade_cards(record: dict) -> str:
     for t in all_trades:
         detail_row = ""
         if t["detail"]:
-            safe_detail = escape(t['detail'])
+            safe_detail = escape(t["detail"])
             detail_row = f"""
   <tr>
-    <td style="padding:6px 16px 14px;background:{t['bg']};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#777;line-height:1.5">
+    <td style="padding:6px 16px 14px;background:{t["bg"]};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#777;line-height:1.5">
       {safe_detail}
     </td>
   </tr>"""
 
         reasoning_row = ""
         if t.get("reasoning"):
-            safe_reasoning = escape(t['reasoning'])
+            safe_reasoning = escape(t["reasoning"])
             reasoning_row = f"""
   <tr>
-    <td style="padding:12px 16px 14px;background:{t['reasoning_bg']};border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">
+    <td style="padding:12px 16px 14px;background:{t["reasoning_bg"]};border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">
       <p style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin:0 0 4px 0">Why</p>
       <p style="font-size:13px;color:#666;line-height:1.6;margin:0">{safe_reasoning}</p>
     </td>
   </tr>"""
 
-        safe_symbol = escape(t['symbol'])
-        safe_action = escape(t['action'])
+        safe_symbol = escape(t["symbol"])
+        safe_action = escape(t["action"])
         cards += f"""<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
   <tr>
-    <td style="background:{t['bg']};padding:14px 16px 0">
+    <td style="background:{t["bg"]};padding:14px 16px 0">
       <span style="font-size:18px;font-weight:bold;color:#111;font-family:Arial,Helvetica,sans-serif">{safe_symbol}</span>
-      <span style="margin-left:8px;background:{t['badge_bg']};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{safe_action}</span>
+      <span style="margin-left:8px;background:{t["badge_bg"]};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{safe_action}</span>
     </td>
   </tr>
   {detail_row}
@@ -209,20 +249,27 @@ def _build_html(record: dict, name: str = "there") -> str:
     day_return_pct = (pnl / opening_capital * 100) if opening_capital else 0.0
     day_return_str = f"+{day_return_pct:.2f}%" if day_return_pct >= 0 else f"{day_return_pct:.2f}%"
 
-    trade_count = len(record.get("trades_executed", [])) + len(record.get("stop_losses_triggered", []))
-    trade_line = f"{trade_count} trade{'s' if trade_count != 1 else ''} today" if trade_count else "No trades today"
+    trade_count = len(record.get("trades_executed", [])) + len(
+        record.get("stop_losses_triggered", [])
+    )
+    trade_line = (
+        f"{trade_count} trade{'s' if trade_count != 1 else ''} today"
+        if trade_count
+        else "No trades today"
+    )
 
     from config import IS_PAPER
+
     mode_label = "Paper trading" if IS_PAPER else "Live trading"
     mode_colour = "#999999" if IS_PAPER else "#e65100"
 
     trade_cards = _build_trade_cards(record)
 
     glossary_rows = "".join(
-        f'<tr>'
+        f"<tr>"
         f'<td style="padding:5px 12px 5px 0;color:#555;font-weight:600;vertical-align:top;white-space:nowrap;font-family:Arial,Helvetica,sans-serif;font-size:12px">{term}</td>'
         f'<td style="padding:5px 0;color:#777;line-height:1.5;font-family:Arial,Helvetica,sans-serif;font-size:12px">{explanation}</td>'
-        f'</tr>'
+        f"</tr>"
         for term, explanation in _GLOSSARY
     )
 
@@ -244,7 +291,7 @@ def _build_html(record: dict, name: str = "there") -> str:
         <tr><td style="padding:32px 28px 0">
 
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;color:#555;margin:0 0 4px 0">Hi {name},</p>
-          <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#777;margin:0 0 28px 0">Here&#39;s your trading update for <b>{record['date']}</b>.</p>
+          <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#777;margin:0 0 28px 0">Here&#39;s your trading update for <b>{record["date"]}</b>.</p>
 
           <!-- P&L hero -->
           <table width="100%" cellpadding="0" cellspacing="0" style="background:{pnl_bg};border-radius:10px;margin-bottom:24px">
@@ -268,7 +315,7 @@ def _build_html(record: dict, name: str = "there") -> str:
                 <tr>
                   <td width="50%" style="text-align:center;padding:14px 8px 0 0;border-right:1px solid #dddddd;border-top:1px solid #dddddd">
                     <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 4px 0">Cash</p>
-                    <p style="font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:600;color:#333;margin:0">${record['account_after']['cash']:,.2f}</p>
+                    <p style="font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:600;color:#333;margin:0">${record["account_after"]["cash"]:,.2f}</p>
                   </td>
                   <td width="50%" style="text-align:center;padding:14px 0 0 8px;border-top:1px solid #dddddd">
                     <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 4px 0">Trades</p>
@@ -284,7 +331,7 @@ def _build_html(record: dict, name: str = "there") -> str:
             <tr>
               <td width="4" style="background:#cccccc">&nbsp;</td>
               <td style="background:#f5f5f5;padding:10px 14px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#555;line-height:1.5">
-                <b>Market:</b> {escape(record.get('market_summary', ''))}
+                <b>Market:</b> {escape(record.get("market_summary", ""))}
               </td>
             </tr>
           </table>
@@ -338,8 +385,8 @@ def _build_diagnostics_section(report: dict) -> str:
             f"""<tr>
               <td style="padding:6px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;
                          color:#c62828;border-bottom:1px solid #f5f5f5;line-height:1.4">
-                <b>{f['test'].split('.')[-1]}</b><br>
-                <span style="color:#999">{f['message'][:120]}</span>
+                <b>{f["test"].split(".")[-1]}</b><br>
+                <span style="color:#999">{f["message"][:120]}</span>
               </td>
             </tr>"""
             for f in failures
@@ -385,7 +432,9 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
     what_worked = review.get("what_worked", [])
     what_didnt = review.get("what_didnt", [])
     lessons = review.get("lessons", [])
-    applied = [c for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped")]
+    applied = [
+        c for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped")
+    ]
     rejected = [c for c in review.get("applied_changes", []) if c["status"] == "rejected"]
 
     def _bullets(items: list[str], colour: str = "#444") -> str:
@@ -407,13 +456,13 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
         rows = "".join(
             f"""<tr>
               <td style="padding:8px 12px 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;
-                         font-weight:600;color:#333;border-bottom:1px solid #f0f0f0;white-space:nowrap">{c['parameter']}</td>
+                         font-weight:600;color:#333;border-bottom:1px solid #f0f0f0;white-space:nowrap">{c["parameter"]}</td>
               <td style="padding:8px 12px;font-family:Arial,Helvetica,sans-serif;font-size:13px;
-                         color:#c62828;border-bottom:1px solid #f0f0f0">{c['old_value']}</td>
+                         color:#c62828;border-bottom:1px solid #f0f0f0">{c["old_value"]}</td>
               <td style="padding:8px 12px;font-family:Arial,Helvetica,sans-serif;font-size:13px;
-                         color:#2e7d32;font-weight:600;border-bottom:1px solid #f0f0f0">{c['new_value']}{"&nbsp;⚠︎" if c['status'] == 'clamped' else ""}</td>
+                         color:#2e7d32;font-weight:600;border-bottom:1px solid #f0f0f0">{c["new_value"]}{"&nbsp;⚠︎" if c["status"] == "clamped" else ""}</td>
               <td style="padding:8px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;
-                         color:#666;border-bottom:1px solid #f0f0f0;line-height:1.4">{c.get('reason','')}</td>
+                         color:#666;border-bottom:1px solid #f0f0f0;line-height:1.4">{c.get("reason", "")}</td>
             </tr>"""
             for c in applied
         )
@@ -431,7 +480,7 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
           </tr>
           {rows}
         </table>
-        {"<p style='font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;margin:8px 0 0'>⚠︎ Value was clamped to the safety boundary.</p>" if any(c['status'] == 'clamped' for c in applied) else ""}
+        {"<p style='font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;margin:8px 0 0'>⚠︎ Value was clamped to the safety boundary.</p>" if any(c["status"] == "clamped" for c in applied) else ""}
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888;margin:10px 0 0;line-height:1.5">
           These are proposed parameter changes. Apply them manually to config.py if you want them to take effect.
         </p>"""
@@ -444,9 +493,9 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
             "Suggestions outside safe bounds (not applied)",
             "".join(
                 f'<p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#aaa;margin:0 0 6px 0">'
-                f'{c["parameter"]}: {c.get("reason","")} <i>(rejected: {c.get("rejection_reason","")})</i></p>'
+                f"{c['parameter']}: {c.get('reason', '')} <i>(rejected: {c.get('rejection_reason', '')})</i></p>"
                 for c in rejected
-            )
+            ),
         )
 
     return f"""<!DOCTYPE html>
@@ -496,8 +545,14 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
 
 
 def send_weekly_review(review: dict, test_report: dict | None = None):
-    applied_count = sum(1 for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped"))
-    change_note = f" · {applied_count} config change{'s' if applied_count != 1 else ''} applied" if applied_count else ""
+    applied_count = sum(
+        1 for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped")
+    )
+    change_note = (
+        f" · {applied_count} config change{'s' if applied_count != 1 else ''} applied"
+        if applied_count
+        else ""
+    )
     diag_note = f" · tests {test_report.get('status', '')}" if test_report else ""
     _send_html(
         subject=f"Weekly Review {date.today().isoformat()}{change_note}{diag_note}",

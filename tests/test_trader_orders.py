@@ -1,4 +1,5 @@
 """Tests for execution/trader.py — order placement, fill polling, reconciliation."""
+
 import os
 import shutil
 import tempfile
@@ -48,6 +49,7 @@ def _mock_account(portfolio_value=100_000, cash=20_000, buying_power=40_000, equ
 def _meta_patcher(tmpdir):
     """Return patchers that isolate trader metadata tests to a temp SQLite DB."""
     import utils.db as db_module
+
     db_path = os.path.join(tmpdir, "test.db")
     return [
         patch.object(db_module, "_DB_PATH", db_path),
@@ -57,7 +59,6 @@ def _meta_patcher(tmpdir):
 
 
 class TestOrderResult(unittest.TestCase):
-
     def test_is_success_true_for_filled(self):
         r = OrderResult(status=OrderStatus.FILLED, symbol="AAPL")
         self.assertTrue(r.is_success)
@@ -93,9 +94,9 @@ class TestOrderResult(unittest.TestCase):
 
 
 class TestGetAccountInfo(unittest.TestCase):
-
     def test_returns_float_values(self):
         from execution.trader import get_account_info
+
         client = MagicMock()
         client.get_account.return_value = _mock_account(100_000, 20_000, 40_000, 100_000)
         result = get_account_info(client)
@@ -105,6 +106,7 @@ class TestGetAccountInfo(unittest.TestCase):
 
     def test_returns_required_keys(self):
         from execution.trader import get_account_info
+
         client = MagicMock()
         client.get_account.return_value = _mock_account()
         result = get_account_info(client)
@@ -113,9 +115,9 @@ class TestGetAccountInfo(unittest.TestCase):
 
 
 class TestGetOpenPositions(unittest.TestCase):
-
     def test_returns_list_of_position_dicts(self):
         from execution.trader import get_open_positions
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10, 180.0)]
         result = get_open_positions(client)
@@ -124,6 +126,7 @@ class TestGetOpenPositions(unittest.TestCase):
 
     def test_unrealised_plpc_converted_to_percent(self):
         from execution.trader import get_open_positions
+
         pos = _mock_position("AAPL", 10, 180.0)
         pos.unrealized_plpc = "0.05"  # 5% as decimal
         client = MagicMock()
@@ -133,6 +136,7 @@ class TestGetOpenPositions(unittest.TestCase):
 
     def test_empty_positions_returns_empty_list(self):
         from execution.trader import get_open_positions
+
         client = MagicMock()
         client.get_all_positions.return_value = []
         result = get_open_positions(client)
@@ -140,9 +144,9 @@ class TestGetOpenPositions(unittest.TestCase):
 
 
 class TestPlaceBuyOrder(unittest.TestCase):
-
     def test_returns_none_for_tiny_order(self):
         from execution.trader import place_buy_order
+
         client = MagicMock()
         result = place_buy_order(client, "AAPL", 0.50)
         self.assertIsNone(result)
@@ -150,6 +154,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
     def test_places_order_for_valid_notional(self):
         from execution.trader import place_buy_order
+
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-abc")
         with patch("execution.trader.wait_for_fill", return_value=28.5):
@@ -161,6 +166,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
     def test_returns_rejected_on_api_error(self):
         from execution.trader import place_buy_order
+
         client = MagicMock()
         client.submit_order.side_effect = Exception("insufficient funds")
         result = place_buy_order(client, "AAPL", 5_000.0)
@@ -170,16 +176,56 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
     def test_returns_timeout_when_fill_does_not_arrive(self):
         from execution.trader import place_buy_order
+
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-abc")
+        final_order = MagicMock()
+        final_order.status = "pending_new"
+        final_order.filled_qty = None
+        client.get_order_by_id.return_value = final_order
         with patch("execution.trader.wait_for_fill", return_value=None):
             result = place_buy_order(client, "AAPL", 5_000.0)
         self.assertIsNotNone(result)
         self.assertEqual(result.status, OrderStatus.TIMEOUT)
         self.assertEqual(result.broker_order_id, "order-abc")
 
+    def test_buy_partial_fill_detected_after_timeout(self):
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-partial")
+        partial = MagicMock()
+        partial.status = "partially_filled"
+        partial.filled_qty = 5.0
+        client.get_order_by_id.return_value = partial
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_buy_order(client, "AAPL", 5_000.0)
+        self.assertEqual(result.status, OrderStatus.PARTIAL)
+        self.assertAlmostEqual(result.filled_qty, 5.0)
+
+    def test_buy_client_order_id_set_when_run_id_provided(self):
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-xyz")
+        with patch("execution.trader.wait_for_fill", return_value=10.0):
+            place_buy_order(client, "AAPL", 3_000.0, run_id="abcdef12-1234-5678-abcd-000000000000")
+        submitted = client.submit_order.call_args[0][0]
+        self.assertEqual(submitted.client_order_id, "ib-abcdef12-AAPL-BUY")
+
+    def test_buy_no_client_order_id_without_run_id(self):
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-xyz")
+        with patch("execution.trader.wait_for_fill", return_value=10.0):
+            place_buy_order(client, "AAPL", 3_000.0)
+        submitted = client.submit_order.call_args[0][0]
+        self.assertFalse(hasattr(submitted, "client_order_id") and submitted.client_order_id)
+
     def test_order_includes_broker_order_id(self):
         from execution.trader import place_buy_order
+
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-xyz")
         with patch("execution.trader.wait_for_fill", return_value=10.0):
@@ -189,9 +235,9 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
 
 class TestWaitForFill(unittest.TestCase):
-
     def test_returns_qty_when_immediately_filled(self):
         from execution.trader import wait_for_fill
+
         filled_order = _mock_order(status="filled", filled_qty="28.571")
         client = MagicMock()
         client.get_order_by_id.return_value = filled_order
@@ -201,6 +247,7 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_returns_none_on_timeout(self):
         from execution.trader import wait_for_fill
+
         pending_order = _mock_order(status="new", filled_qty=None)
         client = MagicMock()
         client.get_order_by_id.return_value = pending_order
@@ -211,6 +258,7 @@ class TestWaitForFill(unittest.TestCase):
     def test_does_not_return_early_on_partially_filled(self):
         """partially_filled is not a terminal success — must keep polling until filled."""
         from execution.trader import wait_for_fill
+
         calls = [
             _mock_order(status="partially_filled", filled_qty="5.0"),
             _mock_order(status="partially_filled", filled_qty="8.0"),
@@ -225,14 +273,18 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_returns_none_when_partially_filled_then_times_out(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
-        client.get_order_by_id.return_value = _mock_order(status="partially_filled", filled_qty="5.0")
+        client.get_order_by_id.return_value = _mock_order(
+            status="partially_filled", filled_qty="5.0"
+        )
         with patch("execution.trader.time.sleep"):
             result = wait_for_fill(client, "order-123", max_wait=3)
         self.assertIsNone(result)
 
     def test_exits_early_on_rejected(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
         client.get_order_by_id.return_value = _mock_order(status="rejected", filled_qty=None)
         with patch("execution.trader.time.sleep"):
@@ -242,6 +294,7 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_exits_early_on_cancelled(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
         client.get_order_by_id.return_value = _mock_order(status="cancelled", filled_qty=None)
         with patch("execution.trader.time.sleep"):
@@ -251,6 +304,7 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_exits_early_on_expired(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
         client.get_order_by_id.return_value = _mock_order(status="expired", filled_qty=None)
         with patch("execution.trader.time.sleep"):
@@ -260,6 +314,7 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_retries_after_api_error_and_succeeds(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
         client.get_order_by_id.side_effect = [
             Exception("transient"),
@@ -271,6 +326,7 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_returns_none_when_api_errors_until_timeout(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
         client.get_order_by_id.side_effect = Exception("API down")
         with patch("execution.trader.time.sleep"):
@@ -279,6 +335,7 @@ class TestWaitForFill(unittest.TestCase):
 
     def test_poll_exception_handled_gracefully(self):
         from execution.trader import wait_for_fill
+
         client = MagicMock()
         client.get_order_by_id.side_effect = Exception("API timeout")
         with patch("execution.trader.time.sleep"):
@@ -296,9 +353,9 @@ def _mock_filled_order(order_id, filled_qty=10.0):
 
 
 class TestPlaceSellOrder(unittest.TestCase):
-
     def test_places_sell_order(self):
         from execution.trader import place_sell_order
+
         client = MagicMock()
         client.submit_order.return_value = _mock_order("sell-123", status="new")
         client.get_order_by_id.return_value = _mock_filled_order("sell-123", filled_qty=15.5)
@@ -310,6 +367,7 @@ class TestPlaceSellOrder(unittest.TestCase):
 
     def test_returns_rejected_on_error(self):
         from execution.trader import place_sell_order
+
         client = MagicMock()
         client.submit_order.side_effect = Exception("position not found")
         result = place_sell_order(client, "AAPL", 15.5)
@@ -318,9 +376,9 @@ class TestPlaceSellOrder(unittest.TestCase):
 
 
 class TestClosePosition(unittest.TestCase):
-
     def test_closes_successfully(self):
         from execution.trader import close_position
+
         client = MagicMock()
         client.close_position.return_value = _mock_order("close-123", status="new")
         client.get_order_by_id.return_value = _mock_filled_order("close-123", filled_qty=10.0)
@@ -333,6 +391,7 @@ class TestClosePosition(unittest.TestCase):
 
     def test_returns_rejected_on_error(self):
         from execution.trader import close_position
+
         client = MagicMock()
         client.close_position.side_effect = Exception("not found")
         result = close_position(client, "AAPL")
@@ -344,6 +403,7 @@ class TestClosePosition(unittest.TestCase):
         # Trailing stop holds shares: close_position must cancel open orders first
         # or Alpaca returns "insufficient qty available for order"
         from execution.trader import close_position
+
         call_order = []
         client = MagicMock()
         client.get_orders.return_value = [_make_trailing_stop_order("AAPL")]
@@ -361,6 +421,7 @@ class TestClosePosition(unittest.TestCase):
 
     def test_close_succeeds_even_when_cancel_raises(self):
         from execution.trader import close_position
+
         client = MagicMock()
         client.get_orders.side_effect = Exception("API down")  # cancel_open_orders fails
         client.close_position.return_value = _mock_order("close-456", status="new")
@@ -372,7 +433,6 @@ class TestClosePosition(unittest.TestCase):
 
 
 class TestCancelOpenOrders(unittest.TestCase):
-
     def _make_order(self, symbol, status="new"):
         o = MagicMock()
         o.symbol = symbol
@@ -382,6 +442,7 @@ class TestCancelOpenOrders(unittest.TestCase):
 
     def test_cancels_matching_open_orders(self):
         from execution.trader import cancel_open_orders
+
         client = MagicMock()
         client.get_orders.return_value = [self._make_order("AAPL", "new")]
         cancel_open_orders(client, "AAPL")
@@ -389,6 +450,7 @@ class TestCancelOpenOrders(unittest.TestCase):
 
     def test_does_not_cancel_other_symbols(self):
         from execution.trader import cancel_open_orders
+
         client = MagicMock()
         client.get_orders.return_value = [
             self._make_order("AAPL", "new"),
@@ -402,6 +464,7 @@ class TestCancelOpenOrders(unittest.TestCase):
 
     def test_does_not_cancel_filled_orders(self):
         from execution.trader import cancel_open_orders
+
         client = MagicMock()
         client.get_orders.return_value = [self._make_order("AAPL", "filled")]
         cancel_open_orders(client, "AAPL")
@@ -409,6 +472,7 @@ class TestCancelOpenOrders(unittest.TestCase):
 
     def test_handles_exception_gracefully(self):
         from execution.trader import cancel_open_orders
+
         client = MagicMock()
         client.get_orders.side_effect = Exception("API error")
         try:
@@ -418,15 +482,16 @@ class TestCancelOpenOrders(unittest.TestCase):
 
 
 class TestReconcilePositions(unittest.TestCase):
-
     def setUp(self):
         import utils.db as db_module
+
         self.tmpdir = tempfile.mkdtemp()
         self.patchers = _meta_patcher(self.tmpdir)
         for p in self.patchers:
             p.start()
         db_module._initialized = False
         from utils.db import init_db
+
         init_db()
 
     def tearDown(self):
@@ -436,6 +501,7 @@ class TestReconcilePositions(unittest.TestCase):
 
     def test_removes_stale_metadata_for_closed_positions(self):
         from execution.trader import get_position_meta, reconcile_positions, record_buy
+
         record_buy("AAPL", 180.0)
         # Alpaca shows no open positions
         client = MagicMock()
@@ -446,6 +512,7 @@ class TestReconcilePositions(unittest.TestCase):
 
     def test_adds_placeholder_for_untracked_position(self):
         from execution.trader import get_position_meta, reconcile_positions
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("NVDA", 10)]
         reconcile_positions(client)
@@ -455,6 +522,7 @@ class TestReconcilePositions(unittest.TestCase):
 
     def test_keeps_existing_metadata_for_held_positions(self):
         from execution.trader import get_position_meta, reconcile_positions, record_buy
+
         record_buy("AAPL", 180.0, signal="momentum", confidence=8)
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10)]
@@ -465,6 +533,7 @@ class TestReconcilePositions(unittest.TestCase):
 
     def test_api_exception_does_not_crash(self):
         from execution.trader import reconcile_positions
+
         client = MagicMock()
         client.get_all_positions.side_effect = Exception("broker down")
         try:
@@ -474,9 +543,9 @@ class TestReconcilePositions(unittest.TestCase):
 
 
 class TestEnsureStopsAttached(unittest.TestCase):
-
     def _make_stop_order(self, symbol, order_type, qty):
         from alpaca.trading.enums import OrderSide
+
         o = MagicMock()
         o.symbol = symbol
         o.order_type = order_type
@@ -486,6 +555,7 @@ class TestEnsureStopsAttached(unittest.TestCase):
 
     def test_no_positions_does_nothing(self):
         from execution.trader import ensure_stops_attached
+
         client = MagicMock()
         client.get_all_positions.return_value = []
         ensure_stops_attached(client)
@@ -494,6 +564,7 @@ class TestEnsureStopsAttached(unittest.TestCase):
     def test_attaches_stop_for_uncovered_position(self):
 
         from execution.trader import ensure_stops_attached
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10.0)]
         client.get_orders.return_value = []  # no existing stops
@@ -508,6 +579,7 @@ class TestEnsureStopsAttached(unittest.TestCase):
         from alpaca.trading.enums import OrderSide, OrderType
 
         from execution.trader import ensure_stops_attached
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10.0)]
 
@@ -524,6 +596,7 @@ class TestEnsureStopsAttached(unittest.TestCase):
 
     def test_handles_api_exception_gracefully(self):
         from execution.trader import ensure_stops_attached
+
         client = MagicMock()
         client.get_all_positions.side_effect = Exception("API down")
         try:
@@ -533,30 +606,32 @@ class TestEnsureStopsAttached(unittest.TestCase):
 
 
 class TestIsMarketOpen(unittest.TestCase):
-
     def test_returns_true_when_market_open(self):
         from execution.trader import is_market_open
+
         client = MagicMock()
         client.get_clock.return_value = MagicMock(is_open=True)
         self.assertTrue(is_market_open(client))
 
     def test_returns_false_when_market_closed(self):
         from execution.trader import is_market_open
+
         client = MagicMock()
         client.get_clock.return_value = MagicMock(is_open=False)
         self.assertFalse(is_market_open(client))
 
 
 class TestGetPositionSignal(unittest.TestCase):
-
     def setUp(self):
         import utils.db as db_module
+
         self.tmpdir = tempfile.mkdtemp()
         self.patchers = _meta_patcher(self.tmpdir)
         for p in self.patchers:
             p.start()
         db_module._initialized = False
         from utils.db import init_db
+
         init_db()
 
     def tearDown(self):
@@ -566,18 +641,20 @@ class TestGetPositionSignal(unittest.TestCase):
 
     def test_returns_signal_for_known_position(self):
         from execution.trader import get_position_signal, record_buy
+
         record_buy("AAPL", 180.0, signal="momentum")
         self.assertEqual(get_position_signal("AAPL"), "momentum")
 
     def test_returns_unknown_for_missing_position(self):
         from execution.trader import get_position_signal
+
         self.assertEqual(get_position_signal("GHOST"), "unknown")
 
 
 class TestPlacePartialSell(unittest.TestCase):
-
     def test_places_partial_sell_order(self):
         from execution.trader import place_partial_sell
+
         client = MagicMock()
         client.submit_order.return_value = MagicMock(id="order-partial")
         client.get_order_by_id.return_value = _mock_filled_order("order-partial", filled_qty=5.0)
@@ -590,6 +667,7 @@ class TestPlacePartialSell(unittest.TestCase):
 
     def test_returns_none_for_zero_qty(self):
         from execution.trader import place_partial_sell
+
         client = MagicMock()
         result = place_partial_sell(client, "AAPL", 0.0)
         self.assertIsNone(result)
@@ -597,6 +675,7 @@ class TestPlacePartialSell(unittest.TestCase):
 
     def test_returns_none_for_negative_qty(self):
         from execution.trader import place_partial_sell
+
         client = MagicMock()
         result = place_partial_sell(client, "AAPL", -1.0)
         self.assertIsNone(result)
@@ -604,6 +683,7 @@ class TestPlacePartialSell(unittest.TestCase):
 
     def test_returns_rejected_on_error(self):
         from execution.trader import place_partial_sell
+
         client = MagicMock()
         client.submit_order.side_effect = Exception("insufficient shares")
         result = place_partial_sell(client, "AAPL", 5.0)
@@ -634,10 +714,10 @@ def _seq(*statuses_and_qtys):
 
 
 class TestClosePositionTerminalStates(unittest.TestCase):
-
     def _close(self, order_sequence, final_order=None):
         """Run close_position with a given sequence of get_order_by_id responses."""
         from execution.trader import close_position
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "close-001"
@@ -666,6 +746,7 @@ class TestClosePositionTerminalStates(unittest.TestCase):
     def test_partially_filled_then_timeout_is_partial_not_success(self):
         """Timeout while partially filled → PARTIAL status, qty recorded, not success."""
         from execution.trader import close_position
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "close-001"
@@ -696,6 +777,7 @@ class TestClosePositionTerminalStates(unittest.TestCase):
 
     def test_submit_exception_is_rejected(self):
         from execution.trader import close_position
+
         client = MagicMock()
         client.get_orders.return_value = []
         client.close_position.side_effect = Exception("position not found")
@@ -706,9 +788,9 @@ class TestClosePositionTerminalStates(unittest.TestCase):
 
 
 class TestPlaceSellOrderTerminalStates(unittest.TestCase):
-
     def _sell(self, order_sequence, final_order=None, qty=10.0):
         from execution.trader import place_sell_order
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "sell-001"
@@ -732,6 +814,7 @@ class TestPlaceSellOrderTerminalStates(unittest.TestCase):
 
     def test_partially_filled_then_timeout_is_partial_not_success(self):
         from execution.trader import place_sell_order
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "sell-001"
@@ -760,6 +843,7 @@ class TestPlaceSellOrderTerminalStates(unittest.TestCase):
 
     def test_api_error_once_then_filled(self):
         from execution.trader import place_sell_order
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "sell-001"
@@ -774,6 +858,7 @@ class TestPlaceSellOrderTerminalStates(unittest.TestCase):
 
     def test_api_errors_until_timeout(self):
         from execution.trader import place_sell_order
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "sell-001"
@@ -786,9 +871,9 @@ class TestPlaceSellOrderTerminalStates(unittest.TestCase):
 
 
 class TestPlacePartialSellTerminalStates(unittest.TestCase):
-
     def _partial_sell(self, order_sequence, final_order=None, qty=5.0):
         from execution.trader import place_partial_sell
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "psell-001"
@@ -811,6 +896,7 @@ class TestPlacePartialSellTerminalStates(unittest.TestCase):
 
     def test_partially_filled_then_timeout_is_partial_not_success(self):
         from execution.trader import place_partial_sell
+
         client = MagicMock()
         submitted = MagicMock()
         submitted.id = "psell-001"
@@ -839,7 +925,6 @@ class TestPlacePartialSellTerminalStates(unittest.TestCase):
 
 
 class TestPlaceTrailingStop(unittest.TestCase):
-
     def _make_order(self, order_id="stop-123"):
         o = MagicMock()
         o.id = order_id
@@ -847,11 +932,13 @@ class TestPlaceTrailingStop(unittest.TestCase):
 
     def test_returns_none_for_zero_qty(self):
         from execution.trader import place_trailing_stop
+
         result = place_trailing_stop(MagicMock(), "AAPL", 0.0)
         self.assertIsNone(result)
 
     def test_returns_none_for_negative_qty(self):
         from execution.trader import place_trailing_stop
+
         result = place_trailing_stop(MagicMock(), "AAPL", -1.0)
         self.assertIsNone(result)
 
@@ -859,6 +946,7 @@ class TestPlaceTrailingStop(unittest.TestCase):
         from alpaca.trading.requests import TrailingStopOrderRequest
 
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-trail")
         result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
@@ -872,33 +960,52 @@ class TestPlaceTrailingStop(unittest.TestCase):
         from alpaca.trading.requests import StopOrderRequest
 
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-fixed")
         result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
         self.assertTrue(result.is_success)
         self.assertEqual(result.stop_order_id, "stop-fixed")
-        submitted = client.submit_order.call_args[0][0]
-        self.assertIsInstance(submitted, StopOrderRequest)
+        # First call is the stop order; second call liquidates the fractional remainder
+        stop_req = client.submit_order.call_args_list[0][0][0]
+        self.assertIsInstance(stop_req, StopOrderRequest)
+
+    def test_fractional_remainder_is_liquidated(self):
+        from alpaca.trading.requests import MarketOrderRequest
+
+        from execution.trader import place_trailing_stop
+
+        client = MagicMock()
+        client.submit_order.return_value = self._make_order("stop-fixed")
+        place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
+        # Two calls: stop for whole shares, then market sell for remainder
+        self.assertEqual(client.submit_order.call_count, 2)
+        remainder_req = client.submit_order.call_args_list[1][0][0]
+        self.assertIsInstance(remainder_req, MarketOrderRequest)
+        self.assertAlmostEqual(remainder_req.qty, 0.5, places=4)
 
     def test_fractional_stop_price_below_current(self):
         from config import TRAILING_STOP_PCT
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.return_value = self._make_order()
         place_trailing_stop(client, "AAPL", 2.5, current_price=200.0)
-        # stop_price is set on the submitted request, not in OrderResult
-        submitted = client.submit_order.call_args[0][0]
+        # First call is the stop order
+        stop_req = client.submit_order.call_args_list[0][0][0]
         expected_stop = round(200.0 * (1 - TRAILING_STOP_PCT / 100), 2)
-        self.assertAlmostEqual(submitted.stop_price, expected_stop, places=2)
+        self.assertAlmostEqual(stop_req.stop_price, expected_stop, places=2)
 
     def test_fractional_without_current_price_returns_stop_failed(self):
         from execution.trader import place_trailing_stop
+
         result = place_trailing_stop(MagicMock(), "AAPL", 2.5, current_price=None)
         self.assertEqual(result.status, OrderStatus.STOP_FAILED)
         self.assertFalse(result.is_success)
 
     def test_returns_stop_failed_on_api_error(self):
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.side_effect = Exception("order rejected")
         result = place_trailing_stop(client, "AAPL", 10.0, current_price=150.0)
@@ -908,6 +1015,7 @@ class TestPlaceTrailingStop(unittest.TestCase):
     def test_whole_shares_trailing_stop_success_returns_filled(self):
         """GTC trailing stop path (non-fractional qty) — success branch."""
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.return_value = self._make_order("stop-gtc-123")
         result = place_trailing_stop(client, "MSFT", 5.0, current_price=300.0)
@@ -918,6 +1026,7 @@ class TestPlaceTrailingStop(unittest.TestCase):
     def test_whole_shares_trailing_stop_exception_returns_stop_failed(self):
         """GTC trailing stop path (non-fractional qty) — exception branch (lines 175-177)."""
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.side_effect = Exception("trailing stop rejected")
         result = place_trailing_stop(client, "MSFT", 5.0, current_price=300.0)
@@ -928,6 +1037,7 @@ class TestPlaceTrailingStop(unittest.TestCase):
     def test_fractional_stop_exception_returns_stop_failed(self):
         """Fixed stop path (fractional qty) — exception branch (lines 158-160)."""
         from execution.trader import place_trailing_stop
+
         client = MagicMock()
         client.submit_order.side_effect = Exception("stop order api error")
         result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
@@ -941,12 +1051,14 @@ class TestReconcilePositionsMissingSymbol(unittest.TestCase):
 
     def setUp(self):
         import utils.db as db_module
+
         self.tmpdir = tempfile.mkdtemp()
         self.patchers = _meta_patcher(self.tmpdir)
         for p in self.patchers:
             p.start()
         db_module._initialized = False
         from utils.db import init_db
+
         init_db()
 
     def tearDown(self):
@@ -957,6 +1069,7 @@ class TestReconcilePositionsMissingSymbol(unittest.TestCase):
     def test_adds_placeholder_metadata_for_broker_symbol_not_in_db(self):
         """Lines 364-365: symbols in broker but not in DB get a placeholder INSERT."""
         from execution.trader import get_position_meta, reconcile_positions
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("TSLA", 5)]
         reconcile_positions(client)
@@ -968,6 +1081,7 @@ class TestReconcilePositionsMissingSymbol(unittest.TestCase):
     def test_reconcile_db_exception_does_not_crash(self):
         """Lines 364-365: db exception inside the inner block is caught."""
         from execution.trader import reconcile_positions
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10)]
         with patch("execution.trader._db", side_effect=Exception("db error")):
@@ -982,6 +1096,7 @@ class TestGetPositionSignalException(unittest.TestCase):
 
     def test_returns_unknown_when_db_raises(self):
         from execution.trader import get_position_signal
+
         with patch("execution.trader._db", side_effect=Exception("db down")):
             result = get_position_signal("AAPL")
         self.assertEqual(result, "unknown")
@@ -992,6 +1107,7 @@ class TestRecordPartialExitException(unittest.TestCase):
 
     def test_does_not_raise_when_db_raises(self):
         from execution.trader import record_partial_exit
+
         with patch("execution.trader._db", side_effect=Exception("db error")):
             try:
                 record_partial_exit("AAPL")
@@ -1004,6 +1120,7 @@ class TestGetPositionMetaException(unittest.TestCase):
 
     def test_returns_defaults_when_db_raises(self):
         from execution.trader import get_position_meta
+
         with patch("execution.trader._db", side_effect=Exception("db error")):
             meta = get_position_meta("AAPL")
         self.assertEqual(meta["signal"], "unknown")
@@ -1017,6 +1134,7 @@ class TestLoadAllPositionsException(unittest.TestCase):
 
     def test_returns_empty_dict_when_db_raises(self):
         from execution.trader import _load_all_positions
+
         with patch("execution.trader._db", side_effect=Exception("db error")):
             result = _load_all_positions()
         self.assertEqual(result, {})
@@ -1027,12 +1145,14 @@ class TestGetPositionAgesException(unittest.TestCase):
 
     def setUp(self):
         import utils.db as db_module
+
         self.tmpdir = tempfile.mkdtemp()
         self.patchers = _meta_patcher(self.tmpdir)
         for p in self.patchers:
             p.start()
         db_module._initialized = False
         from utils.db import init_db
+
         init_db()
 
     def tearDown(self):
@@ -1046,6 +1166,7 @@ class TestGetPositionAgesException(unittest.TestCase):
 
         # Insert a row with a bad entry_date that cannot be parsed
         from utils.db import get_db
+
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
@@ -1062,6 +1183,7 @@ class TestEnsureStopsAttachedException(unittest.TestCase):
 
     def test_does_not_raise_when_get_all_positions_raises(self):
         from execution.trader import ensure_stops_attached
+
         client = MagicMock()
         client.get_all_positions.side_effect = Exception("broker unavailable")
         try:
@@ -1071,6 +1193,7 @@ class TestEnsureStopsAttachedException(unittest.TestCase):
 
     def test_does_not_raise_when_get_orders_raises(self):
         from execution.trader import ensure_stops_attached
+
         client = MagicMock()
         client.get_all_positions.return_value = [_mock_position("AAPL", 10)]
         client.get_orders.side_effect = Exception("orders API down")
@@ -1082,6 +1205,7 @@ class TestEnsureStopsAttachedException(unittest.TestCase):
     def test_sub_share_uncovered_skips_without_placing_stop(self):
         """Line 397: whole_uncovered < 1 (entirely sub-share) → continue, no stop placed."""
         from execution.trader import ensure_stops_attached
+
         # Position of 0.5 shares — entirely sub-share, whole_uncovered = floor(0.5) = 0
         pos = MagicMock()
         pos.symbol = "AAPL"
@@ -1100,6 +1224,7 @@ class TestGetDailyNotionalException(unittest.TestCase):
 
     def test_returns_zero_when_db_raises(self):
         from execution.trader import get_daily_notional
+
         with patch("execution.trader._db", side_effect=Exception("db error")):
             result = get_daily_notional("2026-01-15")
         self.assertEqual(result, 0.0)
@@ -1110,6 +1235,7 @@ class TestAddDailyNotionalException(unittest.TestCase):
 
     def test_does_not_raise_when_db_raises(self):
         from execution.trader import add_daily_notional
+
         with patch("execution.trader._db", side_effect=Exception("db error")):
             try:
                 add_daily_notional("2026-01-15", 500.0)

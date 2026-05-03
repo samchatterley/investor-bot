@@ -9,42 +9,145 @@ logger = logging.getLogger(__name__)
 # Broader universe used only for the daily top-movers scan.
 # Intentionally sector-diverse and mid-cap-heavy so the momentum×volume scorer
 # can surface "sleeper" moves beyond mega-caps.
-EXTENDED_UNIVERSE = list(dict.fromkeys([
-    # Mega-cap tech (anchor names)
-    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AMD", "NFLX",
-    "CRM", "ADBE", "UBER",
-    # Semiconductors — mid/large
-    "INTC", "QCOM", "AVGO", "TXN", "MU", "SMCI", "MRVL", "ON", "MPWR",
-    "LRCX", "KLAC", "AMAT", "SWKS",
-    # Software / SaaS growth
-    "PLTR", "SNOW", "NET", "DDOG", "CRWD", "BILL", "APP", "GTLB",
-    "PCOR", "MNDY", "HUBS", "TEAM", "ZS", "PANW",
-    # Fintech & payments
-    "V", "MA", "PYPL", "SQ", "SHOP", "COIN", "AFRM", "SOFI", "HOOD",
-    # Financials
-    "JPM", "BAC", "GS", "MS", "C", "SCHW",
-    # Energy — oil & clean
-    "XOM", "CVX", "OXY", "ENPH", "SEDG", "FSLR", "RUN", "PLUG", "BE",
-    # Healthcare & biotech
-    "PFE", "MRNA", "ABBV", "LLY", "JNJ", "BMY",
-    "EXAS", "NBIX", "BMRN", "INCY", "SRPT",
-    "ISRG", "DXCM", "PODD",
-    # Defense — large & mid
-    "LMT", "RTX", "NOC", "BA", "HII", "KTOS", "RKLB", "LDOS",
-    # Industrials & infrastructure
-    "CAT", "GE", "HON", "EMR", "GNRC", "AXON", "SAIA", "XYL",
-    # Consumer discretionary
-    "NKE", "MCD", "SBUX", "TGT", "COST", "WMT", "HD",
-    "DKNG", "LYFT", "DASH", "CHWY", "W",
-    # Entertainment & media
-    "DIS", "SNAP", "PINS", "RBLX",
-    # Commodities & materials
-    "FCX", "AA", "MP", "CLF",
-    # Crypto-adjacent (high volatility movers)
-    "MSTR", "MARA", "RIOT",
-    # Broad market ETFs (baseline comparison)
-    "SPY", "QQQ", "IWM",
-]))
+EXTENDED_UNIVERSE = list(
+    dict.fromkeys(
+        [
+            # Mega-cap tech (anchor names)
+            "AAPL",
+            "MSFT",
+            "GOOGL",
+            "AMZN",
+            "META",
+            "NVDA",
+            "TSLA",
+            "AMD",
+            "NFLX",
+            "CRM",
+            "ADBE",
+            "UBER",
+            # Semiconductors — mid/large
+            "INTC",
+            "QCOM",
+            "AVGO",
+            "TXN",
+            "MU",
+            "SMCI",
+            "MRVL",
+            "ON",
+            "MPWR",
+            "LRCX",
+            "KLAC",
+            "AMAT",
+            "SWKS",
+            # Software / SaaS growth
+            "PLTR",
+            "SNOW",
+            "NET",
+            "DDOG",
+            "CRWD",
+            "BILL",
+            "APP",
+            "GTLB",
+            "PCOR",
+            "MNDY",
+            "HUBS",
+            "TEAM",
+            "ZS",
+            "PANW",
+            # Fintech & payments
+            "V",
+            "MA",
+            "PYPL",
+            "SQ",
+            "SHOP",
+            "COIN",
+            "AFRM",
+            "SOFI",
+            "HOOD",
+            # Financials
+            "JPM",
+            "BAC",
+            "GS",
+            "MS",
+            "C",
+            "SCHW",
+            # Energy — oil & clean
+            "XOM",
+            "CVX",
+            "OXY",
+            "ENPH",
+            "SEDG",
+            "FSLR",
+            "RUN",
+            "PLUG",
+            "BE",
+            # Healthcare & biotech
+            "PFE",
+            "MRNA",
+            "ABBV",
+            "LLY",
+            "JNJ",
+            "BMY",
+            "EXAS",
+            "NBIX",
+            "BMRN",
+            "INCY",
+            "SRPT",
+            "ISRG",
+            "DXCM",
+            "PODD",
+            # Defense — large & mid
+            "LMT",
+            "RTX",
+            "NOC",
+            "BA",
+            "HII",
+            "KTOS",
+            "RKLB",
+            "LDOS",
+            # Industrials & infrastructure
+            "CAT",
+            "GE",
+            "HON",
+            "EMR",
+            "GNRC",
+            "AXON",
+            "SAIA",
+            "XYL",
+            # Consumer discretionary
+            "NKE",
+            "MCD",
+            "SBUX",
+            "TGT",
+            "COST",
+            "WMT",
+            "HD",
+            "DKNG",
+            "LYFT",
+            "DASH",
+            "CHWY",
+            "W",
+            # Entertainment & media
+            "DIS",
+            "SNAP",
+            "PINS",
+            "RBLX",
+            # Commodities & materials
+            "FCX",
+            "AA",
+            "MP",
+            "CLF",
+            # Crypto-adjacent (high volatility movers)
+            "MSTR",
+            "MARA",
+            "RIOT",
+            # Broad market ETFs (baseline comparison)
+            "SPY",
+            "QQQ",
+            "IWM",
+        ]
+    )
+)
 
 
 def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> dict:
@@ -55,7 +158,12 @@ def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> 
     try:
         hist = yf.Ticker("SPY").history(period="20d")
         if len(hist) < 6:
-            return {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"}
+            return {
+                "is_bearish": False,
+                "spy_change_pct": 0.0,
+                "spy_5d_pct": 0.0,
+                "regime": "UNKNOWN",
+            }
 
         spy_1d = float((hist["Close"].iloc[-1] / hist["Close"].iloc[-2] - 1) * 100)
         spy_5d = float((hist["Close"].iloc[-1] / hist["Close"].iloc[-6] - 1) * 100)
@@ -109,41 +217,31 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
 
         # ── New signals ───────────────────────────────────────────────────────
         # Volatility squeeze: bands contracting → expansion imminent
-        bb_squeeze_breakout = (
-            s.get("bb_squeeze", False)
-            and (ema_up or macd_diff > 0)
-            and vol > 1.2
-        )
+        bb_squeeze_breakout = s.get("bb_squeeze", False) and (ema_up or macd_diff > 0) and vol > 1.2
         # Near 52-week high with volume: growth / breakout momentum
-        breakout_52w = (
-            s.get("price_vs_52w_high_pct", -999) >= -3.0
-            and vol > 1.2
-            and weekly_up
-        )
+        breakout_52w = s.get("price_vs_52w_high_pct", -999) >= -3.0 and vol > 1.2 and weekly_up
         # Consistent SPY outperformance: market leader in sustained uptrend
         rs_leader = (
-            s.get("rel_strength_5d", 0) > 2.0
-            and s.get("rel_strength_10d", 0) > 3.0
-            and ema_up
+            s.get("rel_strength_5d", 0) > 2.0 and s.get("rel_strength_10d", 0) > 3.0 and ema_up
         )
         # Inside day followed by directional confirmation: coiled spring
         inside_day_breakout = (
-            s.get("is_inside_day", False)
-            and (ema_up or macd_diff > 0)
-            and vol > 1.1
+            s.get("is_inside_day", False) and (ema_up or macd_diff > 0) and vol > 1.1
         )
         # Pullback to EMA21 within an established uptrend
         pct_ema21 = s.get("price_vs_ema21_pct", 0)
-        trend_pullback = (
-            ema_up
-            and -3.0 <= pct_ema21 <= -0.5
-            and 40 <= rsi <= 58
-            and vol > 1.0
-        )
+        trend_pullback = ema_up and -3.0 <= pct_ema21 <= -0.5 and 40 <= rsi <= 58 and vol > 1.0
 
-        if not (mean_reversion or momentum or fresh_breakout
-                or bb_squeeze_breakout or breakout_52w or rs_leader
-                or inside_day_breakout or trend_pullback):
+        if not (
+            mean_reversion
+            or momentum
+            or fresh_breakout
+            or bb_squeeze_breakout
+            or breakout_52w
+            or rs_leader
+            or inside_day_breakout
+            or trend_pullback
+        ):
             continue
 
         # Block buys against the weekly trend unless the stock is deeply oversold

@@ -23,6 +23,7 @@ def _load(name: str) -> dict:
 
 # ── Prompt injection ──────────────────────────────────────────────────────────
 
+
 class TestPromptInjectionScan:
     def test_malicious_headlines_dropped(self):
         from utils.validators import sanitize_headlines
@@ -65,6 +66,7 @@ class TestPromptInjectionScan:
 
 # ── Hallucinated tickers ──────────────────────────────────────────────────────
 
+
 class TestHallucinatedTickers:
     def setup_method(self):
         self.fixture = _load("hallucinated_tickers.json")
@@ -99,7 +101,9 @@ class TestHallucinatedTickers:
 
         universe = set(self.fixture["scanned_universe"])
         held = set(self.fixture["held_symbols"])
-        is_valid, errors = validate_ai_response(self.fixture["ai_response"], universe, held_symbols=held)
+        is_valid, errors = validate_ai_response(
+            self.fixture["ai_response"], universe, held_symbols=held
+        )
 
         # is_valid is False because there were errors, but valid candidates still pass
         # (main.py only blocks buy_candidates; it does not abort the entire run on hallucination errors)
@@ -110,6 +114,7 @@ class TestHallucinatedTickers:
 
 
 # ── Bear market suppression ───────────────────────────────────────────────────
+
 
 class TestBearMarketBuySuppression:
     def test_is_bearish_flag_set(self):
@@ -136,6 +141,7 @@ class TestBearMarketBuySuppression:
 
 
 # ── Conflicting signals ───────────────────────────────────────────────────────
+
 
 class TestConflictingSignals:
     def setup_method(self):
@@ -166,6 +172,7 @@ class TestConflictingSignals:
 
 # ── Malformed tool calls ──────────────────────────────────────────────────────
 
+
 class TestMalformedResponses:
     @pytest.fixture(params=range(3))
     def case(self, request):
@@ -185,6 +192,7 @@ class TestMalformedResponses:
 
 
 # ── Earnings risk ─────────────────────────────────────────────────────────────
+
 
 class TestEarningsRisk:
     def test_fixture_structure(self):

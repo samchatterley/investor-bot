@@ -7,6 +7,7 @@ to config.py so they take effect from Monday's first run.
 Runs Sunday evenings via run_scheduler.py.
 Output saved to logs/weekly_review_YYYY-MM-DD.json.
 """
+
 import json
 import logging
 import os
@@ -25,19 +26,39 @@ _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 
 # Only these parameters may be auto-adjusted, within these bounds.
 _SAFE_PARAMS: dict[str, dict] = {
-    "MIN_CONFIDENCE":     {"min": 6,   "max": 9,    "type": int,   "desc": "minimum confidence score (1-10) to open a position"},
-    "TRAILING_STOP_PCT":  {"min": 2.0, "max": 8.0,  "type": float, "desc": "% trail below highest price for the stop order"},
-    "PARTIAL_PROFIT_PCT": {"min": 5.0, "max": 20.0, "type": float, "desc": "take half-position profit at this % unrealised gain"},
-    "MAX_HOLD_DAYS":      {"min": 2,   "max": 7,    "type": int,   "desc": "force-exit positions held longer than this many trading days"},
+    "MIN_CONFIDENCE": {
+        "min": 6,
+        "max": 9,
+        "type": int,
+        "desc": "minimum confidence score (1-10) to open a position",
+    },
+    "TRAILING_STOP_PCT": {
+        "min": 2.0,
+        "max": 8.0,
+        "type": float,
+        "desc": "% trail below highest price for the stop order",
+    },
+    "PARTIAL_PROFIT_PCT": {
+        "min": 5.0,
+        "max": 20.0,
+        "type": float,
+        "desc": "take half-position profit at this % unrealised gain",
+    },
+    "MAX_HOLD_DAYS": {
+        "min": 2,
+        "max": 7,
+        "type": int,
+        "desc": "force-exit positions held longer than this many trading days",
+    },
 }
 
 
 def _current_param_values() -> dict[str, float | int]:
     return {
-        "MIN_CONFIDENCE":     cfg.MIN_CONFIDENCE,
-        "TRAILING_STOP_PCT":  cfg.TRAILING_STOP_PCT,
+        "MIN_CONFIDENCE": cfg.MIN_CONFIDENCE,
+        "TRAILING_STOP_PCT": cfg.TRAILING_STOP_PCT,
         "PARTIAL_PROFIT_PCT": cfg.PARTIAL_PROFIT_PCT,
-        "MAX_HOLD_DAYS":      cfg.MAX_HOLD_DAYS,
+        "MAX_HOLD_DAYS": cfg.MAX_HOLD_DAYS,
     }
 
 
@@ -63,8 +84,13 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
         spec = _SAFE_PARAMS.get(param)
 
         if not spec:
-            results.append({**change, "status": "rejected",
-                             "rejection_reason": "not in the safe-to-modify list"})
+            results.append(
+                {
+                    **change,
+                    "status": "rejected",
+                    "rejection_reason": "not in the safe-to-modify list",
+                }
+            )
             continue
 
         old_val = spec["type"](current_overrides.get(param, getattr(cfg, param)))
@@ -72,18 +98,21 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
         new_val = max(spec["min"], min(spec["max"], raw_proposed))
 
         if new_val == old_val:
-            results.append({**change, "old_value": old_val, "new_value": new_val,
-                             "status": "unchanged"})
+            results.append(
+                {**change, "old_value": old_val, "new_value": new_val, "status": "unchanged"}
+            )
             continue
 
         status = "applied" if new_val == raw_proposed else "clamped"
-        results.append({
-            "parameter": param,
-            "old_value": old_val,
-            "new_value": new_val,
-            "reason": change.get("reason", ""),
-            "status": status,
-        })
+        results.append(
+            {
+                "parameter": param,
+                "old_value": old_val,
+                "new_value": new_val,
+                "reason": change.get("reason", ""),
+                "status": status,
+            }
+        )
         logger.info(f"Config proposal (not applied): {param} {old_val} → {new_val} ({status})")
 
     return results
@@ -93,8 +122,7 @@ def get_latest_review() -> list[str]:
     """Return the lessons list from the most recent weekly review, or [] if none exists."""
     os.makedirs(LOG_DIR, exist_ok=True)
     review_files = sorted(
-        f for f in os.listdir(LOG_DIR)
-        if f.startswith("weekly_review_") and f.endswith(".json")
+        f for f in os.listdir(LOG_DIR) if f.startswith("weekly_review_") and f.endswith(".json")
     )
     if not review_files:
         return []
@@ -126,14 +154,21 @@ def run_weekly_review() -> dict | None:
     current_params = _current_param_values()
 
     trade_summary = [
-        {"date": r["date"], "symbol": t["symbol"],
-         "action": t["action"], "detail": t.get("detail", "")}
+        {
+            "date": r["date"],
+            "symbol": t["symbol"],
+            "action": t["action"],
+            "detail": t.get("detail", ""),
+        }
         for r in week_records
         for t in r.get("trades_executed", [])
     ]
     daily_breakdown = [
-        {"date": r["date"], "pnl_usd": round(r.get("daily_pnl", 0), 2),
-         "market": r.get("market_summary", "")}
+        {
+            "date": r["date"],
+            "pnl_usd": round(r.get("daily_pnl", 0), 2),
+            "market": r.get("market_summary", ""),
+        }
         for r in week_records
     ]
 
@@ -146,10 +181,10 @@ def run_weekly_review() -> dict | None:
 what didn't, and what changes to make for next week.
 
 WEEK METRICS:
-- Total return: {metrics.get('total_return_pct', 0):+.2f}%
-- Win rate (profitable days): {metrics.get('win_rate_pct', 0):.0f}%
-- Sharpe ratio: {metrics.get('sharpe', 0):.2f}
-- Total trades executed: {metrics.get('total_trades', 0)}
+- Total return: {metrics.get("total_return_pct", 0):+.2f}%
+- Win rate (profitable days): {metrics.get("win_rate_pct", 0):.0f}%
+- Sharpe ratio: {metrics.get("sharpe", 0):.2f}
+- Total trades executed: {metrics.get("total_trades", 0)}
 
 DAILY BREAKDOWN:
 {json.dumps(daily_breakdown, indent=2)}
@@ -217,7 +252,9 @@ Respond with ONLY this JSON:
             logger.info(f"  Lesson: {lesson}")
         for change in proposed_changes:
             if change["status"] in ("applied", "clamped"):
-                logger.info(f"  Proposed (not applied): {change['parameter']} {change['old_value']} → {change['new_value']}")
+                logger.info(
+                    f"  Proposed (not applied): {change['parameter']} {change['old_value']} → {change['new_value']}"
+                )
 
         return review
 

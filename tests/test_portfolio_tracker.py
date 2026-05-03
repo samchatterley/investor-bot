@@ -21,7 +21,6 @@ def _ai(summary="quiet"):
 
 
 class PortfolioTrackerBase(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.log_patcher = patch("utils.portfolio_tracker.LOG_DIR", self.tmpdir)
@@ -33,15 +32,10 @@ class PortfolioTrackerBase(unittest.TestCase):
 
 
 class TestSaveAndLoad(PortfolioTrackerBase):
-
     def test_save_creates_json_file(self):
         save_daily_run("2026-01-15", _account(100_000), _account(101_000), _ai(), [], [])
         # File is saved in a weekly subdirectory — search recursively
-        all_files = [
-            fname
-            for _, _, files in os.walk(self.tmpdir)
-            for fname in files
-        ]
+        all_files = [fname for _, _, files in os.walk(self.tmpdir) for fname in files]
         self.assertTrue(any("2026-01-15" in f for f in all_files))
 
     def test_load_returns_saved_record(self):
@@ -70,7 +64,6 @@ class TestSaveAndLoad(PortfolioTrackerBase):
 
 
 class TestGetDaySummary(PortfolioTrackerBase):
-
     def test_returns_none_when_no_records(self):
         self.assertIsNone(get_day_summary("2026-01-15"))
 
@@ -78,8 +71,12 @@ class TestGetDaySummary(PortfolioTrackerBase):
         trade_a = {"symbol": "AAPL", "action": "BUY", "detail": "$5000"}
         trade_b = {"symbol": "AAPL", "action": "SELL", "detail": "earnings exit"}
 
-        save_daily_run("2026-01-15", _account(100_000), _account(100_500), _ai("open"), [trade_a], [])
-        save_daily_run("2026-01-15-close", _account(100_500), _account(101_200), _ai("close"), [trade_b], [])
+        save_daily_run(
+            "2026-01-15", _account(100_000), _account(100_500), _ai("open"), [trade_a], []
+        )
+        save_daily_run(
+            "2026-01-15-close", _account(100_500), _account(101_200), _ai("close"), [trade_b], []
+        )
 
         summary = get_day_summary("2026-01-15")
         self.assertIsNotNone(summary)
@@ -102,7 +99,6 @@ class TestGetDaySummary(PortfolioTrackerBase):
 
 
 class TestPrintSummary(PortfolioTrackerBase):
-
     def _record(self, pnl=500.0, trades=None, stops=None):
         return {
             "date": "2026-01-15",
@@ -118,6 +114,7 @@ class TestPrintSummary(PortfolioTrackerBase):
         import sys
 
         from utils.portfolio_tracker import print_summary
+
         captured = io.StringIO()
         sys.stdout = captured
         try:
@@ -131,6 +128,7 @@ class TestPrintSummary(PortfolioTrackerBase):
         import sys
 
         from utils.portfolio_tracker import print_summary
+
         captured = io.StringIO()
         sys.stdout = captured
         try:
@@ -144,6 +142,7 @@ class TestPrintSummary(PortfolioTrackerBase):
         import sys
 
         from utils.portfolio_tracker import print_summary
+
         trades = [{"action": "BUY", "symbol": "NVDA", "detail": "$5000"}]
         captured = io.StringIO()
         sys.stdout = captured
@@ -158,6 +157,7 @@ class TestPrintSummary(PortfolioTrackerBase):
         import sys
 
         from utils.portfolio_tracker import print_summary
+
         captured = io.StringIO()
         sys.stdout = captured
         try:
@@ -168,7 +168,6 @@ class TestPrintSummary(PortfolioTrackerBase):
 
 
 class TestGetTrackRecord(PortfolioTrackerBase):
-
     def test_returns_last_n_days(self):
         for i in range(1, 8):
             save_daily_run(f"2026-01-0{i}", _account(100_000), _account(100_000), _ai(), [], [])
@@ -176,8 +175,14 @@ class TestGetTrackRecord(PortfolioTrackerBase):
         self.assertEqual(len(record), 5)
 
     def test_record_has_required_fields(self):
-        save_daily_run("2026-01-01", _account(100_000), _account(101_000), _ai("up day"),
-                       [{"symbol": "AAPL", "action": "BUY", "detail": "$5000"}], [])
+        save_daily_run(
+            "2026-01-01",
+            _account(100_000),
+            _account(101_000),
+            _ai("up day"),
+            [{"symbol": "AAPL", "action": "BUY", "detail": "$5000"}],
+            [],
+        )
         record = get_track_record(n_days=1)
         entry = record[0]
         self.assertIn("date", entry)
@@ -193,7 +198,6 @@ class TestGetTrackRecord(PortfolioTrackerBase):
 
 
 class TestTradeMergeGuard(PortfolioTrackerBase):
-
     def test_second_run_merges_new_trades(self):
         trade_a = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
         trade_b = {"symbol": "MSFT", "action": "BUY", "detail": "$3000", "order_id": "o2"}
@@ -223,10 +227,10 @@ class TestTradeMergeGuard(PortfolioTrackerBase):
 
 
 class TestMergeEdgeCases(PortfolioTrackerBase):
-
     def test_merge_logs_info_when_new_trades_added(self):
         # Lines 90-91 (added > 0 path): merging new trades into existing record
         import logging
+
         trade_a = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
         trade_b = {"symbol": "MSFT", "action": "BUY", "detail": "$3000", "order_id": "o2"}
         save_daily_run("2026-01-15", _account(100_000), _account(100_500), _ai(), [trade_a], [])
@@ -238,6 +242,7 @@ class TestMergeEdgeCases(PortfolioTrackerBase):
     def test_spurious_rerun_logs_warning(self):
         # Line 101 (added == 0 with existing trades): spurious re-run warning
         import logging
+
         trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
         save_daily_run("2026-01-16", _account(100_000), _account(100_500), _ai(), [trade], [])
         with self.assertLogs("utils.portfolio_tracker", level=logging.WARNING) as cm:
@@ -259,6 +264,7 @@ class TestMergeEdgeCases(PortfolioTrackerBase):
         save_daily_run("2026-01-18", _account(100_000), _account(100_500), _ai(), [], [])
         # Find and corrupt the file
         import glob
+
         files = glob.glob(os.path.join(self.tmpdir, "**", "*.json"), recursive=True)
         run_files = [f for f in files if "2026-01-18" in f]
         self.assertEqual(len(run_files), 1)
@@ -275,13 +281,14 @@ class TestMergeEdgeCases(PortfolioTrackerBase):
         # Line 101: "-midday" in date → mode = "midday"
         trade = {"symbol": "TSLA", "action": "BUY", "detail": "$2000", "order_id": "m1"}
         try:
-            save_daily_run("2026-01-19-midday", _account(100_000), _account(100_300), _ai(), [trade], [])
+            save_daily_run(
+                "2026-01-19-midday", _account(100_000), _account(100_300), _ai(), [trade], []
+            )
         except Exception:
             self.fail("save_daily_run raised for midday date")
 
 
 class TestPrintSummaryStopLosses(PortfolioTrackerBase):
-
     def test_print_summary_shows_stop_losses(self):
         # Lines 145-147: stop_losses_triggered section in print_summary
         import io
@@ -309,13 +316,15 @@ class TestPrintSummaryStopLosses(PortfolioTrackerBase):
 
 
 class TestSaveDailyBaselineFailure(PortfolioTrackerBase):
-
     def test_sqlite_baseline_write_failure_does_not_raise(self):
         # Lines 178-179: SQLite baseline write failure → warning logged, no exception
         from utils.portfolio_tracker import save_daily_baseline
+
         baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
-        with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path), \
-             patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
+        with (
+            patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path),
+            patch("utils.db.get_db", side_effect=RuntimeError("db locked")),
+        ):
             try:
                 save_daily_baseline(100_000.0)
             except Exception:
@@ -323,9 +332,9 @@ class TestSaveDailyBaselineFailure(PortfolioTrackerBase):
 
 
 class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
-
     def test_writes_baseline_file(self):
         from utils.portfolio_tracker import save_daily_baseline
+
         baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
         with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path):
             save_daily_baseline(100_000.0)
@@ -335,6 +344,7 @@ class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
         import json as _json
 
         from utils.portfolio_tracker import save_daily_baseline
+
         baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
         with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path):
             save_daily_baseline(99_500.0)
@@ -344,6 +354,7 @@ class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
 
     def test_invalid_date_string_uses_today(self):
         from utils.portfolio_tracker import _weekly_log_dir
+
         # Non-ISO date triggers ValueError → falls back to today()
         result = _weekly_log_dir("not-a-date-at-all!!")
         self.assertTrue(os.path.isdir(result))

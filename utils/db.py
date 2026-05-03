@@ -148,12 +148,15 @@ def init_db():
 
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, "ALTER TABLE positions ADD COLUMN partial_exit_taken_at TEXT"),
-    (2, (
-        "CREATE TABLE IF NOT EXISTS daily_notional ("
-        "market_date TEXT PRIMARY KEY, "
-        "buy_notional REAL NOT NULL DEFAULT 0, "
-        "updated_at TEXT NOT NULL)"
-    )),
+    (
+        2,
+        (
+            "CREATE TABLE IF NOT EXISTS daily_notional ("
+            "market_date TEXT PRIMARY KEY, "
+            "buy_notional REAL NOT NULL DEFAULT 0, "
+            "updated_at TEXT NOT NULL)"
+        ),
+    ),
 ]
 
 
@@ -180,6 +183,7 @@ def _run_migrations():
 
 # ── Migration from legacy JSON files ─────────────────────────────────────────
 
+
 def _migrate_json_state():
     """One-time import of existing JSON files into SQLite. Safe to call repeatedly."""
     _migrate_positions()
@@ -204,9 +208,14 @@ def _migrate_positions():
                         "INSERT OR IGNORE INTO positions "
                         "(symbol, entry_date, entry_price, signal, regime, confidence) "
                         "VALUES (?,?,?,?,?,?)",
-                        (sym, data.get("entry_date", ""), data.get("entry_price", 0.0),
-                         data.get("signal", "unknown"), data.get("regime", "UNKNOWN"),
-                         data.get("confidence", 0)),
+                        (
+                            sym,
+                            data.get("entry_date", ""),
+                            data.get("entry_price", 0.0),
+                            data.get("signal", "unknown"),
+                            data.get("regime", "UNKNOWN"),
+                            data.get("confidence", 0),
+                        ),
                     )
         logger.info(f"Migrated {len(meta)} position(s) from positions_meta.json")
     except Exception as e:
@@ -215,12 +224,20 @@ def _migrate_positions():
 
 def _migrate_runs():
     import re
+
     pattern = re.compile(r"^\d{4}-\d{2}-\d{2}(-midday|-close)?\.json$")
-    non_run = {"positions_meta.json", "signal_stats.json", "daily_baseline.json",
-               "backtest_results.json"}
+    non_run = {
+        "positions_meta.json",
+        "signal_stats.json",
+        "daily_baseline.json",
+        "backtest_results.json",
+    }
     try:
-        files = [f for f in os.listdir(LOG_DIR)
-                 if f.endswith(".json") and f not in non_run and pattern.match(f)]
+        files = [
+            f
+            for f in os.listdir(LOG_DIR)
+            if f.endswith(".json") and f not in non_run and pattern.match(f)
+        ]
     except FileNotFoundError:
         return
     migrated = 0
@@ -231,27 +248,29 @@ def _migrate_runs():
             if "date" not in r or "account_after" not in r:
                 continue
             with get_db() as conn:
-                exists = conn.execute(
-                    "SELECT 1 FROM runs WHERE date=?", (r["date"],)
-                ).fetchone()
+                exists = conn.execute("SELECT 1 FROM runs WHERE date=?", (r["date"],)).fetchone()
                 if not exists:
                     conn.execute(
                         "INSERT OR IGNORE INTO runs "
                         "(date,mode,run_id,timestamp,account_before,account_after,"
                         "market_summary,position_decisions,buy_candidates,"
                         "trades_executed,stop_losses,daily_pnl) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (r["date"],
-                         "open" if "-" not in r["date"].lstrip("0123456789-")[:1] else r["date"].split("-")[-1],
-                         r.get("run_id"),
-                         r.get("timestamp", ""),
-                         json.dumps(r.get("account_before", {})),
-                         json.dumps(r.get("account_after", {})),
-                         r.get("market_summary", ""),
-                         json.dumps(r.get("position_decisions", [])),
-                         json.dumps(r.get("buy_candidates", [])),
-                         json.dumps(r.get("trades_executed", [])),
-                         json.dumps(r.get("stop_losses_triggered", [])),
-                         r.get("daily_pnl", 0.0)),
+                        (
+                            r["date"],
+                            "open"
+                            if "-" not in r["date"].lstrip("0123456789-")[:1]
+                            else r["date"].split("-")[-1],
+                            r.get("run_id"),
+                            r.get("timestamp", ""),
+                            json.dumps(r.get("account_before", {})),
+                            json.dumps(r.get("account_after", {})),
+                            r.get("market_summary", ""),
+                            json.dumps(r.get("position_decisions", [])),
+                            json.dumps(r.get("buy_candidates", [])),
+                            json.dumps(r.get("trades_executed", [])),
+                            json.dumps(r.get("stop_losses_triggered", [])),
+                            r.get("daily_pnl", 0.0),
+                        ),
                     )
                     migrated += 1
         except Exception as e:
@@ -277,8 +296,14 @@ def _migrate_audit():
                         continue
                     ev = json.loads(line)
                     payload = {k: v for k, v in ev.items() if k not in ("ts", "event")}
-                    rows.append((ev.get("run_id"), ev.get("ts", ""), ev.get("event", ""),
-                                 json.dumps(payload)))
+                    rows.append(
+                        (
+                            ev.get("run_id"),
+                            ev.get("ts", ""),
+                            ev.get("event", ""),
+                            json.dumps(payload),
+                        )
+                    )
             conn.executemany(
                 "INSERT INTO audit_events (run_id,ts,event,payload) VALUES (?,?,?,?)", rows
             )
@@ -303,15 +328,26 @@ def _migrate_decisions():
                     if not line:
                         continue
                     d = json.loads(line)
-                    rows.append((d.get("run_id"), d.get("date", ""), d.get("mode", "open"),
-                                 d.get("ts", ""), d.get("market_summary", ""),
-                                 d.get("symbol", ""), d.get("action", ""),
-                                 d.get("confidence"), d.get("key_signal"),
-                                 d.get("reasoning"), int(d.get("executed", False))))
+                    rows.append(
+                        (
+                            d.get("run_id"),
+                            d.get("date", ""),
+                            d.get("mode", "open"),
+                            d.get("ts", ""),
+                            d.get("market_summary", ""),
+                            d.get("symbol", ""),
+                            d.get("action", ""),
+                            d.get("confidence"),
+                            d.get("key_signal"),
+                            d.get("reasoning"),
+                            int(d.get("executed", False)),
+                        )
+                    )
             conn.executemany(
                 "INSERT INTO decisions (run_id,date,mode,timestamp,market_summary,"
                 "symbol,action,confidence,key_signal,reasoning,executed) VALUES "
-                "(?,?,?,?,?,?,?,?,?,?,?)", rows
+                "(?,?,?,?,?,?,?,?,?,?,?)",
+                rows,
             )
         logger.info(f"Migrated {len(rows)} decision(s) from decisions.jsonl")
     except Exception as e:

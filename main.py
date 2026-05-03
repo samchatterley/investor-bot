@@ -54,6 +54,7 @@ def _lock_file() -> str:
 
 # ── Lock file management ──────────────────────────────────────────────────────
 
+
 def _acquire_lock() -> int | None:
     """Atomically create the lock file. Returns an open fd on success, None if already locked."""
     lock_file = _lock_file()
@@ -69,10 +70,14 @@ def _acquire_lock() -> int | None:
             try:
                 fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             except FileExistsError:
-                logger.warning("Could not acquire lock after stale removal — another run may be in progress.")
+                logger.warning(
+                    "Could not acquire lock after stale removal — another run may be in progress."
+                )
                 return None
         else:
-            logger.warning("Lock file exists — another run may be in progress. Remove .lock file to override.")
+            logger.warning(
+                "Lock file exists — another run may be in progress. Remove .lock file to override."
+            )
             return None
     payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
     os.write(fd, payload.encode())
@@ -88,6 +93,7 @@ def _release_lock(fd: int | None = None):
 
 
 # ── Kill switch ───────────────────────────────────────────────────────────────
+
 
 def _run_kill_switch():
     """
@@ -112,8 +118,7 @@ def _run_kill_switch():
         close_results[pos["symbol"]] = result
         pl = pos["unrealized_pl"]
         logger.critical(
-            f"  {pos['symbol']}: order={result.status.name}  "
-            f"P&L: {'+' if pl >= 0 else ''}{pl:.2f}"
+            f"  {pos['symbol']}: order={result.status.name}  P&L: {'+' if pl >= 0 else ''}{pl:.2f}"
         )
         if result.is_success:
             audit_log.log_position_closed(pos["symbol"], "kill_switch", pos["unrealized_plpc"])
@@ -152,8 +157,7 @@ def _run_kill_switch():
         symbol: {
             "order_status": result.status.name,
             "broker_status": (
-                "unknown" if verification_error
-                else ("open" if symbol in remaining else "closed")
+                "unknown" if verification_error else ("open" if symbol in remaining else "closed")
             ),
         }
         for symbol, result in close_results.items()
@@ -202,6 +206,7 @@ def _run_clear_halt():
 
 # ── Partial exits ─────────────────────────────────────────────────────────────
 
+
 def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
     """Sell half of any position up more than PARTIAL_PROFIT_PCT (once per position)."""
     executed = []
@@ -213,20 +218,28 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
                 logger.info(f"Partial exit already taken for {symbol} — skipping")
                 continue
             half_qty = pos["qty"] / 2
-            logger.info(f"Partial exit: {symbol} +{pos['unrealized_plpc']:.1f}% — selling {half_qty:.6f} shares")
+            logger.info(
+                f"Partial exit: {symbol} +{pos['unrealized_plpc']:.1f}% — selling {half_qty:.6f} shares"
+            )
             if not dry_run:
                 trader.cancel_open_orders(client, symbol)
                 result = trader.place_partial_sell(client, symbol, half_qty)
                 if result and result.is_success:
-                    audit_log.log_order_placed(symbol, "SELL_PARTIAL", pos["market_value"] / 2, result.broker_order_id)
+                    audit_log.log_order_placed(
+                        symbol, "SELL_PARTIAL", pos["market_value"] / 2, result.broker_order_id
+                    )
                     audit_log.log_order_filled(symbol, result.broker_order_id, result.filled_qty)
                     trader.record_partial_exit(symbol)
-                    trader.place_trailing_stop(client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"])
-                    executed.append({
-                        "symbol": symbol,
-                        "action": "PARTIAL SELL",
-                        "detail": f"50% at +{pos['unrealized_plpc']:.1f}%",
-                    })
+                    trader.place_trailing_stop(
+                        client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"]
+                    )
+                    executed.append(
+                        {
+                            "symbol": symbol,
+                            "action": "PARTIAL SELL",
+                            "detail": f"50% at +{pos['unrealized_plpc']:.1f}%",
+                        }
+                    )
             else:
                 logger.info(f"  [DRY RUN] Would partial-sell {symbol}")
                 executed.append({"symbol": symbol, "action": "PARTIAL SELL", "detail": "dry run"})
@@ -235,10 +248,13 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
 
 # ── Main run ──────────────────────────────────────────────────────────────────
 
+
 def run(dry_run: bool = False, mode: str = "open"):
     today = config.today_et().isoformat()
     mode_label = "PAPER" if config.IS_PAPER else "*** LIVE ***"
-    logger.info(f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''} ===")
+    logger.info(
+        f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''} ==="
+    )
     if not config.IS_PAPER and not dry_run and config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK":
         logger.error(
             "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
@@ -293,8 +309,12 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
     # ── Account snapshot ──────────────────────────────────────────────────────
     account_before = trader.get_account_info(client)
-    logger.info(f"Portfolio: ${account_before['portfolio_value']:.2f}  Cash: ${account_before['cash']:.2f}")
-    audit_log.log_run_start(mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER)
+    logger.info(
+        f"Portfolio: ${account_before['portfolio_value']:.2f}  Cash: ${account_before['cash']:.2f}"
+    )
+    audit_log.log_run_start(
+        mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER
+    )
 
     if mode == "open":
         portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
@@ -323,7 +343,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         if not dry_run:
             for pos in trader.get_open_positions(client):
                 trader.close_position(client, pos["symbol"])
-                audit_log.log_position_closed(pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"])
+                audit_log.log_position_closed(
+                    pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
+                )
                 trader.record_sell(pos["symbol"])
         return
 
@@ -374,21 +396,31 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                     pos = next((p for p in open_positions if p["symbol"] == symbol), None)
                     if pos:
                         performance.record_trade_outcome(
-                            meta["signal"], pos["unrealized_plpc"],
-                            regime=meta["regime"], confidence=meta["confidence"],
+                            meta["signal"],
+                            pos["unrealized_plpc"],
+                            regime=meta["regime"],
+                            confidence=meta["confidence"],
                         )
-                        audit_log.log_position_closed(symbol, "earnings_exit", pos["unrealized_plpc"])
+                        audit_log.log_position_closed(
+                            symbol, "earnings_exit", pos["unrealized_plpc"]
+                        )
                     trader.record_sell(symbol)
-                    all_trades.append({"symbol": symbol, "action": "SELL", "detail": "earnings exit"})
+                    all_trades.append(
+                        {"symbol": symbol, "action": "SELL", "detail": "earnings exit"}
+                    )
                 else:
-                    logger.error(f"  Earnings exit FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}")
+                    logger.error(
+                        f"  Earnings exit FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}"
+                    )
 
     open_positions = trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
     position_ages = trader.get_position_ages()
     stale = [
-        sym for sym, age in position_ages.items()
-        if age >= config.SIGNAL_MAX_HOLD_DAYS.get(
+        sym
+        for sym, age in position_ages.items()
+        if age
+        >= config.SIGNAL_MAX_HOLD_DAYS.get(
             trader.get_position_meta(sym).get("signal", "unknown"),
             config.MAX_HOLD_DAYS,
         )
@@ -412,7 +444,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     candidate_snaps = [s for s in snapshots if s["symbol"] not in held_symbols]
     filtered_candidates = stock_scanner.prefilter_candidates(candidate_snaps)
     ai_snapshots = held_snaps + filtered_candidates
-    logger.info(f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed")
+    logger.info(
+        f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
+    )
 
     # Symbols the AI actually received — used as the validation universe.
     # Broader known_symbols (all fetched) would allow hallucinated tickers from
@@ -462,7 +496,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         return
 
     # ── Validate AI response before acting ───────────────────────────────────
-    is_valid, validation_errors = validate_ai_response(decisions, ai_known_symbols, held_symbols=held_symbols)
+    is_valid, validation_errors = validate_ai_response(
+        decisions, ai_known_symbols, held_symbols=held_symbols
+    )
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
         buy_domain_only = validation_errors and all(
@@ -498,11 +534,15 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     )
 
     # ── Execute sells ─────────────────────────────────────────────────────────
-    symbols_to_sell = {d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"}
+    symbols_to_sell = {
+        d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
+    }
     symbols_to_sell |= {sym for sym in stale if sym in held_symbols}
 
     for symbol in symbols_to_sell:
-        decision = next((d for d in decisions.get("position_decisions", []) if d["symbol"] == symbol), None)
+        decision = next(
+            (d for d in decisions.get("position_decisions", []) if d["symbol"] == symbol), None
+        )
         if decision:
             reason = decision["reasoning"]
         else:
@@ -517,22 +557,34 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                 if pos:
                     meta = trader.get_position_meta(symbol)
                     performance.record_trade_outcome(
-                        meta["signal"], pos["unrealized_plpc"],
-                        regime=meta["regime"], confidence=meta["confidence"],
+                        meta["signal"],
+                        pos["unrealized_plpc"],
+                        regime=meta["regime"],
+                        confidence=meta["confidence"],
                     )
                     audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
                 trader.record_sell(symbol)
                 executed_symbols.add(symbol)
                 all_trades.append({"symbol": symbol, "action": "SELL", "detail": reason})
             else:
-                logger.error(f"  SELL FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}. Manual review required.")
-                alerts.alert_error("SELL FAILED", f"{symbol}: failed to close position — {result.rejection_reason or 'unknown error'}")
+                logger.error(
+                    f"  SELL FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}. Manual review required."
+                )
+                alerts.alert_error(
+                    "SELL FAILED",
+                    f"{symbol}: failed to close position — {result.rejection_reason or 'unknown error'}",
+                )
         else:
             executed_symbols.add(symbol)
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
 
     # ── Execute buys (open mode only; midday/close are position-management runs) ──
-    skip_buys = mode in ("midday", "close", "open_sells") or cb_triggered or regime.get("is_bearish") or macro.get("is_high_risk")
+    skip_buys = (
+        mode in ("midday", "close", "open_sells")
+        or cb_triggered
+        or regime.get("is_bearish")
+        or macro.get("is_high_risk")
+    )
     if skip_buys:
         reasons = []
         if mode in ("midday", "close"):
@@ -566,13 +618,16 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                 regime_conf_bump = 0
             effective_max_orders = min(config.MAX_ORDERS_PER_RUN, regime_max_orders)
 
-            min_confidence = config.MIN_CONFIDENCE + regime_conf_bump + (1 if vix and vix > 25 else 0)
+            min_confidence = (
+                config.MIN_CONFIDENCE + regime_conf_bump + (1 if vix and vix > 25 else 0)
+            )
             if regime_conf_bump:
-                logger.info(f"Regime {regime_name}: min_confidence raised to {min_confidence}, max_orders capped at {effective_max_orders}")
+                logger.info(
+                    f"Regime {regime_name}: min_confidence raised to {min_confidence}, max_orders capped at {effective_max_orders}"
+                )
 
             raw_candidates = [
-                c for c in decisions.get("buy_candidates", [])
-                if c["confidence"] >= min_confidence
+                c for c in decisions.get("buy_candidates", []) if c["confidence"] >= min_confidence
             ]
             valid_candidates = risk_manager.validate_buy_candidates(
                 raw_candidates,
@@ -586,7 +641,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             orders_placed = 0
             for candidate in valid_candidates:
                 if orders_placed >= effective_max_orders:
-                    logger.warning(f"MAX_ORDERS_PER_RUN ({config.MAX_ORDERS_PER_RUN}) reached — no more buys this run")
+                    logger.warning(
+                        f"MAX_ORDERS_PER_RUN ({config.MAX_ORDERS_PER_RUN}) reached — no more buys this run"
+                    )
                     break
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
@@ -602,8 +659,11 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
                 # Pre-trade controls (MiFID II)
                 approved, rejection_reason = check_pre_trade(
-                    symbol, notional, daily_notional_spent,
-                    config.MAX_SINGLE_ORDER_USD, config.MAX_DAILY_NOTIONAL_USD,
+                    symbol,
+                    notional,
+                    daily_notional_spent,
+                    config.MAX_SINGLE_ORDER_USD,
+                    config.MAX_DAILY_NOTIONAL_USD,
                 )
                 if not approved:
                     logger.warning(f"  Pre-trade check failed: {rejection_reason}")
@@ -621,28 +681,44 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         )
                         continue
                     if not dry_run:
-                        result = trader.place_buy_order(client, symbol, notional)
+                        result = trader.place_buy_order(client, symbol, notional, run_id=run_id)
                         if result and result.is_success:
                             orders_placed += 1
                             daily_notional_spent += notional
                             trader.add_daily_notional(today, notional)
                             entry_price = snap["current_price"] if snap else 0.0
                             trader.record_buy(
-                                symbol, entry_price,
+                                symbol,
+                                entry_price,
                                 signal=candidate.get("key_signal", "unknown"),
                                 regime=regime.get("regime", "UNKNOWN"),
                                 confidence=confidence,
                             )
-                            audit_log.log_order_placed(symbol, "BUY", notional, result.broker_order_id)
+                            audit_log.log_order_placed(
+                                symbol, "BUY", notional, result.broker_order_id
+                            )
                             if result.filled_qty:
-                                audit_log.log_order_filled(symbol, result.broker_order_id, result.filled_qty)
+                                audit_log.log_order_filled(
+                                    symbol, result.broker_order_id, result.filled_qty
+                                )
                                 current_price = snap["current_price"] if snap else None
                                 # Floor to whole shares — Alpaca rejects fractional stop orders
                                 stop_qty = int(math.floor(result.filled_qty))
-                                stop_result = trader.place_trailing_stop(client, symbol, stop_qty, current_price=current_price) if stop_qty >= 1 else None
+                                stop_result = (
+                                    trader.place_trailing_stop(
+                                        client, symbol, stop_qty, current_price=current_price
+                                    )
+                                    if stop_qty >= 1
+                                    else None
+                                )
                                 if stop_result is None or not stop_result.is_success:
-                                    logger.error(f"  Stop placement FAILED for {symbol} — position unprotected!")
-                                    alerts.alert_error("STOP FAILED", f"{symbol}: trailing stop placement failed after buy — position has no downside protection.")
+                                    logger.error(
+                                        f"  Stop placement FAILED for {symbol} — position unprotected!"
+                                    )
+                                    alerts.alert_error(
+                                        "STOP FAILED",
+                                        f"{symbol}: trailing stop placement failed after buy — position has no downside protection.",
+                                    )
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})
@@ -650,7 +726,13 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         orders_placed += 1
                         daily_notional_spent += notional
                         executed_symbols.add(symbol)
-                        all_trades.append({"symbol": symbol, "action": "BUY", "detail": f"dry run ${notional:.2f}"})
+                        all_trades.append(
+                            {
+                                "symbol": symbol,
+                                "action": "BUY",
+                                "detail": f"dry run ${notional:.2f}",
+                            }
+                        )
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")
 
@@ -672,7 +754,9 @@ def _run_inner(dry_run: bool, mode: str, today: str):
     )
     portfolio_tracker.print_summary(record)
     performance.generate_dashboard(portfolio_tracker.load_history())
-    audit_log.log_run_end(mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"])
+    audit_log.log_run_end(
+        mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"]
+    )
     if mode == "close" and not dry_run:
         day_summary = get_day_summary(today)
         if day_summary:
@@ -683,13 +767,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--mode", choices=["open", "midday", "close"], default="open")
-    parser.add_argument("--kill-switch", action="store_true", help="Emergency: liquidate all and halt")
-    parser.add_argument("--clear-halt", action="store_true", help="Remove halt file and resume trading")
+    parser.add_argument(
+        "--kill-switch", action="store_true", help="Emergency: liquidate all and halt"
+    )
+    parser.add_argument(
+        "--clear-halt", action="store_true", help="Remove halt file and resume trading"
+    )
     parser.add_argument("--backtest", action="store_true", help="Run historical backtest")
     parser.add_argument("--start", default="2025-01-01")
     parser.add_argument("--end", default="2025-12-31")
-    parser.add_argument("--capital", type=float, default=None,
-                        help="Starting capital for backtest. Defaults to current Alpaca portfolio value.")
+    parser.add_argument(
+        "--capital",
+        type=float,
+        default=None,
+        help="Starting capital for backtest. Defaults to current Alpaca portfolio value.",
+    )
     args = parser.parse_args()
 
     if args.kill_switch:
@@ -707,8 +799,12 @@ if __name__ == "__main__":
                 logger.warning(f"Could not fetch account value ({e}) — defaulting to $100,000")
                 capital = 100000.0
         from backtest import run_backtest
+
         run_backtest(
-            config.STOCK_UNIVERSE, args.start, args.end, capital,
+            config.STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            capital,
             max_positions=config.MAX_POSITIONS,
         )
     else:

@@ -10,6 +10,7 @@ of the session while still executing time-sensitive exits at the bell.
 Times are scheduled in NYSE timezone directly — no BST/GMT conversion needed.
 Leave this process running in a terminal or tmux session.
 """
+
 import os
 import sys
 
@@ -51,10 +52,20 @@ def _run(mode: str):
         logger.error(f"Run failed ({mode}): {e}", exc_info=True)
 
 
-def _open_sells(): _run("open_sells")
-def _open():       _run("open")
-def _midday():     _run("midday")
-def _close():      _run("close")
+def _open_sells():
+    _run("open_sells")
+
+
+def _open():
+    _run("open")
+
+
+def _midday():
+    _run("midday")
+
+
+def _close():
+    _run("close")
 
 
 def _weekly_review():
@@ -78,12 +89,16 @@ def _weekly_review():
             from datetime import date as _date
 
             from notifications.emailer import _build_weekly_html, _send_html
+
             review_stub = {
                 "week_summary": "No trade history available for this week.",
-                "what_worked": [], "what_didnt": [], "lessons": [], "proposed_changes": [],
+                "what_worked": [],
+                "what_didnt": [],
+                "lessons": [],
+                "proposed_changes": [],
             }
             _send_html(
-                subject=f"Weekly Diagnostics {_date.today().isoformat()} · tests {test_report.get('status','')}",
+                subject=f"Weekly Diagnostics {_date.today().isoformat()} · tests {test_report.get('status', '')}",
                 html_fn=lambda name: _build_weekly_html(review_stub, name, test_report),
             )
     except Exception as e:
@@ -100,7 +115,9 @@ if __name__ == "__main__":
 
     schedule.every().sunday.at("15:00", _ET).do(_weekly_review)
 
-    logger.info("Scheduler running — Mon–Fri at 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)")
+    logger.info(
+        "Scheduler running — Mon–Fri at 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)"
+    )
     logger.info("Ctrl+C to stop.")
 
     while True:

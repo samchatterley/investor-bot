@@ -2,9 +2,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-CIRCUIT_BREAKER_DRAWDOWN_PCT = -12.0   # halt buys if portfolio drops this much from 5-day peak
-MAX_DAILY_LOSS_PCT = -5.0              # close everything if down this much on the day
-MAX_SECTOR_POSITIONS = 2               # max open positions in any single sector
+CIRCUIT_BREAKER_DRAWDOWN_PCT = -12.0  # halt buys if portfolio drops this much from 5-day peak
+MAX_DAILY_LOSS_PCT = -5.0  # close everything if down this much on the day
+MAX_SECTOR_POSITIONS = 2  # max open positions in any single sector
 
 
 def check_circuit_breaker(portfolio_history: list[dict]) -> tuple[bool, float]:
@@ -26,7 +26,9 @@ def check_circuit_breaker(portfolio_history: list[dict]) -> tuple[bool, float]:
         drawdown = (current / peak - 1) * 100
         triggered = drawdown <= CIRCUIT_BREAKER_DRAWDOWN_PCT
         if triggered:
-            logger.warning(f"Circuit breaker triggered: {drawdown:.1f}% drawdown from {peak:.2f} peak")
+            logger.warning(
+                f"Circuit breaker triggered: {drawdown:.1f}% drawdown from {peak:.2f} peak"
+            )
         return triggered, round(drawdown, 2)
     except (KeyError, IndexError, ZeroDivisionError) as e:
         logger.error(f"Circuit breaker check failed: {e}")
@@ -55,12 +57,12 @@ def check_vix_stop_adjustment(vix: float | None) -> float:
     if vix is None:
         return 4.0
     if vix > 35:
-        return 7.0   # very high vol — wide stop
+        return 7.0  # very high vol — wide stop
     if vix > 25:
-        return 5.5   # elevated vol
+        return 5.5  # elevated vol
     if vix > 18:
-        return 4.0   # normal
-    return 3.0       # low vol — tight stop
+        return 4.0  # normal
+    return 3.0  # low vol — tight stop
 
 
 def validate_buy_candidates(

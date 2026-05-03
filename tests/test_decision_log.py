@@ -1,4 +1,5 @@
 """Tests for utils/decision_log.py — AI decision audit trail."""
+
 import json
 import os
 import shutil
@@ -25,7 +26,6 @@ def _decisions(buy_symbols=None, sell_symbols=None, market="Quiet day"):
 
 
 class DecisionLogBase(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.decisions_path = os.path.join(self.tmpdir, "decisions.jsonl")
@@ -45,9 +45,9 @@ class DecisionLogBase(unittest.TestCase):
 
 
 class TestLogDecisions(DecisionLogBase):
-
     def test_buy_candidate_written(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
         entries = self._read_entries()
         self.assertEqual(len(entries), 1)
@@ -56,6 +56,7 @@ class TestLogDecisions(DecisionLogBase):
 
     def test_position_decision_written(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(sell_symbols=["MSFT"]), "midday", set())
         entries = self._read_entries()
         self.assertEqual(len(entries), 1)
@@ -64,36 +65,42 @@ class TestLogDecisions(DecisionLogBase):
 
     def test_multiple_candidates_all_written(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL", "NVDA"]), "open", set())
         entries = self._read_entries()
         self.assertEqual(len(entries), 2)
 
     def test_executed_flag_true_when_in_executed_set(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "open", {"AAPL"})
         entries = self._read_entries()
         self.assertTrue(entries[0]["executed"])
 
     def test_executed_flag_false_when_not_in_executed_set(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
         entries = self._read_entries()
         self.assertFalse(entries[0]["executed"])
 
     def test_market_summary_included(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"], market="Strong bull day"), "open", set())
         entries = self._read_entries()
         self.assertEqual(entries[0]["market_summary"], "Strong bull day")
 
     def test_mode_included(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "midday", set())
         entries = self._read_entries()
         self.assertEqual(entries[0]["mode"], "midday")
 
     def test_confidence_and_reasoning_included(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
         entries = self._read_entries()
         self.assertEqual(entries[0]["confidence"], 8)
@@ -101,35 +108,39 @@ class TestLogDecisions(DecisionLogBase):
 
     def test_key_signal_none_for_position_decisions(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(sell_symbols=["MSFT"]), "open", set())
         entries = self._read_entries()
         self.assertIsNone(entries[0]["key_signal"])
 
     def test_empty_decisions_writes_nothing(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(), "open", set())
         self.assertEqual(self._read_entries(), [])
 
     def test_entries_appended_across_calls(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
         log_decisions(_decisions(buy_symbols=["NVDA"]), "midday", set())
         self.assertEqual(len(self._read_entries()), 2)
 
     def test_each_entry_has_timestamp(self):
         from utils.decision_log import log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
         entries = self._read_entries()
         self.assertIn("ts", entries[0])
 
 
 class TestDecisionWriteFailures(DecisionLogBase):
-
     def test_jsonl_write_failure_does_not_raise(self):
         # Lines 43-44: open() raises → logger.error, no exception propagated
         import builtins
 
         from utils import decision_log
+
         real_open = builtins.open
 
         def failing_open(path, *args, **kwargs):
@@ -140,6 +151,7 @@ class TestDecisionWriteFailures(DecisionLogBase):
         with patch("builtins.open", side_effect=failing_open):
             try:
                 from utils.decision_log import log_decisions
+
                 log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
             except Exception:
                 self.fail("_write raised on JSONL write failure")
@@ -147,6 +159,7 @@ class TestDecisionWriteFailures(DecisionLogBase):
     def test_sqlite_write_failure_does_not_raise(self):
         # Lines 68-69: get_db() raises → logger.error, no exception propagated
         from utils.decision_log import log_decisions
+
         with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
             try:
                 log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
@@ -155,20 +168,22 @@ class TestDecisionWriteFailures(DecisionLogBase):
 
 
 class TestLoadDecisions(DecisionLogBase):
-
     def test_returns_empty_when_file_missing(self):
         from utils.decision_log import load_decisions
+
         result = load_decisions()
         self.assertEqual(result, [])
 
     def test_returns_written_entries(self):
         from utils.decision_log import load_decisions, log_decisions
+
         log_decisions(_decisions(buy_symbols=["AAPL", "NVDA"]), "open", {"AAPL"})
         result = load_decisions()
         self.assertEqual(len(result), 2)
 
     def test_respects_n_limit(self):
         from utils.decision_log import load_decisions, log_decisions
+
         for i in range(10):
             log_decisions(_decisions(buy_symbols=[f"SYM{i}"]), "open", set())
         result = load_decisions(n=5)
@@ -176,6 +191,7 @@ class TestLoadDecisions(DecisionLogBase):
 
     def test_returns_last_n_not_first_n(self):
         from utils.decision_log import load_decisions, log_decisions
+
         for i in range(5):
             log_decisions(_decisions(buy_symbols=[f"SYM{i}"]), "open", set())
         result = load_decisions(n=2)
@@ -185,9 +201,10 @@ class TestLoadDecisions(DecisionLogBase):
 
     def test_skips_malformed_lines(self):
         from utils.decision_log import load_decisions
+
         with open(self.decisions_path, "w") as f:
             f.write('{"valid": true}\n')
-            f.write('not json at all\n')
+            f.write("not json at all\n")
             f.write('{"also_valid": true}\n')
         result = load_decisions()
         self.assertEqual(len(result), 2)
@@ -195,6 +212,7 @@ class TestLoadDecisions(DecisionLogBase):
     def test_load_decisions_suppresses_read_exception(self):
         # Lines 126-127: open() raises inside the try block → except passes, returns empty list
         import builtins
+
         real_open = builtins.open
 
         # File must exist for the os.path.exists check to pass
@@ -208,5 +226,6 @@ class TestLoadDecisions(DecisionLogBase):
 
         with patch("builtins.open", side_effect=failing_open):
             from utils.decision_log import load_decisions
+
             result = load_decisions()
         self.assertEqual(result, [])

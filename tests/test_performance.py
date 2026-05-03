@@ -29,7 +29,6 @@ def _run(date_str, before, after, pnl=None):
 
 
 class TestComputeMetrics(unittest.TestCase):
-
     def test_empty_returns_empty_dict(self):
         self.assertEqual(compute_metrics([]), {})
 
@@ -39,14 +38,18 @@ class TestComputeMetrics(unittest.TestCase):
         self.assertEqual(m["total_return_pct"], 0.0)
 
     def test_positive_total_return(self):
-        records = [_run("2026-01-01", 100_000, 100_000),
-                   _run("2026-01-02", 100_000, 110_000, pnl=10_000)]
+        records = [
+            _run("2026-01-01", 100_000, 100_000),
+            _run("2026-01-02", 100_000, 110_000, pnl=10_000),
+        ]
         m = compute_metrics(records)
         self.assertAlmostEqual(m["total_return_pct"], 10.0, places=1)
 
     def test_max_drawdown_is_negative_or_zero(self):
-        records = [_run("2026-01-01", 100_000, 100_000),
-                   _run("2026-01-02", 100_000, 90_000, pnl=-10_000)]
+        records = [
+            _run("2026-01-01", 100_000, 100_000),
+            _run("2026-01-02", 100_000, 90_000, pnl=-10_000),
+        ]
         m = compute_metrics(records)
         self.assertLessEqual(m["max_drawdown_pct"], 0.0)
 
@@ -87,7 +90,6 @@ class TestComputeMetrics(unittest.TestCase):
 
 
 class TestBucketHelpers(unittest.TestCase):
-
     def test_empty_bucket_structure(self):
         b = _empty_bucket()
         self.assertEqual(b["trades"], 0)
@@ -123,7 +125,6 @@ class TestBucketHelpers(unittest.TestCase):
 
 
 class TestSignalTracking(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.stats_patcher = patch(
@@ -206,6 +207,7 @@ class TestSignalTracking(unittest.TestCase):
         with open(corrupt_path, "w") as f:
             f.write("{ not valid json }")
         from analysis.performance import _load_stats
+
         result = _load_stats()
         self.assertEqual(result, {})
 
@@ -222,7 +224,6 @@ class TestSignalTracking(unittest.TestCase):
 
 
 class TestGenerateDashboard(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.dashboard_patcher = patch(
@@ -245,7 +246,7 @@ class TestGenerateDashboard(unittest.TestCase):
         return {
             "date": date_str,
             "account_before": {"portfolio_value": before},
-            "account_after":  {"portfolio_value": after},
+            "account_after": {"portfolio_value": after},
             "daily_pnl": pnl,
             "trades_executed": [],
         }

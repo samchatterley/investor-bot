@@ -48,7 +48,9 @@ def fetch_stock_data(
             last_date = df.index[-1].date()
             staleness = (datetime.now().date() - last_date).days
             if staleness > 3:
-                logger.warning(f"{symbol}: last data point {last_date} is {staleness} days old — skipping stale feed")
+                logger.warning(
+                    f"{symbol}: last data point {last_date} is {staleness} days old — skipping stale feed"
+                )
                 return None
 
             df = df.copy()
@@ -137,17 +139,24 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame) -> dict:
         "macd_crossed_up": bool(latest["macd_diff"] > 0 and prev["macd_diff"] <= 0),
         "macd_crossed_down": bool(latest["macd_diff"] < 0 and prev["macd_diff"] >= 0),
         "ema9_above_ema21": bool(latest["ema9"] > latest["ema21"]),
-        "bb_pct": round(float(latest["bb_pct"]), 2),   # 0=oversold zone, 1=overbought zone
+        "bb_pct": round(float(latest["bb_pct"]), 2),  # 0=oversold zone, 1=overbought zone
         "vol_ratio": round(float(latest["vol_ratio"]), 2),  # >1.5 = high volume
-        "avg_volume": int(float(_av)) if (_av := latest.get("avg_volume_20")) is not None and not pd.isna(_av) else 0,
+        "avg_volume": int(float(_av))
+        if (_av := latest.get("avg_volume_20")) is not None and not pd.isna(_av)
+        else 0,
         "price_vs_ema9_pct": round((float(latest["Close"]) / float(latest["ema9"]) - 1) * 100, 2),
         "price_vs_ema21_pct": round((float(latest["Close"]) / float(latest["ema21"]) - 1) * 100, 2),
         "weekly_trend_up": bool(latest.get("weekly_trend_up", True)),
         "weekly_rsi": float(latest.get("weekly_rsi", 50.0)),
-        "bb_squeeze": bool(latest.get("bb_squeeze", False)) if pd.notna(latest.get("bb_squeeze", False)) else False,
-        "is_inside_day": bool(latest.get("is_inside_day", False)) if pd.notna(latest.get("is_inside_day", False)) else False,
+        "bb_squeeze": bool(latest.get("bb_squeeze", False))
+        if pd.notna(latest.get("bb_squeeze", False))
+        else False,
+        "is_inside_day": bool(latest.get("is_inside_day", False))
+        if pd.notna(latest.get("is_inside_day", False))
+        else False,
         "price_vs_52w_high_pct": round((float(latest["Close"]) / float(_h52w) - 1) * 100, 2)
-            if (_h52w := latest.get("high_52w")) is not None and pd.notna(_h52w) else 0.0,
+        if (_h52w := latest.get("high_52w")) is not None and pd.notna(_h52w)
+        else 0.0,
     }
 
 
@@ -167,7 +176,9 @@ def get_spy_5d_return() -> float | None:
     try:
         hist = yf.Ticker("SPY").history(period="15d")
         if len(hist) >= 6:
-            return round((float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-6]) - 1) * 100, 2)
+            return round(
+                (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-6]) - 1) * 100, 2
+            )
     except Exception:
         pass
     return None
@@ -178,7 +189,9 @@ def get_spy_10d_return() -> float | None:
     try:
         hist = yf.Ticker("SPY").history(period="25d")
         if len(hist) >= 11:
-            return round((float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-11]) - 1) * 100, 2)
+            return round(
+                (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-11]) - 1) * 100, 2
+            )
     except Exception:
         pass
     return None

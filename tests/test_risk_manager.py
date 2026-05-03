@@ -13,7 +13,6 @@ def _record(value):
 
 
 class TestCircuitBreaker(unittest.TestCase):
-
     def test_not_triggered_on_flat_portfolio(self):
         history = [_record(100_000)] * 5
         triggered, drawdown = check_circuit_breaker(history)
@@ -21,8 +20,13 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertEqual(drawdown, 0.0)
 
     def test_triggered_on_large_drawdown(self):
-        history = [_record(100_000), _record(100_000), _record(100_000),
-                   _record(100_000), _record(85_000)]
+        history = [
+            _record(100_000),
+            _record(100_000),
+            _record(100_000),
+            _record(100_000),
+            _record(85_000),
+        ]
         triggered, drawdown = check_circuit_breaker(history)
         self.assertTrue(triggered)
         self.assertLess(drawdown, -12.0)
@@ -42,14 +46,18 @@ class TestCircuitBreaker(unittest.TestCase):
         self.assertFalse(triggered)
 
     def test_drawdown_value_is_correct(self):
-        history = [_record(100_000), _record(100_000), _record(100_000),
-                   _record(100_000), _record(80_000)]
+        history = [
+            _record(100_000),
+            _record(100_000),
+            _record(100_000),
+            _record(100_000),
+            _record(80_000),
+        ]
         _, drawdown = check_circuit_breaker(history)
         self.assertAlmostEqual(drawdown, -20.0, places=1)
 
 
 class TestDailyLoss(unittest.TestCase):
-
     def test_not_triggered_on_gain(self):
         triggered, pct = check_daily_loss(100_000, 102_000)
         self.assertFalse(triggered)
@@ -75,7 +83,6 @@ class TestDailyLoss(unittest.TestCase):
 
 
 class TestVixStopAdjustment(unittest.TestCase):
-
     def test_none_returns_default(self):
         self.assertEqual(check_vix_stop_adjustment(None), 4.0)
 
@@ -93,11 +100,15 @@ class TestVixStopAdjustment(unittest.TestCase):
 
 
 class TestValidateBuyCandidates(unittest.TestCase):
-
     def _sector_map(self, sym):
-        return {"AAPL": "Technology", "MSFT": "Technology", "NVDA": "Technology",
-                "JPM": "Financials", "BAC": "Financials",
-                "SPY": "ETF"}.get(sym, "Unknown")
+        return {
+            "AAPL": "Technology",
+            "MSFT": "Technology",
+            "NVDA": "Technology",
+            "JPM": "Financials",
+            "BAC": "Financials",
+            "SPY": "ETF",
+        }.get(sym, "Unknown")
 
     def test_filters_already_held_symbols(self):
         candidates = [{"symbol": "AAPL", "confidence": 8}]
@@ -113,9 +124,7 @@ class TestValidateBuyCandidates(unittest.TestCase):
         candidates = [{"symbol": "MSFT", "confidence": 8}]
         held = {"AAPL"}
         # Artificially fill Technology to the cap (2)
-        result = validate_buy_candidates(
-            candidates, held, self._sector_map, max_per_sector=1
-        )
+        result = validate_buy_candidates(candidates, held, self._sector_map, max_per_sector=1)
         self.assertEqual(result, [])
 
     def test_etf_bypasses_sector_cap(self):
@@ -143,6 +152,7 @@ class TestValidateBuyCandidates(unittest.TestCase):
     def test_unknown_sector_symbols_bypass_cap(self):
         def unknown_map(sym):
             return "Unknown"
+
         candidates = [
             {"symbol": "AAPL", "confidence": 8},
             {"symbol": "MSFT", "confidence": 8},
@@ -160,17 +170,14 @@ class TestValidateBuyCandidates(unittest.TestCase):
     def test_sector_map_fn_exception_propagates(self):
         def boom(sym):
             raise RuntimeError(f"sector lookup failed for {sym}")
+
         with self.assertRaises(RuntimeError):
-            validate_buy_candidates(
-                [{"symbol": "AAPL", "confidence": 8}], set(), boom
-            )
+            validate_buy_candidates([{"symbol": "AAPL", "confidence": 8}], set(), boom)
 
 
 class TestCircuitBreakerEdgeCases(unittest.TestCase):
-
     def test_malformed_record_returns_false(self):
-        history = [{"bad_key": 1}, {"bad_key": 2}, {"bad_key": 3},
-                   {"bad_key": 4}, {"bad_key": 5}]
+        history = [{"bad_key": 1}, {"bad_key": 2}, {"bad_key": 3}, {"bad_key": 4}, {"bad_key": 5}]
         triggered, drawdown = check_circuit_breaker(history)
         self.assertFalse(triggered)
         self.assertEqual(drawdown, 0.0)
@@ -178,6 +185,7 @@ class TestCircuitBreakerEdgeCases(unittest.TestCase):
     def test_zero_peak_returns_false(self):
         def _r(v):
             return {"account_after": {"portfolio_value": v}}
+
         history = [_r(0), _r(0), _r(0), _r(0), _r(0)]
         triggered, drawdown = check_circuit_breaker(history)
         self.assertFalse(triggered)

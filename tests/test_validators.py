@@ -14,7 +14,12 @@ _GOOD_SUMMARY = "Markets are showing broad-based strength today."
 
 
 def _valid_buy(symbol="AAPL", confidence=8, reasoning=_GOOD_REASONING, signal="momentum"):
-    return {"symbol": symbol, "confidence": confidence, "reasoning": reasoning, "key_signal": signal}
+    return {
+        "symbol": symbol,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "key_signal": signal,
+    }
 
 
 def _valid_sell(symbol="MSFT", action="SELL", reasoning="Exit on valuation."):
@@ -30,6 +35,7 @@ def _valid_decisions(buys=None, sells=None, summary=_GOOD_SUMMARY):
 
 
 # ── DecisionSet model — unit tests ────────────────────────────────────────────
+
 
 class TestDecisionSetModel(unittest.TestCase):
     """Direct tests of Pydantic models, independent of validate_ai_response."""
@@ -52,10 +58,14 @@ class TestDecisionSetModel(unittest.TestCase):
         self.assertIn("AAPL", str(ctx.exception))
 
     def test_multiple_duplicate_symbols_all_reported(self):
-        data = _valid_decisions(buys=[
-            _valid_buy("AAPL"), _valid_buy("AAPL"),
-            _valid_buy("NVDA"), _valid_buy("NVDA"),
-        ])
+        data = _valid_decisions(
+            buys=[
+                _valid_buy("AAPL"),
+                _valid_buy("AAPL"),
+                _valid_buy("NVDA"),
+                _valid_buy("NVDA"),
+            ]
+        )
         with self.assertRaises(ValidationError) as ctx:
             DecisionSet.model_validate(data)
         msg = str(ctx.exception)
@@ -127,7 +137,6 @@ class TestDecisionSetModel(unittest.TestCase):
 
 
 class TestBuyCandidateModel(unittest.TestCase):
-
     def test_valid_candidate_parses(self):
         c = BuyCandidate.model_validate(_valid_buy())
         self.assertEqual(c.symbol, "AAPL")
@@ -214,7 +223,6 @@ class TestBuyCandidateModel(unittest.TestCase):
 
 
 class TestPositionDecisionModel(unittest.TestCase):
-
     def test_hold_action_valid(self):
         d = PositionDecision.model_validate({"symbol": "AAPL", "action": "HOLD"})
         self.assertEqual(d.action, "HOLD")
@@ -248,8 +256,8 @@ class TestPositionDecisionModel(unittest.TestCase):
 
 # ── validate_ai_response — integration tests ─────────────────────────────────
 
-class TestValidateAiResponse(unittest.TestCase):
 
+class TestValidateAiResponse(unittest.TestCase):
     def _valid(self):
         return _valid_decisions()
 
@@ -311,10 +319,12 @@ class TestValidateAiResponse(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_multiple_errors_all_reported(self):
-        data = _valid_decisions(buys=[
-            _valid_buy("AAPL"),
-            {"symbol": "GHOST1", "confidence": 99, "key_signal": "unknown", "reasoning": "ok"},
-        ])
+        data = _valid_decisions(
+            buys=[
+                _valid_buy("AAPL"),
+                {"symbol": "GHOST1", "confidence": 99, "key_signal": "unknown", "reasoning": "ok"},
+            ]
+        )
         _, errors = validate_ai_response(data, _KNOWN)
         self.assertGreaterEqual(len(errors), 2)
 
@@ -424,7 +434,6 @@ class TestValidateAiResponse(unittest.TestCase):
 
 
 class TestValidateAiResponseUnhappyPaths(unittest.TestCase):
-
     def _valid(self):
         return _valid_decisions()
 
@@ -470,6 +479,7 @@ class TestValidateAiResponseUnhappyPaths(unittest.TestCase):
 
 # ── Context-dependent checks ─────────────────────────────────────────────────
 
+
 class TestValidateContextChecks(unittest.TestCase):
     """Tests for Phase 2: runtime known_symbols / held_symbols checks."""
 
@@ -514,9 +524,7 @@ class TestValidateContextChecks(unittest.TestCase):
             buys=[_valid_buy("GHOST1"), _valid_buy("GHOST2")],
             sells=[],
         )
-        is_valid, errors = validate_ai_response(
-            data, _KNOWN, held_symbols={"MSFT"}
-        )
+        is_valid, errors = validate_ai_response(data, _KNOWN, held_symbols={"MSFT"})
         self.assertFalse(is_valid)
         buy_errors = [e for e in errors if "BUY candidate" in e]
         self.assertGreaterEqual(len(buy_errors), 2)
@@ -524,8 +532,8 @@ class TestValidateContextChecks(unittest.TestCase):
 
 # ── sanitize_headlines ────────────────────────────────────────────────────────
 
-class TestSanitizeHeadlines(unittest.TestCase):
 
+class TestSanitizeHeadlines(unittest.TestCase):
     def test_clean_headline_passes_through(self):
         news = {"AAPL": ["Apple reports record earnings"]}
         result = sanitize_headlines(news)
@@ -594,8 +602,8 @@ class TestSanitizeHeadlines(unittest.TestCase):
 
 # ── check_pre_trade ───────────────────────────────────────────────────────────
 
-class TestCheckPreTrade(unittest.TestCase):
 
+class TestCheckPreTrade(unittest.TestCase):
     def test_approved_within_limits(self):
         approved, reason = check_pre_trade("AAPL", 10_000, 0, 50_000, 150_000)
         self.assertTrue(approved)

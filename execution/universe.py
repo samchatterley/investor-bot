@@ -11,6 +11,7 @@ Two-stage filter:
 Result is cached in logs/universe_cache.json with a 24-hour TTL.  On any
 failure the function falls back gracefully to config.STOCK_UNIVERSE.
 """
+
 import json
 import logging
 import os
@@ -29,17 +30,19 @@ logger = logging.getLogger(__name__)
 _CACHE_PATH = os.path.join(LOG_DIR, "universe_cache.json")
 _CACHE_TTL_HOURS = 24
 _MIN_PRICE = 5.0
-_MAX_UNIVERSE_SIZE = 500        # cap to keep OHLCV fetch time acceptable
-_SNAPSHOT_CHUNK_SIZE = 1000     # Alpaca snapshot API limit per request
+_MAX_UNIVERSE_SIZE = 500  # cap to keep OHLCV fetch time acceptable
+_SNAPSHOT_CHUNK_SIZE = 1000  # Alpaca snapshot API limit per request
 
-_MAJOR_EXCHANGES: frozenset[AssetExchange] = frozenset({
-    AssetExchange.NYSE,
-    AssetExchange.NASDAQ,
-    AssetExchange.ARCA,
-    AssetExchange.NYSEARCA,
-    AssetExchange.AMEX,
-    AssetExchange.BATS,
-})
+_MAJOR_EXCHANGES: frozenset[AssetExchange] = frozenset(
+    {
+        AssetExchange.NYSE,
+        AssetExchange.NASDAQ,
+        AssetExchange.ARCA,
+        AssetExchange.NYSEARCA,
+        AssetExchange.AMEX,
+        AssetExchange.BATS,
+    }
+)
 
 
 def _load_cache() -> list[str] | None:
@@ -79,8 +82,7 @@ def _get_eligible_symbols(client: TradingClient) -> list[str]:
     req = GetAssetsRequest(asset_class=AssetClass.US_EQUITY, status=AssetStatus.ACTIVE)
     assets = client.get_all_assets(req)
     eligible = [
-        a.symbol for a in assets
-        if a.tradable and a.fractionable and a.exchange in _MAJOR_EXCHANGES
+        a.symbol for a in assets if a.tradable and a.fractionable and a.exchange in _MAJOR_EXCHANGES
     ]
     logger.info(f"Alpaca eligible symbols: {len(eligible)}")
     return eligible
@@ -97,9 +99,7 @@ def _apply_snapshot_filter(symbols: list[str]) -> list[str]:
     for i in range(0, len(symbols), _SNAPSHOT_CHUNK_SIZE):
         chunk = symbols[i : i + _SNAPSHOT_CHUNK_SIZE]
         try:
-            snaps = data_client.get_stock_snapshots(
-                StockSnapshotRequest(symbol_or_symbols=chunk)
-            )
+            snaps = data_client.get_stock_snapshots(StockSnapshotRequest(symbol_or_symbols=chunk))
             for sym, snap in snaps.items():
                 bar = snap.daily_bar
                 if bar is None:

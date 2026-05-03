@@ -1,4 +1,5 @@
 """Tests for execution/stock_scanner.py — get_market_regime, prefilter_candidates, get_top_movers."""
+
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -15,9 +16,14 @@ def _spy_history(prices: list[float]) -> pd.DataFrame:
 def _snap(**kwargs):
     defaults = {
         "symbol": "TEST",
-        "rsi_14": 50, "bb_pct": 0.5, "vol_ratio": 1.0,
-        "ema9_above_ema21": False, "macd_diff": 0, "macd_crossed_up": False,
-        "weekly_trend_up": True, "ret_5d_pct": 0,
+        "rsi_14": 50,
+        "bb_pct": 0.5,
+        "vol_ratio": 1.0,
+        "ema9_above_ema21": False,
+        "macd_diff": 0,
+        "macd_crossed_up": False,
+        "weekly_trend_up": True,
+        "ret_5d_pct": 0,
         "avg_volume": 1_000_000,  # above MIN_VOLUME = 500_000
         # New strategy fields
         "bb_squeeze": False,
@@ -32,7 +38,6 @@ def _snap(**kwargs):
 
 
 class TestGetMarketRegime(unittest.TestCase):
-
     def _mock_spy(self, prices):
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = _spy_history(prices)
@@ -94,7 +99,6 @@ class TestGetMarketRegime(unittest.TestCase):
 
 
 class TestPrefilterCandidates(unittest.TestCase):
-
     def test_momentum_signal_passes(self):
         snap = _snap(ema9_above_ema21=True, macd_diff=0.5, ret_5d_pct=2.0, vol_ratio=1.5)
         result = prefilter_candidates([snap])
@@ -117,8 +121,13 @@ class TestPrefilterCandidates(unittest.TestCase):
 
     def test_against_weekly_trend_filtered(self):
         # Momentum setup but weekly trend is down
-        snap = _snap(ema9_above_ema21=True, macd_diff=0.5, ret_5d_pct=2.0,
-                     vol_ratio=1.5, weekly_trend_up=False)
+        snap = _snap(
+            ema9_above_ema21=True,
+            macd_diff=0.5,
+            ret_5d_pct=2.0,
+            vol_ratio=1.5,
+            weekly_trend_up=False,
+        )
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 0)
 
@@ -224,8 +233,7 @@ class TestPrefilterCandidates(unittest.TestCase):
 
     def test_trend_pullback_in_buy_zone_passes(self):
         # EMA up, price 2% below EMA21, RSI 50 (mid-range), normal volume
-        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-2.0,
-                     rsi_14=50, vol_ratio=1.1)
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-2.0, rsi_14=50, vol_ratio=1.1)
         self.assertEqual(len(prefilter_candidates([snap])), 1)
 
     def test_trend_pullback_just_below_ema21_passes(self):
@@ -259,15 +267,10 @@ class TestPrefilterCandidates(unittest.TestCase):
 
 
 class TestGetTopMovers(unittest.TestCase):
-
     def _make_data(self, symbols, n_rows=5):
         idx = pd.date_range("2026-01-01", periods=n_rows, freq="B")
-        closes = pd.DataFrame(
-            {sym: [100 + i for i in range(n_rows)] for sym in symbols}, index=idx
-        )
-        volumes = pd.DataFrame(
-            {sym: [1_000_000] * n_rows for sym in symbols}, index=idx
-        )
+        closes = pd.DataFrame({sym: [100 + i for i in range(n_rows)] for sym in symbols}, index=idx)
+        volumes = pd.DataFrame({sym: [1_000_000] * n_rows for sym in symbols}, index=idx)
         mock = MagicMock()
         mock.empty = False
         mock.__len__ = MagicMock(return_value=n_rows)
@@ -276,6 +279,7 @@ class TestGetTopMovers(unittest.TestCase):
 
     def test_returns_list_on_success(self):
         from execution.stock_scanner import get_top_movers
+
         syms = ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]
         with patch("execution.stock_scanner.yf.download", return_value=self._make_data(syms)):
             result = get_top_movers(n=3)
@@ -283,12 +287,14 @@ class TestGetTopMovers(unittest.TestCase):
 
     def test_returns_empty_on_exception(self):
         from execution.stock_scanner import get_top_movers
+
         with patch("execution.stock_scanner.yf.download", side_effect=Exception("network error")):
             result = get_top_movers()
         self.assertEqual(result, [])
 
     def test_returns_empty_on_empty_data(self):
         from execution.stock_scanner import get_top_movers
+
         mock = MagicMock()
         mock.empty = True
         with patch("execution.stock_scanner.yf.download", return_value=mock):
@@ -297,6 +303,7 @@ class TestGetTopMovers(unittest.TestCase):
 
     def test_returns_empty_when_insufficient_rows(self):
         from execution.stock_scanner import get_top_movers
+
         mock = MagicMock()
         mock.empty = False
         mock.__len__ = MagicMock(return_value=1)

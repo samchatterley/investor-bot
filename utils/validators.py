@@ -71,7 +71,7 @@ def validate_ai_response(
             errors.append(f"{loc}: {err['msg']}")
 
     # Phase 2: context-dependent checks — always run so main.py gets the full picture
-    for c in (decisions.get("buy_candidates") or []):
+    for c in decisions.get("buy_candidates") or []:
         if not isinstance(c, dict):
             continue
         sym = c.get("symbol", "")
@@ -80,7 +80,7 @@ def validate_ai_response(
         if held_symbols and sym in held_symbols:
             errors.append(f"BUY candidate '{sym}' already held — conflict with open position")
 
-    for d in (decisions.get("position_decisions") or []):
+    for d in decisions.get("position_decisions") or []:
         if not isinstance(d, dict):
             continue
         action = d.get("action")
@@ -88,7 +88,9 @@ def validate_ai_response(
         if action == "SELL" and held_symbols is not None and sym not in held_symbols:
             # Log a warning but do not add to errors — this is an expected race condition
             # when a trailing stop auto-closes a position between data fetch and validation.
-            logger.warning(f"SELL for '{sym}' references a non-held position — likely auto-closed by a stop")
+            logger.warning(
+                f"SELL for '{sym}' references a non-held position — likely auto-closed by a stop"
+            )
 
     if errors:
         logger.warning(f"AI response validation failed ({len(errors)} error(s)): {errors}")

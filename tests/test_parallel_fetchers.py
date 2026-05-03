@@ -1,10 +1,10 @@
 """Tests for data/news_fetcher.py and data/sentiment.py — parallel dispatch and unhappy paths."""
+
 import unittest
 from unittest.mock import MagicMock, patch
 
 
 class TestFetchSingleNews(unittest.TestCase):
-
     def _ticker(self, news):
         t = MagicMock()
         t.news = news
@@ -12,6 +12,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_returns_symbol_and_headlines(self):
         from data.news_fetcher import _fetch_single
+
         headline = {"title": "Apple gains"}
         with patch("data.news_fetcher.yf.Ticker", return_value=self._ticker([headline])):
             sym, headlines = _fetch_single("AAPL", max_headlines=3)
@@ -20,6 +21,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_uses_content_title_fallback(self):
         from data.news_fetcher import _fetch_single
+
         item = {"content": {"title": "Nested title"}}
         with patch("data.news_fetcher.yf.Ticker", return_value=self._ticker([item])):
             sym, headlines = _fetch_single("AAPL", max_headlines=3)
@@ -27,6 +29,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_uses_headline_key_fallback(self):
         from data.news_fetcher import _fetch_single
+
         item = {"headline": "Headline key title"}
         with patch("data.news_fetcher.yf.Ticker", return_value=self._ticker([item])):
             _, headlines = _fetch_single("MSFT", max_headlines=3)
@@ -34,6 +37,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_empty_title_excluded(self):
         from data.news_fetcher import _fetch_single
+
         item = {"title": ""}
         with patch("data.news_fetcher.yf.Ticker", return_value=self._ticker([item])):
             _, headlines = _fetch_single("AAPL", max_headlines=3)
@@ -41,6 +45,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_max_headlines_respected(self):
         from data.news_fetcher import _fetch_single
+
         items = [{"title": f"Story {i}"} for i in range(10)]
         with patch("data.news_fetcher.yf.Ticker", return_value=self._ticker(items)):
             _, headlines = _fetch_single("AAPL", max_headlines=3)
@@ -48,6 +53,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_exception_returns_empty_list(self):
         from data.news_fetcher import _fetch_single
+
         with patch("data.news_fetcher.yf.Ticker", side_effect=Exception("network error")):
             sym, headlines = _fetch_single("AAPL", max_headlines=3)
         self.assertEqual(sym, "AAPL")
@@ -55,6 +61,7 @@ class TestFetchSingleNews(unittest.TestCase):
 
     def test_none_news_attribute_returns_empty(self):
         from data.news_fetcher import _fetch_single
+
         t = MagicMock()
         t.news = None
         with patch("data.news_fetcher.yf.Ticker", return_value=t):
@@ -63,15 +70,16 @@ class TestFetchSingleNews(unittest.TestCase):
 
 
 class TestFetchNews(unittest.TestCase):
-
     def test_returns_dict(self):
         from data.news_fetcher import fetch_news
+
         with patch("data.news_fetcher._fetch_single", return_value=("AAPL", ["Good news"])):
             result = fetch_news(["AAPL"])
         self.assertIsInstance(result, dict)
 
     def test_symbols_with_headlines_included(self):
         from data.news_fetcher import fetch_news
+
         with patch("data.news_fetcher._fetch_single", return_value=("AAPL", ["Good news"])):
             result = fetch_news(["AAPL"])
         self.assertIn("AAPL", result)
@@ -88,6 +96,7 @@ class TestFetchNews(unittest.TestCase):
 
     def test_empty_symbols_returns_empty_dict(self):
         from data.news_fetcher import fetch_news
+
         result = fetch_news([])
         self.assertEqual(result, {})
 
@@ -123,7 +132,6 @@ class TestFetchNews(unittest.TestCase):
 
 
 class TestFetchAnalystSentiment(unittest.TestCase):
-
     def _info(self, mean=2.0, key="buy", analysts=15, target=200.0, current=180.0):
         return {
             "recommendationMean": mean,
@@ -135,6 +143,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_returns_symbol_and_data(self):
         from data.sentiment import _fetch_analyst
+
         with patch("data.sentiment.yf.Ticker") as mock_ticker:
             mock_ticker.return_value.info = self._info()
             sym, data = _fetch_analyst("AAPL")
@@ -143,6 +152,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_bullish_pct_range(self):
         from data.sentiment import _fetch_analyst
+
         with patch("data.sentiment.yf.Ticker") as mock_ticker:
             mock_ticker.return_value.info = self._info(mean=1.0)
             _, data = _fetch_analyst("AAPL")
@@ -152,6 +162,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_upside_pct_included_when_target_and_current(self):
         from data.sentiment import _fetch_analyst
+
         with patch("data.sentiment.yf.Ticker") as mock_ticker:
             mock_ticker.return_value.info = self._info(target=200.0, current=180.0)
             _, data = _fetch_analyst("AAPL")
@@ -160,6 +171,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_upside_pct_excluded_when_no_target(self):
         from data.sentiment import _fetch_analyst
+
         with patch("data.sentiment.yf.Ticker") as mock_ticker:
             mock_ticker.return_value.info = self._info(target=None, current=180.0)
             _, data = _fetch_analyst("AAPL")
@@ -167,6 +179,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_returns_empty_when_no_mean(self):
         from data.sentiment import _fetch_analyst
+
         info = self._info()
         info["recommendationMean"] = None
         with patch("data.sentiment.yf.Ticker") as mock_ticker:
@@ -176,6 +189,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_returns_empty_when_no_analysts(self):
         from data.sentiment import _fetch_analyst
+
         info = self._info()
         info["numberOfAnalystOpinions"] = 0
         with patch("data.sentiment.yf.Ticker") as mock_ticker:
@@ -185,6 +199,7 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
     def test_returns_empty_on_exception(self):
         from data.sentiment import _fetch_analyst
+
         with patch("data.sentiment.yf.Ticker", side_effect=Exception("network")):
             sym, data = _fetch_analyst("AAPL")
         self.assertEqual(sym, "AAPL")
@@ -192,10 +207,13 @@ class TestFetchAnalystSentiment(unittest.TestCase):
 
 
 class TestGetSentiment(unittest.TestCase):
-
     def test_returns_dict(self):
         from data.sentiment import get_sentiment
-        with patch("data.sentiment._fetch_analyst", return_value=("AAPL", {"bullish_pct": 75, "bearish_pct": 25})):
+
+        with patch(
+            "data.sentiment._fetch_analyst",
+            return_value=("AAPL", {"bullish_pct": 75, "bearish_pct": 25}),
+        ):
             result = get_sentiment(["AAPL"])
         self.assertIsInstance(result, dict)
 
@@ -203,7 +221,15 @@ class TestGetSentiment(unittest.TestCase):
         from data.sentiment import get_sentiment
 
         def fake_fetch(sym):
-            return (sym, {"bullish_pct": 60, "bearish_pct": 40, "analyst_count": 10, "recommendation": "buy"})
+            return (
+                sym,
+                {
+                    "bullish_pct": 60,
+                    "bearish_pct": 40,
+                    "analyst_count": 10,
+                    "recommendation": "buy",
+                },
+            )
 
         with patch("data.sentiment._fetch_analyst", side_effect=fake_fetch):
             result = get_sentiment(["AAPL"])
@@ -221,6 +247,7 @@ class TestGetSentiment(unittest.TestCase):
 
     def test_empty_symbols_returns_empty_dict(self):
         from data.sentiment import get_sentiment
+
         result = get_sentiment([])
         self.assertEqual(result, {})
 

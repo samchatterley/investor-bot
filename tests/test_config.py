@@ -9,7 +9,6 @@ import config
 
 
 class TestValidate(unittest.TestCase):
-
     def _patch(self, attr, value):
         original = getattr(config, attr)
         setattr(config, attr, value)
@@ -89,7 +88,6 @@ class TestValidate(unittest.TestCase):
 
 
 class TestTodayEt(unittest.TestCase):
-
     def test_returns_date_object(self):
         self.assertIsInstance(config.today_et(), date)
 
@@ -99,18 +97,25 @@ class TestTodayEt(unittest.TestCase):
 
 # ── Runtime override tests ────────────────────────────────────────────────────
 
+
 class TestRuntimeOverrideConstants(unittest.TestCase):
     """Structural checks on the allowlist and bounds table."""
 
     def test_all_override_keys_have_bounds_entry(self):
         for key in config.RUNTIME_OVERRIDE_KEYS:
-            self.assertIn(key, config.RUNTIME_OVERRIDE_BOUNDS,
-                          f"{key} is in RUNTIME_OVERRIDE_KEYS but missing from RUNTIME_OVERRIDE_BOUNDS")
+            self.assertIn(
+                key,
+                config.RUNTIME_OVERRIDE_BOUNDS,
+                f"{key} is in RUNTIME_OVERRIDE_KEYS but missing from RUNTIME_OVERRIDE_BOUNDS",
+            )
 
     def test_all_bounds_entries_are_in_allowlist(self):
         for key in config.RUNTIME_OVERRIDE_BOUNDS:
-            self.assertIn(key, config.RUNTIME_OVERRIDE_KEYS,
-                          f"{key} is in RUNTIME_OVERRIDE_BOUNDS but missing from RUNTIME_OVERRIDE_KEYS")
+            self.assertIn(
+                key,
+                config.RUNTIME_OVERRIDE_KEYS,
+                f"{key} is in RUNTIME_OVERRIDE_BOUNDS but missing from RUNTIME_OVERRIDE_KEYS",
+            )
 
     def test_bounds_entries_have_correct_shape(self):
         for key, bounds in config.RUNTIME_OVERRIDE_BOUNDS.items():
@@ -120,11 +125,21 @@ class TestRuntimeOverrideConstants(unittest.TestCase):
             self.assertLess(lo, hi, f"{key}: min must be less than max")
 
     def test_sensitive_keys_not_in_allowlist(self):
-        for key in ("IS_PAPER", "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
-                    "ANTHROPIC_API_KEY", "STOCK_UNIVERSE", "HALT_FILE",
-                    "ALPACA_BASE_URL", "LOG_DIR"):
-            self.assertNotIn(key, config.RUNTIME_OVERRIDE_KEYS,
-                             f"Sensitive key {key} must not be runtime-overrideable")
+        for key in (
+            "IS_PAPER",
+            "ALPACA_API_KEY",
+            "ALPACA_SECRET_KEY",
+            "ANTHROPIC_API_KEY",
+            "STOCK_UNIVERSE",
+            "HALT_FILE",
+            "ALPACA_BASE_URL",
+            "LOG_DIR",
+        ):
+            self.assertNotIn(
+                key,
+                config.RUNTIME_OVERRIDE_KEYS,
+                f"Sensitive key {key} must not be runtime-overrideable",
+            )
 
 
 class TestRuntimeOverrideBase(unittest.TestCase):
@@ -151,7 +166,6 @@ class TestRuntimeOverrideBase(unittest.TestCase):
 
 
 class TestRuntimeOverrideApply(TestRuntimeOverrideBase):
-
     def test_valid_int_key_applied(self):
         self._write({"MIN_CONFIDENCE": 9})
         self._load()
@@ -208,7 +222,6 @@ class TestRuntimeOverrideApply(TestRuntimeOverrideBase):
 
 
 class TestRuntimeOverrideReject(TestRuntimeOverrideBase):
-
     def test_unknown_key_not_applied(self):
         original = config.IS_PAPER
         self._write({"IS_PAPER": False})
@@ -258,7 +271,7 @@ class TestRuntimeOverrideReject(TestRuntimeOverrideBase):
         self._write({"MIN_CONFIDENCE": 99, "MAX_HOLD_DAYS": 3})
         self._load()
         self.assertEqual(config.MIN_CONFIDENCE, original_conf)  # rejected
-        self.assertEqual(config.MAX_HOLD_DAYS, 3)               # applied
+        self.assertEqual(config.MAX_HOLD_DAYS, 3)  # applied
 
     def test_max_position_pct_not_runtime_overridable(self):
         # MAX_POSITION_PCT is a deprecated legacy constant — removed from RUNTIME_OVERRIDE_KEYS
@@ -270,7 +283,6 @@ class TestRuntimeOverrideReject(TestRuntimeOverrideBase):
 
 
 class TestRuntimeOverrideEdgeCases(TestRuntimeOverrideBase):
-
     def test_missing_file_no_change_no_crash(self):
         # No file written — _RUNTIME_CONFIG_PATH does not exist
         original_conf = self._originals["MIN_CONFIDENCE"]
@@ -298,45 +310,50 @@ class TestRuntimeOverrideEdgeCases(TestRuntimeOverrideBase):
 
 
 class TestValidateTradingMode(unittest.TestCase):
-
     def test_paper_mode_with_valid_url_returns_true(self):
         import config
+
         result = config._validate_trading_mode("paper", "https://paper-api.alpaca.markets")
         self.assertTrue(result)
 
     def test_paper_mode_with_wrong_url_raises(self):
         import config
+
         with self.assertRaises(ValueError):
             config._validate_trading_mode("paper", "https://api.alpaca.markets")
 
     def test_live_mode_with_valid_url_returns_false(self):
         import config
+
         result = config._validate_trading_mode("live", "https://api.alpaca.markets")
         self.assertFalse(result)
 
     def test_live_mode_with_wrong_url_raises(self):
         import config
+
         with self.assertRaises(ValueError):
             config._validate_trading_mode("live", "https://paper-api.alpaca.markets")
 
     def test_invalid_mode_raises(self):
         import config
+
         with self.assertRaises(ValueError):
             config._validate_trading_mode("staging", "https://paper-api.alpaca.markets")
 
     def test_empty_mode_with_paper_url_returns_true(self):
         import config
+
         result = config._validate_trading_mode("", "https://paper-api.alpaca.markets")
         self.assertTrue(result)
 
     def test_empty_mode_with_live_url_returns_false(self):
         import config
+
         result = config._validate_trading_mode("", "https://api.alpaca.markets")
         self.assertFalse(result)
 
 
 class TestRuntimeOverrideAuditEvents(TestRuntimeOverrideBase):
-
     def test_applied_key_emits_applied_event(self):
         self._write({"MIN_CONFIDENCE": 9})
         with patch.object(config, "_audit_config_event") as mock_audit:

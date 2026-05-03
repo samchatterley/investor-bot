@@ -70,10 +70,18 @@ def _entry_signal(row: pd.Series, params: dict | None = None) -> str | None:
     - Momentum: ema9 > ema21 AND macd_diff > 0 AND ret_5d > mom_ret5d_threshold AND vol_ratio > mom_vol_threshold
     """
     p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
-    if row["rsi"] < p["rsi_threshold"] and row["bb_pct"] < p["bb_threshold"] and row["vol_ratio"] > p["mr_vol_threshold"]:
+    if (
+        row["rsi"] < p["rsi_threshold"]
+        and row["bb_pct"] < p["bb_threshold"]
+        and row["vol_ratio"] > p["mr_vol_threshold"]
+    ):
         return "mean_reversion"
-    if (row["ema9"] > row["ema21"] and row["macd_diff"] > 0
-            and row["ret_5d"] > p["mom_ret5d_threshold"] and row["vol_ratio"] > p["mom_vol_threshold"]):
+    if (
+        row["ema9"] > row["ema21"]
+        and row["macd_diff"] > 0
+        and row["ret_5d"] > p["mom_ret5d_threshold"]
+        and row["vol_ratio"] > p["mom_vol_threshold"]
+    ):
         return "momentum"
     return None
 
@@ -106,7 +114,11 @@ def _run_simulation(
         portfolio_value = cash
         for sym, pos in positions.items():
             try:
-                px = float(indicators[sym].loc[today, "Close"]) if today in indicators[sym].index else pos["entry_price"]
+                px = (
+                    float(indicators[sym].loc[today, "Close"])
+                    if today in indicators[sym].index
+                    else pos["entry_price"]
+                )
                 portfolio_value += pos["shares"] * px
             except Exception:
                 portfolio_value += pos["shares"] * pos["entry_price"]
@@ -119,7 +131,7 @@ def _run_simulation(
                 px = float(indicators[sym].loc[today, "Close"])
             except Exception:
                 continue
-            pnl_pct = (px / pos["entry_price"] - 1)
+            pnl_pct = px / pos["entry_price"] - 1
             trading_days_held = sum(1 for _ in pd.bdate_range(pos["entry_date"], today)) - 1
 
             reason = None
@@ -133,13 +145,18 @@ def _run_simulation(
             if reason:
                 exit_px = px * sell_factor
                 cash += pos["shares"] * exit_px
-                trades.append({
-                    "date": today_str, "symbol": sym, "action": "SELL",
-                    "reason": reason, "entry_price": pos["entry_price"],
-                    "exit_price": exit_px,
-                    "pnl_pct": round((exit_px / pos["entry_price"] - 1) * 100, 2),
-                    "signal": pos["signal"],
-                })
+                trades.append(
+                    {
+                        "date": today_str,
+                        "symbol": sym,
+                        "action": "SELL",
+                        "reason": reason,
+                        "entry_price": pos["entry_price"],
+                        "exit_price": exit_px,
+                        "pnl_pct": round((exit_px / pos["entry_price"] - 1) * 100, 2),
+                        "signal": pos["signal"],
+                    }
+                )
                 to_close.append(sym)
 
         for sym in to_close:
@@ -177,13 +194,20 @@ def _run_simulation(
                     continue
                 cash -= cost
                 positions[sym] = {
-                    "entry_price": fill_px, "entry_date": today,
-                    "shares": shares, "signal": signal,
+                    "entry_price": fill_px,
+                    "entry_date": today,
+                    "shares": shares,
+                    "signal": signal,
                 }
-                trades.append({
-                    "date": today_str, "symbol": sym, "action": "BUY",
-                    "price": fill_px, "signal": signal,
-                })
+                trades.append(
+                    {
+                        "date": today_str,
+                        "symbol": sym,
+                        "action": "BUY",
+                        "price": fill_px,
+                        "signal": signal,
+                    }
+                )
             except Exception:
                 continue
 
@@ -194,11 +218,16 @@ def _run_simulation(
             exit_px = px * sell_factor
             cash += pos["shares"] * exit_px
             pnl_pct = (exit_px / pos["entry_price"] - 1) * 100
-            trades.append({
-                "date": "end", "symbol": sym, "action": "SELL",
-                "reason": "end_of_backtest", "pnl_pct": round(pnl_pct, 2),
-                "signal": pos["signal"],
-            })
+            trades.append(
+                {
+                    "date": "end",
+                    "symbol": sym,
+                    "action": "SELL",
+                    "reason": "end_of_backtest",
+                    "pnl_pct": round(pnl_pct, 2),
+                    "signal": pos["signal"],
+                }
+            )
         except Exception:
             cash += pos["shares"] * pos["entry_price"]
 
@@ -208,7 +237,9 @@ def _run_simulation(
     closed_trades = [t for t in trades if t["action"] == "SELL" and "pnl_pct" in t]
     wins = [t for t in closed_trades if t["pnl_pct"] > 0]
     win_rate = len(wins) / len(closed_trades) * 100 if closed_trades else 0
-    avg_return = sum(t["pnl_pct"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
+    avg_return = (
+        sum(t["pnl_pct"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
+    )
 
     eq_values = [v for _, v in equity_curve]
     peak = eq_values[0] if eq_values else initial_capital
@@ -231,7 +262,9 @@ def _run_simulation(
             by_signal[s]["losses"] += 1
 
     daily_rets = pd.Series(eq_values).pct_change().dropna()
-    sharpe = float(daily_rets.mean() / daily_rets.std() * (252 ** 0.5)) if daily_rets.std() > 0 else 0.0
+    sharpe = (
+        float(daily_rets.mean() / daily_rets.std() * (252**0.5)) if daily_rets.std() > 0 else 0.0
+    )
 
     return {
         "initial_capital": initial_capital,
@@ -260,9 +293,13 @@ def run_backtest(
     spread_bps: int | None = None,
 ) -> dict:
 
-    logger.info(f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital")
+    logger.info(
+        f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital"
+    )
 
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime(
+        "%Y-%m-%d"
+    )
     raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
     if raw.empty:
         logger.error("No data fetched")
@@ -275,9 +312,9 @@ def run_backtest(
     indicators = {}
     for sym in symbols:
         try:
-            df = pd.DataFrame({
-                "Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]
-            }).dropna()
+            df = pd.DataFrame(
+                {"Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]}
+            ).dropna()
             df = _compute_indicators(df)
             indicators[sym] = df
         except Exception:
@@ -285,8 +322,14 @@ def run_backtest(
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     results = _run_simulation(
-        indicators, trading_dates, initial_capital, max_positions, max_hold_days, params,
-        slippage_bps=slippage_bps, spread_bps=spread_bps,
+        indicators,
+        trading_dates,
+        initial_capital,
+        max_positions,
+        max_hold_days,
+        params,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -335,7 +378,9 @@ def run_walk_forward_optimized(
     )
 
     # Download once — indicators are computed once and reused across all folds and combos
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime(
+        "%Y-%m-%d"
+    )
     raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
     if raw.empty:
         logger.error("No data fetched for walk-forward")
@@ -348,9 +393,9 @@ def run_walk_forward_optimized(
     indicators = {}
     for sym in symbols:
         try:
-            df = pd.DataFrame({
-                "Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]
-            }).dropna()
+            df = pd.DataFrame(
+                {"Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]}
+            ).dropna()
             df = _compute_indicators(df)
             indicators[sym] = df
         except Exception:
@@ -368,14 +413,16 @@ def run_walk_forward_optimized(
     folds_meta = []
     i = 0
     while i + train_days + test_days <= len(trading_dates):
-        folds_meta.append({
-            "train_start": trading_dates[i].strftime("%Y-%m-%d"),
-            "train_end": trading_dates[i + train_days - 1].strftime("%Y-%m-%d"),
-            "test_start": trading_dates[i + train_days].strftime("%Y-%m-%d"),
-            "test_end": trading_dates[i + train_days + test_days - 1].strftime("%Y-%m-%d"),
-            "train_slice": slice(i, i + train_days),
-            "test_slice": slice(i + train_days, i + train_days + test_days),
-        })
+        folds_meta.append(
+            {
+                "train_start": trading_dates[i].strftime("%Y-%m-%d"),
+                "train_end": trading_dates[i + train_days - 1].strftime("%Y-%m-%d"),
+                "test_start": trading_dates[i + train_days].strftime("%Y-%m-%d"),
+                "test_end": trading_dates[i + train_days + test_days - 1].strftime("%Y-%m-%d"),
+                "train_slice": slice(i, i + train_days),
+                "test_slice": slice(i + train_days, i + train_days + test_days),
+            }
+        )
         i += test_days
 
     logger.info(f"Walk-forward: {len(folds_meta)} folds")
@@ -391,8 +438,16 @@ def run_walk_forward_optimized(
         best_train_trades = 0
 
         for combo in all_combos:
-            r = _run_simulation(indicators, train_dates, initial_capital, max_positions, max_hold_days, combo,
-                                slippage_bps=slippage_bps, spread_bps=spread_bps)
+            r = _run_simulation(
+                indicators,
+                train_dates,
+                initial_capital,
+                max_positions,
+                max_hold_days,
+                combo,
+                slippage_bps=slippage_bps,
+                spread_bps=spread_bps,
+            )
             if r["total_trades"] < _MIN_TRAIN_TRADES:
                 continue
             if r["sharpe_ratio"] > best_score:
@@ -401,12 +456,20 @@ def run_walk_forward_optimized(
                 best_train_trades = r["total_trades"]
 
         # OOS test — test window data was never seen during param selection
-        oos = _run_simulation(indicators, test_dates, initial_capital, max_positions, max_hold_days, best_params,
-                              slippage_bps=slippage_bps, spread_bps=spread_bps)
+        oos = _run_simulation(
+            indicators,
+            test_dates,
+            initial_capital,
+            max_positions,
+            max_hold_days,
+            best_params,
+            slippage_bps=slippage_bps,
+            spread_bps=spread_bps,
+        )
 
         # Buy-and-hold baseline: equal-weight all symbols over the OOS window
         baseline_rets = []
-        for sym, df in indicators.items():
+        for _sym, df in indicators.items():
             try:
                 start_px = float(df.loc[df.index >= test_dates[0]].iloc[0]["Close"])
                 end_px = float(df.loc[df.index <= test_dates[-1]].iloc[-1]["Close"])
@@ -416,21 +479,23 @@ def run_walk_forward_optimized(
         fold_baseline = round(sum(baseline_rets) / len(baseline_rets), 2) if baseline_rets else 0.0
 
         train_sharpe_val = round(best_score, 2) if best_score != -float("inf") else 0.0
-        fold_results.append({
-            "train_start": fold["train_start"],
-            "train_end": fold["train_end"],
-            "test_start": fold["test_start"],
-            "test_end": fold["test_end"],
-            "best_params": best_params,
-            "train_sharpe": train_sharpe_val,
-            "train_total_trades": best_train_trades,
-            "oos_total_return_pct": oos["total_return_pct"],
-            "oos_win_rate_pct": oos["win_rate_pct"],
-            "oos_total_trades": oos["total_trades"],
-            "oos_sharpe": oos["sharpe_ratio"],
-            "oos_degradation": round(train_sharpe_val - oos["sharpe_ratio"], 2),
-            "random_baseline_return_pct": fold_baseline,
-        })
+        fold_results.append(
+            {
+                "train_start": fold["train_start"],
+                "train_end": fold["train_end"],
+                "test_start": fold["test_start"],
+                "test_end": fold["test_end"],
+                "best_params": best_params,
+                "train_sharpe": train_sharpe_val,
+                "train_total_trades": best_train_trades,
+                "oos_total_return_pct": oos["total_return_pct"],
+                "oos_win_rate_pct": oos["win_rate_pct"],
+                "oos_total_trades": oos["total_trades"],
+                "oos_sharpe": oos["sharpe_ratio"],
+                "oos_degradation": round(train_sharpe_val - oos["sharpe_ratio"], 2),
+                "random_baseline_return_pct": fold_baseline,
+            }
+        )
 
         logger.info(
             f"  Fold {fold['test_start']}–{fold['test_end']}: "
@@ -460,7 +525,9 @@ def run_walk_forward_optimized(
         "consistency_pct": round(profitable / n * 100, 1),
         "param_stability_pct": round(modal_count / n * 100, 1),
         "mean_oos_degradation": round(sum(f["oos_degradation"] for f in fold_results) / n, 2),
-        "random_baseline_return_pct": round(sum(f["random_baseline_return_pct"] for f in fold_results) / n, 2),
+        "random_baseline_return_pct": round(
+            sum(f["random_baseline_return_pct"] for f in fold_results) / n, 2
+        ),
     }
 
     logger.info(

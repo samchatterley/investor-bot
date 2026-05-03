@@ -52,7 +52,10 @@ _DECISION_TOOL = {
         "type": "object",
         "properties": {
             "date": {"type": "string", "description": "Today's date YYYY-MM-DD"},
-            "market_summary": {"type": "string", "description": "One sentence on overall market tone"},
+            "market_summary": {
+                "type": "string",
+                "description": "One sentence on overall market tone",
+            },
             "position_decisions": {
                 "type": "array",
                 "description": "Decision for each currently held position",
@@ -62,8 +65,14 @@ _DECISION_TOOL = {
                         "symbol": {"type": "string"},
                         "action": {"type": "string", "enum": ["HOLD", "SELL"]},
                         "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
-                        "reasoning": {"type": "string", "description": "Precise technical rationale with indicator values"},
-                        "summary": {"type": "string", "description": "One plain-English sentence for non-technical readers"},
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Precise technical rationale with indicator values",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "One plain-English sentence for non-technical readers",
+                        },
                     },
                     "required": ["symbol", "action", "confidence", "reasoning", "summary"],
                 },
@@ -76,15 +85,28 @@ _DECISION_TOOL = {
                     "properties": {
                         "symbol": {"type": "string"},
                         "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
-                        "reasoning": {"type": "string", "description": "Precise technical rationale with indicator values"},
-                        "summary": {"type": "string", "description": "One plain-English sentence for non-technical readers"},
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Precise technical rationale with indicator values",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "One plain-English sentence for non-technical readers",
+                        },
                         "key_signal": {
                             "type": "string",
                             "enum": [
-                                "mean_reversion", "momentum", "trend_continuation",
-                                "macd_crossover", "rsi_oversold", "news_catalyst",
-                                "bb_squeeze", "breakout_52w", "rs_leader",
-                                "inside_day_breakout", "trend_pullback",
+                                "mean_reversion",
+                                "momentum",
+                                "trend_continuation",
+                                "macd_crossover",
+                                "rsi_oversold",
+                                "news_catalyst",
+                                "bb_squeeze",
+                                "breakout_52w",
+                                "rs_leader",
+                                "inside_day_breakout",
+                                "trend_pullback",
                                 "unknown",
                             ],
                         },
@@ -100,10 +122,10 @@ _DECISION_TOOL = {
 
 _REGIME_ADVICE = {
     "BULL_TRENDING": "Market is trending upward — favour momentum and trend-continuation setups.",
-    "CHOPPY":        "Market is choppy with no clear direction — favour mean-reversion (oversold bounces). Avoid chasing moves.",
-    "HIGH_VOL":      "High volatility with a weakening market — only the highest-conviction setups. Be conservative with confidence scores.",
-    "BEAR_DAY":      "BEAR DAY — SPY down sharply. NO new BUYs.",
-    "UNKNOWN":       "",
+    "CHOPPY": "Market is choppy with no clear direction — favour mean-reversion (oversold bounces). Avoid chasing moves.",
+    "HIGH_VOL": "High volatility with a weakening market — only the highest-conviction setups. Be conservative with confidence scores.",
+    "BEAR_DAY": "BEAR DAY — SPY down sharply. NO new BUYs.",
+    "UNKNOWN": "",
 }
 
 
@@ -145,19 +167,31 @@ def build_prompt(
     # Macro risk
     macro_block = ""
     if macro_risk and macro_risk.get("is_high_risk"):
-        macro_block = f"⚠️  MACRO EVENT TODAY: {macro_risk['event']} — avoid new positions, vol is elevated.\n"
+        macro_block = (
+            f"⚠️  MACRO EVENT TODAY: {macro_risk['event']} — avoid new positions, vol is elevated.\n"
+        )
 
     # VIX
     vix_block = ""
     if vix is not None:
-        tone = "HIGH — widen stops, reduce size" if vix > 25 else "ELEVATED" if vix > 18 else "LOW — normal conditions"
+        tone = (
+            "HIGH — widen stops, reduce size"
+            if vix > 25
+            else "ELEVATED"
+            if vix > 18
+            else "LOW — normal conditions"
+        )
         vix_block = f"VIX: {vix:.1f} ({tone})\n"
 
     # Earnings risk
     earnings_block = ""
     if earnings_risk:
         lines = [f"  ⚠️  {sym}: earnings {str(ed)}" for sym, ed in earnings_risk.items()]
-        earnings_block = "EARNINGS RISK (EXIT THESE POSITIONS — do not hold through earnings):\n" + "\n".join(lines) + "\n"
+        earnings_block = (
+            "EARNINGS RISK (EXIT THESE POSITIONS — do not hold through earnings):\n"
+            + "\n".join(lines)
+            + "\n"
+        )
 
     # Sector performance
     sector_block = ""
@@ -166,8 +200,12 @@ def build_prompt(
         bot = list(sector_performance.items())[-3:]
         sector_block = (
             "SECTOR ROTATION (5-day performance):\n"
-            + "  Leading: " + ", ".join(f"{s} {r:+.1f}%" for s, r in top) + "\n"
-            + "  Lagging: " + ", ".join(f"{s} {r:+.1f}%" for s, r in reversed(bot)) + "\n"
+            + "  Leading: "
+            + ", ".join(f"{s} {r:+.1f}%" for s, r in top)
+            + "\n"
+            + "  Lagging: "
+            + ", ".join(f"{s} {r:+.1f}%" for s, r in reversed(bot))
+            + "\n"
         )
         if leading_sectors:
             sector_block += f"  Favour candidates from: {', '.join(leading_sectors)}\n"
@@ -198,7 +236,7 @@ def build_prompt(
     if stale_positions:
         stale_block = f"""
 STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to free capital):
-{', '.join(stale_positions)}
+{", ".join(stale_positions)}
 """
 
     # Options flow
@@ -212,7 +250,11 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
             flag = "  ⚡ UNUSUAL CALL ACTIVITY" if unusual else ""
             lines.append(f"  {sym}: put/call ratio {pc:.2f} ({tone}){flag}")
         if lines:
-            options_block = "OPTIONS FLOW (large call buying vs put buying signals where informed money is positioned):\n" + "\n".join(lines) + "\n"
+            options_block = (
+                "OPTIONS FLOW (large call buying vs put buying signals where informed money is positioned):\n"
+                + "\n".join(lines)
+                + "\n"
+            )
 
     # News section
     news_block = ""
@@ -229,7 +271,7 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
     if track_record:
         lines = []
         for r in track_record:
-            pnl = f"{'+'if r['daily_pnl_usd']>=0 else ''}${r['daily_pnl_usd']:.2f}"
+            pnl = f"{'+' if r['daily_pnl_usd'] >= 0 else ''}${r['daily_pnl_usd']:.2f}"
             trade_strs = [f"{t['symbol']} {t['action']}" for t in r.get("trades", [])]
             trades_str = ", ".join(trade_strs) if trade_strs else "no trades"
             lines.append(f"  {r['date']} P&L {pnl}: {trades_str}")
@@ -238,7 +280,10 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
     # Position ages
     ages_block = ""
     if position_ages:
-        lines = [f"  {sym}: {age} trading day{'s' if age!=1 else ''}" for sym, age in position_ages.items()]
+        lines = [
+            f"  {sym}: {age} trading day{'s' if age != 1 else ''}"
+            for sym, age in position_ages.items()
+        ]
         if lines:
             ages_block = "CURRENT POSITION AGES:\n" + "\n".join(lines) + "\n"
 
@@ -293,18 +338,20 @@ Focus on signal quality and confidence accuracy.
 Use the submit_trading_decisions tool to return your analysis."""
 
 
-_COST_PER_M_INPUT  = 3.0   # USD per 1M input tokens (claude-sonnet-4-x)
+_COST_PER_M_INPUT = 3.0  # USD per 1M input tokens (claude-sonnet-4-x)
 _COST_PER_M_OUTPUT = 15.0  # USD per 1M output tokens
 
 
 def _record_llm_usage(run_id: str | None, input_tokens: int, output_tokens: int):
     """Write token counts and estimated cost to the llm_usage SQLite table."""
-    cost = (input_tokens / 1_000_000) * _COST_PER_M_INPUT + \
-           (output_tokens / 1_000_000) * _COST_PER_M_OUTPUT
+    cost = (input_tokens / 1_000_000) * _COST_PER_M_INPUT + (
+        output_tokens / 1_000_000
+    ) * _COST_PER_M_OUTPUT
     try:
         from datetime import datetime
 
         from utils.db import get_db
+
         ts = datetime.now(UTC).isoformat()
         with get_db() as conn:
             conn.execute(
@@ -313,8 +360,7 @@ def _record_llm_usage(run_id: str | None, input_tokens: int, output_tokens: int)
                 (run_id, ts, CLAUDE_MODEL, input_tokens, output_tokens, round(cost, 6)),
             )
         logger.info(
-            f"LLM usage: {input_tokens} in / {output_tokens} out  "
-            f"≈ ${cost:.4f}  run_id={run_id}"
+            f"LLM usage: {input_tokens} in / {output_tokens} out  ≈ ${cost:.4f}  run_id={run_id}"
         )
     except Exception as e:
         logger.warning(f"Failed to record LLM usage: {e}")
@@ -341,7 +387,10 @@ def get_trading_decisions(
     run_id: str | None = None,
 ) -> dict | None:
     prompt = build_prompt(
-        snapshots, current_positions, available_cash, portfolio_value,
+        snapshots,
+        current_positions,
+        available_cash,
+        portfolio_value,
         news_by_symbol=news_by_symbol,
         track_record=track_record,
         market_regime=market_regime,
@@ -371,9 +420,7 @@ def get_trading_decisions(
         if hasattr(response, "usage") and response.usage:
             _record_llm_usage(run_id, response.usage.input_tokens, response.usage.output_tokens)
 
-        tool_block = next(
-            (b for b in response.content if hasattr(b, "input")), None
-        )
+        tool_block = next((b for b in response.content if hasattr(b, "input")), None)
         if tool_block is None:
             logger.error("AI response contained no tool call")
             return None

@@ -24,6 +24,7 @@ _IS_DEMO = len(sys.argv) > 1 and sys.argv[1] == "demo"
 
 if not _IS_DEMO:
     import config
+
     config.validate()
     from utils.decision_log import load_decisions
     from utils.portfolio_tracker import load_history
@@ -32,6 +33,7 @@ else:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _header(text: str):
     print(f"\n  {'─' * 46}")
@@ -44,15 +46,18 @@ def _print_positions(positions: list):
         print("  No open positions.")
         return
     print(f"\n  {'Symbol':<8} {'Value':>12} {'P&L':>10} {'P&L %':>7}")
-    print(f"  {'─'*8} {'─'*12} {'─'*10} {'─'*7}")
+    print(f"  {'─' * 8} {'─' * 12} {'─' * 10} {'─' * 7}")
     for p in positions:
         pl = p["unrealized_pl"]
         pct = p["unrealized_plpc"]
         sign = "+" if pl >= 0 else ""
-        print(f"  {p['symbol']:<8} ${p['market_value']:>11,.2f} {sign}${pl:>8,.2f} {sign}{pct:>5.1f}%")
+        print(
+            f"  {p['symbol']:<8} ${p['market_value']:>11,.2f} {sign}${pl:>8,.2f} {sign}{pct:>5.1f}%"
+        )
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+
 
 def cmd_status(args):
     _header("BOT STATUS")
@@ -63,6 +68,7 @@ def cmd_status(args):
 
     try:
         from execution import trader
+
         client = trader.get_client()
         acc = trader.get_account_info(client)
         positions = trader.get_open_positions(client)
@@ -78,6 +84,7 @@ def cmd_positions(args):
     _header("OPEN POSITIONS")
     try:
         from execution import trader
+
         client = trader.get_client()
         positions = trader.get_open_positions(client)
         _print_positions(positions)
@@ -89,18 +96,22 @@ def cmd_trades(args):
     _header(f"TRADE HISTORY (last {args.days} days)")
     history = load_history()
     recent = [r for r in history if not r["date"].endswith(("-midday", "-close"))]
-    recent = recent[-args.days:]
+    recent = recent[-args.days :]
     if not recent:
         print("  No trade history found.")
         return
     for record in recent:
         pnl = record.get("daily_pnl", 0)
         sign = "+" if pnl >= 0 else ""
-        print(f"\n  {record['date']}  P&L: {sign}${pnl:.2f}  |  {record.get('market_summary','')[:60]}")
+        print(
+            f"\n  {record['date']}  P&L: {sign}${pnl:.2f}  |  {record.get('market_summary', '')[:60]}"
+        )
         trades = record.get("trades_executed", [])
         if trades:
             for t in trades:
-                print(f"    {t.get('action','?'):<5} {t.get('symbol','?'):<8} {t.get('detail','')}")
+                print(
+                    f"    {t.get('action', '?'):<5} {t.get('symbol', '?'):<8} {t.get('detail', '')}"
+                )
         else:
             print("    (no trades)")
 
@@ -116,15 +127,17 @@ def cmd_decisions(args):
     for e in entries:
         groups.setdefault(e["date"], []).append(e)
 
-    for date_key in sorted(groups)[-args.days:]:
+    for date_key in sorted(groups)[-args.days :]:
         day_entries = groups[date_key]
         summary = day_entries[0].get("market_summary", "")
         print(f"\n  {date_key}  {summary[:70]}")
         for e in day_entries:
             executed = "[EXECUTED]" if e.get("executed") else "          "
-            sig = f"  [{e.get('key_signal','')}]" if e.get("key_signal") else ""
+            sig = f"  [{e.get('key_signal', '')}]" if e.get("key_signal") else ""
             conf = e.get("confidence", "?")
-            print(f"    {executed}  {e.get('action','?'):<5} {e.get('symbol','?'):<8}  conf={conf}{sig}")
+            print(
+                f"    {executed}  {e.get('action', '?'):<5} {e.get('symbol', '?'):<8}  conf={conf}{sig}"
+            )
             reasoning = e.get("reasoning", "")
             if reasoning:
                 print(f"              {reasoning[:90]}")
@@ -132,6 +145,7 @@ def cmd_decisions(args):
 
 def cmd_run(args):
     import main as bot
+
     bot.run(dry_run=args.dry_run, mode=args.mode)
 
 
@@ -139,6 +153,7 @@ def cmd_halt(args):
     confirm = input("  Activate kill switch? This will liquidate ALL positions. [yes/no]: ")
     if confirm.strip().lower() == "yes":
         import main as bot
+
         bot._run_kill_switch()
     else:
         print("  Cancelled.")
@@ -146,15 +161,18 @@ def cmd_halt(args):
 
 def cmd_resume(args):
     import main as bot
+
     bot._run_clear_halt()
 
 
 def cmd_backtest(args):
     from backtest import run_backtest
+
     capital = args.capital
     if capital is None:
         try:
             from execution import trader
+
             client = trader.get_client()
             capital = trader.get_account_info(client)["portfolio_value"]
             print(f"  Using current portfolio value: ${capital:,.2f}")
@@ -162,12 +180,14 @@ def cmd_backtest(args):
             capital = 100_000.0
             print(f"  Defaulting to ${capital:,.0f}")
     end = args.end or date.today().isoformat()
-    run_backtest(config.STOCK_UNIVERSE, args.start, end, capital,
-                 max_positions=config.MAX_POSITIONS)
+    run_backtest(
+        config.STOCK_UNIVERSE, args.start, end, capital, max_positions=config.MAX_POSITIONS
+    )
 
 
 def cmd_dashboard(args):
     import subprocess
+
     dashboard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
     print("  Launching dashboard at http://localhost:8501 ...")
     subprocess.run([sys.executable, "-m", "streamlit", "run", dashboard_path])
@@ -227,6 +247,7 @@ def cmd_demo(_args):
     # ── 2. Pre-filter ─────────────────────────────────────────────────────────
     _step("Pre-filter candidates (momentum / mean-reversion / breakout screens)")
     from execution.stock_scanner import prefilter_candidates
+
     snapshots = demo["snapshots"]
     qualified = prefilter_candidates(snapshots)
     filtered_out = [s["symbol"] for s in snapshots if s not in qualified]
@@ -238,11 +259,14 @@ def cmd_demo(_args):
     _step("AI analysis  (pre-recorded fixture — no Claude API call in demo)")
     ai = demo["ai_response"]
     _info(f"Market summary: {ai['market_summary']}")
-    _ok(f"{len(ai['buy_candidates'])} buy candidates  |  {len(ai['position_decisions'])} position decisions")
+    _ok(
+        f"{len(ai['buy_candidates'])} buy candidates  |  {len(ai['position_decisions'])} position decisions"
+    )
 
     # ── 4. Validation ─────────────────────────────────────────────────────────
     _step("Validation layer")
     from utils.validators import validate_ai_response
+
     scanned_symbols = {s["symbol"] for s in snapshots}
     held_symbols = {p["symbol"] for p in positions}
     is_valid, errors = validate_ai_response(ai, scanned_symbols, held_symbols=held_symbols)
@@ -263,10 +287,13 @@ def cmd_demo(_args):
         _ok("Bear filter: not triggered")
 
     from risk.position_sizer import kelly_fraction
+
     available_cash = acc["cash"] * 0.9  # 10% cash reserve
     max_positions = 5
     slots = max_positions - len(positions)
-    _ok(f"Position slots: {len(positions)}/{max_positions}  |  Available cash: ${available_cash:,.0f}")
+    _ok(
+        f"Position slots: {len(positions)}/{max_positions}  |  Available cash: ${available_cash:,.0f}"
+    )
 
     orders = []
     for candidate in passing[:slots]:
@@ -275,18 +302,31 @@ def cmd_demo(_args):
         if conf < 7:
             _warn(f"{symbol}: confidence {conf} below floor — skipped")
             continue
-        kelly = kelly_fraction(conf, signal=candidate.get("key_signal", "unknown"), regime=regime["regime"])
+        kelly = kelly_fraction(
+            conf, signal=candidate.get("key_signal", "unknown"), regime=regime["regime"]
+        )
         notional = min(available_cash * kelly, acc["portfolio_value"] * 0.45)
         if notional < 1.0:
             _warn(f"{symbol}: notional ${notional:.2f} too small — skipped")
             continue
-        orders.append({"symbol": symbol, "notional": notional, "kelly": kelly, "confidence": conf,
-                       "signal": candidate.get("key_signal"), "reasoning": candidate.get("reasoning", "")})
-        _ok(f"{symbol}: ${notional:,.0f}  Kelly {kelly:.0%}  conf={conf}  [{candidate.get('key_signal')}]")
+        orders.append(
+            {
+                "symbol": symbol,
+                "notional": notional,
+                "kelly": kelly,
+                "confidence": conf,
+                "signal": candidate.get("key_signal"),
+                "reasoning": candidate.get("reasoning", ""),
+            }
+        )
+        _ok(
+            f"{symbol}: ${notional:,.0f}  Kelly {kelly:.0%}  conf={conf}  [{candidate.get('key_signal')}]"
+        )
 
     # ── 6. Simulated execution ────────────────────────────────────────────────
     _step("Simulated order placement  (no real API calls)")
     import uuid
+
     run_id = str(uuid.uuid4())[:8]
     for o in orders:
         fake_order_id = str(uuid.uuid4())[:8]
@@ -320,6 +360,7 @@ def cmd_demo(_args):
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -355,16 +396,16 @@ def main():
 
     args = parser.parse_args()
     {
-        "status":    cmd_status,
+        "status": cmd_status,
         "positions": cmd_positions,
-        "trades":    cmd_trades,
+        "trades": cmd_trades,
         "decisions": cmd_decisions,
-        "run":       cmd_run,
-        "halt":      cmd_halt,
-        "resume":    cmd_resume,
-        "backtest":  cmd_backtest,
+        "run": cmd_run,
+        "halt": cmd_halt,
+        "resume": cmd_resume,
+        "backtest": cmd_backtest,
         "dashboard": cmd_dashboard,
-        "demo":      cmd_demo,
+        "demo": cmd_demo,
     }[args.command](args)
 
 

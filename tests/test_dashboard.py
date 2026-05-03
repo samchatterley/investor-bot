@@ -4,6 +4,7 @@ Each page branch in dashboard.py is module-level code that runs during import.
 To cover different branches, we reload the module with different mocked
 `st.radio` return values and controlled data sources.
 """
+
 import json
 import sys
 import unittest
@@ -11,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, mock_open, patch
 
 # ── Reload helper ─────────────────────────────────────────────────────────────
+
 
 def _make_mock_st(page: str = "Overview") -> MagicMock:
     """Create a fully-mocked streamlit module for a given page value."""
@@ -62,8 +64,12 @@ def _reload(
 
     # Patch only these keys; save originals so we can restore them after import
     # plotly.graph_objects is mocked to avoid reading ~/.plotly/.config during tests
-    _PATCH_KEYS = ["streamlit", "utils.portfolio_tracker", "utils.decision_log",
-                   "plotly.graph_objects"]
+    _PATCH_KEYS = [
+        "streamlit",
+        "utils.portfolio_tracker",
+        "utils.decision_log",
+        "plotly.graph_objects",
+    ]
     _saved = {k: sys.modules.get(k) for k in _PATCH_KEYS}
     sys.modules["streamlit"] = mock_st
     sys.modules["utils.portfolio_tracker"] = mock_pt
@@ -121,6 +127,7 @@ def _reload(
 
 # ── Pure helper functions ─────────────────────────────────────────────────────
 
+
 class TestFmtPct(unittest.TestCase):
     """_fmt_pct — line 194."""
 
@@ -160,6 +167,7 @@ class TestAgeLabel(unittest.TestCase):
 
 # ── _load_account error path (lines 223-224) ─────────────────────────────────
 
+
 class TestLoadAccountError(unittest.TestCase):
     """_load_account exception path covered during reload AND direct call."""
 
@@ -175,8 +183,8 @@ class TestLoadAccountError(unittest.TestCase):
 
 # ── _load_diagnostics (lines 228-239) ────────────────────────────────────────
 
-class TestLoadDiagnostics(unittest.TestCase):
 
+class TestLoadDiagnostics(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db, _ = _reload("Overview")
@@ -188,8 +196,10 @@ class TestLoadDiagnostics(unittest.TestCase):
     def test_returns_latest_report(self):
         report = {"status": "PASS", "total": 100}
         with (
-            patch("os.listdir", return_value=["test_report_2026-05-01.json",
-                                               "test_report_2026-04-30.json"]),
+            patch(
+                "os.listdir",
+                return_value=["test_report_2026-05-01.json", "test_report_2026-04-30.json"],
+            ),
             patch("builtins.open", mock_open(read_data=json.dumps(report))),
         ):
             result = self.db._load_diagnostics()
@@ -202,8 +212,8 @@ class TestLoadDiagnostics(unittest.TestCase):
 
 # ── _load_backtest (lines 243-250) ───────────────────────────────────────────
 
-class TestLoadBacktest(unittest.TestCase):
 
+class TestLoadBacktest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db, _ = _reload("Overview")
@@ -231,8 +241,8 @@ class TestLoadBacktest(unittest.TestCase):
 
 # ── Overview page — elif err: branch (lines 291-292) ─────────────────────────
 
-class TestOverviewErrBranch(unittest.TestCase):
 
+class TestOverviewErrBranch(unittest.TestCase):
     def test_account_error_renders_warning(self):
         _, mock_st = _reload("Overview", account_error=True)
         mock_st.warning.assert_called()
@@ -242,8 +252,8 @@ class TestOverviewErrBranch(unittest.TestCase):
 # Covered by the Diagnostics page reload that calls _diagnostics_button at
 # line 608 of dashboard.py. Additional direct tests below for completeness.
 
-class TestDiagnosticsButton(unittest.TestCase):
 
+class TestDiagnosticsButton(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db, cls.mock_st = _reload("Overview")
@@ -278,21 +288,27 @@ class TestDiagnosticsButton(unittest.TestCase):
 
 # ── Overview page — equity curve + positions (lines 306-325, 337) ────────────
 
-class TestOverviewWithData(unittest.TestCase):
 
+class TestOverviewWithData(unittest.TestCase):
     def test_equity_chart_rendered_with_history(self):
         _, mock_st = _reload("Overview", history=_trade_history(2))
         mock_st.plotly_chart.assert_called()
 
     def test_colour_pnl_function(self):
         acc_mock = {"portfolio_value": 100000.0, "cash": 50000.0}
-        pos_mock = [{
-            "symbol": "AAPL", "market_value": 5000.0,
-            "unrealized_pl": 200.0, "unrealized_plpc": 4.0,
-        }]
-        with patch("execution.trader.get_client", return_value=MagicMock()), \
-             patch("execution.trader.get_account_info", return_value=acc_mock), \
-             patch("execution.trader.get_open_positions", return_value=pos_mock):
+        pos_mock = [
+            {
+                "symbol": "AAPL",
+                "market_value": 5000.0,
+                "unrealized_pl": 200.0,
+                "unrealized_plpc": 4.0,
+            }
+        ]
+        with (
+            patch("execution.trader.get_client", return_value=MagicMock()),
+            patch("execution.trader.get_account_info", return_value=acc_mock),
+            patch("execution.trader.get_open_positions", return_value=pos_mock),
+        ):
             db, _ = _reload("Overview")
         # _colour_pnl is defined in module scope when positions is non-empty;
         # call directly since st.dataframe (mocked) never invokes the styler
@@ -301,6 +317,7 @@ class TestOverviewWithData(unittest.TestCase):
 
 
 # ── Trades page (lines 338-388) ──────────────────────────────────────────────
+
 
 def _trade_history(n: int = 2, with_trades: bool = True) -> list:
     trades = [{"action": "BUY", "symbol": "AAPL", "detail": "$5000"}] if with_trades else []
@@ -319,7 +336,6 @@ def _trade_history(n: int = 2, with_trades: bool = True) -> list:
 
 
 class TestTradesPage(unittest.TestCase):
-
     def test_empty_history_shows_info(self):
         _, mock_st = _reload("Trades", history=[])
         mock_st.info.assert_called()
@@ -340,6 +356,7 @@ class TestTradesPage(unittest.TestCase):
 
 # ── AI Decisions page (lines 394-483) ────────────────────────────────────────
 
+
 def _decisions(n: int = 3) -> list:
     return [
         {
@@ -356,7 +373,6 @@ def _decisions(n: int = 3) -> list:
 
 
 class TestAiDecisionsPage(unittest.TestCase):
-
     def test_empty_decisions_shows_info(self):
         _, mock_st = _reload("AI Decisions", decisions=[])
         mock_st.info.assert_called()
@@ -368,8 +384,10 @@ class TestAiDecisionsPage(unittest.TestCase):
 
 # ── Backtest page (lines 489-545) ────────────────────────────────────────────
 
-def _backtest_results(with_equity: bool = True, with_signals: bool = True,
-                      with_trades: bool = True) -> str:
+
+def _backtest_results(
+    with_equity: bool = True, with_signals: bool = True, with_trades: bool = True
+) -> str:
     r: dict = {
         "start": "2025-01-01",
         "end": "2025-12-31",
@@ -384,16 +402,13 @@ def _backtest_results(with_equity: bool = True, with_signals: bool = True,
     if with_equity:
         r["equity_curve"] = [["2025-01-01", 100000], ["2025-12-31", 115000]]
     if with_signals:
-        r["by_signal"] = {
-            "momentum": {"wins": 10, "losses": 5, "total_return": 20.0}
-        }
+        r["by_signal"] = {"momentum": {"wins": 10, "losses": 5, "total_return": 20.0}}
     if with_trades:
         r["trades"] = [{"action": "SELL", "symbol": "AAPL", "pnl_pct": 5.0}]
     return json.dumps(r)
 
 
 class TestBacktestPage(unittest.TestCase):
-
     def test_no_results_shows_info(self):
         _, mock_st = _reload("Backtest", os_exists=False)
         mock_st.info.assert_called()
@@ -423,8 +438,13 @@ class TestBacktestPage(unittest.TestCase):
 
 # ── Diagnostics page (lines 552-608) ─────────────────────────────────────────
 
-def _diag_report(status: str = "PASS", ts_offset_s: float = -10.0,
-                 with_failures: bool = False, invalid_ts: bool = False) -> str:
+
+def _diag_report(
+    status: str = "PASS",
+    ts_offset_s: float = -10.0,
+    with_failures: bool = False,
+    invalid_ts: bool = False,
+) -> str:
     ts = (datetime.now(UTC) + timedelta(seconds=ts_offset_s)).isoformat()
     if invalid_ts:
         ts = "not-a-date"
@@ -439,12 +459,13 @@ def _diag_report(status: str = "PASS", ts_offset_s: float = -10.0,
         "failures": [],
     }
     if with_failures:
-        report["failures"] = [{"test": "TestFoo.test_bar", "message": "AssertionError: False is not True"}]
+        report["failures"] = [
+            {"test": "TestFoo.test_bar", "message": "AssertionError: False is not True"}
+        ]
     return json.dumps(report)
 
 
 class TestDiagnosticsPage(unittest.TestCase):
-
     def test_no_report_shows_info(self):
         _, mock_st = _reload("Diagnostics", os_listdir_return=[])
         mock_st.info.assert_called()

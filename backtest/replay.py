@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 _WARMUP_DAYS = 252
 
 
-def _build_preloaded(symbols: list[str], fetch_start: date, end_date: date) -> dict[str, pd.DataFrame]:
+def _build_preloaded(
+    symbols: list[str], fetch_start: date, end_date: date
+) -> dict[str, pd.DataFrame]:
     """Download full OHLCV history for all symbols in one batch call."""
     tickers = list({*symbols, "SPY", "^VIX"})
     raw = yf.download(
@@ -60,7 +62,12 @@ def _compute_regime(preloaded: dict[str, pd.DataFrame], as_of: str) -> dict:
     try:
         sliced = spy_df[spy_df.index <= pd.Timestamp(as_of)]["Close"].dropna()
         if len(sliced) < 6:
-            return {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"}
+            return {
+                "is_bearish": False,
+                "spy_change_pct": 0.0,
+                "spy_5d_pct": 0.0,
+                "regime": "UNKNOWN",
+            }
 
         spy_1d = float((sliced.iloc[-1] / sliced.iloc[-2] - 1) * 100)
         spy_5d = float((sliced.iloc[-1] / sliced.iloc[-6] - 1) * 100)
@@ -131,11 +138,7 @@ def run_historical_replay(
         logger.error("replay: SPY not in preloaded data — aborting")
         return {"error": "SPY data missing"}
 
-    trading_dates = [
-        d.date()
-        for d in spy_df.index
-        if start <= d.date() <= end
-    ]
+    trading_dates = [d.date() for d in spy_df.index if start <= d.date() <= end]
     if not trading_dates:
         return {"error": "no trading dates in range"}
 
@@ -153,8 +156,10 @@ def run_historical_replay(
 
         # ── Market snapshots (point-in-time) ──────────────────────────────────
         snapshots = market_data.get_market_snapshots(
-            universe, config.LOOKBACK_DAYS,
-            preloaded=preloaded, as_of=as_of,
+            universe,
+            config.LOOKBACK_DAYS,
+            preloaded=preloaded,
+            as_of=as_of,
         )
         if not snapshots:
             logger.warning(f"replay {as_of}: no snapshots — skipping")
@@ -176,7 +181,8 @@ def run_historical_replay(
             for sym, p in positions.items()
         ]
         portfolio_value = cash + sum(
-            p["shares"] * next((s["current_price"] for s in snapshots if s["symbol"] == sym), p["entry_price"])
+            p["shares"]
+            * next((s["current_price"] for s in snapshots if s["symbol"] == sym), p["entry_price"])
             for sym, p in positions.items()
         )
 
@@ -189,7 +195,9 @@ def run_historical_replay(
                 news_by_symbol={},
                 track_record={},
                 market_regime=regime,
-                position_ages={sym: (sim_date - p["entry_date"]).days for sym, p in positions.items()},
+                position_ages={
+                    sym: (sim_date - p["entry_date"]).days for sym, p in positions.items()
+                },
                 stale_positions=[],
                 vix=regime.get("vix"),
                 sector_performance={},
@@ -207,15 +215,17 @@ def run_historical_replay(
 
         if dry_run:
             # In dry_run mode record what Claude said but don't touch positions
-            daily_records.append({
-                "date": as_of,
-                "portfolio_value": round(portfolio_value, 2),
-                "cash": round(cash, 2),
-                "open_positions": len(positions),
-                "regime": regime.get("regime"),
-                "decisions": decisions,
-                "trades": [],
-            })
+            daily_records.append(
+                {
+                    "date": as_of,
+                    "portfolio_value": round(portfolio_value, 2),
+                    "cash": round(cash, 2),
+                    "open_positions": len(positions),
+                    "regime": regime.get("regime"),
+                    "decisions": decisions,
+                    "trades": [],
+                }
+            )
             continue
 
         # ── Fill decisions at next-day open ───────────────────────────────────
@@ -228,7 +238,11 @@ def run_historical_replay(
         day_trades: list[dict] = []
 
         # Sells
-        sell_symbols = {d["symbol"] for d in decisions.get("position_decisions", []) if d.get("action") == "SELL"}
+        sell_symbols = {
+            d["symbol"]
+            for d in decisions.get("position_decisions", [])
+            if d.get("action") == "SELL"
+        }
         # Stale exits
         for sym, pos in list(positions.items()):
             if (sim_date - pos["entry_date"]).days >= max_hold_days:
@@ -253,7 +267,9 @@ def run_historical_replay(
             proceeds = pos["shares"] * exit_px
             cash += proceeds
             trade = {
-                "date": next_as_of, "symbol": sym, "action": "SELL",
+                "date": next_as_of,
+                "symbol": sym,
+                "action": "SELL",
                 "entry_price": round(pos["entry_price"], 4),
                 "exit_price": round(exit_px, 4),
                 "shares": round(pos["shares"], 4),
@@ -269,8 +285,13 @@ def run_historical_replay(
         if not skip_buys:
             slots = max_positions - len(positions)
             buys = sorted(
-                [c for c in decisions.get("buy_candidates", []) if c["confidence"] >= config.MIN_CONFIDENCE],
-                key=lambda x: x["confidence"], reverse=True,
+                [
+                    c
+                    for c in decisions.get("buy_candidates", [])
+                    if c["confidence"] >= config.MIN_CONFIDENCE
+                ],
+                key=lambda x: x["confidence"],
+                reverse=True,
             )[:slots]
 
             for candidate in buys:
@@ -305,7 +326,9 @@ def run_historical_replay(
                     "confidence": candidate["confidence"],
                 }
                 trade = {
-                    "date": next_as_of, "symbol": sym, "action": "BUY",
+                    "date": next_as_of,
+                    "symbol": sym,
+                    "action": "BUY",
                     "entry_price": round(entry_px, 4),
                     "shares": round(shares, 4),
                     "notional": round(cost, 2),
@@ -316,17 +339,20 @@ def run_historical_replay(
                 all_trades.append(trade)
 
         portfolio_value = cash + sum(
-            p["shares"] * next((s["current_price"] for s in snapshots if s["symbol"] == sym), p["entry_price"])
+            p["shares"]
+            * next((s["current_price"] for s in snapshots if s["symbol"] == sym), p["entry_price"])
             for sym, p in positions.items()
         )
-        daily_records.append({
-            "date": as_of,
-            "portfolio_value": round(portfolio_value, 2),
-            "cash": round(cash, 2),
-            "open_positions": len(positions),
-            "regime": regime.get("regime"),
-            "trades": day_trades,
-        })
+        daily_records.append(
+            {
+                "date": as_of,
+                "portfolio_value": round(portfolio_value, 2),
+                "cash": round(cash, 2),
+                "open_positions": len(positions),
+                "regime": regime.get("regime"),
+                "trades": day_trades,
+            }
+        )
 
     # ── Close all remaining positions at end ──────────────────────────────────
     last_date = trading_dates[-1].strftime("%Y-%m-%d") if trading_dates else end_date
@@ -334,21 +360,26 @@ def run_historical_replay(
         snap_list = market_data.get_market_snapshots([sym], 2, preloaded=preloaded, as_of=last_date)
         exit_px = snap_list[0]["current_price"] * sell_factor if snap_list else pos["entry_price"]
         cash += pos["shares"] * exit_px
-        all_trades.append({
-            "date": last_date, "symbol": sym, "action": "SELL",
-            "entry_price": round(pos["entry_price"], 4),
-            "exit_price": round(exit_px, 4),
-            "shares": round(pos["shares"], 4),
-            "pnl_pct": round((exit_px / pos["entry_price"] - 1) * 100, 2),
-            "hold_days": (pd.Timestamp(last_date).date() - pos["entry_date"]).days,
-        })
+        all_trades.append(
+            {
+                "date": last_date,
+                "symbol": sym,
+                "action": "SELL",
+                "entry_price": round(pos["entry_price"], 4),
+                "exit_price": round(exit_px, 4),
+                "shares": round(pos["shares"], 4),
+                "pnl_pct": round((exit_px / pos["entry_price"] - 1) * 100, 2),
+                "hold_days": (pd.Timestamp(last_date).date() - pos["entry_date"]).days,
+            }
+        )
 
     final_value = cash
     total_return_pct = round((final_value / initial_capital - 1) * 100, 2)
     completed_sells = [t for t in all_trades if t["action"] == "SELL" and "pnl_pct" in t]
     win_rate = (
         round(sum(1 for t in completed_sells if t["pnl_pct"] > 0) / len(completed_sells) * 100, 1)
-        if completed_sells else 0.0
+        if completed_sells
+        else 0.0
     )
 
     return {

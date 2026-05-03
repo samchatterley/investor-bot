@@ -1,4 +1,5 @@
 """Full coverage of data/market_data.py — fetch_stock_data and get_market_snapshots."""
+
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -10,18 +11,20 @@ def _make_ohlcv(n=200, base=100.0):
     idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n)
     actual_n = len(idx)
     prices = [base + i * 0.1 for i in range(actual_n)]
-    df = pd.DataFrame({
-        "Open":   prices,
-        "High":   [p + 1 for p in prices],
-        "Low":    [p - 1 for p in prices],
-        "Close":  prices,
-        "Volume": [1_000_000] * actual_n,
-    }, index=idx)
+    df = pd.DataFrame(
+        {
+            "Open": prices,
+            "High": [p + 1 for p in prices],
+            "Low": [p - 1 for p in prices],
+            "Close": prices,
+            "Volume": [1_000_000] * actual_n,
+        },
+        index=idx,
+    )
     return df
 
 
 class TestFetchStockData(unittest.TestCase):
-
     def _ticker(self, df):
         t = MagicMock()
         t.history.return_value = df
@@ -29,6 +32,7 @@ class TestFetchStockData(unittest.TestCase):
 
     def test_returns_dataframe_on_success(self):
         from data.market_data import fetch_stock_data
+
         with patch("data.market_data.yf.Ticker", return_value=self._ticker(_make_ohlcv(200))):
             result = fetch_stock_data("AAPL", days=30)
         self.assertIsNotNone(result)
@@ -36,12 +40,14 @@ class TestFetchStockData(unittest.TestCase):
 
     def test_returns_none_on_empty_dataframe(self):
         from data.market_data import fetch_stock_data
+
         with patch("data.market_data.yf.Ticker", return_value=self._ticker(pd.DataFrame())):
             result = fetch_stock_data("AAPL")
         self.assertIsNone(result)
 
     def test_returns_none_when_insufficient_rows(self):
         from data.market_data import fetch_stock_data
+
         # Less than 35 rows after dropna — insufficient for indicators
         with patch("data.market_data.yf.Ticker", return_value=self._ticker(_make_ohlcv(10))):
             result = fetch_stock_data("AAPL")
@@ -49,22 +55,35 @@ class TestFetchStockData(unittest.TestCase):
 
     def test_returns_none_on_yfinance_exception(self):
         from data.market_data import fetch_stock_data
+
         with patch("data.market_data.yf.Ticker", side_effect=Exception("network error")):
             result = fetch_stock_data("AAPL")
         self.assertIsNone(result)
 
     def test_result_has_required_indicator_columns(self):
         from data.market_data import fetch_stock_data
+
         with patch("data.market_data.yf.Ticker", return_value=self._ticker(_make_ohlcv(200))):
             result = fetch_stock_data("AAPL", days=30)
         if result is None:
             self.skipTest("fetch_stock_data returned None — indicator warmup failed")
-        for col in ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio",
-                    "ret_1d", "ret_5d", "ret_10d", "weekly_trend_up"]:
+        for col in [
+            "rsi",
+            "macd_diff",
+            "ema9",
+            "ema21",
+            "bb_pct",
+            "vol_ratio",
+            "ret_1d",
+            "ret_5d",
+            "ret_10d",
+            "weekly_trend_up",
+        ]:
             self.assertIn(col, result.columns, f"Missing column: {col}")
 
     def test_result_length_capped_at_days_param(self):
         from data.market_data import fetch_stock_data
+
         with patch("data.market_data.yf.Ticker", return_value=self._ticker(_make_ohlcv(200))):
             result = fetch_stock_data("AAPL", days=20)
         if result is not None:
@@ -72,6 +91,7 @@ class TestFetchStockData(unittest.TestCase):
 
     def test_weekly_trend_defaults_to_true_on_exception(self):
         from data.market_data import fetch_stock_data
+
         # Use only 40 rows — weekly resample won't have 22 weeks, triggers fallback
         with patch("data.market_data.yf.Ticker", return_value=self._ticker(_make_ohlcv(40))):
             result = fetch_stock_data("AAPL", days=5)
@@ -80,94 +100,127 @@ class TestFetchStockData(unittest.TestCase):
 
 
 class TestGetMarketSnapshots(unittest.TestCase):
-
     def _snap(self, symbol, price=150.0):
         return {
-            "symbol": symbol, "current_price": price,
-            "rsi_14": 50.0, "macd_diff": 0.1, "ema9_above_ema21": True,
-            "bb_pct": 0.5, "vol_ratio": 1.2, "ret_1d_pct": 0.5,
-            "ret_5d_pct": 2.0, "ret_10d_pct": 3.0, "weekly_trend_up": True,
+            "symbol": symbol,
+            "current_price": price,
+            "rsi_14": 50.0,
+            "macd_diff": 0.1,
+            "ema9_above_ema21": True,
+            "bb_pct": 0.5,
+            "vol_ratio": 1.2,
+            "ret_1d_pct": 0.5,
+            "ret_5d_pct": 2.0,
+            "ret_10d_pct": 3.0,
+            "weekly_trend_up": True,
         }
 
     def test_returns_list_on_success(self):
         from data.market_data import get_market_snapshots
-        with patch("data.market_data.fetch_stock_data") as mock_fetch, \
-             patch("data.market_data.summarise_for_ai", return_value=self._snap("AAPL")), \
-             patch("data.market_data.get_spy_5d_return", return_value=1.5):
-            mock_fetch.return_value = MagicMock()   # non-None DataFrame
+
+        with (
+            patch("data.market_data.fetch_stock_data") as mock_fetch,
+            patch("data.market_data.summarise_for_ai", return_value=self._snap("AAPL")),
+            patch("data.market_data.get_spy_5d_return", return_value=1.5),
+        ):
+            mock_fetch.return_value = MagicMock()  # non-None DataFrame
             result = get_market_snapshots(["AAPL"])
         self.assertIsInstance(result, list)
 
     def test_filters_out_failed_fetches(self):
         from data.market_data import get_market_snapshots
-        with patch("data.market_data.fetch_stock_data", return_value=None), \
-             patch("data.market_data.get_spy_5d_return", return_value=None):
+
+        with (
+            patch("data.market_data.fetch_stock_data", return_value=None),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+        ):
             result = get_market_snapshots(["AAPL", "NVDA"])
         self.assertEqual(result, [])
 
     def test_rel_strength_added_when_spy_5d_available(self):
         from data.market_data import get_market_snapshots
+
         snap = self._snap("AAPL")
-        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()), \
-             patch("data.market_data.summarise_for_ai", return_value=snap), \
-             patch("data.market_data.get_spy_5d_return", return_value=1.5):
+        with (
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=1.5),
+        ):
             result = get_market_snapshots(["AAPL"])
         if result:
             self.assertIn("rel_strength_5d", result[0])
 
     def test_rel_strength_omitted_when_spy_unavailable(self):
         from data.market_data import get_market_snapshots
+
         snap = self._snap("AAPL")
-        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()), \
-             patch("data.market_data.summarise_for_ai", return_value=snap), \
-             patch("data.market_data.get_spy_5d_return", return_value=None):
+        with (
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+        ):
             result = get_market_snapshots(["AAPL"])
         if result:
             self.assertNotIn("rel_strength_5d", result[0])
 
     def test_empty_symbols_returns_empty(self):
         from data.market_data import get_market_snapshots
+
         with patch("data.market_data.get_spy_5d_return", return_value=None):
             result = get_market_snapshots([])
         self.assertEqual(result, [])
 
     def test_preloaded_as_of_uses_spy_from_preloaded_not_live(self):
         from data.market_data import get_market_snapshots
+
         snap = self._snap("AAPL")
         spy_df = _make_ohlcv(60, base=400.0)
         preloaded = {"AAPL": _make_ohlcv(200), "SPY": spy_df}
-        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()) as mock_fetch, \
-             patch("data.market_data.summarise_for_ai", return_value=snap), \
-             patch("data.market_data.get_spy_5d_return") as live_spy:
+        with (
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return") as live_spy,
+        ):
             get_market_snapshots(["AAPL"], preloaded=preloaded, as_of="2025-01-10")
         live_spy.assert_not_called()
 
     def test_preloaded_as_of_passes_args_to_fetch_stock_data(self):
         from data.market_data import get_market_snapshots
+
         snap = self._snap("NVDA")
         preloaded = {"NVDA": _make_ohlcv(200), "SPY": _make_ohlcv(60, base=400.0)}
-        with patch("data.market_data.fetch_stock_data", return_value=MagicMock()) as mock_fetch, \
-             patch("data.market_data.summarise_for_ai", return_value=snap):
+        with (
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()) as mock_fetch,
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+        ):
             get_market_snapshots(["NVDA"], preloaded=preloaded, as_of="2025-06-01")
         _, kwargs = mock_fetch.call_args
-        self.assertEqual(kwargs.get("as_of") or mock_fetch.call_args[0][3] if len(mock_fetch.call_args[0]) > 3 else kwargs.get("as_of"), "2025-06-01")
+        self.assertEqual(
+            kwargs.get("as_of") or mock_fetch.call_args[0][3]
+            if len(mock_fetch.call_args[0]) > 3
+            else kwargs.get("as_of"),
+            "2025-06-01",
+        )
 
 
 class TestFetchStockDataPreloaded(unittest.TestCase):
-
     def _make_preloaded(self, n=200, base=100.0):
         idx = pd.bdate_range(end="2025-06-01", periods=n)
         prices = [base + i * 0.1 for i in range(len(idx))]
-        return pd.DataFrame({
-            "Open":   prices,
-            "High":   [p + 1 for p in prices],
-            "Low":    [p - 1 for p in prices],
-            "Close":  prices,
-            "Volume": [1_000_000] * len(idx),
-        }, index=idx)
+        return pd.DataFrame(
+            {
+                "Open": prices,
+                "High": [p + 1 for p in prices],
+                "Low": [p - 1 for p in prices],
+                "Close": prices,
+                "Volume": [1_000_000] * len(idx),
+            },
+            index=idx,
+        )
 
     def test_preloaded_path_does_not_call_yfinance(self):
         from data.market_data import fetch_stock_data
+
         df = self._make_preloaded(200)
         with patch("data.market_data.yf.Ticker") as mock_yf:
             result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
@@ -176,6 +229,7 @@ class TestFetchStockDataPreloaded(unittest.TestCase):
 
     def test_preloaded_as_of_slices_to_date(self):
         from data.market_data import fetch_stock_data
+
         df = self._make_preloaded(200)
         cutoff = df.index[99]  # middle of the range
         result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df}, as_of=str(cutoff.date()))
@@ -184,20 +238,25 @@ class TestFetchStockDataPreloaded(unittest.TestCase):
 
     def test_preloaded_returns_none_when_symbol_missing(self):
         from data.market_data import fetch_stock_data
+
         with patch("data.market_data.yf.Ticker", return_value=MagicMock()) as mock_yf:
             mock_yf.return_value.history.return_value = pd.DataFrame()
-            result = fetch_stock_data("MISSING", days=30, preloaded={"AAPL": self._make_preloaded()})
+            result = fetch_stock_data(
+                "MISSING", days=30, preloaded={"AAPL": self._make_preloaded()}
+            )
         # Falls through to live path; live path returns None on empty df
         self.assertIsNone(result)
 
     def test_preloaded_returns_none_on_insufficient_rows(self):
         from data.market_data import fetch_stock_data
+
         df = self._make_preloaded(10)  # too few rows
         result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
         self.assertIsNone(result)
 
     def test_preloaded_result_has_indicator_columns(self):
         from data.market_data import fetch_stock_data
+
         df = self._make_preloaded(200)
         result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
         if result is None:
@@ -207,6 +266,7 @@ class TestFetchStockDataPreloaded(unittest.TestCase):
 
     def test_preloaded_result_capped_at_days_param(self):
         from data.market_data import fetch_stock_data
+
         df = self._make_preloaded(200)
         result = fetch_stock_data("AAPL", days=15, preloaded={"AAPL": df})
         if result is not None:

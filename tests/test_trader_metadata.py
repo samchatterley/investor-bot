@@ -2,6 +2,7 @@
 Tests for position metadata functions in execution/trader.py (SQLite backend).
 Alpaca API calls are excluded — those require a live/mock broker connection.
 """
+
 import os
 import shutil
 import tempfile
@@ -11,7 +12,6 @@ from unittest.mock import patch
 
 
 class _MetaTestBase(unittest.TestCase):
-
     def setUp(self):
         import utils.db as db_module
 
@@ -34,13 +34,14 @@ class _MetaTestBase(unittest.TestCase):
         # Initialise schema in the isolated temp DB
         db_module._initialized = False
         from utils.db import init_db
+
         init_db()
 
 
 class TestRecordBuyAndSell(_MetaTestBase):
-
     def test_record_buy_creates_entry(self):
         from execution.trader import get_position_meta, record_buy
+
         record_buy("AAPL", 175.50, signal="momentum", regime="BULL_TRENDING", confidence=8)
         meta = get_position_meta("AAPL")
         self.assertEqual(meta["signal"], "momentum")
@@ -50,6 +51,7 @@ class TestRecordBuyAndSell(_MetaTestBase):
 
     def test_record_buy_stores_entry_date(self):
         from execution.trader import get_position_meta, record_buy
+
         record_buy("MSFT", 400.0)
         meta = get_position_meta("MSFT")
         self.assertIn("entry_date", meta)
@@ -57,6 +59,7 @@ class TestRecordBuyAndSell(_MetaTestBase):
 
     def test_record_sell_removes_entry(self):
         from execution.trader import get_position_meta, record_buy, record_sell
+
         record_buy("NVDA", 800.0, signal="momentum")
         record_sell("NVDA")
         meta = get_position_meta("NVDA")
@@ -64,10 +67,12 @@ class TestRecordBuyAndSell(_MetaTestBase):
 
     def test_record_sell_missing_symbol_is_safe(self):
         from execution.trader import record_sell
+
         record_sell("GHOST")  # should not raise
 
     def test_multiple_positions_stored_independently(self):
         from execution.trader import get_position_meta, record_buy
+
         record_buy("AAPL", 175.0, signal="momentum", confidence=8)
         record_buy("MSFT", 400.0, signal="mean_reversion", confidence=7)
         self.assertEqual(get_position_meta("AAPL")["signal"], "momentum")
@@ -75,9 +80,9 @@ class TestRecordBuyAndSell(_MetaTestBase):
 
 
 class TestGetPositionMeta(_MetaTestBase):
-
     def test_unknown_symbol_returns_defaults(self):
         from execution.trader import get_position_meta
+
         meta = get_position_meta("UNKNOWN")
         self.assertEqual(meta["signal"], "unknown")
         self.assertEqual(meta["regime"], "UNKNOWN")
@@ -86,6 +91,7 @@ class TestGetPositionMeta(_MetaTestBase):
 
     def test_defaults_not_overwritten_by_partial_metadata(self):
         from execution.trader import get_position_meta, record_buy
+
         record_buy("AAPL", 180.0)  # no regime or confidence supplied → defaults
         meta = get_position_meta("AAPL")
         self.assertEqual(meta["regime"], "UNKNOWN")
@@ -93,27 +99,30 @@ class TestGetPositionMeta(_MetaTestBase):
 
 
 class TestPositionAges(_MetaTestBase):
-
     def test_position_entered_today_has_age_one(self):
         from execution.trader import get_position_ages, record_buy
+
         record_buy("AAPL", 175.0)
         ages = get_position_ages()
         self.assertGreaterEqual(ages["AAPL"], 1)
 
     def test_get_stale_positions_below_threshold(self):
         from execution.trader import get_stale_positions, record_buy
+
         record_buy("AAPL", 175.0)
         stale = get_stale_positions(max_days=30)
         self.assertNotIn("AAPL", stale)
 
     def test_get_stale_positions_with_low_threshold(self):
         from execution.trader import get_stale_positions, record_buy
+
         record_buy("AAPL", 175.0)
         stale = get_stale_positions(max_days=1)
         self.assertIn("AAPL", stale)
 
     def test_no_positions_returns_empty(self):
         from execution.trader import get_position_ages, get_stale_positions
+
         self.assertEqual(get_position_ages(), {})
         self.assertEqual(get_stale_positions(), [])
 
@@ -123,6 +132,7 @@ class TestRecordPartialExit(_MetaTestBase):
 
     def test_record_partial_exit_sets_timestamp(self):
         from execution.trader import get_position_meta, record_buy, record_partial_exit
+
         record_buy("AAPL", 180.0)
         record_partial_exit("AAPL")
         meta = get_position_meta("AAPL")
@@ -130,6 +140,7 @@ class TestRecordPartialExit(_MetaTestBase):
 
     def test_record_partial_exit_unknown_symbol_does_not_raise(self):
         from execution.trader import record_partial_exit
+
         # Symbol not in DB — UPDATE touches no rows but should not raise
         try:
             record_partial_exit("GHOST")

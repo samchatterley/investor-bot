@@ -25,6 +25,7 @@ def _send(subject: str, body: str):
 
 # ── Emergency alerts only (owner-only, sent immediately) ─────────────────────
 
+
 def alert_circuit_breaker(drawdown_pct: float):
     _send(
         "[BOT] Circuit breaker activated",

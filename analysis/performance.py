@@ -14,6 +14,7 @@ _DASHBOARD_PATH = os.path.join(LOG_DIR, "dashboard.html")
 
 # ---------- Signal win-rate tracking ----------
 
+
 def _load_stats() -> dict:
     os.makedirs(LOG_DIR, exist_ok=True)
     if os.path.exists(_STATS_PATH):
@@ -44,8 +45,9 @@ def _update_bucket(bucket: dict, return_pct: float):
         bucket["losses"] += 1
 
 
-def record_trade_outcome(signal: str, return_pct: float,
-                         regime: str = "UNKNOWN", confidence: int = 0):
+def record_trade_outcome(
+    signal: str, return_pct: float, regime: str = "UNKNOWN", confidence: int = 0
+):
     """
     Record the outcome of a closed trade against its entry signal, regime, and confidence.
     Called when a position is closed (sell, stop loss, stale exit).
@@ -68,7 +70,9 @@ def record_trade_outcome(signal: str, return_pct: float,
     _update_bucket(entry["by_confidence"][conf_key], return_pct)
 
     _save_stats(stats)
-    logger.info(f"Signal stats updated: {signal} [regime={regime} conf={confidence}] → {return_pct:+.2f}%")
+    logger.info(
+        f"Signal stats updated: {signal} [regime={regime} conf={confidence}] → {return_pct:+.2f}%"
+    )
 
 
 def _bucket_summary(bucket: dict) -> dict:
@@ -122,7 +126,9 @@ def get_actionable_feedback() -> str:
         avg = data["avg_return_pct"]
 
         if wr >= 60:
-            verdict = f"working well ({wr:.0f}% win rate, avg {avg:+.2f}%) — maintain confidence scoring"
+            verdict = (
+                f"working well ({wr:.0f}% win rate, avg {avg:+.2f}%) — maintain confidence scoring"
+            )
         elif wr >= 45:
             verdict = f"marginal ({wr:.0f}% win rate, avg {avg:+.2f}%) — be selective, prefer higher setups"
         else:
@@ -147,11 +153,13 @@ def get_actionable_feedback() -> str:
 
     return (
         "PERFORMANCE FEEDBACK — adjust confidence scoring based on what has actually worked:\n"
-        + "\n".join(lines) + "\n"
+        + "\n".join(lines)
+        + "\n"
     )
 
 
 # ---------- HTML dashboard ----------
+
 
 def compute_metrics(records: list[dict]) -> dict:
     if not records:
@@ -225,10 +233,10 @@ def generate_dashboard(records: list[dict]):
             colour = "#2e7d32" if action == "BUY" else "#c62828"
             trade_rows += f"""
             <tr>
-                <td>{r['date']}</td>
+                <td>{r["date"]}</td>
                 <td><b style="color:{colour}">{action}</b></td>
-                <td>{t.get('symbol','')}</td>
-                <td>{t.get('detail','')}</td>
+                <td>{t.get("symbol", "")}</td>
+                <td>{t.get("detail", "")}</td>
             </tr>"""
 
     html = f"""<!DOCTYPE html>
@@ -256,28 +264,28 @@ def generate_dashboard(records: list[dict]):
 </head>
 <body>
 <h1>Trading Bot Performance</h1>
-<p class="subtitle">Generated {date.today().isoformat()} · {metrics.get('days_traded',0)} days of data</p>
+<p class="subtitle">Generated {date.today().isoformat()} · {metrics.get("days_traded", 0)} days of data</p>
 
 <div class="cards">
   <div class="card">
     <div class="label">Total Return</div>
-    <div class="value {'pos' if metrics.get('total_return_pct',0) >= 0 else 'neg'}">{metrics.get('total_return_pct',0):+.1f}%</div>
+    <div class="value {"pos" if metrics.get("total_return_pct", 0) >= 0 else "neg"}">{metrics.get("total_return_pct", 0):+.1f}%</div>
   </div>
   <div class="card">
     <div class="label">Win Rate</div>
-    <div class="value">{metrics.get('win_rate_pct',0):.0f}%</div>
+    <div class="value">{metrics.get("win_rate_pct", 0):.0f}%</div>
   </div>
   <div class="card">
     <div class="label">Max Drawdown</div>
-    <div class="value neg">{metrics.get('max_drawdown_pct',0):.1f}%</div>
+    <div class="value neg">{metrics.get("max_drawdown_pct", 0):.1f}%</div>
   </div>
   <div class="card">
     <div class="label">Sharpe Ratio</div>
-    <div class="value">{metrics.get('sharpe',0):.2f}</div>
+    <div class="value">{metrics.get("sharpe", 0):.2f}</div>
   </div>
   <div class="card">
     <div class="label">Total Trades</div>
-    <div class="value">{metrics.get('total_trades',0)}</div>
+    <div class="value">{metrics.get("total_trades", 0)}</div>
   </div>
 </div>
 
@@ -325,7 +333,7 @@ new Chart(document.getElementById('pnlChart'), {{
   options: {{ plugins: {{ legend: {{ display: false }} }} }}
 }});
 
-{'new Chart(document.getElementById("signalChart"), { type: "bar", data: { labels: signalLabels, datasets: [{ label: "Win Rate %", data: signalWR, backgroundColor: "#1565c0" }] }, options: { scales: { y: { max: 100 } } } });' if signal_labels else ''}
+{'new Chart(document.getElementById("signalChart"), { type: "bar", data: { labels: signalLabels, datasets: [{ label: "Win Rate %", data: signalWR, backgroundColor: "#1565c0" }] }, options: { scales: { y: { max: 100 } } } });' if signal_labels else ""}
 </script>
 </body>
 </html>"""

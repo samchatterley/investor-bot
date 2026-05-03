@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ── Execution result types ────────────────────────────────────────────────────
 
+
 class OrderStatus(StrEnum):
     FILLED = "FILLED"
     PARTIAL = "PARTIAL"
@@ -31,20 +32,23 @@ class OrderResult:
     def is_success(self) -> bool:
         return self.status == OrderStatus.FILLED
 
-VALID_BUY_SIGNALS: frozenset[str] = frozenset({
-    "mean_reversion",
-    "momentum",
-    "trend_continuation",
-    "macd_crossover",
-    "rsi_oversold",
-    "news_catalyst",
-    "unknown",
-    "bb_squeeze",
-    "breakout_52w",
-    "rs_leader",
-    "inside_day_breakout",
-    "trend_pullback",
-})
+
+VALID_BUY_SIGNALS: frozenset[str] = frozenset(
+    {
+        "mean_reversion",
+        "momentum",
+        "trend_continuation",
+        "macd_crossover",
+        "rsi_oversold",
+        "news_catalyst",
+        "unknown",
+        "bb_squeeze",
+        "breakout_52w",
+        "rs_leader",
+        "inside_day_breakout",
+        "trend_pullback",
+    }
+)
 
 
 class BuyCandidate(BaseModel):
@@ -94,9 +98,7 @@ class DecisionSet(BaseModel):
     @model_validator(mode="after")
     def no_buy_sell_conflict(self) -> DecisionSet:
         buy_symbols = {c.symbol for c in self.buy_candidates}
-        sell_symbols = {
-            d.symbol for d in self.position_decisions if d.action == "SELL"
-        }
+        sell_symbols = {d.symbol for d in self.position_decisions if d.action == "SELL"}
         conflicts = buy_symbols & sell_symbols
         if conflicts:
             raise ValueError(

@@ -6,29 +6,59 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 SECTOR_MAP = {
-    "AAPL": "Technology",    "MSFT": "Technology",    "GOOGL": "Technology",
-    "AMZN": "Consumer Discretionary", "META": "Technology", "NVDA": "Technology",
-    "TSLA": "Consumer Discretionary", "AMD": "Technology",  "NFLX": "Consumer Discretionary",
-    "CRM":  "Technology",    "ADBE": "Technology",    "UBER": "Industrials",
-    "JPM":  "Financials",    "BAC":  "Financials",    "GS":   "Financials",
-    "XOM":  "Energy",        "CVX":  "Energy",
-    "SPY":  "ETF",           "QQQ":  "ETF",           "IWM":  "ETF",
-    "COST": "Consumer Staples", "WMT": "Consumer Staples",
-    "HD":   "Consumer Discretionary",
-    "V":    "Financials",    "MA":   "Financials",    "PYPL": "Financials",
-    "SHOP": "Technology",    "COIN": "Financials",
-    "SNAP": "Technology",    "PINS": "Technology",    "RBLX": "Technology",
-    "DIS":  "Consumer Discretionary",
-    "PFE":  "Healthcare",    "MRNA": "Healthcare",    "ABBV": "Healthcare",
-    "LLY":  "Healthcare",
-    "BA":   "Industrials",   "CAT":  "Industrials",   "GE":   "Industrials",
-    "LMT":  "Industrials",
-    "NKE":  "Consumer Discretionary", "MCD": "Consumer Discretionary",
-    "SBUX": "Consumer Discretionary", "TGT": "Consumer Discretionary",
-    "PLTR": "Technology",    "SNOW": "Technology",    "NET":  "Technology",
-    "DDOG": "Technology",    "CRWD": "Technology",
-    "INTC": "Technology",    "QCOM": "Technology",    "AVGO": "Technology",
-    "TXN":  "Technology",
+    "AAPL": "Technology",
+    "MSFT": "Technology",
+    "GOOGL": "Technology",
+    "AMZN": "Consumer Discretionary",
+    "META": "Technology",
+    "NVDA": "Technology",
+    "TSLA": "Consumer Discretionary",
+    "AMD": "Technology",
+    "NFLX": "Consumer Discretionary",
+    "CRM": "Technology",
+    "ADBE": "Technology",
+    "UBER": "Industrials",
+    "JPM": "Financials",
+    "BAC": "Financials",
+    "GS": "Financials",
+    "XOM": "Energy",
+    "CVX": "Energy",
+    "SPY": "ETF",
+    "QQQ": "ETF",
+    "IWM": "ETF",
+    "COST": "Consumer Staples",
+    "WMT": "Consumer Staples",
+    "HD": "Consumer Discretionary",
+    "V": "Financials",
+    "MA": "Financials",
+    "PYPL": "Financials",
+    "SHOP": "Technology",
+    "COIN": "Financials",
+    "SNAP": "Technology",
+    "PINS": "Technology",
+    "RBLX": "Technology",
+    "DIS": "Consumer Discretionary",
+    "PFE": "Healthcare",
+    "MRNA": "Healthcare",
+    "ABBV": "Healthcare",
+    "LLY": "Healthcare",
+    "BA": "Industrials",
+    "CAT": "Industrials",
+    "GE": "Industrials",
+    "LMT": "Industrials",
+    "NKE": "Consumer Discretionary",
+    "MCD": "Consumer Discretionary",
+    "SBUX": "Consumer Discretionary",
+    "TGT": "Consumer Discretionary",
+    "PLTR": "Technology",
+    "SNOW": "Technology",
+    "NET": "Technology",
+    "DDOG": "Technology",
+    "CRWD": "Technology",
+    "INTC": "Technology",
+    "QCOM": "Technology",
+    "AVGO": "Technology",
+    "TXN": "Technology",
 }
 
 SECTOR_ETFS = {
@@ -50,7 +80,9 @@ def get_sector_performance(days: int = 5) -> dict[str, float]:
     """Return {sector_name: 5d_return_pct} for major sectors, sorted best to worst."""
     try:
         etfs = list(SECTOR_ETFS.values())
-        data = yf.download(etfs, period=f"{days + 10}d", interval="1d", progress=False, auto_adjust=True)
+        data = yf.download(
+            etfs, period=f"{days + 10}d", interval="1d", progress=False, auto_adjust=True
+        )
         if data.empty or len(data) < 2:
             return {}
 
@@ -91,5 +123,3 @@ def check_sector_concentration(symbols: list[str], max_per_sector: int = 2) -> l
             # Flag the excess symbols (keep the first max_per_sector)
             breaches.extend(syms[max_per_sector:])
     return breaches
-
-

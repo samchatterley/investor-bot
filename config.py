@@ -13,6 +13,7 @@ def today_et() -> date:
     """Return today's date in US Eastern time — use this for all market-date comparisons."""
     return datetime.now(pytz.timezone(MARKET_TIMEZONE)).date()
 
+
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
@@ -34,16 +35,14 @@ def _validate_trading_mode(mode: str, url: str) -> bool:
         _expected = "https://paper-api.alpaca.markets"
         if url.rstrip("/") != _expected:
             raise ValueError(
-                f"ALPACA_BASE_URL={url!r} does not match TRADING_MODE=paper. "
-                f"Expected {_expected!r}"
+                f"ALPACA_BASE_URL={url!r} does not match TRADING_MODE=paper. Expected {_expected!r}"
             )
         return True
     elif mode == "live":
         _expected = "https://api.alpaca.markets"
         if url.rstrip("/") != _expected:
             raise ValueError(
-                f"ALPACA_BASE_URL={url!r} does not match TRADING_MODE=live. "
-                f"Expected {_expected!r}"
+                f"ALPACA_BASE_URL={url!r} does not match TRADING_MODE=live. Expected {_expected!r}"
             )
         return False
     elif mode:
@@ -56,23 +55,23 @@ IS_PAPER = _validate_trading_mode(_TRADING_MODE, ALPACA_BASE_URL)
 
 # Position sizing
 MAX_POSITIONS = 5
-MAX_POSITION_PCT = 0.45      # Deprecated — legacy Kelly cap; kept only for config.validate(). Superseded by MAX_POSITION_WEIGHT.
-CASH_RESERVE_PCT = 0.10      # Always keep 10% as cash buffer
+MAX_POSITION_PCT = 0.45  # Deprecated — legacy Kelly cap; kept only for config.validate(). Superseded by MAX_POSITION_WEIGHT.
+CASH_RESERVE_PCT = 0.10  # Always keep 10% as cash buffer
 
 # Risk-budget sizing (replaces Kelly)
 RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity risked per trade
-MAX_POSITION_WEIGHT = 0.05   # 5% of portfolio per position (hard cap)
+MAX_POSITION_WEIGHT = 0.05  # 5% of portfolio per position (hard cap)
 
 # Risk management
-STOP_LOSS_PCT = 0.04         # 4% trailing stop (tighter than old fixed stop)
-TAKE_PROFIT_PCT = 0.15       # 15% take profit target (let winners run a bit further)
-TRAILING_STOP_PCT = 4.0      # percent trail below highest price (Alpaca native order)
-SLIPPAGE_BPS = 5             # one-way market impact estimate (basis points)
-SPREAD_BPS = 3               # half-spread applied to each side (basis points)
-KELLY_MULTIPLIER = 0.5       # half-Kelly — kept for research telemetry only
+STOP_LOSS_PCT = 0.04  # 4% trailing stop (tighter than old fixed stop)
+TAKE_PROFIT_PCT = 0.15  # 15% take profit target (let winners run a bit further)
+TRAILING_STOP_PCT = 4.0  # percent trail below highest price (Alpaca native order)
+SLIPPAGE_BPS = 5  # one-way market impact estimate (basis points)
+SPREAD_BPS = 3  # half-spread applied to each side (basis points)
+KELLY_MULTIPLIER = 0.5  # half-Kelly — kept for research telemetry only
 
 # AI decision threshold
-MIN_CONFIDENCE = 7           # Min confidence score (1-10) to open a position
+MIN_CONFIDENCE = 7  # Min confidence score (1-10) to open a position
 
 # Position hold limit — auto-exit after this many trading days
 MAX_HOLD_DAYS = 3
@@ -81,18 +80,18 @@ MAX_HOLD_DAYS = 3
 # Momentum and trend trades need room to develop; mean-reversion and news
 # catalysts play out faster and should be exited sooner.
 SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
-    "mean_reversion":      2,
-    "rsi_oversold":        2,
-    "news_catalyst":       2,
-    "macd_crossover":      4,
-    "momentum":            5,
-    "trend_continuation":  5,
-    "bb_squeeze":          4,  # volatility squeeze → expansion; hold for the move
-    "breakout_52w":        5,  # 52-week breakout has room to run
-    "rs_leader":           5,  # sustained relative strength leader
+    "mean_reversion": 2,
+    "rsi_oversold": 2,
+    "news_catalyst": 2,
+    "macd_crossover": 4,
+    "momentum": 5,
+    "trend_continuation": 5,
+    "bb_squeeze": 4,  # volatility squeeze → expansion; hold for the move
+    "breakout_52w": 5,  # 52-week breakout has room to run
+    "rs_leader": 5,  # sustained relative strength leader
     "inside_day_breakout": 3,  # short-duration coil play
-    "trend_pullback":      3,  # quick bounce off EMA in uptrend
-    "unknown":             3,  # conservative default
+    "trend_pullback": 3,  # quick bounce off EMA in uptrend
+    "unknown": 3,  # conservative default
 }
 
 # Bear market filter — skip new buys when SPY drops more than this % in a single day
@@ -108,7 +107,7 @@ PARTIAL_PROFIT_PCT = 8.0
 EARNINGS_WARNING_DAYS = 2
 
 # VIX thresholds for stop adjustment
-VIX_HIGH = 25.0   # above this, widen stops
+VIX_HIGH = 25.0  # above this, widen stops
 
 # Max positions per sector
 MAX_SECTOR_POSITIONS = 2
@@ -121,36 +120,78 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # Market schedule (US Eastern Time)
 MARKET_OPEN_HOUR = 9
-MARKET_OPEN_MINUTE = 31      # Run 1 min after open
+MARKET_OPEN_MINUTE = 31  # Run 1 min after open
 MARKET_TIMEZONE = "America/New_York"
 
 # Stocks to scan - liquid names with fractional share support on Alpaca
 STOCK_UNIVERSE = [
     # Mega-cap tech
-    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "NVDA",
+    "TSLA",
     # Semiconductors (high momentum sector)
-    "AMD", "AVGO", "QCOM", "MU", "INTC", "TSM", "AMAT",
+    "AMD",
+    "AVGO",
+    "QCOM",
+    "MU",
+    "INTC",
+    "TSM",
+    "AMAT",
     # Software & growth tech
-    "NFLX", "CRM", "ADBE", "UBER", "SHOP", "SNOW", "PLTR",
+    "NFLX",
+    "CRM",
+    "ADBE",
+    "UBER",
+    "SHOP",
+    "SNOW",
+    "PLTR",
     # Fintech
-    "PYPL", "SQ", "V", "MA",
+    "PYPL",
+    "SQ",
+    "V",
+    "MA",
     # Financials
-    "JPM", "BAC", "GS", "MS",
+    "JPM",
+    "BAC",
+    "GS",
+    "MS",
     # Healthcare & pharma
-    "LLY", "UNH", "JNJ", "ABBV", "MRK",
+    "LLY",
+    "UNH",
+    "JNJ",
+    "ABBV",
+    "MRK",
     # Energy
-    "XOM", "CVX", "OXY",
+    "XOM",
+    "CVX",
+    "OXY",
     # Consumer discretionary
-    "COST", "WMT", "HD", "MCD", "NKE", "SBUX",
+    "COST",
+    "WMT",
+    "HD",
+    "MCD",
+    "NKE",
+    "SBUX",
     # Industrials
-    "CAT", "DE", "GE",
+    "CAT",
+    "DE",
+    "GE",
     # Broad market & sector ETFs
-    "SPY", "QQQ", "IWM", "XLK", "XLE", "XLF",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "XLK",
+    "XLE",
+    "XLF",
 ]
 
 # Email notifications
-EMAIL_FROM = os.getenv("EMAIL_FROM")           # Your Gmail address
-EMAIL_TO = os.getenv("EMAIL_TO")               # Owner address — emergency alerts only
+EMAIL_FROM = os.getenv("EMAIL_FROM")  # Your Gmail address
+EMAIL_TO = os.getenv("EMAIL_TO")  # Owner address — emergency alerts only
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # Gmail App Password (not your login password)
 # Named recipient list for daily summary + weekly review emails.
 # Format: "FirstName:email,FirstName:email,..."
@@ -189,22 +230,24 @@ _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 
 # Explicit allowlist of keys the weekly self-review may modify at runtime.
 # Everything else — API keys, trading mode, stock universe — is immutable.
-RUNTIME_OVERRIDE_KEYS: frozenset[str] = frozenset({
-    "MIN_CONFIDENCE",
-    "TRAILING_STOP_PCT",
-    "MAX_HOLD_DAYS",
-    "MAX_ORDERS_PER_RUN",
-    "PARTIAL_PROFIT_PCT",
-})
+RUNTIME_OVERRIDE_KEYS: frozenset[str] = frozenset(
+    {
+        "MIN_CONFIDENCE",
+        "TRAILING_STOP_PCT",
+        "MAX_HOLD_DAYS",
+        "MAX_ORDERS_PER_RUN",
+        "PARTIAL_PROFIT_PCT",
+    }
+)
 
 # (type, min_inclusive, max_inclusive) — applied only to runtime overrides.
 # Tighter than the static validate() bounds to constrain AI self-modification.
 RUNTIME_OVERRIDE_BOUNDS: dict[str, tuple] = {
-    "MIN_CONFIDENCE":     (int,   7,    10),
-    "TRAILING_STOP_PCT":  (float, 2.0,  10.0),
-    "MAX_HOLD_DAYS":      (int,   1,    10),
-    "MAX_ORDERS_PER_RUN": (int,   1,    5),
-    "PARTIAL_PROFIT_PCT": (float, 3.0,  20.0),
+    "MIN_CONFIDENCE": (int, 7, 10),
+    "TRAILING_STOP_PCT": (float, 2.0, 10.0),
+    "MAX_HOLD_DAYS": (int, 1, 10),
+    "MAX_ORDERS_PER_RUN": (int, 1, 5),
+    "PARTIAL_PROFIT_PCT": (float, 3.0, 20.0),
 }
 
 
@@ -222,10 +265,12 @@ def _load_runtime_overrides() -> None:
         return
     except json.JSONDecodeError as exc:
         import logging as _logging
+
         _logging.getLogger(__name__).warning(f"runtime_config.json is malformed: {exc}")
         return
 
     import sys
+
     module = sys.modules[__name__]
 
     for key, raw_value in overrides.items():
@@ -245,8 +290,11 @@ def _load_runtime_overrides() -> None:
             with contextlib.suppress(Exception):
                 _audit_config_event(
                     "CONFIG_OVERRIDE_REJECTED",
-                    {"key": key, "value": raw_value,
-                     "reason": f"cannot coerce to {expected_type.__name__}"},
+                    {
+                        "key": key,
+                        "value": raw_value,
+                        "reason": f"cannot coerce to {expected_type.__name__}",
+                    },
                 )
             continue
 
@@ -254,8 +302,11 @@ def _load_runtime_overrides() -> None:
             with contextlib.suppress(Exception):
                 _audit_config_event(
                     "CONFIG_OVERRIDE_REJECTED",
-                    {"key": key, "value": coerced,
-                     "reason": f"out of bounds [{min_val}, {max_val}]"},
+                    {
+                        "key": key,
+                        "value": coerced,
+                        "reason": f"out of bounds [{min_val}, {max_val}]",
+                    },
                 )
             continue
 
@@ -268,6 +319,7 @@ def _audit_config_event(event_type: str, payload: dict) -> None:
     """Lazy audit emit — avoids circular import (audit_log imports config)."""
     try:
         from utils import audit_log
+
         audit_log._write(event_type, payload)
     except Exception:
         pass

@@ -78,7 +78,9 @@ def save_daily_run(
                         merged.append(t)
                 record["trades_executed"] = merged
                 record["account_before"] = existing["account_before"]
-                record["daily_pnl"] = account_after["portfolio_value"] - existing["account_before"]["portfolio_value"]
+                record["daily_pnl"] = (
+                    account_after["portfolio_value"] - existing["account_before"]["portfolio_value"]
+                )
                 added = len(merged) - len(prior_trades)
                 if added:
                     logger.info(f"Merged {added} new trade(s) into existing {date} record")
@@ -96,6 +98,7 @@ def save_daily_run(
     # Mirror to SQLite runs table
     try:
         from utils.db import get_db
+
         mode = "open"
         if "-midday" in date:
             mode = "midday"
@@ -157,8 +160,11 @@ def print_summary(record: dict):
 
 
 _NON_RUN_FILES = {
-    "positions_meta.json", "signal_stats.json", "daily_baseline.json",
-    "backtest_results.json", "runtime_config.json",
+    "positions_meta.json",
+    "signal_stats.json",
+    "daily_baseline.json",
+    "backtest_results.json",
+    "runtime_config.json",
 }
 
 
@@ -170,6 +176,7 @@ def save_daily_baseline(portfolio_value: float) -> None:
         json.dump({"date": today, "portfolio_value": portfolio_value}, f)
     try:
         from utils.db import get_db
+
         with get_db() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO daily_baselines VALUES (?,?)",
@@ -230,8 +237,8 @@ def get_day_summary(today: str) -> dict | None:
         return None
 
     all_trades = [t for r in today_records for t in r.get("trades_executed", [])]
-    all_stops  = [s for r in today_records for s in r.get("stop_losses_triggered", [])]
-    buy_candidates    = [b for r in today_records for b in r.get("buy_candidates", [])]
+    all_stops = [s for r in today_records for s in r.get("stop_losses_triggered", [])]
+    buy_candidates = [b for r in today_records for b in r.get("buy_candidates", [])]
     position_decisions = [d for r in today_records for d in r.get("position_decisions", [])]
 
     # Use the open run's market summary — it has the full AI analysis
@@ -241,12 +248,12 @@ def get_day_summary(today: str) -> dict | None:
     )
 
     account_before = today_records[0]["account_before"]
-    account_after  = today_records[-1]["account_after"]
+    account_after = today_records[-1]["account_after"]
 
     return {
         "date": today,
         "account_before": account_before,
-        "account_after":  account_after,
+        "account_after": account_after,
         "market_summary": market_summary,
         "buy_candidates": buy_candidates,
         "position_decisions": position_decisions,
@@ -265,21 +272,27 @@ def get_track_record(n_days: int = 10) -> list[dict]:
     for r in recent:
         trades = []
         for t in r.get("trades_executed", []):
-            trades.append({
-                "symbol": t.get("symbol"),
-                "action": t.get("action"),
-                "detail": t.get("detail", ""),
-            })
+            trades.append(
+                {
+                    "symbol": t.get("symbol"),
+                    "action": t.get("action"),
+                    "detail": t.get("detail", ""),
+                }
+            )
         for s in r.get("stop_losses_triggered", []):
-            trades.append({
-                "symbol": s.get("symbol"),
-                "action": "STOP_LOSS",
-                "pl_pct": s.get("pl_pct"),
-            })
-        result.append({
-            "date": r["date"],
-            "daily_pnl_usd": round(r.get("daily_pnl", 0), 2),
-            "market": r.get("market_summary", ""),
-            "trades": trades,
-        })
+            trades.append(
+                {
+                    "symbol": s.get("symbol"),
+                    "action": "STOP_LOSS",
+                    "pl_pct": s.get("pl_pct"),
+                }
+            )
+        result.append(
+            {
+                "date": r["date"],
+                "daily_pnl_usd": round(r.get("daily_pnl", 0), 2),
+                "market": r.get("market_summary", ""),
+                "trades": trades,
+            }
+        )
     return result

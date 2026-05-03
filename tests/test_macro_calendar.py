@@ -10,7 +10,6 @@ from risk.macro_calendar import (
 
 
 class TestGetMacroRisk(unittest.TestCase):
-
     def test_fomc_date_is_high_risk(self):
         fomc_day = next(iter(FOMC_ANNOUNCEMENT_DATES))
         result = get_macro_risk(fomc_day)
@@ -57,6 +56,7 @@ class TestGetMacroRisk(unittest.TestCase):
     def test_defaults_to_today_when_no_date_passed(self):
         # Line 44: check_date is None → today_et() is called
         from unittest.mock import patch
+
         fixed_date = date(2026, 2, 10)  # a quiet day
         with patch("risk.macro_calendar.today_et", return_value=fixed_date):
             result = get_macro_risk()

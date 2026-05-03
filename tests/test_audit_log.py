@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 
 class AuditLogBase(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.audit_path = os.path.join(self.tmpdir, "audit.jsonl")
@@ -27,9 +26,9 @@ class AuditLogBase(unittest.TestCase):
 
 
 class TestAuditLogWrites(AuditLogBase):
-
     def test_log_run_start_writes_event(self):
         from utils.audit_log import log_run_start
+
         log_run_start("open", 100_000, 10_000, True)
         events = self._read_events()
         self.assertEqual(len(events), 1)
@@ -38,6 +37,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_run_end_writes_event(self):
         from utils.audit_log import log_run_end
+
         log_run_end("close", 1234.56, 3, 101_234.56)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "RUN_END")
@@ -45,6 +45,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_order_placed(self):
         from utils.audit_log import log_order_placed
+
         log_order_placed("AAPL", "BUY", 5000.0, "order-123")
         events = self._read_events()
         self.assertEqual(events[0]["event"], "ORDER_PLACED")
@@ -53,12 +54,14 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_order_filled(self):
         from utils.audit_log import log_order_filled
+
         log_order_filled("AAPL", "order-123", 28.571)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "ORDER_FILLED")
 
     def test_log_position_closed(self):
         from utils.audit_log import log_position_closed
+
         log_position_closed("MSFT", "earnings_exit", -1.23)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "POSITION_CLOSED")
@@ -66,6 +69,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_ai_decision(self):
         from utils.audit_log import log_ai_decision
+
         log_ai_decision("Bullish day", 2, 1)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "AI_DECISION")
@@ -73,6 +77,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_validation_failure(self):
         from utils.audit_log import log_validation_failure
+
         log_validation_failure(["bad symbol GHOST"])
         events = self._read_events()
         self.assertEqual(events[0]["event"], "VALIDATION_FAILURE")
@@ -80,6 +85,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_circuit_breaker(self):
         from utils.audit_log import log_circuit_breaker
+
         log_circuit_breaker(-13.5)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "CIRCUIT_BREAKER")
@@ -87,6 +93,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_kill_switch(self):
         from utils.audit_log import log_kill_switch
+
         log_kill_switch(4)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "KILL_SWITCH")
@@ -94,12 +101,14 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_halt_cleared(self):
         from utils.audit_log import log_halt_cleared
+
         log_halt_cleared()
         events = self._read_events()
         self.assertEqual(events[0]["event"], "HALT_CLEARED")
 
     def test_events_are_appended_not_overwritten(self):
         from utils.audit_log import log_run_end, log_run_start
+
         log_run_start("open", 100_000, 10_000, True)
         log_run_end("open", 500.0, 2, 100_500)
         events = self._read_events()
@@ -107,6 +116,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_each_event_has_timestamp(self):
         from utils.audit_log import log_run_start
+
         log_run_start("open", 100_000, 10_000, False)
         events = self._read_events()
         self.assertIn("ts", events[0])
@@ -114,6 +124,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_daily_loss_limit(self):
         from utils.audit_log import log_daily_loss_limit
+
         log_daily_loss_limit(-4.2)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "DAILY_LOSS_LIMIT")
@@ -121,6 +132,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_earnings_exit(self):
         from utils.audit_log import log_earnings_exit
+
         log_earnings_exit("AAPL", "2026-05-01")
         events = self._read_events()
         self.assertEqual(events[0]["event"], "EARNINGS_EXIT")
@@ -129,6 +141,7 @@ class TestAuditLogWrites(AuditLogBase):
 
     def test_log_macro_skip(self):
         from utils.audit_log import log_macro_skip
+
         log_macro_skip("FOMC Rate Decision")
         events = self._read_events()
         self.assertEqual(events[0]["event"], "MACRO_SKIP")
@@ -136,10 +149,10 @@ class TestAuditLogWrites(AuditLogBase):
 
 
 class TestRunIdInjection(AuditLogBase):
-
     def test_set_run_id_appears_in_subsequent_events(self):
         from utils import audit_log
         from utils.audit_log import log_run_start, set_run_id
+
         original = audit_log._run_id
         try:
             set_run_id("test-run-001")
@@ -152,6 +165,7 @@ class TestRunIdInjection(AuditLogBase):
     def test_no_run_id_field_when_not_set(self):
         from utils import audit_log
         from utils.audit_log import log_run_start
+
         original = audit_log._run_id
         try:
             audit_log._run_id = None
@@ -163,12 +177,12 @@ class TestRunIdInjection(AuditLogBase):
 
 
 class TestAuditWriteFailures(AuditLogBase):
-
     def test_jsonl_write_failure_does_not_raise(self):
         # Lines 43-44: open() raises during JSONL write → logger.error, no exception propagated
         import builtins
 
         from utils import audit_log
+
         real_open = builtins.open
 
         def failing_open(path, *args, **kwargs):
@@ -185,6 +199,7 @@ class TestAuditWriteFailures(AuditLogBase):
     def test_sqlite_write_failure_does_not_raise(self):
         # Lines 54-55: get_db() raises → logger.error, no exception propagated
         from utils import audit_log
+
         with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
             try:
                 audit_log._write("TEST_EVENT", {"key": "value"})
@@ -193,9 +208,9 @@ class TestAuditWriteFailures(AuditLogBase):
 
 
 class TestConfigOverrideLogs(AuditLogBase):
-
     def test_log_config_override_applied(self):
         from utils.audit_log import log_config_override_applied
+
         log_config_override_applied("MIN_CONFIDENCE", 8)
         events = self._read_events()
         self.assertEqual(events[0]["event"], "CONFIG_OVERRIDE_APPLIED")
@@ -204,6 +219,7 @@ class TestConfigOverrideLogs(AuditLogBase):
 
     def test_log_config_override_rejected(self):
         from utils.audit_log import log_config_override_rejected
+
         log_config_override_rejected("SUPER_LEVER", 99, "not in allowlist")
         events = self._read_events()
         self.assertEqual(events[0]["event"], "CONFIG_OVERRIDE_REJECTED")
