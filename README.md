@@ -739,7 +739,7 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
-### 2.0 — May 2026 — Live-safety hardening for £150 experiment
+### 1.10 — May 2026 — Live-safety hardening for £150 experiment
 
 Three critical blockers identified in a pre-live code review have been resolved:
 
