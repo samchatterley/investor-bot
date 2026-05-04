@@ -125,7 +125,7 @@ def check_quote_gate(
             reject_reason=f"spread {spread_bps:.1f} bps > {max_spread_bps} bps limit",
         )
 
-    # Last trade freshness (best-effort — skip check if not available)
+    # Last trade freshness — fail closed: if trade data cannot be fetched, do not approve.
     trade_age = 0.0
     try:
         trades = client.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=[symbol]))
@@ -147,7 +147,9 @@ def check_quote_gate(
                     reject_reason=f"last trade stale: {trade_age:.0f}s > {max_trade_age}s limit",
                 )
     except Exception as e:
-        logger.warning(f"check_quote_gate({symbol}): last-trade check skipped — {e}")
+        raise BrokerStateUnavailable(
+            f"check_quote_gate({symbol}): last-trade fetch failed — {e}"
+        ) from e
 
     # Whole-share affordability — ensures at least one whole share can be stop-protected
     if ask > 0 and notional / ask < 1.0:

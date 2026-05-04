@@ -30,7 +30,7 @@ from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
-from models import BrokerStateUnavailable, OrderResult
+from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult
 from notifications import alerts, emailer
 from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
 from utils import audit_log, decision_log, portfolio_tracker
@@ -307,7 +307,10 @@ def _assert_account_safety(client) -> None:
     except RuntimeError:
         raise
     except Exception as e:
-        logger.warning(f"_assert_account_safety: could not verify account type — {e}")
+        raise RuntimeError(
+            f"_assert_account_safety: cannot verify account constraints — {e}. "
+            "Resolve broker connectivity or set ALLOW_MARGIN=true if intentional."
+        ) from e
 
 
 # ── Stop failure → flatten helper ────────────────────────────────────────────
@@ -465,7 +468,7 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
         return
 
     try:
-        _run_inner(dry_run=dry_run, mode=mode, today=today)
+        _run_inner(dry_run=dry_run, mode=mode, today=today, _live_shadow=_live_shadow)
     except Exception as e:
         logger.error(f"Unhandled error in trading run: {e}", exc_info=True)
         alerts.alert_error("main.run", str(e))
@@ -473,16 +476,20 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
         _release_lock(lock_fd)
 
 
-def _run_inner(dry_run: bool, mode: str, today: str):
+def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
     run_id = str(uuid.uuid4())
     audit_log.set_run_id(run_id)
     decision_log.set_run_id(run_id)
     logger.info(f"run_id={run_id}")
 
+    # True when this run should exercise live safety gates even though no orders are placed.
+    # Covers both real live runs and --live-shadow (full-pipeline validation mode).
+    should_run_live_gates = (not dry_run) or _live_shadow
+
     client = trader.get_client()
 
     # ── Broker account safety assertions (live only) ──────────────────────────
-    if not config.IS_PAPER and not dry_run:
+    if not config.IS_PAPER and should_run_live_gates:
         try:
             _assert_account_safety(client)
         except RuntimeError as e:
@@ -917,6 +924,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
                 # Order-intent ledger guard — survives process restarts unlike broker queries.
                 # Blocks re-submission when a prior same-day intent is still active.
+                # OrderLedgerUnavailable means the guard is inoperative → suspend all buys.
                 try:
                     from utils.order_ledger import has_active_intent
 
@@ -927,10 +935,14 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         continue
                 except ImportError:
                     pass
+                except OrderLedgerUnavailable as e:
+                    logger.error(f"Order ledger unavailable — suspending all buys this run: {e}")
+                    alerts.alert_error("ORDER LEDGER UNAVAILABLE", str(e))
+                    break
 
                 # Pending-order guard — prevents duplicate buys after timeout/restart.
                 # BrokerStateUnavailable means we cannot verify safety → suspend all buys.
-                if not dry_run:
+                if should_run_live_gates:
                     try:
                         if trader.has_pending_buy(client, symbol):
                             logger.warning(
@@ -966,7 +978,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
                 # Pre-trade controls (MiFID II) — includes open-exposure cap when configured.
                 # BrokerStateUnavailable means we cannot verify exposure → suspend all buys.
-                if not dry_run:
+                if should_run_live_gates:
                     try:
                         open_exposure = trader.get_total_open_exposure(client)
                     except BrokerStateUnavailable as e:
@@ -994,8 +1006,8 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
                 qg = None  # populated by quote gate in live mode; used for execution quality log
                 # Live quote gate — validates real-time conditions before order submission.
-                # Skipped in dry-run and paper mode (yfinance snapshots are sufficient there).
-                if not dry_run and not config.IS_PAPER:
+                # Runs in live mode and live-shadow mode; skipped in dry-run and paper mode.
+                if should_run_live_gates and not config.IS_PAPER:
                     try:
                         qg = check_quote_gate(symbol, notional)
                         if not qg.approved:

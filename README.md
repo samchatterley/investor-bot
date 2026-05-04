@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1257 tests, 100% coverage)
+├── tests/             Unit test suite (1260 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -695,7 +695,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1257 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1260 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -739,6 +739,19 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.12 — May 2026 — Close last permissive fallbacks (10/10 safety)
+
+- **`--live-shadow` now runs all live gates.** `should_run_live_gates = (not dry_run) or _live_shadow` — pending-buy guard, open-exposure query, and quote gate all execute in live-shadow mode. Only order submission is suppressed.
+- **`has_active_intent()` fails closed.** DB failure now raises `OrderLedgerUnavailable` instead of returning `False`. A ledger failure means the restart-safe duplicate-order guard is inoperative — buys must be suspended.
+- **`OrderLedgerUnavailable` wired into buy loop.** The buy loop catches `OrderLedgerUnavailable` and breaks (with alert), the same way it handles `BrokerStateUnavailable`.
+- **`create_intent()` failure blocks live broker submission.** In live mode (`IS_PAPER=False`), if intent creation fails the bot raises `OrderLedgerUnavailable` rather than submitting to Alpaca without a durable pre-submit record.
+- **Quote gate last-trade failure fails closed.** A trade-feed exception now raises `BrokerStateUnavailable` instead of approving the order with a warning. Unknown trade state is treated as stale.
+- **Account safety assertion fails closed in live mode.** Generic exceptions from `_assert_account_safety()` now re-raise as `RuntimeError`, preventing startup when margin/PDT/buying-power constraints cannot be verified.
+- **3 new CI invariant tests** (total 28): ledger DB failure raises `OrderLedgerUnavailable`; quote gate trade-fetch failure raises `BrokerStateUnavailable`; `create_intent` failure in live mode raises `OrderLedgerUnavailable`.
+- **1260 tests, 100% coverage, zero ruff violations.**
+
+---
+
 ### 1.11 — May 2026 — Live safety hardening (10/10 safety for £150 experiment)
 
 - **Fail-closed broker state.** `has_pending_buy()` and `get_total_open_exposure()` now raise `BrokerStateUnavailable` instead of returning safe defaults on exception. Broker query failure is treated as trade-blocking, not permissive.
@@ -755,7 +768,7 @@ Additional live-mode safety gates active in all modes:
 - **LIVE_RUNBOOK.md.** Operations runbook: pre-market checklist, first live trade checklist, incident procedures (halt, missing stop, outage, 409, partial fill), flatten/resume/canary procedures, and 6 `make drill-*` targets.
 - **Makefile** with `test`, `lint`, `safety-check`, and 6 incident drill targets.
 - **Pending buy included in exposure cap.** `get_total_open_exposure()` counts market value of submitted-but-unfilled orders alongside filled positions.
-- **1257 tests, 100% coverage, zero ruff violations.**
+- **1260 tests, 100% coverage, zero ruff violations.**
 
 ---
 

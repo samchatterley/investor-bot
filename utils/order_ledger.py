@@ -28,6 +28,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from models import OrderLedgerUnavailable
 from utils.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -120,8 +121,7 @@ def has_active_intent(symbol: str, side: str, trade_date: str) -> bool:
             ).fetchone()
         return row is not None
     except Exception as e:
-        logger.warning(f"has_active_intent({symbol}): {e}")
-        return False
+        raise OrderLedgerUnavailable(f"has_active_intent({symbol}): {e}") from e
 
 
 def get_unresolved_intents(trade_date: str | None = None) -> list[dict]:

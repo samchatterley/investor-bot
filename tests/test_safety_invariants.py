@@ -16,6 +16,9 @@ Invariants checked:
   8. BrokerStateUnavailable is raised (not swallowed) — buy loop must break, not continue
   9. HealthStatus.RED blocks new buys
  10. No buy can proceed when health is RED or YELLOW
+ 11. has_active_intent() raises OrderLedgerUnavailable on DB failure (never fails open)
+ 12. Quote gate last-trade failure raises BrokerStateUnavailable (never approves on unknown trade state)
+ 13. create_intent() failure in live mode raises OrderLedgerUnavailable (never proceeds without durable record)
 """
 
 import importlib
@@ -379,6 +382,64 @@ class TestQuoteGateStructure(unittest.TestCase):
         mock_client.get_stock_latest_quote.side_effect = RuntimeError("network down")
         with self.assertRaises(BrokerStateUnavailable):
             check_quote_gate("AAPL", 50.0, data_client=mock_client)
+
+    def test_quote_gate_raises_broker_state_unavailable_on_last_trade_failure(self):
+        """Last-trade fetch failure must raise BrokerStateUnavailable, not approve the order."""
+        from execution.quote_gate import check_quote_gate
+        from models import BrokerStateUnavailable
+
+        mock_client = MagicMock()
+        quote = MagicMock()
+        quote.bid_price = 100.0
+        quote.ask_price = 100.1
+        from datetime import UTC, datetime
+
+        quote.timestamp = datetime.now(UTC)
+        mock_client.get_stock_latest_quote.return_value = {"AAPL": quote}
+        mock_client.get_stock_latest_trade.side_effect = RuntimeError("trade feed down")
+        with self.assertRaises(BrokerStateUnavailable):
+            check_quote_gate("AAPL", 200.0, data_client=mock_client)
+
+
+class TestOrderLedgerFailClosed(unittest.TestCase):
+    """Order-ledger failures must block buys, not fail open."""
+
+    def test_has_active_intent_raises_on_db_failure(self):
+        """has_active_intent() must raise OrderLedgerUnavailable when the DB cannot be queried."""
+        from models import OrderLedgerUnavailable
+        from utils.order_ledger import has_active_intent
+
+        with (
+            patch("utils.order_ledger.get_db", side_effect=Exception("DB locked")),
+            self.assertRaises(OrderLedgerUnavailable),
+        ):
+            has_active_intent("AAPL", "BUY", "2026-05-04")
+
+    def test_create_intent_failure_raises_order_ledger_unavailable_in_live_mode(self):
+        """In live mode, create_intent returning None must raise OrderLedgerUnavailable."""
+        import os
+        import tempfile
+
+        from execution.trader import place_buy_order
+        from models import OrderLedgerUnavailable
+
+        client = MagicMock()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _patches = [
+                patch("utils.db._DB_PATH", os.path.join(tmpdir, "test.db")),
+                patch("config.LOG_DIR", tmpdir),
+                patch("execution.trader.IS_PAPER", False),
+                patch("utils.order_ledger.get_db", side_effect=Exception("DB locked")),
+            ]
+            for p in _patches:
+                p.start()
+            try:
+                # init_db also uses get_db — bypass by re-patching only during place_buy_order
+                with self.assertRaises(OrderLedgerUnavailable):
+                    place_buy_order(client, "AAPL", 50.0)
+            finally:
+                for p in _patches:
+                    p.stop()
 
 
 if __name__ == "__main__":

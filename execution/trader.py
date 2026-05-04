@@ -15,7 +15,7 @@ from config import (
     TRAILING_STOP_PCT,
     today_et,
 )
-from models import BrokerStateUnavailable, OrderResult, OrderStatus
+from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult, OrderStatus
 from utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,12 @@ def place_buy_order(
         _ledger = False
 
     if _ledger:
-        create_intent(symbol, "BUY", trade_date, notional_usd, client_order_id)
+        intent_id = create_intent(symbol, "BUY", trade_date, notional_usd, client_order_id)
+        if intent_id is None and not IS_PAPER:
+            # create_intent failed (DB error) in live mode — refuse to submit without a durable record.
+            raise OrderLedgerUnavailable(
+                f"place_buy_order({symbol}): create_intent failed — cannot submit without durable pre-submit record"
+            )
         log_order_event(client_order_id, "INTENT_CREATED", {"notional": notional_usd})
 
     try:

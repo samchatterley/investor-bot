@@ -15,6 +15,14 @@ class BrokerStateUnavailable(Exception):
     """
 
 
+class OrderLedgerUnavailable(Exception):
+    """Raised when the order-intent ledger cannot be queried.
+
+    Any code path that catches this in the buy loop must block the buy — a ledger
+    failure means the restart-safe duplicate-order guard is inoperative.
+    """
+
+
 # ── Execution result types ────────────────────────────────────────────────────
 
 
