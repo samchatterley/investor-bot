@@ -1267,7 +1267,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--mode", choices=["open", "midday", "close"], default="open")
+    parser.add_argument("--mode", choices=["open", "open_sells", "midday", "close"], default="open")
     parser.add_argument(
         "--kill-switch", action="store_true", help="Emergency: liquidate all and halt"
     )
