@@ -6,7 +6,12 @@ from datetime import date
 import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, TrailingStopOrderRequest
+from alpaca.trading.requests import (
+    GetOrdersRequest,
+    MarketOrderRequest,
+    StopOrderRequest,
+    TrailingStopOrderRequest,
+)
 
 from config import (
     ALPACA_API_KEY,
@@ -641,47 +646,53 @@ def get_total_open_exposure(client: TradingClient) -> float:
         raise BrokerStateUnavailable(f"get_total_open_exposure: {e}") from e
 
 
-_CANCEL_WAIT_SECS = 8
+_CANCEL_WAIT_SECS = 10
 _CANCEL_POLL_INTERVAL = 0.5
 _ACTIVE_ORDER_STATUSES = frozenset({"new", "accepted", "pending_new", "held"})
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):
-    """Cancel all open orders for a symbol and wait until none remain held.
+    """Cancel all open orders for a symbol and wait until all shares are freed.
 
-    Alpaca cancellations are async — shares stay 'held_for_orders' for a few
-    seconds after cancel_order_by_id returns.  Polling here prevents the
-    subsequent close_position call from failing with code 40310000
-    ('insufficient qty available for order').
+    Two problems this solves:
+    1. GTC trailing stops placed on previous days may not be returned by the
+       default get_orders() call — we use status='open' with a high limit to
+       ensure all active orders are visible regardless of age.
+    2. Alpaca cancellations are async — shares stay 'held_for_orders' for a few
+       seconds after cancel_order_by_id returns.  We poll qty_available on the
+       position itself rather than order status, so the check is authoritative.
     """
     try:
-        orders = client.get_orders()
-        cancelled_ids = []
+        # Fetch ALL open orders (includes GTC stops from prior days)
+        orders = client.get_orders(GetOrdersRequest(status="open", limit=500))
+        cancelled_any = False
         for order in orders:
             if order.symbol == symbol and str(order.status) in _ACTIVE_ORDER_STATUSES:
-                client.cancel_order_by_id(str(order.id))
-                cancelled_ids.append(str(order.id))
-                logger.info(f"Cancelled order {order.id} for {symbol}")
+                try:
+                    client.cancel_order_by_id(str(order.id))
+                    logger.info(f"Cancelled order {order.id} for {symbol}")
+                    cancelled_any = True
+                except Exception as cancel_err:
+                    logger.warning(f"Could not cancel order {order.id}: {cancel_err}")
 
-        if not cancelled_ids:
+        if not cancelled_any:
             return
 
-        # Poll until all cancelled orders are no longer active so shares are freed.
+        # Poll position qty_available until all shares are freed (or timeout).
+        # qty_available == qty means no shares are held_for_orders.
         deadline = time.time() + _CANCEL_WAIT_SECS
         while time.time() < deadline:
             time.sleep(_CANCEL_POLL_INTERVAL)
             try:
-                live = {
-                    str(o.id)
-                    for o in client.get_orders()
-                    if str(o.status) in _ACTIVE_ORDER_STATUSES
-                }
-                if not any(oid in live for oid in cancelled_ids):
+                pos = client.get_open_position(symbol)
+                total = float(pos.qty)
+                available = float(pos.qty_available)
+                if available >= total - 0.000001:
                     return
             except Exception:
-                break  # can't confirm — proceed anyway
+                return  # position gone or unreadable — proceed with close
         logger.warning(
-            f"cancel_open_orders({symbol}): orders still active after {_CANCEL_WAIT_SECS}s wait"
+            f"cancel_open_orders({symbol}): shares still held after {_CANCEL_WAIT_SECS}s"
         )
     except Exception as e:
         logger.error(f"Failed to cancel orders for {symbol}: {e}")

@@ -71,7 +71,7 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset(
 class BuyCandidate(BaseModel):
     symbol: str
     confidence: int = Field(ge=1, le=10)
-    reasoning: str = Field(min_length=20, max_length=500)
+    reasoning: str = Field(min_length=20, max_length=2000)
     key_signal: str | None = None
 
     model_config = {"extra": "ignore"}
