@@ -5,9 +5,8 @@ from datetime import date
 
 import pandas as pd
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderType, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
 from alpaca.trading.requests import (
-    GetOrdersRequest,
     MarketOrderRequest,
     StopOrderRequest,
     TrailingStopOrderRequest,
@@ -652,36 +651,40 @@ _ACTIVE_ORDER_STATUSES = frozenset({"new", "accepted", "pending_new", "held"})
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):
-    """Cancel all open orders for a symbol and wait until all shares are freed.
+    """Cancel all account orders then wait until the position's shares are freed.
 
-    Two problems this solves:
-    1. GTC trailing stops placed on previous days may not be returned by the
-       default get_orders() call — we use status='open' with a high limit to
-       ensure all active orders are visible regardless of age.
-    2. Alpaca cancellations are async — shares stay 'held_for_orders' for a few
-       seconds after cancel_order_by_id returns.  We poll qty_available on the
-       position itself rather than order status, so the check is authoritative.
+    GTC trailing stops placed on prior days are NOT returned by get_orders() with
+    a symbol filter in some Alpaca SDK versions — they only appear when cancelling
+    all account orders.  Cancelling all is safe here: any stops that get cancelled
+    alongside the target symbol's stop will be re-attached by ensure_stops_attached
+    at the end of the run.
+
+    Polls qty_available on the position (not order status) so the check is
+    authoritative — it confirms Alpaca has released the held shares, not just
+    that the cancel request was accepted.
     """
     try:
-        # Fetch ALL open orders for this symbol (includes GTC stops from prior days)
-        orders = client.get_orders(
-            GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol], limit=500)
-        )
-        cancelled_any = False
-        for order in orders:
-            if str(order.status) in _ACTIVE_ORDER_STATUSES:
-                try:
-                    client.cancel_order_by_id(str(order.id))
-                    logger.info(f"Cancelled order {order.id} for {symbol}")
-                    cancelled_any = True
-                except Exception as cancel_err:
-                    logger.warning(f"Could not cancel order {order.id}: {cancel_err}")
+        # Check if any shares are actually held before firing cancel-all
+        try:
+            pos = client.get_open_position(symbol)
+            available = float(pos.qty_available)
+            total = float(pos.qty)
+            if available >= total - 0.000001:
+                return  # nothing held — no cancellations needed
+        except Exception:
+            return  # position gone or unreadable
 
-        if not cancelled_any:
-            return
+        # Cancel ALL account orders — the only reliable way to release shares
+        # held by GTC trailing stops that the symbol-scoped query misses.
+        logger.info(
+            f"cancel_open_orders({symbol}): cancelling all account orders to free held shares"
+        )
+        try:
+            client.cancel_orders()
+        except Exception as e:
+            logger.warning(f"cancel_orders() failed: {e}")
 
         # Poll position qty_available until all shares are freed (or timeout).
-        # qty_available == qty means no shares are held_for_orders.
         deadline = time.time() + _CANCEL_WAIT_SECS
         while time.time() < deadline:
             time.sleep(_CANCEL_POLL_INTERVAL)
@@ -690,6 +693,7 @@ def cancel_open_orders(client: TradingClient, symbol: str):
                 total = float(pos.qty)
                 available = float(pos.qty_available)
                 if available >= total - 0.000001:
+                    logger.info(f"cancel_open_orders({symbol}): all shares freed")
                     return
             except Exception:
                 return  # position gone or unreadable — proceed with close
