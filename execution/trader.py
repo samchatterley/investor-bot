@@ -5,7 +5,7 @@ from datetime import date
 
 import pandas as pd
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
+from alpaca.trading.enums import OrderSide, OrderType, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
     GetOrdersRequest,
     MarketOrderRequest,
@@ -663,11 +663,13 @@ def cancel_open_orders(client: TradingClient, symbol: str):
        position itself rather than order status, so the check is authoritative.
     """
     try:
-        # Fetch ALL open orders (includes GTC stops from prior days)
-        orders = client.get_orders(GetOrdersRequest(status="open", limit=500))
+        # Fetch ALL open orders for this symbol (includes GTC stops from prior days)
+        orders = client.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol], limit=500)
+        )
         cancelled_any = False
         for order in orders:
-            if order.symbol == symbol and str(order.status) in _ACTIVE_ORDER_STATUSES:
+            if str(order.status) in _ACTIVE_ORDER_STATUSES:
                 try:
                     client.cancel_order_by_id(str(order.id))
                     logger.info(f"Cancelled order {order.id} for {symbol}")
