@@ -809,7 +809,20 @@ class RunInnerBase(unittest.TestCase):
                 "daily_pnl": 0.0,
             },
             "main.emailer.send_summary": None,
+            "main.audit_log.log_event": None,
+            "main.trader.has_pending_buy": False,
+            "main.trader.get_total_open_exposure": 0.0,
+            "main.trader.get_daily_notional": 0.0,
+            "main.trader.add_daily_notional": None,
+            "main.build_scan_universe": [],
         }
+        # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
+        if "main.run_startup_health_check" not in overrides:
+            from utils.health import HealthReport, HealthStatus
+
+            defaults["main.run_startup_health_check"] = HealthReport(
+                status=HealthStatus.GREEN, issues=[], metrics={}
+            )
         defaults.update(overrides)
 
         stack = contextlib.ExitStack()

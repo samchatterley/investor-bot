@@ -6,6 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+
+class BrokerStateUnavailable(Exception):
+    """Raised when a broker query fails and the result cannot be trusted.
+
+    Any code path that catches this in the buy loop must block the buy — treating
+    broker uncertainty as permissive is the most dangerous failure mode.
+    """
+
+
 # ── Execution result types ────────────────────────────────────────────────────
 
 

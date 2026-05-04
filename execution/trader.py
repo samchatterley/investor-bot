@@ -15,7 +15,7 @@ from config import (
     TRAILING_STOP_PCT,
     today_et,
 )
-from models import OrderResult, OrderStatus
+from models import BrokerStateUnavailable, OrderResult, OrderStatus
 from utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,9 @@ def get_open_positions(client: TradingClient) -> list[dict]:
 def has_pending_buy(client: TradingClient, symbol: str) -> bool:
     """Return True if broker has a pending/active buy order for this symbol.
 
-    Used as a pre-buy gate to prevent duplicate orders after timeout/restart.
+    Raises BrokerStateUnavailable if the broker cannot be queried — callers must
+    treat this as trade-blocking, not permissive. Unknown broker state is more
+    dangerous than a missed buy opportunity.
     """
     try:
         orders = client.get_orders()
@@ -79,9 +81,9 @@ def has_pending_buy(client: TradingClient, symbol: str) -> bool:
                 )
             ):
                 return True
+        return False
     except Exception as e:
-        logger.warning(f"has_pending_buy: could not query orders for {symbol}: {e}")
-    return False
+        raise BrokerStateUnavailable(f"has_pending_buy({symbol}): {e}") from e
 
 
 def place_buy_order(
@@ -94,11 +96,30 @@ def place_buy_order(
 
     client_order_id is symbol+date-stable so reruns on the same day reuse the
     same ID. Alpaca will 409 a duplicate submission, which surfaces as a
-    REJECTED result that the caller treats as a no-op.
+    REJECTED result that the caller treats as a no-op (no new exposure created).
+
+    Every attempt is recorded in the order_intents ledger before broker submission
+    and updated on every state transition so process restarts are safe.
     """
     if notional_usd < 1.0:
         logger.warning(f"Order too small for {symbol}: ${notional_usd:.2f}")
         return None
+
+    client_order_id = f"ib-{symbol}-BUY-{today_et().isoformat()}"
+    trade_date = today_et().isoformat()
+
+    # Record intent before broker submission — if the process crashes after
+    # submission the ledger will show 'submitted' and flag for reconciliation.
+    try:
+        from utils.order_ledger import create_intent, log_order_event, update_intent
+
+        _ledger = True
+    except Exception:
+        _ledger = False
+
+    if _ledger:
+        create_intent(symbol, "BUY", trade_date, notional_usd, client_order_id)
+        log_order_event(client_order_id, "INTENT_CREATED", {"notional": notional_usd})
 
     try:
         req_kwargs: dict = {
@@ -106,14 +127,31 @@ def place_buy_order(
             "notional": round(notional_usd, 2),
             "side": OrderSide.BUY,
             "time_in_force": TimeInForce.DAY,
-            "client_order_id": f"ib-{symbol}-BUY-{today_et().isoformat()}",
+            "client_order_id": client_order_id,
         }
         order = client.submit_order(MarketOrderRequest(**req_kwargs))
         order_id = str(order.id)
         logger.info(f"BUY order placed: {symbol} ${notional_usd:.2f} | order_id={order_id}")
 
+        if _ledger:
+            update_intent(client_order_id, "submitted", broker_order_id=order_id)
+            log_order_event(
+                client_order_id,
+                "ORDER_SUBMITTED",
+                {"broker_order_id": order_id},
+                broker_order_id=order_id,
+            )
+
         filled_qty = wait_for_fill(client, order_id)
         if filled_qty is not None:
+            if _ledger:
+                update_intent(client_order_id, "filled")
+                log_order_event(
+                    client_order_id,
+                    "ORDER_FILLED",
+                    {"filled_qty": filled_qty},
+                    broker_order_id=order_id,
+                )
             return OrderResult(
                 status=OrderStatus.FILLED,
                 symbol=symbol,
@@ -127,6 +165,14 @@ def place_buy_order(
                 logger.warning(
                     f"BUY for {symbol} partially filled {partial_qty} of ${notional_usd:.2f}"
                 )
+                if _ledger:
+                    update_intent(client_order_id, "partial")
+                    log_order_event(
+                        client_order_id,
+                        "ORDER_PARTIAL",
+                        {"filled_qty": partial_qty},
+                        broker_order_id=order_id,
+                    )
                 return OrderResult(
                     status=OrderStatus.PARTIAL,
                     symbol=symbol,
@@ -135,11 +181,17 @@ def place_buy_order(
                 )
         except Exception:
             pass
+        if _ledger:
+            update_intent(client_order_id, "timeout")
+            log_order_event(client_order_id, "ORDER_TIMEOUT", {}, broker_order_id=order_id)
         return OrderResult(
             status=OrderStatus.TIMEOUT, symbol=symbol, broker_order_id=order_id, filled_qty=0.0
         )
     except Exception as e:
         logger.error(f"Failed to place BUY for {symbol}: {e}")
+        if _ledger:
+            update_intent(client_order_id, "rejected")
+            log_order_event(client_order_id, "ORDER_REJECTED", {"reason": str(e)})
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
@@ -552,6 +604,9 @@ def get_total_open_exposure(client: TradingClient) -> float:
 
     Pending orders for symbols already in positions are skipped to avoid
     double-counting partially-filled orders.
+
+    Raises BrokerStateUnavailable if the broker cannot be queried — callers must
+    treat this as trade-blocking, not permissive.
     """
     try:
         total = 0.0
@@ -568,9 +623,10 @@ def get_total_open_exposure(client: TradingClient) -> float:
             ):
                 total += float(o.notional)
         return total
+    except BrokerStateUnavailable:
+        raise
     except Exception as e:
-        logger.warning(f"get_total_open_exposure failed: {e}")
-        return 0.0
+        raise BrokerStateUnavailable(f"get_total_open_exposure: {e}") from e
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):

@@ -298,12 +298,14 @@ class TestHasPendingBuy(unittest.TestCase):
         client.get_orders.return_value = [self._make_order("SOFI", True, "filled")]
         self.assertFalse(has_pending_buy(client, "SOFI"))
 
-    def test_returns_false_when_get_orders_raises(self):
+    def test_raises_broker_state_unavailable_when_get_orders_raises(self):
         from execution.trader import has_pending_buy
+        from models import BrokerStateUnavailable
 
         client = MagicMock()
         client.get_orders.side_effect = Exception("network error")
-        self.assertFalse(has_pending_buy(client, "SOFI"))
+        with self.assertRaises(BrokerStateUnavailable):
+            has_pending_buy(client, "SOFI")
 
     def test_no_false_positive_for_sell_order(self):
         from alpaca.trading.enums import OrderSide
@@ -728,13 +730,14 @@ class TestGetTotalOpenExposureIncludesPending(unittest.TestCase):
         result = get_total_open_exposure(client)
         self.assertAlmostEqual(result, 0.0, places=1)
 
-    def test_returns_zero_on_exception(self):
+    def test_raises_broker_state_unavailable_on_exception(self):
         from execution.trader import get_total_open_exposure
+        from models import BrokerStateUnavailable
 
         client = MagicMock()
         client.get_all_positions.side_effect = Exception("network error")
-        result = get_total_open_exposure(client)
-        self.assertEqual(result, 0.0)
+        with self.assertRaises(BrokerStateUnavailable):
+            get_total_open_exposure(client)
 
 
 # ── Universe price filter ─────────────────────────────────────────────────────

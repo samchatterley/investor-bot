@@ -103,6 +103,31 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     output_tokens INTEGER NOT NULL DEFAULT 0,
     cost_usd      REAL NOT NULL DEFAULT 0.0
 );
+
+CREATE TABLE IF NOT EXISTS order_intents (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol            TEXT NOT NULL,
+    side              TEXT NOT NULL,
+    trade_date        TEXT NOT NULL,
+    intended_notional REAL,
+    client_order_id   TEXT UNIQUE NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    broker_order_id   TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oi_symbol_date ON order_intents(symbol, trade_date);
+CREATE INDEX IF NOT EXISTS idx_oi_status      ON order_intents(status);
+
+CREATE TABLE IF NOT EXISTS order_events (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_order_id  TEXT NOT NULL,
+    broker_order_id  TEXT,
+    event_type       TEXT NOT NULL,
+    payload          TEXT NOT NULL DEFAULT '{}',
+    ts               TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oe_client_id ON order_events(client_order_id);
 """
 
 
@@ -155,6 +180,33 @@ _MIGRATIONS: list[tuple[int, str]] = [
             "market_date TEXT PRIMARY KEY, "
             "buy_notional REAL NOT NULL DEFAULT 0, "
             "updated_at TEXT NOT NULL)"
+        ),
+    ),
+    (
+        3,
+        # order_intents and order_events — durable order ledger (see utils/order_ledger.py)
+        (
+            "CREATE TABLE IF NOT EXISTS order_intents ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "symbol TEXT NOT NULL, "
+            "side TEXT NOT NULL, "
+            "trade_date TEXT NOT NULL, "
+            "intended_notional REAL, "
+            "client_order_id TEXT UNIQUE NOT NULL, "
+            "status TEXT NOT NULL DEFAULT 'pending', "
+            "broker_order_id TEXT, "
+            "created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL); "
+            "CREATE INDEX IF NOT EXISTS idx_oi_symbol_date ON order_intents(symbol, trade_date); "
+            "CREATE INDEX IF NOT EXISTS idx_oi_status ON order_intents(status); "
+            "CREATE TABLE IF NOT EXISTS order_events ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "client_order_id TEXT NOT NULL, "
+            "broker_order_id TEXT, "
+            "event_type TEXT NOT NULL, "
+            "payload TEXT NOT NULL DEFAULT '{}', "
+            "ts TEXT NOT NULL); "
+            "CREATE INDEX IF NOT EXISTS idx_oe_client_id ON order_events(client_order_id)"
         ),
     ),
 ]

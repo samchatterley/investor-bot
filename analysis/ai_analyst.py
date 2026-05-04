@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from datetime import UTC
@@ -366,6 +367,29 @@ def _record_llm_usage(run_id: str | None, input_tokens: int, output_tokens: int)
         logger.warning(f"Failed to record LLM usage: {e}")
 
 
+def _record_llm_call_audit(run_id: str | None, prompt_hash: str, raw_response: str) -> None:
+    """Append a compact LLM call record to the audit trail.
+
+    Stores prompt_hash (first 16 hex chars of SHA-256) and the raw tool-call
+    response so every trade is explainable: which prompt produced which response,
+    which validator accepted it, and which order resulted.
+    """
+    try:
+        from utils.audit_log import log_event
+
+        log_event(
+            "LLM_CALL",
+            {
+                "run_id": run_id,
+                "model": CLAUDE_MODEL,
+                "prompt_hash": prompt_hash,
+                "raw_response_snippet": raw_response[:500],  # first 500 chars for quick inspection
+            },
+        )
+    except Exception as e:
+        logger.warning(f"_record_llm_call_audit failed: {e}")
+
+
 def get_trading_decisions(
     snapshots: list[dict],
     current_positions: list[dict],
@@ -419,6 +443,15 @@ def get_trading_decisions(
         # Record token usage immediately — even if subsequent parsing fails
         if hasattr(response, "usage") and response.usage:
             _record_llm_usage(run_id, response.usage.input_tokens, response.usage.output_tokens)
+
+        # Audit trail — hash the prompt and record raw response for post-hoc explainability.
+        # Every trade can be traced: "this order happened because Claude returned X,
+        # validator accepted it, and risk gate approved it."
+        prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        raw_content = json.dumps(
+            [b.input if hasattr(b, "input") else str(b) for b in response.content]
+        )
+        _record_llm_call_audit(run_id, prompt_hash, raw_content)
 
         tool_block = next((b for b in response.content if hasattr(b, "input")), None)
         if tool_block is None:

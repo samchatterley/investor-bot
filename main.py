@@ -28,12 +28,14 @@ from analysis.weekly_review import get_latest_review
 from data import market_data, news_fetcher, options_scanner, sector_data
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
+from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
-from models import OrderResult
+from models import BrokerStateUnavailable, OrderResult
 from notifications import alerts, emailer
 from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
 from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
+from utils.health import HealthStatus, run_startup_health_check
 from utils.portfolio_tracker import get_day_summary
 from utils.validators import check_pre_trade, sanitize_headlines, validate_ai_response
 
@@ -204,6 +206,77 @@ def _run_clear_halt():
         logger.info("No halt file found — trading is already active.")
 
 
+# ── Safety-check mode ─────────────────────────────────────────────────────────
+
+
+def _run_safety_check():
+    """Verify broker state, stop coverage, caps, and halt status without trading.
+
+    Prints a structured GREEN / YELLOW / RED report. No AI analysis, no orders.
+    Safe to run at any time; recommended before first live session and after
+    any incident or restart.
+
+    Exit codes: 0 = GREEN, 1 = YELLOW, 2 = RED.
+    """
+    print("\n=== InvestorBot Safety Check ===")
+    print(f"Mode: {'PAPER' if config.IS_PAPER else '*** LIVE ***'}")
+    print(f"Time: {datetime.now(UTC).isoformat()}\n")
+
+    client = trader.get_client()
+
+    # Run startup health check
+    report = run_startup_health_check(client)
+    report.log()
+
+    # Additional: confirm stops are current
+    try:
+        stops_ok = trader.ensure_stops_attached(client)
+        if not stops_ok:
+            report.issues.append(
+                "ensure_stops_attached: one or more positions could not be protected"
+            )
+        else:
+            logger.info("  Stop coverage: OK")
+    except Exception as e:
+        report.issues.append(f"ensure_stops_attached failed: {e}")
+
+    # Print a human-readable summary
+    print(f"\n--- Result: BROKER_HEALTH={report.status} ---")
+    if report.issues:
+        print(f"Issues ({len(report.issues)}):")
+        for issue in report.issues:
+            print(f"  • {issue}")
+    else:
+        print("All checks passed — safe to trade.")
+
+    if report.metrics:
+        print("\nMetrics:")
+        for k, v in sorted(report.metrics.items()):
+            print(f"  {k}: {v}")
+
+    audit_log.log_event(
+        "SAFETY_CHECK",
+        {"status": report.status, "issues": report.issues, "metrics": report.metrics},
+    )
+
+    exit_codes = {HealthStatus.GREEN: 0, HealthStatus.YELLOW: 1, HealthStatus.RED: 2}
+    sys.exit(exit_codes.get(report.status, 2))
+
+
+def _run_live_shadow(mode: str):
+    """Run the full pipeline against live broker state without placing any orders.
+
+    Purpose: validate that AI decisions, sizing, and all risk gates produce correct
+    output before the first real-money session. Emits WOULD_BUY log entries instead
+    of submitting orders. Does NOT require LIVE_CONFIRM since nothing is executed.
+    """
+    print("\n=== InvestorBot Live Shadow Run ===")
+    print(f"Mode: {mode.upper()}  |  {'PAPER' if config.IS_PAPER else '*** LIVE ACCOUNT ***'}")
+    print("No orders will be placed. All gates run for real.\n")
+    audit_log.log_event("LIVE_SHADOW_START", {"mode": mode, "is_paper": config.IS_PAPER})
+    run(dry_run=True, mode=mode, _live_shadow=True)
+
+
 # ── Broker account safety assertions ─────────────────────────────────────────
 
 
@@ -340,13 +413,19 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 
-def run(dry_run: bool = False, mode: str = "open"):
+def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
     today = config.today_et().isoformat()
+    shadow_label = " [LIVE SHADOW — no orders]" if _live_shadow else ""
     mode_label = "PAPER" if config.IS_PAPER else "*** LIVE ***"
     logger.info(
-        f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''} ==="
+        f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''}{shadow_label} ==="
     )
-    if not config.IS_PAPER and not dry_run and config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK":
+    if (
+        not config.IS_PAPER
+        and not dry_run
+        and not _live_shadow
+        and config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK"
+    ):
         logger.error(
             "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
             "Set it in .env or export it before running."
@@ -449,6 +528,30 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             "Attach stops manually, then run --clear-halt.",
         )
         sys.exit(1)
+
+    # ── Startup health check ──────────────────────────────────────────────────
+    health = run_startup_health_check(client)
+    health.log()
+    audit_log.log_event(
+        "STARTUP_HEALTH",
+        {"status": health.status, "issues": health.issues, "metrics": health.metrics},
+    )
+    if health.status == HealthStatus.RED:
+        logger.critical(
+            f"Startup health check RED ({len(health.issues)} issue(s)) — "
+            "new buys suspended this run. Resolve issues and restart."
+        )
+        alerts.alert_error(
+            "STARTUP HEALTH RED",
+            f"{len(health.issues)} safety issue(s) at startup: " + "; ".join(health.issues[:3]),
+        )
+        # In live non-dry-run mode a RED health is fatal for buys; we continue
+        # to allow sells/exits so existing positions can be managed.
+    elif health.status == HealthStatus.YELLOW:
+        logger.warning(
+            f"Startup health check YELLOW ({len(health.issues)} issue(s)) — "
+            "new buys suspended this run."
+        )
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
     history = portfolio_tracker.load_history()
@@ -737,6 +840,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
         or cb_triggered
         or regime.get("is_bearish")
         or macro.get("is_high_risk")
+        or health.status in (HealthStatus.RED, HealthStatus.YELLOW)
     )
     if skip_buys:
         reasons = []
@@ -748,6 +852,8 @@ def _run_inner(dry_run: bool, mode: str, today: str):
             reasons.append("bear market filter")
         if macro.get("is_high_risk"):
             reasons.append(f"macro event: {macro.get('event')}")
+        if health.status in (HealthStatus.RED, HealthStatus.YELLOW):
+            reasons.append(f"startup health {health.status}")
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
     else:
         account_now = trader.get_account_info(client)
@@ -809,12 +915,34 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
 
-                # Pending-order guard — prevents duplicate buys after timeout/restart
-                if not dry_run and trader.has_pending_buy(client, symbol):
-                    logger.warning(
-                        f"  Skipping {symbol}: broker already has a pending buy order for this symbol"
-                    )
-                    continue
+                # Order-intent ledger guard — survives process restarts unlike broker queries.
+                # Blocks re-submission when a prior same-day intent is still active.
+                try:
+                    from utils.order_ledger import has_active_intent
+
+                    if has_active_intent(symbol, "BUY", today):
+                        logger.warning(
+                            f"  Skipping {symbol}: active order intent in ledger for today"
+                        )
+                        continue
+                except ImportError:
+                    pass
+
+                # Pending-order guard — prevents duplicate buys after timeout/restart.
+                # BrokerStateUnavailable means we cannot verify safety → suspend all buys.
+                if not dry_run:
+                    try:
+                        if trader.has_pending_buy(client, symbol):
+                            logger.warning(
+                                f"  Skipping {symbol}: broker already has a pending buy order for this symbol"
+                            )
+                            continue
+                    except BrokerStateUnavailable as e:
+                        logger.error(
+                            f"Broker state unavailable — suspending all buys this run: {e}"
+                        )
+                        alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
+                        break
 
                 # Size order
                 if config.SMALL_ACCOUNT_MODE:
@@ -836,8 +964,19 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         available_cash,
                     )
 
-                # Pre-trade controls (MiFID II) — includes open-exposure cap when configured
-                open_exposure = trader.get_total_open_exposure(client) if not dry_run else 0.0
+                # Pre-trade controls (MiFID II) — includes open-exposure cap when configured.
+                # BrokerStateUnavailable means we cannot verify exposure → suspend all buys.
+                if not dry_run:
+                    try:
+                        open_exposure = trader.get_total_open_exposure(client)
+                    except BrokerStateUnavailable as e:
+                        logger.error(
+                            f"Cannot query open exposure — suspending all buys this run: {e}"
+                        )
+                        alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
+                        break
+                else:
+                    open_exposure = 0.0
                 approved, rejection_reason = check_pre_trade(
                     symbol,
                     notional,
@@ -853,6 +992,36 @@ def _run_inner(dry_run: bool, mode: str, today: str):
 
                 logger.info(f"  BUY {symbol}: ${notional:.2f} | conf={confidence}")
 
+                qg = None  # populated by quote gate in live mode; used for execution quality log
+                # Live quote gate — validates real-time conditions before order submission.
+                # Skipped in dry-run and paper mode (yfinance snapshots are sufficient there).
+                if not dry_run and not config.IS_PAPER:
+                    try:
+                        qg = check_quote_gate(symbol, notional)
+                        if not qg.approved:
+                            logger.warning(f"  Quote gate rejected {symbol}: {qg.reject_reason}")
+                            audit_log.log_event(
+                                "QUOTE_GATE_REJECTED",
+                                {
+                                    "symbol": symbol,
+                                    "reason": qg.reject_reason,
+                                    "bid": qg.bid,
+                                    "ask": qg.ask,
+                                    "spread_bps": qg.spread_bps,
+                                },
+                            )
+                            continue
+                        logger.info(
+                            f"  Quote gate OK {symbol}: bid={qg.bid:.2f} ask={qg.ask:.2f} "
+                            f"spread={qg.spread_bps:.1f}bps age={qg.quote_age_seconds:.1f}s"
+                        )
+                    except BrokerStateUnavailable as e:
+                        logger.error(
+                            f"Quote gate data API unavailable — suspending all buys this run: {e}"
+                        )
+                        alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
+                        break
+
                 snap = next((s for s in snapshots if s["symbol"] == symbol), None)
                 if notional >= 1.0:
                     # Guard: skip if notional buys < 1 whole share — Alpaca cannot stop-protect sub-share positions
@@ -863,8 +1032,11 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                         )
                         continue
                     if not dry_run:
+                        t_buy_submit = time.monotonic()
                         result = trader.place_buy_order(client, symbol, notional)
+                        t_fill = time.monotonic()
                         if result and result.is_success:
+                            fill_latency_ms = round((t_fill - t_buy_submit) * 1000)
                             orders_placed += 1
                             daily_notional_spent += notional
                             trader.add_daily_notional(today, notional)
@@ -886,6 +1058,7 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                                 current_price = snap["current_price"] if snap else None
                                 # Floor to whole shares — Alpaca rejects fractional stop orders
                                 stop_qty = int(math.floor(result.filled_qty))
+                                t_stop_submit = time.monotonic()
                                 stop_result = (
                                     trader.place_trailing_stop(
                                         client,
@@ -897,6 +1070,39 @@ def _run_inner(dry_run: bool, mode: str, today: str):
                                     if stop_qty >= 1
                                     else None
                                 )
+                                t_stop_accept = time.monotonic()
+                                unprotected_ms = round((t_stop_submit - t_fill) * 1000)
+                                stop_latency_ms = round((t_stop_accept - t_stop_submit) * 1000)
+                                audit_log.log_event(
+                                    "ORDER_TIMING",
+                                    {
+                                        "symbol": symbol,
+                                        "fill_latency_ms": fill_latency_ms,
+                                        "unprotected_window_ms": unprotected_ms,
+                                        "stop_latency_ms": stop_latency_ms,
+                                        "stop_ok": stop_result is not None
+                                        and stop_result.is_success,
+                                    },
+                                )
+                                fill_avg = result.filled_avg_price
+                                if qg and qg.bid and qg.ask and fill_avg:
+                                    mid = (qg.bid + qg.ask) / 2
+                                    slippage_bps = (
+                                        round((fill_avg - mid) / mid * 10_000, 1) if mid else None
+                                    )
+                                    audit_log.log_event(
+                                        "ORDER_EXEC_QUALITY",
+                                        {
+                                            "symbol": symbol,
+                                            "bid": qg.bid,
+                                            "ask": qg.ask,
+                                            "mid": round(mid, 4),
+                                            "spread_bps": qg.spread_bps,
+                                            "fill_avg_price": fill_avg,
+                                            "slippage_vs_mid_bps": slippage_bps,
+                                            "fill_latency_ms": fill_latency_ms,
+                                        },
+                                    )
                                 if stop_result is None or not stop_result.is_success:
                                     _handle_stop_failure(client, symbol, dry_run)
                                     # Position may now be closed or halted — don't count as successful trade
@@ -955,6 +1161,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--clear-halt", action="store_true", help="Remove halt file and resume trading"
     )
+    parser.add_argument(
+        "--safety-check",
+        action="store_true",
+        help="Verify broker state, stops, and caps without trading. Exit 0=GREEN 1=YELLOW 2=RED",
+    )
+    parser.add_argument(
+        "--live-shadow",
+        action="store_true",
+        help="Full pipeline run against real broker state; logs WOULD_BUY decisions without placing orders",
+    )
     parser.add_argument("--backtest", action="store_true", help="Run historical backtest")
     parser.add_argument("--start", default="2025-01-01")
     parser.add_argument("--end", default="2025-12-31")
@@ -970,6 +1186,11 @@ if __name__ == "__main__":
         _run_kill_switch()
     elif args.clear_halt:
         _run_clear_halt()
+    elif args.safety_check:
+        init_db()
+        _run_safety_check()
+    elif args.live_shadow:
+        _run_live_shadow(args.mode)
     elif args.backtest:
         capital = args.capital
         if capital is None:

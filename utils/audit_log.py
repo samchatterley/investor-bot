@@ -149,3 +149,8 @@ def log_config_override_applied(key: str, value) -> None:
 
 def log_config_override_rejected(key: str, value, reason: str) -> None:
     _write("CONFIG_OVERRIDE_REJECTED", {"key": key, "value": value, "reason": reason})
+
+
+def log_event(event_type: str, payload: dict) -> None:
+    """Generic structured audit event for cases not covered by a specific helper."""
+    _write(event_type, payload)

@@ -414,7 +414,19 @@ class TestMaxOrdersPerRun(unittest.TestCase):
             "main.performance.record_trade_outcome": None,
             "main.get_day_summary": None,
             "main.emailer.send_summary": None,
+            "main.audit_log.log_event": None,
+            "main.trader.has_pending_buy": False,
+            "main.trader.get_total_open_exposure": 0.0,
+            "main.trader.get_daily_notional": 0.0,
+            "main.trader.add_daily_notional": None,
+            "main.build_scan_universe": [],
         }
+
+        from utils.health import HealthReport, HealthStatus
+
+        patches["main.run_startup_health_check"] = HealthReport(
+            status=HealthStatus.GREEN, issues=[], metrics={}
+        )
 
         stack = contextlib.ExitStack()
         for target, val in patches.items():
