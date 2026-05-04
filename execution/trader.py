@@ -641,14 +641,48 @@ def get_total_open_exposure(client: TradingClient) -> float:
         raise BrokerStateUnavailable(f"get_total_open_exposure: {e}") from e
 
 
+_CANCEL_WAIT_SECS = 8
+_CANCEL_POLL_INTERVAL = 0.5
+_ACTIVE_ORDER_STATUSES = frozenset({"new", "accepted", "pending_new", "held"})
+
+
 def cancel_open_orders(client: TradingClient, symbol: str):
-    """Cancel all open orders for a symbol (e.g. before a partial exit)."""
+    """Cancel all open orders for a symbol and wait until none remain held.
+
+    Alpaca cancellations are async — shares stay 'held_for_orders' for a few
+    seconds after cancel_order_by_id returns.  Polling here prevents the
+    subsequent close_position call from failing with code 40310000
+    ('insufficient qty available for order').
+    """
     try:
         orders = client.get_orders()
+        cancelled_ids = []
         for order in orders:
-            if order.symbol == symbol and str(order.status) in ("new", "accepted", "pending_new"):
+            if order.symbol == symbol and str(order.status) in _ACTIVE_ORDER_STATUSES:
                 client.cancel_order_by_id(str(order.id))
+                cancelled_ids.append(str(order.id))
                 logger.info(f"Cancelled order {order.id} for {symbol}")
+
+        if not cancelled_ids:
+            return
+
+        # Poll until all cancelled orders are no longer active so shares are freed.
+        deadline = time.time() + _CANCEL_WAIT_SECS
+        while time.time() < deadline:
+            time.sleep(_CANCEL_POLL_INTERVAL)
+            try:
+                live = {
+                    str(o.id)
+                    for o in client.get_orders()
+                    if str(o.status) in _ACTIVE_ORDER_STATUSES
+                }
+                if not any(oid in live for oid in cancelled_ids):
+                    return
+            except Exception:
+                break  # can't confirm — proceed anyway
+        logger.warning(
+            f"cancel_open_orders({symbol}): orders still active after {_CANCEL_WAIT_SECS}s wait"
+        )
     except Exception as e:
         logger.error(f"Failed to cancel orders for {symbol}: {e}")
 

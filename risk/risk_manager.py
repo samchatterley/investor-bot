@@ -18,7 +18,16 @@ def check_circuit_breaker(portfolio_history: list[dict]) -> tuple[bool, float]:
 
     recent = portfolio_history[-5:]
     try:
-        values = [r["account_after"]["portfolio_value"] for r in recent]
+        # Exclude records with implausibly small values — guards against corrupted
+        # test/placeholder records that would produce a false -99.9% drawdown signal.
+        _MIN_PLAUSIBLE = 1_000.0
+        values = [
+            r["account_after"]["portfolio_value"]
+            for r in recent
+            if r["account_after"]["portfolio_value"] >= _MIN_PLAUSIBLE
+        ]
+        if len(values) < 2:
+            return False, 0.0
         peak = max(values[:-1])
         current = values[-1]
         if peak <= 0:

@@ -433,7 +433,7 @@ def get_trading_decisions(
     try:
         response = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1500,
+            max_tokens=4096,
             system=SYSTEM_PROMPT,
             tools=[_DECISION_TOOL],
             tool_choice={"type": "tool", "name": "submit_trading_decisions"},

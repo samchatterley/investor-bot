@@ -44,6 +44,10 @@ _MAJOR_EXCHANGES: frozenset[AssetExchange] = frozenset(
     }
 )
 
+# Symbols confirmed delisted or unavailable from Yahoo Finance data feeds.
+# Kept here to survive cache refreshes without requiring a code change.
+_EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"SQ"})
+
 
 def _load_cache() -> list[str] | None:
     """Return cached symbols if the cache file exists and is within TTL."""
@@ -134,10 +138,11 @@ def build_scan_universe(client: TradingClient) -> list[str]:
         eligible = _get_eligible_symbols(client)
         filtered = _apply_snapshot_filter(eligible)
 
-        # Always include the static core; fill remaining slots from dynamic set
-        core = list(dict.fromkeys(STOCK_UNIVERSE))
+        # Always include the static core; fill remaining slots from dynamic set.
+        # Strip any excluded symbols (delisted / bad data) from both sources.
+        core = [s for s in dict.fromkeys(STOCK_UNIVERSE) if s not in _EXCLUDED_SYMBOLS]
         core_set = set(core)
-        extras = [s for s in filtered if s not in core_set]
+        extras = [s for s in filtered if s not in core_set and s not in _EXCLUDED_SYMBOLS]
         cap = max(0, _MAX_UNIVERSE_SIZE - len(core))
         universe = core + extras[:cap]
 
