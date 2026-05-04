@@ -346,7 +346,7 @@ class TestMaxOrdersPerRun(unittest.TestCase):
             "main.trader.is_market_open": True,
             "main.trader.get_account_info": account,
             "main.trader.get_open_positions": [],
-            "main.trader.reconcile_positions": None,
+            "main.trader.reconcile_positions": set(),
             "main.trader.ensure_stops_attached": None,
             "main.trader.get_position_ages": {},
             "main.trader.get_stale_positions": [],
@@ -420,6 +420,8 @@ class TestMaxOrdersPerRun(unittest.TestCase):
             "main.trader.get_daily_notional": 0.0,
             "main.trader.add_daily_notional": None,
             "main.build_scan_universe": [],
+            "main.save_experiment_baseline": None,
+            "main.load_experiment_baseline": None,
         }
 
         from utils.health import HealthReport, HealthStatus

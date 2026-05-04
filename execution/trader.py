@@ -515,18 +515,23 @@ def get_stale_positions(max_days: int = 3) -> list[str]:
     return [sym for sym, age in get_position_ages().items() if age >= max_days]
 
 
-def reconcile_positions(client: TradingClient):
-    """
-    Sync the SQLite positions table with actual Alpaca positions.
-    Removes stale entries for positions that no longer exist,
-    adds placeholder entries for positions with no metadata.
+def reconcile_positions(client: TradingClient) -> set[str]:
+    """Sync the SQLite positions table with actual Alpaca positions.
+
+    Removes stale entries for positions that no longer exist at the broker,
+    adds placeholder entries for positions with no local metadata.
+
+    Returns the set of symbols that existed at the broker but had no local
+    record — these are unexpected positions and should be treated as a
+    fatal anomaly in live mode before being normalised into the DB.
     """
     try:
         positions = client.get_all_positions()
     except Exception as e:
         logger.error(f"reconcile_positions: could not fetch positions — {e}")
-        return
+        return set()
     actual = {p.symbol for p in positions}
+    unexpected: set[str] = set()
     try:
         with _db() as conn:
             stored = {row["symbol"] for row in conn.execute("SELECT symbol FROM positions")}
@@ -536,7 +541,8 @@ def reconcile_positions(client: TradingClient):
                 conn.execute("DELETE FROM positions WHERE symbol=?", (sym,))
 
             for sym in actual - stored:
-                logger.info(f"Reconcile: adding missing metadata for {sym}")
+                unexpected.add(sym)
+                logger.warning(f"Reconcile: unexpected broker position {sym} — adding placeholder")
                 conn.execute(
                     "INSERT OR IGNORE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
                     "VALUES (?,?,?,?,?,?)",
@@ -544,6 +550,7 @@ def reconcile_positions(client: TradingClient):
                 )
     except Exception as e:
         logger.error(f"reconcile_positions: database error — {e}")
+    return unexpected
 
 
 def ensure_stops_attached(client: TradingClient) -> bool:

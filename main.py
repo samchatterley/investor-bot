@@ -30,13 +30,17 @@ from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
-from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult
+from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult, OrderStatus
 from notifications import alerts, emailer
 from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
 from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
 from utils.health import HealthStatus, run_startup_health_check
-from utils.portfolio_tracker import get_day_summary
+from utils.portfolio_tracker import (
+    get_day_summary,
+    load_experiment_baseline,
+    save_experiment_baseline,
+)
 from utils.validators import check_pre_trade, sanitize_headlines, validate_ai_response
 
 logging.basicConfig(
@@ -512,8 +516,39 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     if mode == "open":
         portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
 
+    # Set the experiment-start equity once, on the first live open run.
+    # Never overwritten — used to enforce MAX_EXPERIMENT_DRAWDOWN_USD for the lifetime of the run.
+    if not config.IS_PAPER and not dry_run and mode == "open":
+        save_experiment_baseline(account_before["portfolio_value"])
+
     # ── Reconcile position metadata ───────────────────────────────────────────
-    trader.reconcile_positions(client)
+    # reconcile_positions returns symbols that exist at the broker but had no
+    # local record — unexpected positions detected BEFORE they are normalised.
+    unexpected_positions = trader.reconcile_positions(client)
+    if unexpected_positions and not config.IS_PAPER and should_run_live_gates:
+        msg = (
+            f"Unexpected broker position(s) with no local record: {sorted(unexpected_positions)}. "
+            "These have been added as placeholders. Verify origin before continuing."
+        )
+        logger.critical(msg)
+        audit_log.log_event("UNEXPECTED_POSITIONS", {"symbols": sorted(unexpected_positions)})
+        alerts.alert_error("UNEXPECTED BROKER POSITIONS", msg)
+        # Write halt — unknown positions means broker state cannot be trusted
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+        with open(config.HALT_FILE, "w") as _hf:
+            json.dump(
+                {
+                    "halted": True,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "reason": "unexpected_broker_positions",
+                    "symbols": sorted(unexpected_positions),
+                },
+                _hf,
+                indent=2,
+            )
+            _hf.write("\n")
+        sys.exit(1)
+
     stops_ok = trader.ensure_stops_attached(client)
     if not stops_ok and not config.IS_PAPER and not dry_run:
         logger.critical(
@@ -595,6 +630,37 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                 )
                 trader.record_sell(pos["symbol"])
         return
+
+    # ── Experiment drawdown cap ───────────────────────────────────────────────
+    # Active when MAX_EXPERIMENT_DRAWDOWN_USD > 0 and a baseline has been set.
+    # Blocks new buys (but allows sells/exits) once total experiment loss is reached.
+    _exp_drawdown_triggered = False
+    if config.MAX_EXPERIMENT_DRAWDOWN_USD > 0:
+        _exp_baseline = load_experiment_baseline()
+        if _exp_baseline is not None:
+            _exp_loss = _exp_baseline - account_before["portfolio_value"]
+            if _exp_loss >= config.MAX_EXPERIMENT_DRAWDOWN_USD:
+                _exp_drawdown_triggered = True
+                logger.critical(
+                    f"Experiment drawdown cap reached: lost ${_exp_loss:.2f} of "
+                    f"${_exp_baseline:.2f} start equity "
+                    f"(limit ${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f}) — "
+                    "new buys blocked for remainder of experiment."
+                )
+                audit_log.log_event(
+                    "EXPERIMENT_DRAWDOWN_CAP",
+                    {
+                        "start_equity": _exp_baseline,
+                        "current_equity": account_before["portfolio_value"],
+                        "loss_usd": round(_exp_loss, 2),
+                        "limit_usd": config.MAX_EXPERIMENT_DRAWDOWN_USD,
+                    },
+                )
+                alerts.alert_error(
+                    "EXPERIMENT DRAWDOWN CAP",
+                    f"Total experiment loss ${_exp_loss:.2f} >= "
+                    f"${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f} limit — no new buys.",
+                )
 
     all_trades: list = []
     daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
@@ -848,6 +914,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         or regime.get("is_bearish")
         or macro.get("is_high_risk")
         or health.status in (HealthStatus.RED, HealthStatus.YELLOW)
+        or _exp_drawdown_triggered
     )
     if skip_buys:
         reasons = []
@@ -861,12 +928,17 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             reasons.append(f"macro event: {macro.get('event')}")
         if health.status in (HealthStatus.RED, HealthStatus.YELLOW):
             reasons.append(f"startup health {health.status}")
+        if _exp_drawdown_triggered:
+            reasons.append("experiment drawdown cap reached")
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
     else:
         account_now = trader.get_account_info(client)
         open_positions = trader.get_open_positions(client)
         available_cash = account_now["cash"] * (1 - config.CASH_RESERVE_PCT)
-        max_positions = position_sizer.get_max_positions(account_now["portfolio_value"])
+        max_positions = min(
+            position_sizer.get_max_positions(account_now["portfolio_value"]),
+            config.MAX_POSITIONS,
+        )
         slots = max_positions - len(open_positions)
         logger.info(f"Position slots: {len(open_positions)}/{max_positions}")
 
@@ -1122,6 +1194,35 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})
+                        elif result and result.status in (
+                            OrderStatus.PARTIAL,
+                            OrderStatus.TIMEOUT,
+                        ):
+                            # Ambiguous fill — broker may hold exposure we didn't fully record.
+                            # Re-query immediately and attach stops; don't wait until next startup.
+                            logger.warning(
+                                f"  BUY {symbol}: ambiguous result "
+                                f"status={result.status.name} "
+                                f"filled_qty={result.filled_qty} — "
+                                "running immediate stop coverage check"
+                            )
+                            audit_log.log_event(
+                                "ORDER_AMBIGUOUS",
+                                {
+                                    "symbol": symbol,
+                                    "status": result.status.name,
+                                    "filled_qty": result.filled_qty,
+                                    "broker_order_id": result.broker_order_id,
+                                },
+                            )
+                            alerts.alert_error(
+                                "ORDER AMBIGUOUS",
+                                f"{symbol} buy returned {result.status.name} — "
+                                "checking stop coverage now.",
+                            )
+                            immediate_stops_ok = trader.ensure_stops_attached(client)
+                            if not immediate_stops_ok:
+                                _handle_stop_failure(client, symbol, dry_run)
                     else:
                         orders_placed += 1
                         daily_notional_spent += notional

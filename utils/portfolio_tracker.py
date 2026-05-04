@@ -7,6 +7,7 @@ from datetime import date as _date
 from config import LOG_DIR
 
 _BASELINE_PATH = os.path.join(LOG_DIR, "daily_baseline.json")
+_EXPERIMENT_BASELINE_PATH = os.path.join(LOG_DIR, "experiment_baseline.json")
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,36 @@ def load_daily_baseline() -> float | None:
     except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
         pass
     return None
+
+
+def save_experiment_baseline(portfolio_value: float) -> None:
+    """Persist the experiment-start equity — written once and never overwritten.
+
+    Used to enforce MAX_EXPERIMENT_DRAWDOWN_USD across the lifetime of the live
+    experiment. Unlike daily_baseline, this survives across days.
+    """
+    if os.path.exists(_EXPERIMENT_BASELINE_PATH):
+        return  # never overwrite — baseline is set on first call only
+    _ensure_log_dir()
+    with open(_EXPERIMENT_BASELINE_PATH, "w") as f:
+        json.dump(
+            {
+                "set_at": datetime.now(UTC).isoformat(),
+                "portfolio_value": portfolio_value,
+            },
+            f,
+        )
+    logger.info(f"Experiment baseline set: ${portfolio_value:.2f}")
+
+
+def load_experiment_baseline() -> float | None:
+    """Return the experiment-start equity, or None if not yet set."""
+    try:
+        with open(_EXPERIMENT_BASELINE_PATH) as f:
+            data = json.load(f)
+        return float(data["portfolio_value"])
+    except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def load_history() -> list[dict]:

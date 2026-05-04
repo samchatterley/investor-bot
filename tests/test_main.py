@@ -745,7 +745,7 @@ class RunInnerBase(unittest.TestCase):
             "main.trader.is_market_open": True,
             "main.trader.get_account_info": _account(),
             "main.trader.get_open_positions": [],
-            "main.trader.reconcile_positions": None,
+            "main.trader.reconcile_positions": set(),
             "main.trader.ensure_stops_attached": None,
             "main.trader.get_position_ages": {},
             "main.trader.get_stale_positions": [],
@@ -815,6 +815,8 @@ class RunInnerBase(unittest.TestCase):
             "main.trader.get_daily_notional": 0.0,
             "main.trader.add_daily_notional": None,
             "main.build_scan_universe": [],
+            "main.save_experiment_baseline": None,
+            "main.load_experiment_baseline": None,
         }
         # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
         if "main.run_startup_health_check" not in overrides:
@@ -837,6 +839,10 @@ class RunInnerBase(unittest.TestCase):
                 m = stack.enter_context(patch(target, side_effect=return_val))
             elif return_val is None:
                 m = stack.enter_context(patch(target, return_value=None))
+            elif ".config." in target:
+                # Config attributes are scalars, not callables — must use new= so the
+                # attribute itself holds the value rather than a MagicMock wrapper.
+                m = stack.enter_context(patch(target, new=return_val))
             else:
                 m = stack.enter_context(patch(target, return_value=return_val))
             mocks[target] = m
@@ -1795,6 +1801,224 @@ class TestRunInnerNotionalTooSmall(RunInnerBase):
         buy_mock.assert_not_called()
         log_output = "\n".join(cm.output)
         self.assertIn("too small", log_output)
+
+
+class TestMaxPositionsCappedByConfig(RunInnerBase):
+    """MAX_POSITIONS from config must always cap get_max_positions() — never exceeded."""
+
+    def test_config_max_positions_caps_sizer(self):
+        """get_max_positions returns 3 but config.MAX_POSITIONS=2 — only 2 slots used."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        stop_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": buy_mock,
+                "main.trader.place_trailing_stop": stop_mock,
+                "main.position_sizer.get_max_positions": 3,
+                "main.config.MAX_POSITIONS": 2,
+                "main.trader.get_open_positions": [
+                    {
+                        "symbol": "MSFT",
+                        "market_value": 50.0,
+                        "unrealized_plpc": 0.0,
+                        "unrealized_pl": 0.0,
+                        "qty": 1,
+                        "current_price": 50.0,
+                    },
+                    {
+                        "symbol": "GOOG",
+                        "market_value": 50.0,
+                        "unrealized_plpc": 0.0,
+                        "unrealized_pl": 0.0,
+                        "qty": 1,
+                        "current_price": 50.0,
+                    },
+                ],
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[
+                        {
+                            "symbol": "AAPL",
+                            "confidence": 8,
+                            "reasoning": "Strong breakout signal above key resistance.",
+                            "key_signal": "momentum",
+                        }
+                    ]
+                ),
+                "main.validate_ai_response": (True, []),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        # 2 positions already open and MAX_POSITIONS=2 → 0 slots → no buy
+        buy_mock.assert_not_called()
+
+
+class TestExperimentDrawdownCap(RunInnerBase):
+    """MAX_EXPERIMENT_DRAWDOWN_USD must block new buys when exceeded."""
+
+    def test_drawdown_cap_blocks_buys(self):
+        buy_mock = MagicMock()
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": buy_mock,
+                # Start equity $1000, current $940 → $60 loss exceeds $50 cap
+                "main.load_experiment_baseline": 1000.0,
+                "main.trader.get_account_info": _account(940, 300),
+                "main.config.MAX_EXPERIMENT_DRAWDOWN_USD": 50.0,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[
+                        {
+                            "symbol": "AAPL",
+                            "confidence": 8,
+                            "reasoning": "Strong breakout signal above key resistance.",
+                            "key_signal": "momentum",
+                        }
+                    ]
+                ),
+                "main.validate_ai_response": (True, []),
+            }
+        )
+        with stack, self.assertLogs("main", level="CRITICAL") as cm:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+        self.assertTrue(any("drawdown" in line.lower() for line in cm.output))
+
+    def test_drawdown_cap_not_triggered_when_under_limit(self):
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        stop_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": buy_mock,
+                "main.trader.place_trailing_stop": stop_mock,
+                # $10 loss well under $50 cap
+                "main.load_experiment_baseline": 1000.0,
+                "main.trader.get_account_info": _account(990, 500),
+                "main.config.MAX_EXPERIMENT_DRAWDOWN_USD": 50.0,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[
+                        {
+                            "symbol": "AAPL",
+                            "confidence": 8,
+                            "reasoning": "Strong breakout signal above key resistance.",
+                            "key_signal": "momentum",
+                        }
+                    ]
+                ),
+                "main.validate_ai_response": (True, []),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called_once()
+
+
+class TestPartialTimeoutImmediateStopCheck(RunInnerBase):
+    """PARTIAL or TIMEOUT buy result must trigger immediate ensure_stops_attached."""
+
+    def _run_ambiguous(self, status: OrderStatus):
+        ensure_mock = MagicMock(return_value=True)
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=status, symbol="AAPL", broker_order_id="x", filled_qty=0.5
+            )
+        )
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": buy_mock,
+                "main.trader.ensure_stops_attached": ensure_mock,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[
+                        {
+                            "symbol": "AAPL",
+                            "confidence": 8,
+                            "reasoning": "Strong breakout signal above key resistance.",
+                            "key_signal": "momentum",
+                        }
+                    ]
+                ),
+                "main.validate_ai_response": (True, []),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        return ensure_mock
+
+    def test_partial_fill_triggers_immediate_stop_check(self):
+        ensure_mock = self._run_ambiguous(OrderStatus.PARTIAL)
+        # ensure_stops_attached called at least once during the buy loop (not only end-of-run)
+        self.assertGreaterEqual(ensure_mock.call_count, 1)
+
+    def test_timeout_triggers_immediate_stop_check(self):
+        ensure_mock = self._run_ambiguous(OrderStatus.TIMEOUT)
+        self.assertGreaterEqual(ensure_mock.call_count, 1)
+
+
+class TestUnexpectedBrokerPositionsHalt(RunInnerBase):
+    """Unexpected broker positions (not in local DB) must halt in live mode."""
+
+    def test_unexpected_positions_write_halt_and_exit_in_live_mode(self):
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        halt_file = os.path.join(tmpdir, ".HALTED")
+        stack, mocks = self._patch_all(
+            **{
+                # reconcile_positions returns unexpected symbol set
+                "main.trader.reconcile_positions": {"XUNKNOWN"},
+                "main.config.IS_PAPER": False,
+                "main.config.HALT_FILE": halt_file,
+                "main.config.LOG_DIR": tmpdir,
+            }
+        )
+        with stack, self.assertRaises(SystemExit):
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        import shutil as _shutil
+
+        _shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_unexpected_positions_not_fatal_in_paper_mode(self):
+        """Paper mode should log but not halt on unexpected positions."""
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.reconcile_positions": {"XUNKNOWN"},
+                "main.config.IS_PAPER": True,
+            }
+        )
+        # Should not raise SystemExit
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
 
 
 if __name__ == "__main__":

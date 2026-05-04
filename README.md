@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1260 tests, 100% coverage)
+├── tests/             Unit test suite (1267 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -695,7 +695,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1260 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1267 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -739,6 +739,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.13 — May 2026 — Structural safety caps (reviewer-required fixes)
+
+- **`MAX_POSITIONS` always caps sizer.** `max_positions = min(get_max_positions(...), config.MAX_POSITIONS)` — broker/sizer can never grant more slots than the hard config cap.
+- **Experiment drawdown cap enforced.** `MAX_EXPERIMENT_DRAWDOWN_USD` now compared against a write-once baseline stored in `logs/experiment_baseline.json`. Buys are blocked once the cumulative experiment loss reaches the cap; a `CRITICAL` log and alert fire.
+- **PARTIAL/TIMEOUT buy triggers immediate stop check.** After any ambiguous fill (`OrderStatus.PARTIAL` or `.TIMEOUT`), `ensure_stops_attached()` runs immediately in the buy loop — not just at end-of-run — so the unprotected window is minimised.
+- **Unexpected broker positions halt in live mode.** `reconcile_positions()` now returns `set[str]` of unknown symbols. If non-empty in live (non-paper) mode, the bot writes the halt file and calls `sys.exit(1)` before normalising state.
+- **7 new tests** (total 1267): `TestMaxPositionsCappedByConfig`, `TestExperimentDrawdownCap` (2), `TestPartialTimeoutImmediateStopCheck` (2), `TestUnexpectedBrokerPositionsHalt` (2).
+- **1267 tests, 100% coverage, zero ruff violations.**
+
+---
+
 ### 1.12 — May 2026 — Close last permissive fallbacks (10/10 safety)
 
 - **`--live-shadow` now runs all live gates.** `should_run_live_gates = (not dry_run) or _live_shadow` — pending-buy guard, open-exposure query, and quote gate all execute in live-shadow mode. Only order submission is suppressed.
@@ -748,7 +759,7 @@ Additional live-mode safety gates active in all modes:
 - **Quote gate last-trade failure fails closed.** A trade-feed exception now raises `BrokerStateUnavailable` instead of approving the order with a warning. Unknown trade state is treated as stale.
 - **Account safety assertion fails closed in live mode.** Generic exceptions from `_assert_account_safety()` now re-raise as `RuntimeError`, preventing startup when margin/PDT/buying-power constraints cannot be verified.
 - **3 new CI invariant tests** (total 28): ledger DB failure raises `OrderLedgerUnavailable`; quote gate trade-fetch failure raises `BrokerStateUnavailable`; `create_intent` failure in live mode raises `OrderLedgerUnavailable`.
-- **1260 tests, 100% coverage, zero ruff violations.**
+- **1260 tests, 100% coverage, zero ruff violations.** (1267 as of v1.13)
 
 ---
 
