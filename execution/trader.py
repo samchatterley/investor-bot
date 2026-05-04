@@ -547,10 +547,27 @@ def ensure_stops_attached(client: TradingClient) -> bool:
 
 
 def get_total_open_exposure(client: TradingClient) -> float:
-    """Return sum of current market value of all open broker positions."""
+    """Return conservative deployed-capital estimate: market value of filled positions
+    plus committed notional of pending (not-yet-filled) buy orders.
+
+    Pending orders for symbols already in positions are skipped to avoid
+    double-counting partially-filled orders.
+    """
     try:
+        total = 0.0
         positions = client.get_all_positions()
-        return sum(float(p.market_value) for p in positions)
+        filled_symbols = {p.symbol for p in positions}
+        total += sum(float(p.market_value) for p in positions)
+        orders = client.get_orders()
+        for o in orders:
+            if (
+                o.side == OrderSide.BUY
+                and str(o.status) in ("new", "accepted", "pending_new")
+                and o.symbol not in filled_symbols
+                and o.notional
+            ):
+                total += float(o.notional)
+        return total
     except Exception as e:
         logger.warning(f"get_total_open_exposure failed: {e}")
         return 0.0

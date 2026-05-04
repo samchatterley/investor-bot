@@ -674,6 +674,69 @@ class TestAssertAccountSafety(unittest.TestCase):
                 self.fail("Normal cash account should pass")
 
 
+# ── get_total_open_exposure includes pending orders ───────────────────────────
+
+
+class TestGetTotalOpenExposureIncludesPending(unittest.TestCase):
+    """get_total_open_exposure() must include pending buy order notional."""
+
+    def _make_position(self, symbol, market_value):
+        p = MagicMock()
+        p.symbol = symbol
+        p.market_value = str(market_value)
+        return p
+
+    def _make_pending_order(self, symbol, notional, status="new"):
+        from alpaca.trading.enums import OrderSide
+
+        o = MagicMock()
+        o.symbol = symbol
+        o.side = OrderSide.BUY
+        o.status = status
+        o.notional = str(notional)
+        return o
+
+    def test_includes_pending_order_for_unfilled_symbol(self):
+        from execution.trader import get_total_open_exposure
+
+        client = MagicMock()
+        client.get_all_positions.return_value = [self._make_position("AAPL", 50.0)]
+        client.get_orders.return_value = [self._make_pending_order("SOFI", 45.0)]
+        result = get_total_open_exposure(client)
+        self.assertAlmostEqual(result, 95.0, places=1)
+
+    def test_skips_pending_order_for_already_filled_symbol(self):
+        """Partial fill: AAPL is in positions and also has a pending order — no double count."""
+        from execution.trader import get_total_open_exposure
+
+        client = MagicMock()
+        client.get_all_positions.return_value = [self._make_position("AAPL", 50.0)]
+        client.get_orders.return_value = [self._make_pending_order("AAPL", 45.0)]
+        result = get_total_open_exposure(client)
+        self.assertAlmostEqual(result, 50.0, places=1)
+
+    def test_only_counts_new_accepted_pending_new_statuses(self):
+        """filled/cancelled orders must not be counted as pending exposure."""
+        from execution.trader import get_total_open_exposure
+
+        client = MagicMock()
+        client.get_all_positions.return_value = []
+        client.get_orders.return_value = [
+            self._make_pending_order("SOFI", 45.0, status="filled"),
+            self._make_pending_order("RKLB", 45.0, status="cancelled"),
+        ]
+        result = get_total_open_exposure(client)
+        self.assertAlmostEqual(result, 0.0, places=1)
+
+    def test_returns_zero_on_exception(self):
+        from execution.trader import get_total_open_exposure
+
+        client = MagicMock()
+        client.get_all_positions.side_effect = Exception("network error")
+        result = get_total_open_exposure(client)
+        self.assertEqual(result, 0.0)
+
+
 # ── Universe price filter ─────────────────────────────────────────────────────
 
 
