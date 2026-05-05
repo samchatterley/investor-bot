@@ -80,7 +80,7 @@ _DECISION_TOOL = {
             },
             "buy_candidates": {
                 "type": "array",
-                "description": "Ranked list of buy candidates, highest conviction first",
+                "description": "Ranked list of buy candidates, highest conviction first. Must NOT contain any symbol already in current open positions.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -288,6 +288,13 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
         if lines:
             ages_block = "CURRENT POSITION AGES:\n" + "\n".join(lines) + "\n"
 
+    held_symbols = sorted({p["symbol"] for p in current_positions}) if current_positions else []
+    held_block = (
+        f"ALREADY HELD — DO NOT include in buy_candidates: {', '.join(held_symbols)}\n"
+        if held_symbols
+        else ""
+    )
+
     snapshots_json = json.dumps(snapshots, indent=2)
 
     return f"""Analyse today's market data and make trading decisions.
@@ -299,7 +306,7 @@ PORTFOLIO STATUS:
 - Max open positions allowed: {MAX_POSITIONS}
 - Current open positions: {json.dumps(current_positions, indent=2)}
 
-{ages_block}
+{held_block}{ages_block}
 {stale_block}
 {track_block}
 {options_block}
@@ -329,7 +336,7 @@ highest quality setups. Current positions are listed separately for HOLD/SELL de
 
 TASK:
 1. For each CURRENT POSITION decide HOLD or SELL — factor in age, news, and momentum
-2. From the buy candidates, select up to {MAX_POSITIONS} (skip all if bear market filter active)
+2. From the buy candidates, select up to {MAX_POSITIONS}{" — never include a symbol from ALREADY HELD above" if held_symbols else ""}
 3. Only recommend BUY if confidence >= {MIN_CONFIDENCE}/10
 4. Treat unusual options call activity as a supporting signal, not a standalone reason to buy
 

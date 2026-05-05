@@ -132,6 +132,18 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("MACRO EVENT", result)
         self.assertIn("FOMC", result)
 
+    def test_held_symbols_block_appears_when_positions_held(self):
+        positions = [{"symbol": "JNJ", "qty": 10}, {"symbol": "AAPL", "qty": 5}]
+        result = self._build(current_positions=positions)
+        self.assertIn("ALREADY HELD", result)
+        self.assertIn("DO NOT", result)
+        self.assertIn("JNJ", result)
+        self.assertIn("AAPL", result)
+
+    def test_held_symbols_block_absent_when_no_positions(self):
+        result = self._build(current_positions=[])
+        self.assertNotIn("ALREADY HELD", result)
+
     def test_no_optional_blocks_when_none_passed(self):
         result = self._build()
         self.assertNotIn("EARNINGS RISK", result)
