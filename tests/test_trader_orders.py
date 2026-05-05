@@ -144,6 +144,21 @@ class TestGetOpenPositions(unittest.TestCase):
 
 
 class TestPlaceBuyOrder(unittest.TestCase):
+    def setUp(self):
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
     def test_returns_none_for_tiny_order(self):
         from execution.trader import place_buy_order
 
@@ -1257,3 +1272,68 @@ class TestAddDailyNotionalException(unittest.TestCase):
                 add_daily_notional("2026-01-15", 500.0)
             except Exception:
                 self.fail("add_daily_notional raised unexpectedly on DB error")
+
+
+class TestAutoCancelTimeoutIntents(unittest.TestCase):
+    """auto_cancel_timeout_intents resolves timeout intents with no broker position."""
+
+    def setUp(self):
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def _insert_intent(self, symbol, status, trade_date="2026-05-05"):
+        from utils.order_ledger import create_intent, update_intent
+
+        client_id = f"ib-{symbol}-BUY-{trade_date}"
+        create_intent(symbol, "BUY", trade_date, 1000.0, client_id)
+        if status != "pending":
+            update_intent(client_id, status, broker_order_id=f"broker-{symbol}")
+        return client_id
+
+    def test_cancels_timeout_intent_with_no_broker_position(self):
+        from utils.order_ledger import auto_cancel_timeout_intents, get_unresolved_intents
+
+        self._insert_intent("AAPL", "timeout")
+        resolved = auto_cancel_timeout_intents(broker_symbols=set(), trade_date="2026-05-05")
+        self.assertEqual(resolved, 1)
+        remaining = get_unresolved_intents(trade_date="2026-05-05")
+        self.assertEqual(len(remaining), 0)
+
+    def test_preserves_timeout_intent_when_broker_has_position(self):
+        from utils.order_ledger import auto_cancel_timeout_intents, get_unresolved_intents
+
+        self._insert_intent("AAPL", "timeout")
+        resolved = auto_cancel_timeout_intents(broker_symbols={"AAPL"}, trade_date="2026-05-05")
+        self.assertEqual(resolved, 0)
+        remaining = get_unresolved_intents(trade_date="2026-05-05")
+        self.assertEqual(len(remaining), 1)
+
+    def test_does_not_cancel_submitted_intents(self):
+        from utils.order_ledger import auto_cancel_timeout_intents, get_unresolved_intents
+
+        self._insert_intent("AAPL", "submitted")
+        resolved = auto_cancel_timeout_intents(broker_symbols=set(), trade_date="2026-05-05")
+        self.assertEqual(resolved, 0)
+        remaining = get_unresolved_intents(trade_date="2026-05-05")
+        self.assertEqual(len(remaining), 1)
+
+    def test_handles_exception_gracefully(self):
+        from utils.order_ledger import auto_cancel_timeout_intents
+
+        with patch("utils.order_ledger.get_unresolved_intents", side_effect=Exception("db fail")):
+            try:
+                result = auto_cancel_timeout_intents(broker_symbols=set(), trade_date="2026-05-05")
+            except Exception:
+                self.fail("auto_cancel_timeout_intents raised unexpectedly")
+        self.assertEqual(result, 0)

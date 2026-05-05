@@ -124,6 +124,34 @@ def has_active_intent(symbol: str, side: str, trade_date: str) -> bool:
         raise OrderLedgerUnavailable(f"has_active_intent({symbol}): {e}") from e
 
 
+def auto_cancel_timeout_intents(broker_symbols: set[str], trade_date: str) -> int:
+    """Auto-resolve timeout intents where no broker position exists.
+
+    A timeout intent whose symbol is absent from broker positions means the order
+    never filled (paper or live). Marking it cancelled clears the YELLOW health
+    without manual DB intervention. Intents where the symbol IS held at the broker
+    are left as timeout for manual review.
+
+    Returns the number of intents resolved.
+    """
+    resolved = 0
+    try:
+        unresolved = get_unresolved_intents(trade_date=trade_date)
+        for intent in unresolved:
+            if intent["status"] != "timeout":
+                continue
+            if intent["symbol"] not in broker_symbols:
+                update_intent(intent["client_order_id"], "cancelled")
+                logger.info(
+                    f"auto_cancel_timeout_intents: {intent['symbol']} BUY has no broker position "
+                    f"— auto-resolved intent {intent['client_order_id']} as cancelled"
+                )
+                resolved += 1
+    except Exception as e:
+        logger.warning(f"auto_cancel_timeout_intents: {e}")
+    return resolved
+
+
 def get_unresolved_intents(trade_date: str | None = None) -> list[dict]:
     """Return intents in ambiguous states (submitted/timeout) that need reconciliation.
 
