@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import config as cfg
@@ -245,7 +246,7 @@ class TestRunWeeklyReview(unittest.TestCase):
         with (
             patch(
                 "analysis.weekly_review.load_history",
-                return_value=[self._make_record("2026-04-27")],
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
             ),
             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
         ):
@@ -270,7 +271,7 @@ class TestRunWeeklyReview(unittest.TestCase):
         with (
             patch(
                 "analysis.weekly_review.load_history",
-                return_value=[self._make_record("2026-04-27")],
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
             ),
             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
         ):
@@ -296,7 +297,7 @@ class TestRunWeeklyReview(unittest.TestCase):
         with (
             patch(
                 "analysis.weekly_review.load_history",
-                return_value=[self._make_record("2026-04-27")],
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
             ),
             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
         ):
@@ -316,7 +317,7 @@ class TestRunWeeklyReview(unittest.TestCase):
         with (
             patch(
                 "analysis.weekly_review.load_history",
-                return_value=[self._make_record("2026-04-27")],
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
             ),
             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
         ):
@@ -330,7 +331,7 @@ class TestRunWeeklyReview(unittest.TestCase):
         with (
             patch(
                 "analysis.weekly_review.load_history",
-                return_value=[self._make_record("2026-04-27")],
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
             ),
             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
         ):
@@ -354,7 +355,7 @@ class TestRunWeeklyReview(unittest.TestCase):
         with (
             patch(
                 "analysis.weekly_review.load_history",
-                return_value=[self._make_record("2026-04-27")],
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
             ),
             patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
         ):

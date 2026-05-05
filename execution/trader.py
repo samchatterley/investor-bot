@@ -390,7 +390,16 @@ def close_position(client: TradingClient, symbol: str) -> OrderResult:
             )
         try:
             final = client.get_order_by_id(order_id)
-            if str(final.status) == "partially_filled" and final.filled_qty:
+            final_status = str(final.status)
+            if final_status == "filled" and final.filled_qty:
+                # Filled after the poll window closed — treat as success
+                return OrderResult(
+                    status=OrderStatus.FILLED,
+                    symbol=symbol,
+                    broker_order_id=order_id,
+                    filled_qty=float(final.filled_qty),
+                )
+            if final_status == "partially_filled" and final.filled_qty:
                 partial_qty = float(final.filled_qty)
                 logger.warning(
                     f"Close for {symbol} partially filled {partial_qty} — position may still be open"
@@ -407,7 +416,11 @@ def close_position(client: TradingClient, symbol: str) -> OrderResult:
             f"Close for {symbol} did not confirm fill within poll window — position may still be open"
         )
         return OrderResult(
-            status=OrderStatus.TIMEOUT, symbol=symbol, broker_order_id=order_id, filled_qty=0.0
+            status=OrderStatus.TIMEOUT,
+            symbol=symbol,
+            broker_order_id=order_id,
+            filled_qty=0.0,
+            rejection_reason="sell order timed out — order may still be pending at broker",
         )
     except Exception as e:
         logger.error(f"Failed to close position {symbol}: {e}")

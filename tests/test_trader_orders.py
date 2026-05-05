@@ -404,14 +404,21 @@ class TestClosePosition(unittest.TestCase):
         self.assertIn("not found", result.rejection_reason)
 
     def test_cancels_open_orders_before_closing(self):
-        # Trailing stop holds shares: close_position must cancel open orders first
+        # Trailing stop holds shares: close_position must cancel all orders first
         # or Alpaca returns "insufficient qty available for order"
         from execution.trader import close_position
 
         call_order = []
         client = MagicMock()
-        client.get_orders.return_value = [_make_trailing_stop_order("AAPL")]
-        client.cancel_order_by_id.side_effect = lambda _: call_order.append("cancel")
+
+        pos_held = MagicMock()
+        pos_held.qty = "10"
+        pos_held.qty_available = "0"
+        pos_free = MagicMock()
+        pos_free.qty = "10"
+        pos_free.qty_available = "10"
+        client.get_open_position.side_effect = [pos_held, pos_free]
+        client.cancel_orders.side_effect = lambda: call_order.append("cancel")
 
         def fake_close(symbol):
             call_order.append("close")
@@ -437,48 +444,53 @@ class TestClosePosition(unittest.TestCase):
 
 
 class TestCancelOpenOrders(unittest.TestCase):
-    def _make_order(self, symbol, status="new"):
-        o = MagicMock()
-        o.symbol = symbol
-        o.status = status
-        o.id = f"order-{symbol}"
-        return o
+    def _make_held_pos(self, symbol="AAPL", qty=10, qty_available=0):
+        pos = MagicMock()
+        pos.qty = str(qty)
+        pos.qty_available = str(qty_available)
+        return pos
 
     def test_cancels_matching_open_orders(self):
+        # When shares are held (qty_available < qty), cancel_orders() fires.
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
-        client.get_orders.return_value = [self._make_order("AAPL", "new")]
-        cancel_open_orders(client, "AAPL")
-        client.cancel_order_by_id.assert_called_once_with("order-AAPL")
-
-    def test_does_not_cancel_other_symbols(self):
-        from execution.trader import cancel_open_orders
-
-        client = MagicMock()
-        client.get_orders.return_value = [
-            self._make_order("AAPL", "new"),
-            self._make_order("NVDA", "new"),
+        client.get_open_position.side_effect = [
+            self._make_held_pos(qty_available=0),  # initial: shares held
+            self._make_held_pos(qty_available=10),  # after cancel: freed
         ]
-        cancel_open_orders(client, "AAPL")
-        # Only AAPL should be cancelled
-        args = [c.args[0] for c in client.cancel_order_by_id.call_args_list]
-        self.assertIn("order-AAPL", args)
-        self.assertNotIn("order-NVDA", args)
+        with patch("execution.trader.time.sleep"):
+            cancel_open_orders(client, "AAPL")
+        client.cancel_orders.assert_called_once()
 
-    def test_does_not_cancel_filled_orders(self):
+    def test_cancel_all_called_once_when_shares_held(self):
+        # cancel_open_orders uses cancel-all (not symbol-scoped); safe because
+        # ensure_stops_attached re-covers other positions at end of run.
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
-        client.get_orders.return_value = [self._make_order("AAPL", "filled")]
+        client.get_open_position.side_effect = [
+            self._make_held_pos(qty_available=0),
+            self._make_held_pos(qty_available=10),
+        ]
+        with patch("execution.trader.time.sleep"):
+            cancel_open_orders(client, "AAPL")
+        client.cancel_orders.assert_called_once()
+
+    def test_no_cancel_when_shares_available(self):
+        # If qty_available == qty, no orders hold shares — skip cancel-all.
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_open_position.return_value = self._make_held_pos(qty_available=10)
         cancel_open_orders(client, "AAPL")
-        client.cancel_order_by_id.assert_not_called()
+        client.cancel_orders.assert_not_called()
 
     def test_handles_exception_gracefully(self):
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
-        client.get_orders.side_effect = Exception("API error")
+        client.get_open_position.side_effect = Exception("API error")
         try:
             cancel_open_orders(client, "AAPL")
         except Exception:

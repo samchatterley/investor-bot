@@ -896,13 +896,9 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                 executed_symbols.add(symbol)
                 all_trades.append({"symbol": symbol, "action": "SELL", "detail": reason})
             else:
-                logger.error(
-                    f"  SELL FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}. Manual review required."
-                )
-                alerts.alert_error(
-                    "SELL FAILED",
-                    f"{symbol}: failed to close position — {result.rejection_reason or 'unknown error'}",
-                )
+                fail_detail = result.rejection_reason or "close failed after retries"
+                logger.error(f"  SELL FAILED {symbol} — {fail_detail}. Manual review required.")
+                alerts.alert_error("SELL FAILED", f"{symbol}: {fail_detail}")
         else:
             executed_symbols.add(symbol)
             all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
@@ -1237,8 +1233,9 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")
 
-    # ── Attach any missing stops (catches fills that arrived after wait_for_fill timed out) ──
-    if not dry_run and all_trades:
+    # ── Attach any missing stops (catches fills that arrived after wait_for_fill timed out,
+    #    and re-covers positions whose stops were cancelled by a failed-sell cycle) ──
+    if not dry_run:
         trader.ensure_stops_attached(client)
 
     # ── Finalise ──────────────────────────────────────────────────────────────

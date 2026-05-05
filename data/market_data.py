@@ -47,7 +47,7 @@ def fetch_stock_data(
 
             last_date = df.index[-1].date()
             staleness = (datetime.now().date() - last_date).days
-            if staleness > 3:
+            if staleness > 4:
                 logger.warning(
                     f"{symbol}: last data point {last_date} is {staleness} days old — skipping stale feed"
                 )

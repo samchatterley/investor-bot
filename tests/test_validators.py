@@ -186,11 +186,11 @@ class TestBuyCandidateModel(unittest.TestCase):
 
     def test_reasoning_too_long_raises(self):
         with self.assertRaises(ValidationError):
-            BuyCandidate.model_validate(_valid_buy(reasoning="x" * 501))
+            BuyCandidate.model_validate(_valid_buy(reasoning="x" * 2001))
 
-    def test_reasoning_exactly_500_chars_passes(self):
-        c = BuyCandidate.model_validate(_valid_buy(reasoning="x" * 500))
-        self.assertEqual(len(c.reasoning), 500)
+    def test_reasoning_exactly_2000_chars_passes(self):
+        c = BuyCandidate.model_validate(_valid_buy(reasoning="x" * 2000))
+        self.assertEqual(len(c.reasoning), 2000)
 
     def test_missing_reasoning_raises(self):
         data = _valid_buy()
@@ -363,7 +363,7 @@ class TestValidateAiResponse(unittest.TestCase):
         self.assertTrue(is_valid)
 
     def test_reasoning_too_long_rejected(self):
-        data = _valid_decisions(buys=[_valid_buy(reasoning="x" * 501)])
+        data = _valid_decisions(buys=[_valid_buy(reasoning="x" * 2001)])
         is_valid, errors = validate_ai_response(data, _KNOWN)
         self.assertFalse(is_valid)
 
