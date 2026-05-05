@@ -1161,6 +1161,34 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         # AAPL sell must still fire despite the invalid buy candidate
         sell_mock.assert_called_once()
 
+    def test_buy_candidates_pydantic_error_treated_as_domain_not_structural(self):
+        """buy_candidates field errors (e.g. reasoning too long) are buy-domain errors —
+        sells are still executed, only buys are blocked."""
+        sell_mock = MagicMock()
+        sell_mock.return_value = OrderResult(status=OrderStatus.FILLED, symbol="AAPL")
+        decisions = _decisions(
+            buys=[{"symbol": "MSFT", "confidence": 8, "key_signal": "momentum"}],
+            sells=[{"symbol": "AAPL", "action": "SELL", "confidence": 7, "reasoning": "weak"}],
+        )
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [
+                    {"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}
+                ],
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.validate_ai_response": (
+                    False,
+                    ["buy_candidates → 0 → reasoning: String should have at most 2000 characters"],
+                ),
+                "main.trader.close_position": sell_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        sell_mock.assert_called_once()
+
     def test_bearish_regime_blocks_buys(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])

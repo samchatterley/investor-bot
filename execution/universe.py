@@ -46,7 +46,12 @@ _MAJOR_EXCHANGES: frozenset[AssetExchange] = frozenset(
 
 # Symbols confirmed delisted or unavailable from Yahoo Finance data feeds.
 # Kept here to survive cache refreshes without requiring a code change.
-_EXCLUDED_SYMBOLS: frozenset[str] = frozenset({"SQ"})
+_EXCLUDED_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "SQ",  # Block Inc rebranded to XYZ in 2024; SQ no longer valid
+        "EXAS",  # Exact Sciences: consistent yfinance data failures May 2026
+    }
+)
 
 
 def _load_cache() -> list[str] | None:
@@ -103,7 +108,7 @@ def _apply_snapshot_filter(symbols: list[str]) -> list[str]:
     for i in range(0, len(symbols), _SNAPSHOT_CHUNK_SIZE):
         chunk = symbols[i : i + _SNAPSHOT_CHUNK_SIZE]
         try:
-            snaps = data_client.get_stock_snapshots(StockSnapshotRequest(symbol_or_symbols=chunk))
+            snaps = data_client.get_stock_snapshot(StockSnapshotRequest(symbol_or_symbols=chunk))
             for sym, snap in snaps.items():
                 bar = snap.daily_bar
                 if bar is None:

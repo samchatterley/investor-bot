@@ -201,7 +201,7 @@ class TestApplySnapshotFilter(unittest.TestCase):
 
     def _mock_data_client(self, snap_map: dict):
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.return_value = snap_map
+        mock_dc.get_stock_snapshot.return_value = snap_map
         return mock_dc
 
     def test_passes_price_and_volume_threshold(self):
@@ -242,7 +242,7 @@ class TestApplySnapshotFilter(unittest.TestCase):
 
     def test_chunk_error_excludes_chunk_symbols(self):
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.side_effect = RuntimeError("API error")
+        mock_dc.get_stock_snapshot.side_effect = RuntimeError("API error")
         mock_cls = MagicMock(return_value=mock_dc)
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["AAPL", "MSFT"])
@@ -263,11 +263,11 @@ class TestApplySnapshotFilter(unittest.TestCase):
             "E": _make_snap(10.0, 1_000_000),
         }
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.side_effect = [snaps, snaps2]
+        mock_dc.get_stock_snapshot.side_effect = [snaps, snaps2]
         mock_cls = MagicMock(return_value=mock_dc)
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["A", "B", "C", "D", "E"])
-        self.assertEqual(mock_dc.get_stock_snapshots.call_count, 2)
+        self.assertEqual(mock_dc.get_stock_snapshot.call_count, 2)
         self.assertEqual(sorted(result), ["A", "B", "C", "D", "E"])
 
 
@@ -307,7 +307,7 @@ class TestBuildScanUniverse(unittest.TestCase):
             "NVDA": _make_snap(200.0, 3_000_000),
         }
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.return_value = snaps
+        mock_dc.get_stock_snapshot.return_value = snaps
         mock_cls = MagicMock(return_value=mock_dc)
 
         with (
@@ -330,7 +330,7 @@ class TestBuildScanUniverse(unittest.TestCase):
         self.mod._MAJOR_EXCHANGES = {"NYSE"}
 
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.return_value = {}
+        mock_dc.get_stock_snapshot.return_value = {}
         mock_cls = MagicMock(return_value=mock_dc)
 
         with (
@@ -356,7 +356,7 @@ class TestBuildScanUniverse(unittest.TestCase):
 
         snaps = {f"SYM{i}": _make_snap(50.0, 1_000_000) for i in range(10)}
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.return_value = snaps
+        mock_dc.get_stock_snapshot.return_value = snaps
         mock_cls = MagicMock(return_value=mock_dc)
 
         with (
@@ -404,7 +404,7 @@ class TestBuildScanUniverse(unittest.TestCase):
             "AMZN": _make_snap(100.0, 2_000_000),
         }
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.return_value = snaps
+        mock_dc.get_stock_snapshot.return_value = snaps
         mock_cls = MagicMock(return_value=mock_dc)
 
         with (
@@ -423,7 +423,7 @@ class TestBuildScanUniverse(unittest.TestCase):
 
         snaps = {"AMZN": _make_snap(100.0, 1_000_000)}
         mock_dc = MagicMock()
-        mock_dc.get_stock_snapshots.return_value = snaps
+        mock_dc.get_stock_snapshot.return_value = snaps
         mock_cls = MagicMock(return_value=mock_dc)
         mock_save = MagicMock()
 

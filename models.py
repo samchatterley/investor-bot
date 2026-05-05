@@ -95,7 +95,7 @@ class PositionDecision(BaseModel):
 class DecisionSet(BaseModel):
     market_summary: str = Field(min_length=10, max_length=300)
     position_decisions: list[PositionDecision]
-    buy_candidates: list[BuyCandidate]
+    buy_candidates: list[BuyCandidate] = Field(default_factory=list)
 
     model_config = {"extra": "ignore"}
 

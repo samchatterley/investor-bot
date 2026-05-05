@@ -158,7 +158,7 @@ STOCK_UNIVERSE = [
     "PLTR",
     # Fintech
     "PYPL",
-    "SQ",
+    "XYZ",  # Block Inc (formerly SQ)
     "V",
     "MA",
     # Financials

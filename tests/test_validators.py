@@ -50,6 +50,12 @@ class TestDecisionSetModel(unittest.TestCase):
         self.assertEqual(ds.buy_candidates, [])
         self.assertEqual(ds.position_decisions, [])
 
+    def test_missing_buy_candidates_defaults_to_empty(self):
+        data = _valid_decisions()
+        del data["buy_candidates"]
+        ds = DecisionSet.model_validate(data)
+        self.assertEqual(ds.buy_candidates, [])
+
     def test_duplicate_buy_symbols_raises(self):
         data = _valid_decisions(buys=[_valid_buy("AAPL"), _valid_buy("AAPL")])
         with self.assertRaises(ValidationError) as ctx:
@@ -123,11 +129,11 @@ class TestDecisionSetModel(unittest.TestCase):
         with self.assertRaises(ValidationError):
             DecisionSet.model_validate(data)
 
-    def test_missing_buy_candidates_raises(self):
+    def test_missing_buy_candidates_defaults_to_empty_list(self):
         data = _valid_decisions()
         del data["buy_candidates"]
-        with self.assertRaises(ValidationError):
-            DecisionSet.model_validate(data)
+        ds = DecisionSet.model_validate(data)
+        self.assertEqual(ds.buy_candidates, [])
 
     def test_missing_position_decisions_raises(self):
         data = _valid_decisions()
@@ -411,11 +417,12 @@ class TestValidateAiResponse(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertTrue(any("market_summary" in e for e in errors))
 
-    def test_missing_buy_candidates_fails(self):
+    def test_missing_buy_candidates_passes_with_empty_default(self):
         data = _valid_decisions()
         del data["buy_candidates"]
         is_valid, errors = validate_ai_response(data, _KNOWN)
-        self.assertFalse(is_valid)
+        self.assertTrue(is_valid)
+        self.assertEqual(errors, [])
 
     def test_missing_position_decisions_fails(self):
         data = _valid_decisions()

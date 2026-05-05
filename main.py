@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sys
 import time
 import uuid
@@ -51,6 +52,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _LOCK_MAX_AGE_SECONDS = 1800  # auto-clear locks older than 30 min (handles crash recovery)
+_current_lock_fd: int | None = None  # module-level so the SIGTERM handler can reach it
+
+
+def _sigterm_handler(signum, frame):
+    """Release the lock file on SIGTERM so the next scheduled run isn't blocked.
+
+    Python's finally blocks don't execute when a process receives SIGTERM (the
+    default signal sent by tmux kill-session, systemctl stop, and most process
+    managers).  Without this handler a killed run leaves a stale .lock file that
+    blocks every subsequent run for up to _LOCK_MAX_AGE_SECONDS (30 min).
+    """
+    global _current_lock_fd
+    if _current_lock_fd is not None:
+        _release_lock(_current_lock_fd)
+        _current_lock_fd = None
+    sys.exit(0)
 
 
 def _lock_file() -> str:
@@ -471,6 +488,11 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
     if lock_fd is None:
         return
 
+    global _current_lock_fd
+    _current_lock_fd = lock_fd
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGHUP, _sigterm_handler)
+
     try:
         _run_inner(dry_run=dry_run, mode=mode, today=today, _live_shadow=_live_shadow)
     except Exception as e:
@@ -478,6 +500,7 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
         alerts.alert_error("main.run", str(e))
     finally:
         _release_lock(lock_fd)
+        _current_lock_fd = None
 
 
 def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
@@ -831,7 +854,8 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
         buy_domain_only = validation_errors and all(
-            e.startswith("BUY candidate '") for e in validation_errors
+            e.startswith("BUY candidate '") or e.startswith("buy_candidates")
+            for e in validation_errors
         )
         if buy_domain_only:
             # BUY domain errors (out-of-universe, already-held) only taint buy decisions.
