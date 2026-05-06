@@ -18,14 +18,18 @@
         "action": "BUY",
         "confidence": 8,
         "key_signal": "momentum",
-        "reasoning": "Conflict: already held, so this BUY should be rejected by the validator."
+        "reasoning": "Conflict: already held, so this BUY should be rejected by the validator.",
+        "do_nothing_case": "Already holding NVDA; adding more increases concentration risk.",
+        "invalidation_trigger": "Any price drop below current stop level invalidates the add."
       },
       {
         "symbol": "AAPL",
         "action": "BUY",
         "confidence": 7,
         "key_signal": "mean_reversion",
-        "reasoning": "Valid candidate — not held, in universe."
+        "reasoning": "Valid candidate — not held, in universe.",
+        "do_nothing_case": "Broader market weakness could extend the oversold condition further.",
+        "invalidation_trigger": "Price closes below the 50-day MA on elevated volume."
       }
     ]
   },

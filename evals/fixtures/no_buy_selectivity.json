@@ -1,0 +1,124 @@
+{
+  "description": "Five cases where a buy should be blocked by a deterministic gate. Each case has a well-formed AI response and the gate that should catch it.",
+  "cases": [
+    {
+      "description": "Empty do_nothing_case — Pydantic min_length rejects it",
+      "response": {
+        "market_summary": "Bull trend intact.",
+        "position_decisions": [],
+        "buy_candidates": [
+          {
+            "symbol": "MSFT",
+            "confidence": 8,
+            "key_signal": "momentum",
+            "reasoning": "Strong momentum with EMA9 above EMA21 and vol_ratio 1.8x. RSI 62, macd_diff positive.",
+            "summary": "Microsoft is in a strong uptrend with volume confirmation.",
+            "do_nothing_case": "",
+            "invalidation_trigger": "Price drops below EMA21 on elevated volume."
+          }
+        ]
+      },
+      "scanned_universe": ["MSFT"],
+      "expected_valid": false,
+      "expected_gate": "pydantic_min_length",
+      "expected_error_contains": "do_nothing_case"
+    },
+    {
+      "description": "Missing invalidation_trigger — Pydantic required field rejects it",
+      "response": {
+        "market_summary": "Choppy market with selective opportunities.",
+        "position_decisions": [],
+        "buy_candidates": [
+          {
+            "symbol": "AAPL",
+            "confidence": 7,
+            "key_signal": "mean_reversion",
+            "reasoning": "RSI at 29, bb_pct 0.06, price -4.2% below EMA21 with volume spike 2.1x average.",
+            "summary": "Apple is oversold with a potential mean-reversion bounce.",
+            "do_nothing_case": "Weekly trend is flat; mean-reversion without trend support often fails to follow through."
+          }
+        ]
+      },
+      "scanned_universe": ["AAPL"],
+      "expected_valid": false,
+      "expected_gate": "pydantic_required",
+      "expected_error_contains": "invalidation_trigger"
+    },
+    {
+      "description": "Confidence below MIN_CONFIDENCE (7) — main.py confidence gate skips the buy",
+      "response": {
+        "market_summary": "High volatility environment.",
+        "position_decisions": [],
+        "buy_candidates": [
+          {
+            "symbol": "NVDA",
+            "confidence": 5,
+            "key_signal": "momentum",
+            "reasoning": "Some momentum signals present but VIX elevated and sector rotation uncertain. RSI 55, vol_ratio 1.1x.",
+            "summary": "NVDA has mild momentum but the environment is too uncertain for high conviction.",
+            "do_nothing_case": "VIX above 25 and sector rotation unclear; low-conviction momentum setups underperform in high-vol regimes.",
+            "invalidation_trigger": "Price drops below EMA9 or VIX rises above 30."
+          }
+        ]
+      },
+      "scanned_universe": ["NVDA"],
+      "expected_valid": true,
+      "expected_gate": "confidence_floor",
+      "min_confidence": 7,
+      "expected_buys_placed": 0
+    },
+    {
+      "description": "Symbol in both BUY candidates and SELL decisions — buy/sell conflict rejected",
+      "response": {
+        "market_summary": "Mixed signals.",
+        "position_decisions": [
+          {
+            "symbol": "GOOGL",
+            "action": "SELL",
+            "confidence": 7,
+            "reasoning": "Technicals weakening; MACD diff turned negative.",
+            "summary": "Sell GOOGL on technical deterioration."
+          }
+        ],
+        "buy_candidates": [
+          {
+            "symbol": "GOOGL",
+            "confidence": 8,
+            "key_signal": "mean_reversion",
+            "reasoning": "RSI at 32, bb_pct 0.05 — oversold bounce candidate despite short-term weakness.",
+            "summary": "GOOGL is oversold and could bounce.",
+            "do_nothing_case": "Already recommending SELL on this symbol — conflicting signals suggest sitting out.",
+            "invalidation_trigger": "Any further deterioration in MACD or price below recent low."
+          }
+        ]
+      },
+      "scanned_universe": ["GOOGL"],
+      "held_symbols": ["GOOGL"],
+      "expected_valid": false,
+      "expected_gate": "buy_sell_conflict",
+      "expected_error_contains": "GOOGL"
+    },
+    {
+      "description": "Reasoning too short — Pydantic min_length rejects it",
+      "response": {
+        "market_summary": "Momentum day.",
+        "position_decisions": [],
+        "buy_candidates": [
+          {
+            "symbol": "AMD",
+            "confidence": 8,
+            "key_signal": "momentum",
+            "reasoning": "Looks good.",
+            "summary": "AMD has momentum.",
+            "do_nothing_case": "Setup lacks multi-indicator confirmation and could be broad-market beta.",
+            "invalidation_trigger": "Price drops below EMA21 on elevated volume."
+          }
+        ]
+      },
+      "scanned_universe": ["AMD"],
+      "expected_valid": false,
+      "expected_gate": "pydantic_min_length",
+      "expected_error_contains": "reasoning"
+    }
+  ]
+}

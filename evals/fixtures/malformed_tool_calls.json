@@ -2,13 +2,13 @@
   "description": "Three malformed AI responses that should all be rejected by schema validation.",
   "cases": [
     {
-      "description": "Missing buy_candidates field",
+      "description": "Missing required position_decisions field",
       "response": {
         "market_summary": "Market flat.",
-        "position_decisions": []
+        "buy_candidates": []
       },
       "expected_valid": false,
-      "expected_error_contains": "buy_candidates"
+      "expected_error_contains": "position_decisions"
     },
     {
       "description": "Confidence score out of valid range (1-10)",
@@ -21,7 +21,9 @@
             "action": "BUY",
             "confidence": 15,
             "key_signal": "momentum",
-            "reasoning": "Confidence 15 is outside the 1-10 range."
+            "reasoning": "Confidence 15 is outside the 1-10 range.",
+            "do_nothing_case": "Setup may not be as strong as the inflated confidence implies.",
+            "invalidation_trigger": "Price drops below EMA21 on elevated volume."
           }
         ]
       },

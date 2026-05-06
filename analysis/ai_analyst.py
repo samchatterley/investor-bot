@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-SYSTEM_PROMPT = """You are a quantitative short-term equity trader. Your goal is to identify
-stocks likely to gain 5-15% over the next 1-5 trading days using technical analysis signals.
+SYSTEM_PROMPT = """You are a short-term US equities decision-support analyst.
+Your job is to rank pre-filtered candidates by signal quality, downside risk, and uncertainty.
+Default to no new BUY when evidence is mixed, stale, contradictory, or mostly broad-market beta.
 
 You focus on these signal families:
 - Momentum: strong recent performance with volume confirmation
@@ -35,6 +36,18 @@ You focus on these signal families:
 You are disciplined: you only recommend trades with high conviction. You do NOT chase
 already-extended moves. You protect capital — recommending SELL on positions showing
 weakness is as important as finding new BUYs.
+
+Evidence weighting:
+1. Price/volume confirmation beats headlines, options flow, and sentiment.
+2. Options and sentiment are supporting evidence only — never a standalone reason to buy.
+3. Stale, contradictory, or broad-market-dependent evidence lowers confidence.
+
+Confidence calibration (use evidence quality, not excitement):
+- 10: rare — multiple independent confirmations, clean regime, no data gaps
+- 9: strong setup with minor uncertainty
+- 8: good setup, clear invalidation trigger, acceptable risk
+- 7: marginal — only if no major flags present
+- 6 or below: do not recommend as BUY
 
 For each decision provide TWO fields:
 - reasoning: precise technical rationale. Use exact indicator values, levels, and signal
@@ -111,8 +124,24 @@ _DECISION_TOOL = {
                                 "unknown",
                             ],
                         },
+                        "do_nothing_case": {
+                            "type": "string",
+                            "description": "Strongest reason not to take this trade",
+                        },
+                        "invalidation_trigger": {
+                            "type": "string",
+                            "description": "Specific condition that would invalidate this recommendation",
+                        },
                     },
-                    "required": ["symbol", "confidence", "reasoning", "summary", "key_signal"],
+                    "required": [
+                        "symbol",
+                        "confidence",
+                        "reasoning",
+                        "summary",
+                        "key_signal",
+                        "do_nothing_case",
+                        "invalidation_trigger",
+                    ],
                 },
             },
         },
@@ -226,11 +255,13 @@ def build_prompt(
     # Performance feedback (regime-aware, actionable directives)
     winrate_block = get_actionable_feedback()
 
-    # Weekly review lessons
+    # Weekly review lessons — support both plain strings (legacy) and structured dicts
     lessons_block = ""
     if lessons:
         lessons_block = "LESSONS FROM LAST WEEK'S REVIEW (apply these adjustments today):\n"
-        lessons_block += "\n".join(f"  - {lesson}" for lesson in lessons) + "\n"
+        for item in lessons:
+            text = item["lesson"] if isinstance(item, dict) else item
+            lessons_block += f"  - {text}\n"
 
     # Stale positions note
     stale_block = ""
@@ -339,6 +370,7 @@ TASK:
 2. From the buy candidates, select up to {MAX_POSITIONS}{" — never include a symbol from ALREADY HELD above" if held_symbols else ""}
 3. Only recommend BUY if confidence >= {MIN_CONFIDENCE}/10
 4. Treat unusual options call activity as a supporting signal, not a standalone reason to buy
+5. For every BUY candidate, populate do_nothing_case honestly — if you cannot clearly refute it, omit the candidate
 
 NOTE: Do NOT include a cash_fraction field — position sizing is handled automatically.
 Focus on signal quality and confidence accuracy.

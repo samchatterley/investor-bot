@@ -16,14 +16,18 @@
         "action": "BUY",
         "confidence": 8,
         "key_signal": "momentum",
-        "reasoning": "Relative strength vs market — but bear filter should still suppress this."
+        "reasoning": "Relative strength vs market — but bear filter should still suppress this.",
+        "do_nothing_case": "BEAR_DAY in effect — SPY down 2.1%. All new buys suppressed regardless of setup quality.",
+        "invalidation_trigger": "Any continuation of broad market weakness invalidates the momentum setup."
       },
       {
         "symbol": "GOOGL",
         "action": "BUY",
         "confidence": 9,
         "key_signal": "mean_reversion",
-        "reasoning": "Deep oversold bounce setup — high confidence but bear day blocks all new buys."
+        "reasoning": "Deep oversold bounce setup — high confidence but bear day blocks all new buys.",
+        "do_nothing_case": "BEAR_DAY in effect — buying into a falling market increases drawdown risk.",
+        "invalidation_trigger": "Price fails to hold the oversold level or SPY continues lower."
       }
     ]
   },

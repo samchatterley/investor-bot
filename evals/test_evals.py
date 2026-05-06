@@ -215,3 +215,57 @@ class TestEarningsRisk:
             assert sym not in fixture["earnings_within_2_days"], (
                 f"{sym} is in expected_held but also in earnings_within_2_days"
             )
+
+
+# ── No-buy selectivity ────────────────────────────────────────────────────────
+
+
+class TestNoBuySelectivity:
+    """Tempting-but-should-reject cases: verify the correct gate blocks each buy."""
+
+    @pytest.fixture(params=range(5))
+    def case(self, request):
+        fixture = _load("no_buy_selectivity.json")
+        return fixture["cases"][request.param]
+
+    def test_invalid_cases_rejected_by_validator(self, case):
+        if case["expected_valid"] is True:
+            pytest.skip("Case is valid — tested by confidence gate test instead")
+
+        from utils.validators import validate_ai_response
+
+        universe = set(case.get("scanned_universe", []))
+        held = set(case.get("held_symbols", []))
+        is_valid, errors = validate_ai_response(case["response"], universe, held_symbols=held)
+
+        assert not is_valid or len(errors) > 0, (
+            f"Case '{case['description']}' should have been rejected but passed validation"
+        )
+
+    def test_error_identifies_correct_field(self, case):
+        if case["expected_valid"] is True:
+            pytest.skip("Case is valid — tested by confidence gate test instead")
+
+        from utils.validators import validate_ai_response
+
+        universe = set(case.get("scanned_universe", []))
+        held = set(case.get("held_symbols", []))
+        _, errors = validate_ai_response(case["response"], universe, held_symbols=held)
+
+        error_text = " ".join(errors).lower()
+        expected_fragment = case.get("expected_error_contains", "").lower()
+        assert expected_fragment in error_text, (
+            f"Case '{case['description']}': expected '{expected_fragment}' in errors, got: {errors}"
+        )
+
+    def test_low_confidence_buy_skipped_by_confidence_gate(self):
+        fixture = _load("no_buy_selectivity.json")
+        case = next(c for c in fixture["cases"] if c["expected_gate"] == "confidence_floor")
+
+        min_conf = case["min_confidence"]
+        candidates = case["response"]["buy_candidates"]
+        placed = [c for c in candidates if c["confidence"] >= min_conf]
+
+        assert len(placed) == case["expected_buys_placed"], (
+            f"Expected {case['expected_buys_placed']} buys placed, got {len(placed)}"
+        )

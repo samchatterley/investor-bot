@@ -149,15 +149,56 @@ class TestGetLatestReview(unittest.TestCase):
         self.assertEqual(get_latest_review(), [])
 
     def test_returns_lessons_from_single_review(self):
-        self._write_review("weekly_review_2026-04-20.json", ["lesson one", "lesson two"])
+        lessons = [
+            {"lesson": "lesson one", "applies_when": "ANY", "expiry": "2099-12-31"},
+            {"lesson": "lesson two", "applies_when": "CHOPPY", "expiry": "2099-12-31"},
+        ]
+        self._write_review("weekly_review_2026-04-20.json", lessons)
         result = get_latest_review()
-        self.assertEqual(result, ["lesson one", "lesson two"])
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["lesson"], "lesson one")
+        self.assertEqual(result[1]["lesson"], "lesson two")
 
     def test_returns_lessons_from_most_recent_review(self):
-        self._write_review("weekly_review_2026-04-13.json", ["old lesson"])
-        self._write_review("weekly_review_2026-04-20.json", ["new lesson"])
+        self._write_review(
+            "weekly_review_2026-04-13.json",
+            [{"lesson": "old lesson", "applies_when": "ANY", "expiry": "2099-12-31"}],
+        )
+        self._write_review(
+            "weekly_review_2026-04-20.json",
+            [{"lesson": "new lesson", "applies_when": "ANY", "expiry": "2099-12-31"}],
+        )
         result = get_latest_review()
-        self.assertEqual(result, ["new lesson"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["lesson"], "new lesson")
+
+    def test_plain_string_lessons_wrapped_for_backward_compat(self):
+        self._write_review("weekly_review_2026-04-20.json", ["plain string lesson"])
+        result = get_latest_review()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["lesson"], "plain string lesson")
+        self.assertEqual(result[0]["applies_when"], "ANY")
+
+    def test_expired_lessons_excluded(self):
+        lessons = [
+            {"lesson": "active lesson", "applies_when": "ANY", "expiry": "2099-12-31"},
+            {"lesson": "expired lesson", "applies_when": "ANY", "expiry": "2020-01-01"},
+        ]
+        self._write_review("weekly_review_2026-04-20.json", lessons)
+        result = get_latest_review()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["lesson"], "active lesson")
+
+    def test_regime_filter_applies(self):
+        lessons = [
+            {"lesson": "any regime lesson", "applies_when": "ANY", "expiry": "2099-12-31"},
+            {"lesson": "choppy only lesson", "applies_when": "CHOPPY", "expiry": "2099-12-31"},
+        ]
+        self._write_review("weekly_review_2026-04-20.json", lessons)
+        result = get_latest_review(regime="BULL_TRENDING")
+        texts = [r["lesson"] for r in result]
+        self.assertIn("any regime lesson", texts)
+        self.assertNotIn("choppy only lesson", texts)
 
     def test_ignores_non_review_files(self):
         import json

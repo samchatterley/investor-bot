@@ -73,6 +73,8 @@ class BuyCandidate(BaseModel):
     confidence: int = Field(ge=1, le=10)
     reasoning: str = Field(min_length=20, max_length=2000)
     key_signal: str | None = None
+    do_nothing_case: str = Field(min_length=10, max_length=500)
+    invalidation_trigger: str = Field(min_length=10, max_length=500)
 
     model_config = {"extra": "ignore"}
 

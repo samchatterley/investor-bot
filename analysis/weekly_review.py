@@ -1,8 +1,10 @@
 """
 Weekly self-review: asks Claude to analyse the past week's closed trades,
 identify what worked by signal and regime, produce lessons for next week,
-and propose bounded config changes. Applied changes are written directly
-to config.py so they take effect from Monday's first run.
+and propose bounded config changes.
+
+Config changes are never applied automatically — they are validated,
+recorded, and surfaced for manual operator review.
 
 Runs Sunday evenings via run_scheduler.py.
 Output saved to logs/weekly_review_YYYY-MM-DD.json.
@@ -118,8 +120,13 @@ def _apply_config_changes(proposed: list[dict]) -> list[dict]:
     return results
 
 
-def get_latest_review() -> list[str]:
-    """Return the lessons list from the most recent weekly review, or [] if none exists."""
+def get_latest_review(regime: str | None = None) -> list[dict]:
+    """Return structured lessons from the most recent weekly review, filtered by expiry and regime.
+
+    Each lesson is {"lesson": str, "applies_when": str, "expiry": "YYYY-MM-DD"}.
+    Plain-string lessons from older reviews are wrapped for backward compatibility.
+    Expired lessons (expiry < today) are silently dropped.
+    """
     os.makedirs(LOG_DIR, exist_ok=True)
     review_files = sorted(
         f for f in os.listdir(LOG_DIR) if f.startswith("weekly_review_") and f.endswith(".json")
@@ -129,9 +136,24 @@ def get_latest_review() -> list[str]:
     path = os.path.join(LOG_DIR, review_files[-1])
     try:
         with open(path) as f:
-            return json.load(f).get("lessons", [])
+            raw_lessons = json.load(f).get("lessons", [])
     except Exception:
         return []
+
+    today = date.today().isoformat()
+    result = []
+    for item in raw_lessons:
+        if isinstance(item, str):
+            result.append({"lesson": item, "applies_when": "ANY", "expiry": None})
+            continue
+        expiry = item.get("expiry")
+        if expiry and expiry < today:
+            continue
+        applies_when = item.get("applies_when", "ANY")
+        if regime and applies_when not in ("ANY", regime):
+            continue
+        result.append(item)
+    return result
 
 
 def run_weekly_review() -> dict | None:
@@ -212,7 +234,11 @@ Respond with ONLY this JSON:
   "what_worked": ["specific observation backed by the data"],
   "what_didnt": ["specific observation backed by the data"],
   "lessons": [
-    "Specific instruction for the AI trader (e.g. 'Avoid mean_reversion in CHOPPY regime — 33% win rate this week. Only take momentum setups with vol_ratio > 1.5.')"
+    {{
+      "lesson": "Specific actionable instruction (e.g. 'Avoid mean_reversion in CHOPPY regime — 33% win rate this week. Only take momentum setups with vol_ratio > 1.5.')",
+      "applies_when": "BULL_TRENDING | CHOPPY | HIGH_VOL | BEAR_DAY | ANY",
+      "expiry": "YYYY-MM-DD (one week from today — lessons expire unless renewed)"
+    }}
   ],
   "config_changes": [
     {{

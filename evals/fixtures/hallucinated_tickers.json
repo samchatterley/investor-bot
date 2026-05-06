@@ -11,28 +11,36 @@
         "action": "BUY",
         "confidence": 8,
         "key_signal": "momentum",
-        "reasoning": "Strong breakout — but this ticker was never in the scan universe."
+        "reasoning": "Strong breakout — but this ticker was never in the scan universe.",
+        "do_nothing_case": "Ticker not in scanned universe; no reliable data to confirm setup.",
+        "invalidation_trigger": "Price fails to hold breakout level on any pullback."
       },
       {
         "symbol": "AAPL",
         "action": "BUY",
         "confidence": 7,
         "key_signal": "mean_reversion",
-        "reasoning": "Oversold bounce off 50-day MA with volume confirmation."
+        "reasoning": "Oversold bounce off 50-day MA with volume confirmation.",
+        "do_nothing_case": "Broader market weakness could drag AAPL lower despite oversold reading.",
+        "invalidation_trigger": "Price closes below the 50-day MA on elevated volume."
       },
       {
         "symbol": "XYZPDQ",
         "action": "BUY",
         "confidence": 9,
         "key_signal": "momentum",
-        "reasoning": "Another hallucinated ticker that should be caught."
+        "reasoning": "Another hallucinated ticker that should be caught.",
+        "do_nothing_case": "Ticker not in scanned universe; no reliable data to confirm setup.",
+        "invalidation_trigger": "Any adverse news or price reversal invalidates the setup."
       },
       {
         "symbol": "NVDA",
         "action": "BUY",
         "confidence": 8,
         "key_signal": "momentum",
-        "reasoning": "AI chip demand cycle intact; volume confirming uptrend."
+        "reasoning": "AI chip demand cycle intact; volume confirming uptrend.",
+        "do_nothing_case": "Semiconductor sector rotation could pause the uptrend short-term.",
+        "invalidation_trigger": "Price drops below EMA21 or volume spike reverses direction."
       }
     ]
   },

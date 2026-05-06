@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1284 tests, 94% coverage)
+├── tests/             Unit test suite (1313 tests, 93% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -751,6 +751,18 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.15 — May 2026 — Prompt quality: decision-support framing, do_nothing_case, structured lessons
+
+- **`SYSTEM_PROMPT` reframed from "trader" to "decision-support analyst".** Removes action-seeking bias. Adds evidence weighting hierarchy (price/volume beats headlines/options/sentiment) and a confidence calibration rubric (10=rare/multiple confirmations → 6=do not recommend BUY).
+- **`do_nothing_case` and `invalidation_trigger` required on every buy candidate.** Added to `_DECISION_TOOL` schema (forces Claude to populate), `BuyCandidate` Pydantic model (validates at domain level), and TASK prompt ("populate do_nothing_case honestly — if you cannot clearly refute it, omit the candidate"). Claude must now argue against every buy before making it.
+- **Weekly review lessons are now structured with expiry and regime filter.** Lessons carry `applies_when` (BULL_TRENDING/CHOPPY/HIGH_VOL/BEAR_DAY/ANY) and `expiry` (YYYY-MM-DD). `get_latest_review()` filters out expired lessons and lessons inapplicable to the current regime before injecting them into the daily prompt. Prevents stale lesson accumulation. Plain-string lessons from older reviews are wrapped for backward compatibility.
+- **`analysis/weekly_review.py` docstring corrected.** Previously claimed changes were written directly to `config.py`; corrected to reflect that config changes are never applied automatically — they are validated, recorded, and surfaced for manual review.
+- **No-buy selectivity eval fixtures and tests added.** `evals/fixtures/no_buy_selectivity.json` with 5 tempting-but-should-reject cases; `TestNoBuySelectivity` class verifies the correct gate (Pydantic field validation, confidence floor, buy/sell conflict check) blocks each one.
+- **29 new tests** (total 1313): `TestGetLatestReview` expanded with expiry, regime filter, and backward-compat tests; `TestNoBuySelectivity` (5 selectivity cases × 3 test types); `test_adversarial_llm` updated for new required fields.
+- **1313 tests, 93% coverage, zero ruff violations.**
+
+---
 
 ### 1.14 — May 2026 — Execution quality telemetry, live-shadow audit events, LIVE_RUNBOOK
 

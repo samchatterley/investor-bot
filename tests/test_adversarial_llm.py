@@ -19,6 +19,9 @@ import unittest
 
 from utils.validators import sanitize_headlines, validate_ai_response
 
+_DO_NOTHING = "Insufficient confirmation; setup may not follow through in current conditions."
+_INVALIDATION = "Price drops below EMA21 on elevated volume."
+
 
 class TestPromptInjectionInNews(unittest.TestCase):
     """Injected headlines must be stripped before reaching Claude."""
@@ -155,12 +158,16 @@ class TestDuplicateSymbolsRejected(unittest.TestCase):
                     "confidence": 8,
                     "reasoning": "Strong breakout signal above resistance level.",
                     "key_signal": "momentum",
+                    "do_nothing_case": _DO_NOTHING,
+                    "invalidation_trigger": _INVALIDATION,
                 },
                 {
                     "symbol": "AAPL",
                     "confidence": 9,
                     "reasoning": "Second mention of the same ticker in response.",
                     "key_signal": "momentum",
+                    "do_nothing_case": _DO_NOTHING,
+                    "invalidation_trigger": _INVALIDATION,
                 },
             ],
             "position_decisions": [],
@@ -182,6 +189,8 @@ class TestBuySellConflict(unittest.TestCase):
                     "confidence": 8,
                     "reasoning": "Strong breakout signal above resistance.",
                     "key_signal": "momentum",
+                    "do_nothing_case": _DO_NOTHING,
+                    "invalidation_trigger": _INVALIDATION,
                 },
             ],
             "position_decisions": [
@@ -222,6 +231,8 @@ class TestOutOfUniverseTicker(unittest.TestCase):
                     "confidence": 8,
                     "reasoning": "Strong breakout signal above resistance level.",
                     "key_signal": "momentum",
+                    "do_nothing_case": _DO_NOTHING,
+                    "invalidation_trigger": _INVALIDATION,
                 },
             ],
             "position_decisions": [],
@@ -284,6 +295,8 @@ class TestUnknownSignalRejected(unittest.TestCase):
                         "confidence": 8,
                         "reasoning": "Strong breakout signal above resistance.",
                         "key_signal": signal,
+                        "do_nothing_case": _DO_NOTHING,
+                        "invalidation_trigger": _INVALIDATION,
                     },
                 ],
                 "position_decisions": [],

@@ -19,6 +19,8 @@ def _valid_buy(symbol="AAPL", confidence=8, reasoning=_GOOD_REASONING, signal="m
         "confidence": confidence,
         "reasoning": reasoning,
         "key_signal": signal,
+        "do_nothing_case": "Insufficient volume confirmation; setup may not follow through.",
+        "invalidation_trigger": "Price drops below EMA21 on elevated volume.",
     }
 
 
