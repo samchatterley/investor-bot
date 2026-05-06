@@ -1,254 +1,303 @@
 # InvestorBot Live Runbook
 
-Exact procedures for operating the bot in live mode.
-Run `python main.py --safety-check` before any live session.
+Operations guide for going live with real capital. Read in full before first live session.
 
 ---
 
-## Pre-Market Checklist (run every live trading day before 09:00 ET)
+## Contents
 
-```
-[ ] python main.py --safety-check          → must exit 0 (GREEN)
-[ ] Confirm Alpaca account balance matches expected capital
-[ ] Confirm no unexpected positions at broker
-[ ] Confirm no stale open orders at broker (Alpaca dashboard)
-[ ] Confirm scheduler is running: pgrep -a caffeinate | grep run_scheduler
-[ ] Confirm log rotation / disk space: df -h logs/
-[ ] Confirm .env has correct ALPACA_BASE_URL for today's mode (paper/live)
-[ ] Confirm SMALL_ACCOUNT_MODE=true if running £150 experiment
-[ ] Confirm LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK is set in .env (live only)
-[ ] Confirm no HALT file: ls logs/.HALTED 2>/dev/null && echo HALTED || echo OK
-```
+1. [Pre-Live Checklist](#1-pre-live-checklist)
+2. [Canary Procedure](#2-canary-procedure)
+3. [Going Live](#3-going-live)
+4. [Monitoring During Runs](#4-monitoring-during-runs)
+5. [Incident Response](#5-incident-response)
+6. [Emergency Halt](#6-emergency-halt)
 
 ---
 
-## First Live Trade Checklist (one-time, before first real-money order)
+## 1. Pre-Live Checklist
 
-```
-[ ] Run python main.py --live-shadow --mode open  → WOULD_BUY decisions only, no orders
-[ ] Verify --live-shadow pulls correct live account balance
-[ ] Verify --live-shadow shows correct open positions (should be none)
-[ ] Verify --live-shadow runs all risk gates (pre-trade, exposure cap, etc.)
-[ ] Confirm broker-side: margin disabled, PDT flag absent, no options access
-[ ] Confirm dedicated Alpaca account holds only experiment capital (≤ £150)
-[ ] Confirm read-only key is separate from trading key
-[ ] Complete canary run (see CANARY section below)
-[ ] Re-run --safety-check after canary — must still be GREEN
-```
+Complete every item before advancing to the canary procedure. Do not skip steps.
 
----
+### 1.1 Account and API
 
-## What To Do On: Halt File Present
+- [ ] Alpaca live account funded and approved for trading
+- [ ] Live API keys set in `.env` (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL=https://api.alpaca.markets`)
+- [ ] `TRADING_MODE=live` set in `.env`
+- [ ] `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` set in `.env`
+- [ ] `ANTHROPIC_API_KEY` set and credited
 
-The bot created `logs/.HALTED` and stopped accepting new orders.
+### 1.2 Safety check — must be GREEN
 
 ```bash
-# 1. Read why it halted
-cat logs/.HALTED | python3 -m json.tool
-
-# 2. Check broker state
-python main.py --safety-check
-
-# 3. If positions are unprotected — attach stops manually in Alpaca dashboard
-#    or via CLI (replace SYMBOL/QTY/STOP_PRICE):
-#    python cli.py place-stop SYMBOL QTY STOP_PRICE
-
-# 4. If position is still open and stop cannot be attached — close it:
-#    python cli.py flatten SYMBOL
-
-# 5. Once broker state is clean:
-python main.py --clear-halt
-
-# 6. Re-run safety check to confirm GREEN before resuming scheduler
 python main.py --safety-check
 ```
 
----
+Expected output: `Result: BROKER_HEALTH=GREEN`. Do not continue if YELLOW or RED.
 
-## What To Do On: Missing Stop
+### 1.3 Paper run verified (minimum 3 sessions)
 
-Symptom: `--safety-check` reports "no stop protection: SYMBOL".
+- [ ] At least 3 paper sessions completed with no unhandled exceptions in `logs/scheduler.log`
+- [ ] No HALT file created unexpectedly
+- [ ] AI decisions pass validation on every run (`validate_ai_response` reported no structural errors)
+- [ ] Stop coverage confirmed after every buy (`ORDER_TIMING` events in audit log)
 
-```bash
-# 1. Check what's at broker
-python main.py --safety-check
-
-# 2. Run ensure_stops_attached via safety check (it calls it automatically)
-#    If the stop was just delayed, --safety-check will attach it.
-
-# 3. If stop still cannot be placed (illiquid, halted symbol):
-python cli.py flatten SYMBOL   # close the position
-python main.py --safety-check  # confirm clean
-
-# 4. If symbol is halted at broker and cannot be closed:
-#    - Contact Alpaca support
-#    - Do NOT resume the bot until the position is resolved
-#    - Write halt file manually if needed: python main.py --kill-switch
-```
-
----
-
-## What To Do On: Alpaca API Outage
-
-Symptom: Bot logs "BrokerStateUnavailable" and suspends buys.
+### 1.4 Shadow run passed
 
 ```bash
-# 1. Check Alpaca status: https://status.alpaca.markets/
-# 2. Do nothing — the bot suspends buys on broker uncertainty (fail-closed design).
-# 3. Existing stops remain at broker and continue to protect positions.
-# 4. When Alpaca recovers, the next scheduled run will proceed normally.
-# 5. If outage was during an active order (status SUBMITTED in ledger):
-python main.py --safety-check   # check for unresolved intents
-# Resolve any 'submitted/timeout' intents by checking Alpaca dashboard manually.
-```
-
----
-
-## What To Do On: Duplicate Order Rejection (409)
-
-Symptom: Buy order returns REJECTED with "client_order_id already exists".
-
-This is expected and safe behaviour — it means the symbol+date client_order_id
-was already submitted today (likely from a prior run). The order ledger will
-show status=rejected for the duplicate attempt.
-
-```bash
-# 1. Confirm the original order exists at broker (Alpaca dashboard).
-# 2. If the original filled: position is protected, nothing to do.
-# 3. If the original was rejected/cancelled: the 409 is a false positive.
-#    Delete the order_intents ledger entry for today and rerun:
-#    python cli.py clear-intent SYMBOL  (or manually via SQLite)
-```
-
----
-
-## What To Do On: Partial Fill
-
-Symptom: Buy order returns PARTIAL status.
-
-```bash
-# 1. --safety-check will detect the position and check stop coverage.
-# 2. The filled quantity is recorded; a stop is placed for whole shares.
-# 3. If filled qty < 1 whole share: position is UNPROTECTED (Alpaca limitation).
-#    Close the fractional position immediately:
-python cli.py flatten SYMBOL
-```
-
----
-
-## How To Manually Flatten a Position
-
-```bash
-# Option 1: CLI helper
-python cli.py flatten SYMBOL
-
-# Option 2: Alpaca dashboard — Markets → Positions → Close
-
-# Option 3: API direct (emergency)
-python -c "
-from execution.trader import get_client, close_position
-c = get_client()
-r = close_position(c, 'SYMBOL')
-print(r)
-"
-```
-
----
-
-## How To Resume Safely After Halt
-
-```bash
-# 1. Understand why it halted (read HALT file)
-cat logs/.HALTED | python3 -m json.tool
-
-# 2. Fix the underlying condition (stop, position, cap breach)
-
-# 3. Run safety check — must be GREEN before resuming
-python main.py --safety-check
-
-# 4. Clear halt
-python main.py --clear-halt
-
-# 5. Confirm scheduler is running; if not, restart it:
-pgrep -a caffeinate | grep run_scheduler || \
-  nohup caffeinate -i .venv/bin/python scripts/run_scheduler.py >> logs/scheduler.log 2>&1 &
-```
-
----
-
-## What Logs To Preserve After An Incident
-
-```bash
-# Copy these before clearing anything:
-cp logs/.HALTED      incident_$(date +%Y%m%d)/halt.json
-cp logs/audit.jsonl  incident_$(date +%Y%m%d)/audit.jsonl
-cp logs/scheduler.log incident_$(date +%Y%m%d)/scheduler.log
-sqlite3 logs/investorbot.db ".dump order_intents" > incident_$(date +%Y%m%d)/order_intents.sql
-sqlite3 logs/investorbot.db ".dump order_events"  > incident_$(date +%Y%m%d)/order_events.sql
-```
-
----
-
-## Canary Procedure (Run Before Full Experiment)
-
-A controlled single-symbol test with a tiny cap to confirm the full
-buy → fill → stop pipeline works end-to-end.
-
-```bash
-# 1. Set canary config (copy .env.canary → .env temporarily, or export):
-export MAX_SINGLE_ORDER_USD=10
-export MAX_DEPLOYED_USD=10
-export MAX_DAILY_NOTIONAL_USD=10
-export MAX_ORDERS_PER_RUN=1
-export MAX_POSITIONS=1
-
-# 2. Run safety check
-python main.py --safety-check   # must be GREEN
-
-# 3. Run live-shadow to confirm sizing
 python main.py --live-shadow --mode open
-
-# 4. Place the canary order (highly liquid symbol, price < $10)
-python main.py --mode open
-
-# 5. Confirm after run:
-[ ] Buy submitted once (check logs/audit.jsonl for ORDER_PLACED)
-[ ] No duplicate on rerun (run again → INTENT_ACTIVE log, no second order)
-[ ] Stop attached (check Alpaca dashboard → Orders → stop order present)
-[ ] Stop visible at broker
-[ ] Local DB matches broker: python main.py --safety-check
-[ ] Kill switch works: python main.py --kill-switch
-[ ] Position closed and HALT written
-[ ] Resume works: python main.py --clear-halt && python main.py --safety-check
-
-# 6. If all checks pass: raise caps to full £150 experiment profile (.env)
 ```
 
-See `.env.canary` for the full canary environment template.
+Verify in `logs/scheduler.log`:
+- `LIVE_SHADOW_START` event logged
+- `WOULD_BUY` events appear with sizing and signal data
+- `LIVE_SHADOW_COMPLETE` event logged with non-zero `would_buy_count`
+- No exceptions, no HALT file
+
+### 1.5 Config review
+
+- [ ] `SMALL_ACCOUNT_MODE=true` if account is < $500
+- [ ] `MAX_SINGLE_ORDER_USD` set to a value you are comfortable losing entirely on day one
+- [ ] `MAX_DAILY_NOTIONAL_USD` ≤ `MAX_SINGLE_ORDER_USD` for canary session
+- [ ] `MAX_POSITIONS=1` for canary session
+- [ ] `MAX_EXPERIMENT_DRAWDOWN_USD` set to the most you are willing to lose over the full experiment
 
 ---
 
-## Incident Drills
+## 2. Canary Procedure
 
-Run these in paper mode to verify safety mechanisms work before going live.
+A canary run is a single trade with the smallest viable notional to prove the live broker pipeline end-to-end before committing meaningful capital. Success means a real order was placed, filled, stop-protected, and manually closed — with every event appearing in the audit log.
+
+### 2.1 Canary config
+
+Copy `canary.env.example` to `.env` and fill in your live API credentials:
 
 ```bash
-make drill-stop-failure        # simulate stop placement failure → expect flatten + alert
-make drill-broker-timeout      # simulate get_orders timeout → expect BrokerStateUnavailable
-make drill-restart-mid-order   # simulate crash between submit and fill → expect intent reconciliation
-make drill-kill-switch         # activate kill switch → expect halt file + positions closed
-make drill-missing-stop        # start with unprotected position → expect ensure_stops_attached
-make drill-duplicate-order     # submit same client_order_id twice → expect 409 REJECTED, no double-buy
+cp canary.env.example .env
+# edit .env — add ALPACA_API_KEY, ALPACA_SECRET_KEY, ANTHROPIC_API_KEY
+```
+
+Key parameters in `canary.env.example`:
+
+| Variable | Canary value | Purpose |
+|----------|-------------|---------|
+| `TRADING_MODE` | `live` | Enables live broker |
+| `SMALL_ACCOUNT_MODE` | `true` | Conservative sizing defaults |
+| `MAX_POSITIONS` | `1` | One position only |
+| `MAX_SINGLE_ORDER_USD` | `20` | Maximum order size |
+| `MAX_DAILY_NOTIONAL_USD` | `20` | Cap total deployment |
+| `MAX_DEPLOYED_USD` | `20` | Cap open exposure |
+| `MAX_EXPERIMENT_DRAWDOWN_USD` | `20` | Hard stop for the whole experiment |
+| `MIN_CONFIDENCE` | `8` | Higher threshold — only high-conviction buys |
+
+### 2.2 Step-by-step canary
+
+**Step 1 — Final safety check with live credentials**
+
+```bash
+python main.py --safety-check
+```
+
+Must be GREEN. If YELLOW/RED: resolve issues before continuing.
+
+**Step 2 — Shadow run with live account**
+
+```bash
+python main.py --live-shadow --mode open
+```
+
+Verify `LIVE_SHADOW_COMPLETE` appears in the log and `would_buy_count > 0`. This confirms the AI is generating candidates and all gates are running against your live account state.
+
+**Step 3 — Canary live run**
+
+```bash
+python main.py --mode open
+```
+
+Watch `logs/scheduler.log` (or the terminal) in real time.
+
+**Step 4 — Verify the fill**
+
+Within 60 seconds of the run completing, check:
+
+```bash
+python cli.py status
+```
+
+Confirm all four of these appear in `logs/investorbot.db`:
+
+```sql
+sqlite3 logs/investorbot.db \
+  "SELECT event, payload FROM audit_events ORDER BY id DESC LIMIT 10;"
+```
+
+- `ORDER_TIMING` event: `fill_latency_ms` present, `stop_ok=True`
+- `ORDER_EXEC_QUALITY` event: `fill_avg_price > 0`, `slippage_vs_mid_bps` present
+- Trailing stop visible in Alpaca dashboard
+
+**Step 5 — Manual close**
+
+Close the canary position immediately. Do not hold it overnight.
+
+```bash
+# Force a sell via the open_sells mode (AI may decide HOLD; override by editing the position
+# or using Alpaca dashboard for an immediate manual close).
+python main.py --mode open_sells
+```
+
+**Step 6 — Pass / fail criteria**
+
+| Check | Pass | Fail — stop and investigate |
+|-------|------|------------------------------|
+| Order placed | `FILLED` in audit log | `REJECTED` or no event |
+| Fill price recorded | `fill_avg_price > 0` in `ORDER_EXEC_QUALITY` | `0.0` |
+| Stop attached | `stop_ok=True` in `ORDER_TIMING` | `stop_ok=False` or stop missing |
+| Slippage reasonable | `slippage_vs_mid_bps` between −50 and +50 | Outside ±100 bps |
+| Position closed | Balance restored (minus spread/slippage) | Position still open |
+| No HALT file | No `logs/HALT` file | HALT file written |
+
+If all pass: canary complete. Proceed to [Going Live](#3-going-live).
+
+If any fail: do not continue. Fix the root cause and repeat from Step 1.
+
+---
+
+## 3. Going Live
+
+After canary passes, raise limits incrementally. Do not jump from canary sizing to full deployment in one step.
+
+### 3.1 Suggested escalation
+
+| Session | `MAX_SINGLE_ORDER_USD` | `MAX_POSITIONS` | Condition to advance |
+|---------|----------------------|-----------------|----------------------|
+| Canary | $20 | 1 | All canary pass/fail criteria met |
+| Week 1 | $100 | 1 | No incidents, stops firing correctly |
+| Week 2 | $250 | 2 | Fill quality consistent (avg slippage < 20 bps) |
+| Week 3+ | Scale to plan | Up to 5 | No HALT events, health stays GREEN |
+
+### 3.2 First live open run checklist
+
+- [ ] `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` in env
+- [ ] Safety check GREEN within 30 minutes of market open
+- [ ] No macro risk events flagged (`python cli.py status`)
+- [ ] VIX below 30 (above 30 → wider stops → more slippage → harder to manage small accounts)
+- [ ] Terminal attached to watch logs in real time: `tmux attach -t investorbot`
+
+---
+
+## 4. Monitoring During Runs
+
+### 4.1 Log locations
+
+| File | What to watch |
+|------|--------------|
+| `logs/scheduler.log` | Run start/end, order confirmations, errors |
+| `logs/investorbot.db` | Full audit trail — every order, event, decision |
+
+### 4.2 Audit queries after each run
+
+```sql
+sqlite3 logs/investorbot.db
+
+-- Last 20 events
+SELECT ts, event, payload FROM audit_events ORDER BY id DESC LIMIT 20;
+
+-- Execution quality for today's buys
+SELECT ts, payload FROM audit_events
+  WHERE event='ORDER_EXEC_QUALITY' ORDER BY id DESC LIMIT 5;
+
+-- Any HALT or error events today
+SELECT ts, event, payload FROM audit_events
+  WHERE event LIKE '%HALT%' OR event LIKE '%FAIL%' ORDER BY id DESC LIMIT 10;
+```
+
+### 4.3 Health check between runs
+
+```bash
+python main.py --safety-check
+```
+
+Expected: GREEN. If YELLOW: investigate the flagged issue before the next run. If RED: do not run until resolved.
+
+### 4.4 Stop coverage audit
+
+Every position must have an active trailing stop. After each open run:
+
+```bash
+python main.py --safety-check
+# Look for "Stop coverage: OK"
 ```
 
 ---
 
-## Escalation
+## 5. Incident Response
 
-If any of the above procedures fail and the bot has a live unprotected position
-you cannot close programmatically:
+### 5.1 Stop placement failed after buy
 
-1. Log into Alpaca dashboard immediately
-2. Close position manually
-3. Revoke API keys (Settings → API Keys → Delete)
-4. Contact Alpaca support if position cannot be closed: support@alpaca.markets
+Symptom: `ORDER_TIMING` shows `stop_ok=False`, or `STOP FAILED` alert received.
+
+Response (live mode only):
+1. Log in to Alpaca dashboard immediately
+2. Manually set a stop-loss order for the unprotected position
+3. Check if bot wrote a HALT file: `ls logs/HALT`
+4. After manual stop placed: `python main.py --clear-halt && python main.py --safety-check`
+
+### 5.2 Duplicate scheduler processes (lock race)
+
+Symptom: `Lock file exists — another run may be in progress` repeated in `logs/scheduler.log`.
+
+Response:
+```bash
+pgrep -af "python.*main.py\|python.*run_scheduler"
+kill <stale_pid>
+ls logs/.lock_*          # check for stale lock files
+rm -f "logs/.lock_$(date +%Y-%m-%d)"   # remove only if > 30 minutes old
+```
+
+### 5.3 AI validation failure (structural)
+
+Symptom: `AI response validation failed — blocking all Claude-driven decisions`.
+
+Response: This is a safety feature. No orders were placed. Investigate the raw Claude response:
+
+```sql
+SELECT ts, payload FROM audit_events
+  WHERE event='VALIDATION_FAILURE' ORDER BY id DESC LIMIT 3;
+```
+
+Review the LLM call log for the same run_id to understand what the model returned.
+
+### 5.4 Order timeout (ambiguous fill)
+
+Symptom: `ORDER AMBIGUOUS` alert, or `ORDER_TIMING` shows `status=TIMEOUT`.
+
+Response:
+1. Check Alpaca dashboard — did the order fill?
+2. If filled at broker but not in DB: run `python main.py --safety-check` — `ensure_stops_attached` will detect and protect the position
+3. If not filled: DAY order expired — no open exposure, no action needed
+4. Resolve the stale intent manually if needed:
+   ```sql
+   UPDATE order_intents SET status='cancelled'
+     WHERE status='timeout' AND symbol='XXXX';
+   ```
+
+---
+
+## 6. Emergency Halt
+
+Stop all trading immediately and liquidate all open positions:
+
+```bash
+python main.py --kill-switch
+```
+
+This cancels all open orders, submits market-sell for every position, waits for fill confirmation, and writes `logs/HALT`. The bot will refuse to run again until the halt is explicitly cleared.
+
+To resume after the incident is resolved:
+
+```bash
+python main.py --clear-halt
+python main.py --safety-check   # must be GREEN before resuming
+```
+
+**Use the kill switch only when you need positions closed now** — e.g., unexpected account drawdown, repeated stop failures, broker connectivity lost. It is not a debugging tool.

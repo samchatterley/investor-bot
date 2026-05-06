@@ -924,8 +924,12 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                 logger.error(f"  SELL FAILED {symbol} — {fail_detail}. Manual review required.")
                 alerts.alert_error("SELL FAILED", f"{symbol}: {fail_detail}")
         else:
+            if _live_shadow:
+                audit_log.log_event("WOULD_SELL", {"symbol": symbol, "reason": reason[:80]})
+                all_trades.append({"symbol": symbol, "action": "WOULD_SELL", "detail": reason})
+            else:
+                all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
             executed_symbols.add(symbol)
-            all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
 
     # ── Execute buys (open mode only; midday/close are position-management runs) ──
     skip_buys = (
@@ -1244,16 +1248,38 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             if not immediate_stops_ok:
                                 _handle_stop_failure(client, symbol, dry_run)
                     else:
+                        if _live_shadow:
+                            audit_log.log_event(
+                                "WOULD_BUY",
+                                {
+                                    "symbol": symbol,
+                                    "notional": round(notional, 2),
+                                    "confidence": confidence,
+                                    "signal": candidate.get("key_signal"),
+                                    "regime": regime.get("regime"),
+                                    "sizing": "small_account"
+                                    if config.SMALL_ACCOUNT_MODE
+                                    else "risk_budget",
+                                },
+                            )
+                            all_trades.append(
+                                {
+                                    "symbol": symbol,
+                                    "action": "WOULD_BUY",
+                                    "detail": f"shadow ${notional:.2f} | {candidate.get('key_signal')} | conf={confidence}",
+                                }
+                            )
+                        else:
+                            all_trades.append(
+                                {
+                                    "symbol": symbol,
+                                    "action": "BUY",
+                                    "detail": f"dry run ${notional:.2f}",
+                                }
+                            )
                         orders_placed += 1
                         daily_notional_spent += notional
                         executed_symbols.add(symbol)
-                        all_trades.append(
-                            {
-                                "symbol": symbol,
-                                "action": "BUY",
-                                "detail": f"dry run ${notional:.2f}",
-                            }
-                        )
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")
 
@@ -1274,6 +1300,24 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         stop_losses_triggered=[],
         run_id=run_id,
     )
+    if _live_shadow:
+        would_buys = [t for t in all_trades if t["action"] == "WOULD_BUY"]
+        would_sells = [t for t in all_trades if t["action"] == "WOULD_SELL"]
+        audit_log.log_event(
+            "LIVE_SHADOW_COMPLETE",
+            {
+                "mode": mode,
+                "would_buy_count": len(would_buys),
+                "would_sell_count": len(would_sells),
+                "would_buys": [t["detail"] for t in would_buys],
+                "would_sells": [t["symbol"] for t in would_sells],
+            },
+        )
+        logger.info(
+            f"[LIVE SHADOW] Complete — {len(would_buys)} WOULD_BUY, "
+            f"{len(would_sells)} WOULD_SELL (no orders placed)"
+        )
+
     portfolio_tracker.print_summary(record)
     performance.generate_dashboard(portfolio_tracker.load_history())
     audit_log.log_run_end(

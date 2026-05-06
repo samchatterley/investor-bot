@@ -2049,5 +2049,134 @@ class TestUnexpectedBrokerPositionsHalt(RunInnerBase):
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
 
 
+class TestLiveShadowMode(RunInnerBase):
+    """--live-shadow: all gates run, WOULD_BUY/WOULD_SELL emitted, no real orders placed."""
+
+    def _shadow_run(self, decisions=None, overrides=None):
+        """Helper: run _run_inner with _live_shadow=True and capture audit_log.log_event calls."""
+        log_event_calls = []
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions or _decisions(),
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.audit_log.log_event": MagicMock(
+                    side_effect=lambda *a, **kw: log_event_calls.append((a, kw))
+                ),
+                **(overrides or {}),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True)
+        return log_event_calls
+
+    def test_would_buy_event_emitted_for_buy_candidate(self):
+        """WOULD_BUY audit event is logged for each approved buy candidate."""
+        decisions = _decisions(
+            buys=[
+                {
+                    "symbol": "AAPL",
+                    "confidence": 8,
+                    "key_signal": "momentum",
+                    "reasoning": "Strong trend continuation signal.",
+                }
+            ]
+        )
+        calls = self._shadow_run(decisions=decisions)
+        event_types = [c[0][0] for c in calls if c[0]]
+        self.assertIn("WOULD_BUY", event_types)
+
+    def test_would_buy_payload_has_sizing_fields(self):
+        """WOULD_BUY payload includes symbol, notional, confidence, signal."""
+        decisions = _decisions(
+            buys=[
+                {
+                    "symbol": "AAPL",
+                    "confidence": 8,
+                    "key_signal": "momentum",
+                    "reasoning": "Strong trend continuation signal.",
+                }
+            ]
+        )
+        calls = self._shadow_run(decisions=decisions)
+        would_buy = next((c[0][1] for c in calls if c[0] and c[0][0] == "WOULD_BUY"), None)
+        self.assertIsNotNone(would_buy)
+        self.assertEqual(would_buy["symbol"], "AAPL")
+        self.assertIn("notional", would_buy)
+        self.assertIn("confidence", would_buy)
+        self.assertIn("signal", would_buy)
+
+    def test_no_real_order_placed_in_shadow_mode(self):
+        """place_buy_order must never be called during a shadow run."""
+        buy_mock = MagicMock()
+        decisions = _decisions(
+            buys=[
+                {
+                    "symbol": "AAPL",
+                    "confidence": 8,
+                    "key_signal": "momentum",
+                    "reasoning": "Strong trend continuation signal.",
+                }
+            ]
+        )
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True)
+        buy_mock.assert_not_called()
+
+    def test_would_sell_event_emitted_for_sell_decision(self):
+        """WOULD_SELL audit event is logged for each sell decision in shadow mode."""
+        decisions = _decisions(
+            sells=[{"symbol": "MSFT", "action": "SELL", "reasoning": "Overbought on RSI."}]
+        )
+        calls = self._shadow_run(
+            decisions=decisions,
+            overrides={
+                "main.trader.get_open_positions": [
+                    {
+                        "symbol": "MSFT",
+                        "qty": 10.0,
+                        "current_price": 300.0,
+                        "unrealized_plpc": 2.0,
+                        "market_value": 3000.0,
+                        "avg_entry_price": 290.0,
+                        "unrealized_pl": 100.0,
+                    }
+                ]
+            },
+        )
+        event_types = [c[0][0] for c in calls if c[0]]
+        self.assertIn("WOULD_SELL", event_types)
+
+    def test_live_shadow_complete_event_emitted(self):
+        """LIVE_SHADOW_COMPLETE is always emitted at end of a shadow run."""
+        calls = self._shadow_run()
+        event_types = [c[0][0] for c in calls if c[0]]
+        self.assertIn("LIVE_SHADOW_COMPLETE", event_types)
+
+    def test_live_shadow_complete_payload_has_counts(self):
+        """LIVE_SHADOW_COMPLETE payload includes would_buy_count and would_sell_count."""
+        calls = self._shadow_run()
+        complete = next(
+            (c[0][1] for c in calls if c[0] and c[0][0] == "LIVE_SHADOW_COMPLETE"), None
+        )
+        self.assertIsNotNone(complete)
+        self.assertIn("would_buy_count", complete)
+        self.assertIn("would_sell_count", complete)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1275 tests, 94% coverage)
+├── tests/             Unit test suite (1284 tests, 94% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -423,6 +423,19 @@ All secrets live in `.env` which is gitignored and never committed. The `.env.ex
 | Gmail SMTP | Free |
 
 At current rates, running costs are approximately **$1–2/month** in API fees.
+
+### Live operations — [LIVE_RUNBOOK.md](LIVE_RUNBOOK.md)
+
+Full step-by-step procedures for going live: pre-live checklist, canary procedure (single $20 trade to verify the full broker pipeline), incremental escalation, audit queries, and incident response. Start here before switching from paper to live.
+
+**Canary procedure in brief:**
+```bash
+cp canary.env.example .env        # fill in live API keys
+python main.py --safety-check     # must be GREEN
+python main.py --live-shadow      # dry run against live account; check LIVE_SHADOW_COMPLETE in logs
+python main.py --mode open        # single $20 canary trade
+# verify ORDER_EXEC_QUALITY + ORDER_TIMING in audit log, then close position
+```
 
 ### Runbook
 
@@ -738,6 +751,18 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.14 — May 2026 — Execution quality telemetry, live-shadow audit events, LIVE_RUNBOOK
+
+- **Fill avg price captured end-to-end.** `wait_for_fill()` now returns `(filled_qty, filled_avg_price)` instead of qty only. `place_buy_order` sets `OrderResult.filled_avg_price` from the live Alpaca fill response, enabling `ORDER_EXEC_QUALITY` events to emit real slippage data (was always 0.0 before).
+- **`ORDER_EXEC_QUALITY` event now populated with actual fill data.** `bid`, `ask`, `spread_bps` from the quote gate; `fill_avg_price` from the fill response; `slippage_vs_mid_bps` computed as `(fill_avg − mid) / mid × 10,000`. Previously required both quote gate and fill data — now both are available.
+- **`--live-shadow` emits `WOULD_BUY` / `WOULD_SELL` audit events.** Shadow mode now logs structured events for each decision that would have been executed — symbol, notional, signal, confidence, regime, sizing basis. `LIVE_SHADOW_COMPLETE` event fires at the end with counts. Previously shadow mode used generic "dry run" log entries.
+- **`LIVE_RUNBOOK.md` added.** Full operations guide: pre-live checklist, canary procedure (single $20 trade to verify broker pipeline end-to-end), incremental escalation table, monitoring audit queries, and incident response for all known failure modes.
+- **`canary.env.example` added.** Minimal live config with $20 caps, `MAX_POSITIONS=1`, `MIN_CONFIDENCE=8`. Copy to `.env`, fill in live API keys, and follow the canary procedure in `LIVE_RUNBOOK.md`.
+- **9 new tests** (total 1284): `TestWaitForFill.test_returns_avg_price_from_fill`, `test_returns_zero_avg_price_when_field_missing`, `TestPlaceBuyOrder.test_buy_order_captures_fill_avg_price`, and `TestLiveShadowMode` (6 tests covering WOULD_BUY payload, no-order guarantee, WOULD_SELL, and LIVE_SHADOW_COMPLETE).
+- **1284 tests, 94% coverage, zero ruff violations.**
+
+---
 
 ### 1.13 — May 2026 — Structural safety caps (reviewer-required fixes)
 

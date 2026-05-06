@@ -17,11 +17,12 @@ def _make_trailing_stop_order(symbol, status="new"):
     return o
 
 
-def _mock_order(order_id="order-123", status="new", filled_qty=None):
+def _mock_order(order_id="order-123", status="new", filled_qty=None, filled_avg_price="0.0"):
     o = MagicMock()
     o.id = order_id
     o.status = status
     o.filled_qty = filled_qty
+    o.filled_avg_price = filled_avg_price
     return o
 
 
@@ -172,12 +173,22 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-abc")
-        with patch("execution.trader.wait_for_fill", return_value=28.5):
+        with patch("execution.trader.wait_for_fill", return_value=(28.5, 175.25)):
             result = place_buy_order(client, "AAPL", 5_000.0)
         self.assertIsNotNone(result)
         self.assertEqual(result.symbol, "AAPL")
         self.assertAlmostEqual(result.filled_qty, 28.5)
         self.assertEqual(result.status, OrderStatus.FILLED)
+
+    def test_buy_order_captures_fill_avg_price(self):
+        """OrderResult.filled_avg_price is populated from the Alpaca fill response."""
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-abc")
+        with patch("execution.trader.wait_for_fill", return_value=(10.0, 234.56)):
+            result = place_buy_order(client, "AAPL", 3_000.0)
+        self.assertAlmostEqual(result.filled_avg_price, 234.56)
 
     def test_returns_rejected_on_api_error(self):
         from execution.trader import place_buy_order
@@ -225,7 +236,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-xyz")
-        with patch("execution.trader.wait_for_fill", return_value=10.0):
+        with patch("execution.trader.wait_for_fill", return_value=(10.0, 0.0)):
             place_buy_order(client, "AAPL", 3_000.0)
         submitted = client.submit_order.call_args[0][0]
         expected = f"ib-AAPL-BUY-{today_et().isoformat()}"
@@ -237,7 +248,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-xyz")
-        with patch("execution.trader.wait_for_fill", return_value=10.0):
+        with patch("execution.trader.wait_for_fill", return_value=(10.0, 0.0)):
             place_buy_order(client, "AAPL", 3_000.0)
         submitted = client.submit_order.call_args[0][0]
         self.assertTrue(submitted.client_order_id)
@@ -247,7 +258,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
 
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-xyz")
-        with patch("execution.trader.wait_for_fill", return_value=10.0):
+        with patch("execution.trader.wait_for_fill", return_value=(10.0, 0.0)):
             result = place_buy_order(client, "MSFT", 3_000.0)
         self.assertEqual(result.broker_order_id, "order-xyz")
         self.assertTrue(result.is_success)
@@ -257,12 +268,40 @@ class TestWaitForFill(unittest.TestCase):
     def test_returns_qty_when_immediately_filled(self):
         from execution.trader import wait_for_fill
 
-        filled_order = _mock_order(status="filled", filled_qty="28.571")
+        filled_order = _mock_order(status="filled", filled_qty="28.571", filled_avg_price="175.50")
         client = MagicMock()
         client.get_order_by_id.return_value = filled_order
         with patch("execution.trader.time.sleep"):
             result = wait_for_fill(client, "order-123", max_wait=3)
-        self.assertAlmostEqual(result, 28.571)
+        self.assertIsNotNone(result)
+        qty, avg_price = result
+        self.assertAlmostEqual(qty, 28.571)
+        self.assertAlmostEqual(avg_price, 175.50)
+
+    def test_returns_avg_price_from_fill(self):
+        from execution.trader import wait_for_fill
+
+        filled_order = _mock_order(status="filled", filled_qty="10.0", filled_avg_price="234.56")
+        client = MagicMock()
+        client.get_order_by_id.return_value = filled_order
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-abc", max_wait=3)
+        self.assertIsNotNone(result)
+        _, avg_price = result
+        self.assertAlmostEqual(avg_price, 234.56)
+
+    def test_returns_zero_avg_price_when_field_missing(self):
+        from execution.trader import wait_for_fill
+
+        filled_order = _mock_order(status="filled", filled_qty="5.0")
+        filled_order.filled_avg_price = None
+        client = MagicMock()
+        client.get_order_by_id.return_value = filled_order
+        with patch("execution.trader.time.sleep"):
+            result = wait_for_fill(client, "order-abc", max_wait=3)
+        self.assertIsNotNone(result)
+        _, avg_price = result
+        self.assertAlmostEqual(avg_price, 0.0)
 
     def test_returns_none_on_timeout(self):
         from execution.trader import wait_for_fill
@@ -287,7 +326,8 @@ class TestWaitForFill(unittest.TestCase):
         client.get_order_by_id.side_effect = calls
         with patch("execution.trader.time.sleep"):
             result = wait_for_fill(client, "order-123", max_wait=5)
-        self.assertAlmostEqual(result, 10.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result[0], 10.0)
         self.assertEqual(client.get_order_by_id.call_count, 3)
 
     def test_returns_none_when_partially_filled_then_times_out(self):
@@ -341,7 +381,8 @@ class TestWaitForFill(unittest.TestCase):
         ]
         with patch("execution.trader.time.sleep"):
             result = wait_for_fill(client, "order-123", max_wait=5)
-        self.assertAlmostEqual(result, 10.0)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result[0], 10.0)
 
     def test_returns_none_when_api_errors_until_timeout(self):
         from execution.trader import wait_for_fill
@@ -362,12 +403,13 @@ class TestWaitForFill(unittest.TestCase):
         self.assertIsNone(result)
 
 
-def _mock_filled_order(order_id, filled_qty=10.0):
+def _mock_filled_order(order_id, filled_qty=10.0, filled_avg_price=0.0):
     """Return a mock order in terminal 'filled' state for use with wait_for_fill."""
     o = MagicMock()
     o.id = order_id
     o.status = "filled"
     o.filled_qty = str(filled_qty)
+    o.filled_avg_price = str(filled_avg_price)
     return o
 
 
@@ -740,6 +782,7 @@ def _seq(*statuses_and_qtys):
         o = MagicMock()
         o.status = status
         o.filled_qty = str(qty) if qty is not None else None
+        o.filled_avg_price = "0.0"
         orders.append(o)
     return orders
 

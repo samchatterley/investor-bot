@@ -151,14 +151,15 @@ def place_buy_order(
                 broker_order_id=order_id,
             )
 
-        filled_qty = wait_for_fill(client, order_id)
-        if filled_qty is not None:
+        fill_result = wait_for_fill(client, order_id)
+        if fill_result is not None:
+            filled_qty, filled_avg_price = fill_result
             if _ledger:
                 update_intent(client_order_id, "filled")
                 log_order_event(
                     client_order_id,
                     "ORDER_FILLED",
-                    {"filled_qty": filled_qty},
+                    {"filled_qty": filled_qty, "filled_avg_price": filled_avg_price},
                     broker_order_id=order_id,
                 )
             return OrderResult(
@@ -166,6 +167,7 @@ def place_buy_order(
                 symbol=symbol,
                 broker_order_id=order_id,
                 filled_qty=filled_qty,
+                filled_avg_price=filled_avg_price,
             )
         try:
             final = client.get_order_by_id(order_id)
@@ -207,8 +209,10 @@ def place_buy_order(
 _TERMINAL_FAIL_STATUSES = frozenset({"rejected", "cancelled", "expired", "done_for_day", "stopped"})
 
 
-def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> float | None:
-    """Poll until a market order reaches 'filled'. Returns filled qty on success, None otherwise.
+def wait_for_fill(
+    client: TradingClient, order_id: str, max_wait: int = 30
+) -> tuple[float, float] | None:
+    """Poll until a market order reaches 'filled'. Returns (filled_qty, filled_avg_price) on success, None otherwise.
 
     Exits early on terminal failure statuses (rejected/cancelled/expired) rather than
     burning the full poll window. Does NOT return early on 'partially_filled' — callers
@@ -219,7 +223,7 @@ def wait_for_fill(client: TradingClient, order_id: str, max_wait: int = 30) -> f
             o = client.get_order_by_id(order_id)
             status_str = str(o.status)
             if status_str == "filled" and o.filled_qty:
-                return float(o.filled_qty)
+                return float(o.filled_qty), float(o.filled_avg_price or 0.0)
             if status_str in _TERMINAL_FAIL_STATUSES:
                 logger.info(f"Order {order_id} reached terminal state: {status_str}")
                 return None
@@ -343,8 +347,9 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
         )
         order_id = str(order.id)
         logger.info(f"SELL order placed: {symbol} qty={qty} | order_id={order_id}")
-        filled_qty = wait_for_fill(client, order_id)
-        if filled_qty is not None:
+        fill_result = wait_for_fill(client, order_id)
+        if fill_result is not None:
+            filled_qty, _ = fill_result
             return OrderResult(
                 status=OrderStatus.FILLED,
                 symbol=symbol,
@@ -380,8 +385,9 @@ def close_position(client: TradingClient, symbol: str) -> OrderResult:
         order = client.close_position(symbol)
         order_id = str(order.id)
         logger.info(f"Close submitted: {symbol} | order_id={order_id}")
-        filled_qty = wait_for_fill(client, order_id)
-        if filled_qty is not None:
+        fill_result = wait_for_fill(client, order_id)
+        if fill_result is not None:
+            filled_qty, _ = fill_result
             return OrderResult(
                 status=OrderStatus.FILLED,
                 symbol=symbol,
@@ -732,8 +738,9 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderR
         )
         order_id = str(order.id)
         logger.info(f"Partial SELL: {symbol} qty={qty:.6f} | order_id={order_id}")
-        filled_qty = wait_for_fill(client, order_id)
-        if filled_qty is not None:
+        fill_result = wait_for_fill(client, order_id)
+        if fill_result is not None:
+            filled_qty, _ = fill_result
             return OrderResult(
                 status=OrderStatus.FILLED,
                 symbol=symbol,
