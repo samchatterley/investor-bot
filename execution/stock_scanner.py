@@ -230,25 +230,58 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         pct_ema21 = s.get("price_vs_ema21_pct", 0)
         trend_pullback = ema_up and -3.0 <= pct_ema21 <= -0.5 and 40 <= rsi <= 58 and vol > 1.0
 
-        if not (
-            mean_reversion
-            or momentum
-            or fresh_breakout
-            or bb_squeeze_breakout
-            or breakout_52w
-            or rs_leader
-            or inside_day_breakout
-            or trend_pullback
-        ):
+        matched = []
+        if mean_reversion:
+            matched.append("mean_reversion")
+        if momentum:
+            matched.append("momentum")
+        if fresh_breakout:
+            matched.append("fresh_breakout")
+        if bb_squeeze_breakout:
+            matched.append("bb_squeeze_breakout")
+        if breakout_52w:
+            matched.append("breakout_52w")
+        if rs_leader:
+            matched.append("rs_leader")
+        if inside_day_breakout:
+            matched.append("inside_day_breakout")
+        if trend_pullback:
+            matched.append("trend_pullback")
+
+        if not matched:
             continue
 
         # Block buys against the weekly trend unless the stock is deeply oversold
         if not weekly_up and not (rsi < 30 and bb < 0.15):
             continue
 
-        qualified.append(s)
+        qualified.append({**s, "matched_signals": matched})
 
     return qualified
+
+
+def score_candidate(snapshot: dict) -> float:
+    """Deterministic score for baseline comparison against Claude's selections.
+
+    Higher score = stronger setup by technical rules alone.
+    Used to compare which candidates Claude selected vs. the rule-ranked order.
+    """
+    rsi = snapshot.get("rsi_14", 50)
+    bb = snapshot.get("bb_pct", 0.5)
+    vol = snapshot.get("vol_ratio", 1.0)
+    rel = snapshot.get("rel_strength_5d", 0.0)
+    n_signals = len(snapshot.get("matched_signals", []))
+
+    rsi_dist = abs(rsi - 50) / 50
+    bb_dist = abs(bb - 0.5) * 2
+    vol_score = min((vol - 1.0) / 1.0, 1.0) if vol > 1.0 else 0.0
+    rel_score = min(max(rel, 0.0), 5.0) / 5.0
+    sig_score = n_signals / 8
+
+    return round(
+        rsi_dist * 0.25 + bb_dist * 0.20 + vol_score * 0.25 + rel_score * 0.20 + sig_score * 0.10,
+        4,
+    )
 
 
 def get_top_movers(n: int = 10) -> list[str]:

@@ -2,6 +2,12 @@
 Rule-based backtester — validates technical signal quality on historical data
 without calling Claude (avoids API cost).
 
+RULE PROXY ONLY: This engine tests mean_reversion and momentum signals with
+deterministic rules. It does NOT test bb_squeeze_breakout, breakout_52w,
+rs_leader, inside_day_breakout, or trend_pullback signals, and does not use
+Claude's judgment, news, options flow, or macro context. Results measure
+signal quality only and must not be interpreted as deployed-strategy validation.
+
 Usage:
     python backtest/engine.py --start 2025-01-01 --end 2025-12-31
     python backtest/engine.py --start 2025-01-01 --end 2025-12-31 --capital 25000
@@ -278,6 +284,16 @@ def _run_simulation(
         "by_signal": by_signal,
         "equity_curve": equity_curve,
         "trades": trades,
+        "validation_scope": "rule_proxy_only",
+        "signals_tested": ["mean_reversion", "momentum"],
+        "signals_not_tested": [
+            "fresh_breakout",
+            "bb_squeeze_breakout",
+            "breakout_52w",
+            "rs_leader",
+            "inside_day_breakout",
+            "trend_pullback",
+        ],
     }
 
 
@@ -557,6 +573,8 @@ def _print_results(r: dict):
     print("\n" + "=" * 50)
     print(f"  BACKTEST RESULTS  {r['start']} → {r['end']}")
     print("=" * 50)
+    print("  NOTE: Rule proxy only — mean_reversion + momentum signals tested.")
+    print("  Does not reflect deployed strategy (Claude, news, options, macro).")
     print(f"  Initial capital:   ${r['initial_capital']:.2f}")
     print(f"  Final value:       ${r['final_value']:.2f}")
     print(f"  Total return:      {r['total_return_pct']:+.1f}%")

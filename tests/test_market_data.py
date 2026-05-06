@@ -66,6 +66,9 @@ class TestSummariseForAI(unittest.TestCase):
             "bb_squeeze",
             "is_inside_day",
             "price_vs_52w_high_pct",
+            "bar_date",
+            "bar_is_final",
+            "data_source",
         ]:
             self.assertIn(key, result, f"Missing key: {key}")
 
@@ -201,6 +204,51 @@ class TestSummariseForAI(unittest.TestCase):
         df["high_52w"] = [float("nan"), float("nan"), float("nan")]
         result = summarise_for_ai("AAPL", df)
         self.assertEqual(result["price_vs_52w_high_pct"], 0.0)
+
+    def test_data_source_live_by_default(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", _make_df())
+        self.assertEqual(result["data_source"], "live")
+
+    def test_data_source_preloaded_when_flag_set(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", _make_df(), is_preloaded=True)
+        self.assertEqual(result["data_source"], "preloaded")
+
+    def test_bar_date_none_for_integer_index(self):
+        from data.market_data import summarise_for_ai
+
+        # _make_df() uses a RangeIndex — bar_date should be None
+        result = summarise_for_ai("AAPL", _make_df())
+        self.assertIsNone(result["bar_date"])
+
+    def test_bar_date_string_for_datetime_index(self):
+        import pandas as pd
+
+        from data.market_data import summarise_for_ai
+
+        df = _make_df()
+        df.index = pd.bdate_range("2026-04-01", periods=len(df))
+        result = summarise_for_ai("AAPL", df)
+        self.assertEqual(result["bar_date"], "2026-04-03")
+
+    def test_bar_is_final_true_for_past_date(self):
+        import pandas as pd
+
+        from data.market_data import summarise_for_ai
+
+        df = _make_df()
+        df.index = pd.bdate_range("2020-01-01", periods=len(df))
+        result = summarise_for_ai("AAPL", df)
+        self.assertTrue(result["bar_is_final"])
+
+    def test_bar_is_final_none_for_integer_index(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", _make_df())
+        self.assertIsNone(result["bar_is_final"])
 
 
 class TestGetVix(unittest.TestCase):

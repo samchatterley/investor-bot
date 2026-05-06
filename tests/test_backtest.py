@@ -637,3 +637,60 @@ class TestPrintResults(unittest.TestCase):
         r = _make_results_dict()
         r["by_signal"] = {"momentum": {"wins": 0, "losses": 5, "total_return": -10.0}}
         _print_results(r)
+
+    def test_prints_rule_proxy_disclaimer(self, capsys=None):
+        import io
+        from contextlib import redirect_stdout
+
+        r = _make_results_dict()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_results(r)
+        self.assertIn("Rule proxy", buf.getvalue())
+
+
+# ── validation_scope ──────────────────────────────────────────────────────────
+
+
+class TestValidationScope(unittest.TestCase):
+    def _build_indicators(self, n=100):
+        raw = _make_raw(n=n)
+        indicators = {}
+        for sym in ("AAPL", "FLAT"):
+            close = raw["Close"][sym]
+            open_ = raw["Open"][sym]
+            volume = raw["Volume"][sym]
+            df = pd.DataFrame({"Close": close, "Open": open_, "Volume": volume}).dropna()
+            df = _compute_indicators(df)
+            if not df.empty:
+                indicators[sym] = df
+        return indicators
+
+    def test_validation_scope_is_rule_proxy_only(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
+        self.assertEqual(result["validation_scope"], "rule_proxy_only")
+
+    def test_signals_tested_contains_expected_signals(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
+        self.assertIn("mean_reversion", result["signals_tested"])
+        self.assertIn("momentum", result["signals_tested"])
+
+    def test_signals_not_tested_excludes_untested_signals(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
+        for sig in ("bb_squeeze_breakout", "breakout_52w", "rs_leader"):
+            self.assertIn(sig, result["signals_not_tested"])
+
+    def test_run_backtest_propagates_validation_scope(self):
+        with (
+            patch("backtest.engine._save_results"),
+            patch("backtest.engine._print_results"),
+            patch("backtest.engine.yf.download", return_value=_make_raw()),
+        ):
+            result = run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07")
+        self.assertEqual(result.get("validation_scope"), "rule_proxy_only")

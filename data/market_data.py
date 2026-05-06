@@ -1,6 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import yfinance as yf
@@ -123,13 +123,24 @@ def fetch_stock_data(
         return None
 
 
-def summarise_for_ai(symbol: str, df: pd.DataFrame) -> dict:
+def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) -> dict:
     """Extract a compact summary of the latest technical snapshot."""
     latest = df.iloc[-1]
     prev = df.iloc[-2]
 
+    _idx = df.index[-1]
+    try:
+        _bar_date: str | None = _idx.strftime("%Y-%m-%d")
+        _bar_is_final: bool | None = _idx.date() < date.today()
+    except AttributeError:
+        _bar_date = None
+        _bar_is_final = None
+
     return {
         "symbol": symbol,
+        "bar_date": _bar_date,
+        "bar_is_final": _bar_is_final,
+        "data_source": "preloaded" if is_preloaded else "live",
         "current_price": round(float(latest["Close"]), 2),
         "ret_1d_pct": round(float(latest["ret_1d"]), 2),
         "ret_5d_pct": round(float(latest["ret_5d"]), 2),
@@ -229,7 +240,7 @@ def get_market_snapshots(
         df = fetch_stock_data(sym, days, preloaded=preloaded, as_of=as_of)
         if df is None:
             return None
-        snap = summarise_for_ai(sym, df)
+        snap = summarise_for_ai(sym, df, is_preloaded=(preloaded is not None))
         if spy_5d is not None:
             snap["rel_strength_5d"] = round(snap["ret_5d_pct"] - spy_5d, 2)
         if spy_10d is not None:

@@ -16,6 +16,7 @@ import config
 from analysis import ai_analyst
 from data import market_data
 from execution import stock_scanner
+from risk import macro_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,13 @@ def run_historical_replay(
       3. Call ai_analyst.get_trading_decisions with the resulting snapshots.
       4. Fill buys at T+1 Open price; fill sells at T+1 Open price.
 
+    Context limitations vs. the live pipeline:
+      - news, options_signals, sentiment, sector_performance, and earnings_risk are
+        not available historically and are passed as empty dicts/lists.
+      - macro_risk is computed from macro_calendar on a per-date basis.
+      - track_record is built from prior daily_records in the same replay run.
+      - Results include context_completeness="partial" to flag these gaps.
+
     Returns a summary dict with per-day records and aggregate stats.
     """
     universe = symbols if symbols is not None else config.STOCK_UNIVERSE
@@ -186,6 +194,29 @@ def run_historical_replay(
             for sym, p in positions.items()
         )
 
+        _slice_start = max(0, len(daily_records) - 10)
+        _recent = daily_records[_slice_start:]
+        track_record = [
+            {
+                "date": r["date"],
+                "daily_pnl_usd": round(
+                    r["portfolio_value"]
+                    - (
+                        _recent[i - 1]["portfolio_value"]
+                        if i > 0
+                        else (
+                            daily_records[_slice_start - 1]["portfolio_value"]
+                            if _slice_start > 0
+                            else initial_capital
+                        )
+                    ),
+                    2,
+                ),
+                "trades": r.get("trades", []),
+            }
+            for i, r in enumerate(_recent)
+        ]
+
         try:
             decisions = ai_analyst.get_trading_decisions(
                 snapshots=ai_snapshots,
@@ -193,7 +224,7 @@ def run_historical_replay(
                 available_cash=cash,
                 portfolio_value=portfolio_value,
                 news_by_symbol={},
-                track_record={},
+                track_record=track_record,
                 market_regime=regime,
                 position_ages={
                     sym: (sim_date - p["entry_date"]).days for sym, p in positions.items()
@@ -203,10 +234,10 @@ def run_historical_replay(
                 sector_performance={},
                 sentiment={},
                 earnings_risk={},
-                macro_risk={"is_high_risk": False, "event": ""},
+                macro_risk=macro_calendar.get_macro_risk(check_date=sim_date),
                 leading_sectors=[],
                 options_signals={},
-                lessons="",
+                lessons=[],
                 run_id=f"replay-{as_of}",
             )
         except Exception as e:
@@ -392,4 +423,12 @@ def run_historical_replay(
         "win_rate_pct": win_rate,
         "daily_records": daily_records,
         "all_trades": all_trades,
+        "context_completeness": "partial",
+        "missing_context": [
+            "news",
+            "options_signals",
+            "sentiment",
+            "sector_performance",
+            "earnings_risk",
+        ],
     }

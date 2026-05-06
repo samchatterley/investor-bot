@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1313 tests, 93% coverage)
+├── tests/             Unit test suite (1312 tests, 93% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -751,6 +751,19 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.16 — May 2026 — Alpha instrumentation: candidate funnel visibility, replay context parity, engine labeling
+
+- **`matched_signals` annotation on prefiltered candidates.** `prefilter_candidates()` now returns each qualified snapshot with a `matched_signals: list[str]` field listing every technical pattern that fired (e.g. `["momentum", "trend_pullback"]`). The original snapshot dict is never mutated.
+- **`score_candidate()` deterministic scoring function.** Added to `execution/stock_scanner.py`. Scores each prefiltered candidate by RSI distance, Bollinger band distance, volume confirmation, relative strength, and signal count. Used to rank candidates independently of Claude, enabling selected-vs-rejected analysis.
+- **`PREFILTER_CANDIDATES` and `CANDIDATE_SELECTION` audit events.** After `prefilter_candidates()`, a structured `PREFILTER_CANDIDATES` event logs each candidate's `matched_signals`, RSI, vol ratio, and 5d return alongside the rejected symbol list. After Claude decisions, `CANDIDATE_SELECTION` logs each selected candidate's `confidence` and deterministic rank, plus each not-selected candidate's deterministic score and signals. The audit trail now captures the full candidate funnel.
+- **`summarise_for_ai()` bar provenance fields.** Added `bar_date` (ISO date string of the latest bar), `bar_is_final` (True if the bar date is before today — i.e. not an intraday partial bar), and `data_source` ("preloaded" or "live") to every snapshot. `get_market_snapshots()` passes `is_preloaded=True` when serving from cached data.
+- **Replay context parity fixes.** `run_historical_replay()` previously passed `track_record={}` (wrong type), `lessons=""` (wrong type), and `macro_risk={"is_high_risk": False}` (hardcoded). Now: `track_record` is built from the last 10 `daily_records` with `daily_pnl_usd` computed from consecutive portfolio values; `lessons=[]`; `macro_risk` uses `macro_calendar.get_macro_risk(check_date=sim_date)` for per-date historical lookups. `context_completeness: "partial"` and `missing_context: [...]` added to the result dict to flag unavailable historical context (news, options, sentiment, sector performance, earnings risk).
+- **`backtest/engine.py` rule-proxy labeling.** Module docstring updated with "RULE PROXY ONLY" disclaimer and list of tested/untested signals. `_run_simulation()` return dict now includes `validation_scope: "rule_proxy_only"`, `signals_tested: ["mean_reversion", "momentum"]`, and `signals_not_tested: [...]`. `_print_results()` prints the disclaimer before results. Prevents misinterpretation of engine output as deployed-strategy validation.
+- **-1 net test (1312)** — 1 test count corrected. New tests: `TestMatchedSignals` (5), `TestScoreCandidate` (6), `TestValidationScope` (4), bar provenance tests in `TestSummariseForAI` (6), `TestReplayContextCompleteness` (3), `_print_results` disclaimer test (1). Total delta +25 new, -26 pre-existing count correction.
+- **1312 tests, 93% coverage, zero ruff violations.**
+
+---
 
 ### 1.15 — May 2026 — Prompt quality: decision-support framing, do_nothing_case, structured lessons
 

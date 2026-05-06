@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from execution.stock_scanner import get_market_regime, prefilter_candidates
+from execution.stock_scanner import get_market_regime, prefilter_candidates, score_candidate
 
 
 def _spy_history(prices: list[float]) -> pd.DataFrame:
@@ -264,6 +264,85 @@ class TestPrefilterCandidates(unittest.TestCase):
         # This may pass mean_reversion if bb_pct is also low, but with defaults it fails both
         # (default bb_pct=0.5, so mean_reversion doesn't fire; trend_pullback rsi guard blocks it)
         self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+
+class TestMatchedSignals(unittest.TestCase):
+    """prefilter_candidates annotates each result with matched_signals."""
+
+    def test_matched_signals_present_on_all_results(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2)
+        result = prefilter_candidates([snap])
+        self.assertIn("matched_signals", result[0])
+
+    def test_mean_reversion_signal_annotated(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2)
+        result = prefilter_candidates([snap])
+        self.assertIn("mean_reversion", result[0]["matched_signals"])
+
+    def test_momentum_signal_annotated(self):
+        snap = _snap(ema9_above_ema21=True, macd_diff=0.5, ret_5d_pct=2.0, vol_ratio=1.5)
+        result = prefilter_candidates([snap])
+        self.assertIn("momentum", result[0]["matched_signals"])
+
+    def test_multiple_signals_all_annotated(self):
+        snap = _snap(
+            rsi_14=30,
+            bb_pct=0.20,
+            vol_ratio=1.5,
+            ema9_above_ema21=True,
+            macd_diff=0.5,
+            ret_5d_pct=2.0,
+        )
+        result = prefilter_candidates([snap])
+        signals = result[0]["matched_signals"]
+        self.assertIn("mean_reversion", signals)
+        self.assertIn("momentum", signals)
+
+    def test_original_snapshot_not_mutated(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2)
+        prefilter_candidates([snap])
+        self.assertNotIn("matched_signals", snap)
+
+
+class TestScoreCandidate(unittest.TestCase):
+    def test_returns_float(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.5, matched_signals=["mean_reversion"])
+        self.assertIsInstance(score_candidate(snap), float)
+
+    def test_score_between_zero_and_one(self):
+        for snap in [
+            _snap(
+                rsi_14=30,
+                bb_pct=0.10,
+                vol_ratio=2.0,
+                rel_strength_5d=5.0,
+                matched_signals=["mean_reversion"] * 8,
+            ),
+            _snap(),
+        ]:
+            result = score_candidate(snap)
+            self.assertGreaterEqual(result, 0.0)
+            self.assertLessEqual(result, 1.0)
+
+    def test_higher_vol_ratio_scores_higher(self):
+        low = score_candidate(_snap(vol_ratio=1.1, matched_signals=["momentum"]))
+        high = score_candidate(_snap(vol_ratio=2.0, matched_signals=["momentum"]))
+        self.assertGreater(high, low)
+
+    def test_more_signals_scores_higher(self):
+        one = score_candidate(_snap(matched_signals=["momentum"]))
+        three = score_candidate(_snap(matched_signals=["momentum", "mean_reversion", "rs_leader"]))
+        self.assertGreater(three, one)
+
+    def test_missing_matched_signals_key_handled(self):
+        snap = _snap()
+        snap.pop("matched_signals", None)
+        result = score_candidate(snap)
+        self.assertIsInstance(result, float)
+
+    def test_deterministic_same_input(self):
+        snap = _snap(rsi_14=35, bb_pct=0.3, vol_ratio=1.4, matched_signals=["momentum"])
+        self.assertEqual(score_candidate(snap), score_candidate(snap))
 
 
 class TestGetTopMovers(unittest.TestCase):

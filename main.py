@@ -799,6 +799,27 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     logger.info(
         f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
     )
+    _filtered_syms = {c["symbol"] for c in filtered_candidates}
+    audit_log.log_event(
+        "PREFILTER_CANDIDATES",
+        {
+            "total_candidates": len(candidate_snaps),
+            "passed": len(filtered_candidates),
+            "candidates": [
+                {
+                    "symbol": c["symbol"],
+                    "matched_signals": c.get("matched_signals", []),
+                    "rsi_14": c.get("rsi_14"),
+                    "vol_ratio": c.get("vol_ratio"),
+                    "ret_5d_pct": c.get("ret_5d_pct"),
+                }
+                for c in filtered_candidates
+            ],
+            "rejected_symbols": [
+                s["symbol"] for s in candidate_snaps if s["symbol"] not in _filtered_syms
+            ],
+        },
+    )
 
     # Symbols the AI actually received — used as the validation universe.
     # Broader known_symbols (all fetched) would allow hallucinated tickers from
@@ -884,6 +905,35 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         decisions.get("market_summary", ""),
         len(decisions.get("buy_candidates", [])),
         sum(1 for d in decisions.get("position_decisions", []) if d.get("action") == "SELL"),
+    )
+    _selected_syms = {b["symbol"] for b in decisions.get("buy_candidates", [])}
+    _ranked = sorted(filtered_candidates, key=stock_scanner.score_candidate, reverse=True)
+    audit_log.log_event(
+        "CANDIDATE_SELECTION",
+        {
+            "prefiltered_count": len(filtered_candidates),
+            "claude_buy_count": len(decisions.get("buy_candidates", [])),
+            "selected": [
+                {
+                    "symbol": b["symbol"],
+                    "confidence": b.get("confidence"),
+                    "deterministic_rank": next(
+                        (i + 1 for i, c in enumerate(_ranked) if c["symbol"] == b["symbol"]),
+                        None,
+                    ),
+                }
+                for b in decisions.get("buy_candidates", [])
+            ],
+            "not_selected": [
+                {
+                    "symbol": c["symbol"],
+                    "deterministic_score": stock_scanner.score_candidate(c),
+                    "matched_signals": c.get("matched_signals", []),
+                }
+                for c in filtered_candidates
+                if c["symbol"] not in _selected_syms
+            ],
+        },
     )
 
     # ── Execute sells ─────────────────────────────────────────────────────────

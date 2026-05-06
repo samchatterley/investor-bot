@@ -428,6 +428,64 @@ class TestRunHistoricalReplayLive(unittest.TestCase):
             self.assertIn("symbol", t)
 
 
+class TestReplayContextCompleteness(unittest.TestCase):
+    """run_historical_replay result includes context_completeness metadata."""
+
+    def _minimal_preloaded(self):
+        idx = pd.bdate_range("2024-06-01", "2025-01-15")
+        spy = pd.DataFrame(
+            {"Open": 400.0, "High": 401.0, "Low": 399.0, "Close": 400.0, "Volume": 1e7}, index=idx
+        )
+        aapl = pd.DataFrame(
+            {"Open": 150.0, "High": 151.0, "Low": 149.0, "Close": 150.0, "Volume": 5e6}, index=idx
+        )
+        return {"SPY": spy, "AAPL": aapl}
+
+    def _run(self):
+        from backtest.replay import run_historical_replay
+
+        with (
+            patch("backtest.replay._build_preloaded", return_value=self._minimal_preloaded()),
+            patch(
+                "backtest.replay.market_data.get_market_snapshots",
+                return_value=[
+                    {
+                        "symbol": "AAPL",
+                        "current_price": 150.0,
+                        "ret_5d_pct": 1.0,
+                        "ret_10d_pct": 2.0,
+                    }
+                ],
+            ),
+            patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+            patch(
+                "analysis.ai_analyst.get_trading_decisions",
+                return_value={"buy_candidates": [], "position_decisions": []},
+            ),
+        ):
+            return run_historical_replay(
+                symbols=["AAPL"],
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                initial_capital=50_000.0,
+                dry_run=True,
+            )
+
+    def test_context_completeness_is_partial(self):
+        result = self._run()
+        self.assertEqual(result.get("context_completeness"), "partial")
+
+    def test_missing_context_lists_expected_fields(self):
+        result = self._run()
+        missing = result.get("missing_context", [])
+        for field in ("news", "options_signals", "sentiment"):
+            self.assertIn(field, missing)
+
+    def test_missing_context_is_list(self):
+        result = self._run()
+        self.assertIsInstance(result.get("missing_context"), list)
+
+
 class TestSpyReturnFromPreloaded(unittest.TestCase):
     def _spy_df(self, n=20):
         idx = pd.bdate_range("2025-01-01", periods=n)
