@@ -2009,6 +2009,122 @@ class TestPartialTimeoutImmediateStopCheck(RunInnerBase):
         self.assertGreaterEqual(ensure_mock.call_count, 1)
 
 
+class TestLateFilledOrderReconciliation(RunInnerBase):
+    """Pre-market buy that filled at open after wait_for_fill timed out must be recorded."""
+
+    def test_late_filled_order_recorded_in_all_trades(self):
+        """TIMEOUT buy + symbol found in live positions → record_buy called + ORDER_LATE_FILL_RECONCILED."""
+        audit_events = []
+
+        def _capture_event(name, payload=None):
+            audit_events.append(name)
+
+        nvda_pos = {
+            "symbol": "NVDA",
+            "qty": 10.0,
+            "avg_entry_price": 202.5,
+            "current_price": 205.0,
+            "unrealized_pl": 25.0,
+            "unrealized_plpc": 1.23,
+            "market_value": 2050.0,
+        }
+        # Calls 1–4: NVDA not yet in positions (pre-fill); call 5: reconciliation sees the fill.
+        _call_n = [0]
+
+        def _positions(*a, **kw):
+            _call_n[0] += 1
+            return [] if _call_n[0] <= 4 else [nvda_pos]
+
+        record_buy_mock = MagicMock()
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": OrderResult(
+                    status=OrderStatus.TIMEOUT,
+                    symbol="NVDA",
+                    broker_order_id="order-x",
+                    filled_qty=0.0,
+                ),
+                "main.trader.get_open_positions": MagicMock(side_effect=_positions),
+                "main.trader.record_buy": record_buy_mock,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "NVDA", "current_price": 202.5}
+                ],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[
+                        {
+                            "symbol": "NVDA",
+                            "confidence": 7,
+                            "reasoning": "BB squeeze breakout signal with volume.",
+                            "key_signal": "bb_squeeze",
+                        }
+                    ]
+                ),
+                "main.validate_ai_response": (True, []),
+                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+        self.assertIn("ORDER_LATE_FILL_RECONCILED", audit_events)
+        record_buy_mock.assert_called_once()
+        call_kwargs = record_buy_mock.call_args
+        self.assertEqual(call_kwargs[0][0], "NVDA")
+        self.assertAlmostEqual(call_kwargs[0][1], 202.5)
+
+    def test_already_held_symbol_not_double_recorded(self):
+        """Symbol in held_symbols before run must not be reconciled even if in buy_candidates."""
+        audit_events = []
+
+        def _capture_event(name, payload=None):
+            audit_events.append(name)
+
+        held_pos = {
+            "symbol": "AAPL",
+            "qty": 5.0,
+            "avg_entry_price": 150.0,
+            "current_price": 152.0,
+            "unrealized_pl": 10.0,
+            "unrealized_plpc": 1.33,
+            "market_value": 760.0,
+        }
+        record_buy_mock = MagicMock()
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": OrderResult(
+                    status=OrderStatus.TIMEOUT,
+                    symbol="AAPL",
+                    broker_order_id="order-y",
+                    filled_qty=0.0,
+                ),
+                "main.trader.get_open_positions": [held_pos],
+                "main.trader.record_buy": record_buy_mock,
+                "main.stock_scanner.prefilter_candidates": [],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[
+                        {
+                            "symbol": "AAPL",
+                            "confidence": 8,
+                            "reasoning": "Breakout above resistance with volume.",
+                            "key_signal": "breakout_52w",
+                        }
+                    ]
+                ),
+                "main.validate_ai_response": (True, []),
+                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+        self.assertNotIn("ORDER_LATE_FILL_RECONCILED", audit_events)
+        record_buy_mock.assert_not_called()
+
+
 class TestUnexpectedBrokerPositionsHalt(RunInnerBase):
     """Unexpected broker positions (not in local DB) must halt in live mode."""
 

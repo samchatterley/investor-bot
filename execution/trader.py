@@ -171,7 +171,28 @@ def place_buy_order(
             )
         try:
             final = client.get_order_by_id(order_id)
-            if str(final.status) == "partially_filled" and final.filled_qty:
+            final_status = str(final.status)
+            if final_status == "filled" and final.filled_qty:
+                # Order filled after wait_for_fill gave up — treat as a normal fill.
+                late_qty = float(final.filled_qty)
+                late_avg = float(final.filled_avg_price or 0.0)
+                logger.info(f"BUY for {symbol} filled on final check: {late_qty} @ {late_avg:.4f}")
+                if _ledger:
+                    update_intent(client_order_id, "filled")
+                    log_order_event(
+                        client_order_id,
+                        "ORDER_FILLED",
+                        {"filled_qty": late_qty, "filled_avg_price": late_avg},
+                        broker_order_id=order_id,
+                    )
+                return OrderResult(
+                    status=OrderStatus.FILLED,
+                    symbol=symbol,
+                    broker_order_id=order_id,
+                    filled_qty=late_qty,
+                    filled_avg_price=late_avg,
+                )
+            elif final_status == "partially_filled" and final.filled_qty:
                 partial_qty = float(final.filled_qty)
                 logger.warning(
                     f"BUY for {symbol} partially filled {partial_qty} of ${notional_usd:.2f}"

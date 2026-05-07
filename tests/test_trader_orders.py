@@ -229,6 +229,27 @@ class TestPlaceBuyOrder(unittest.TestCase):
         self.assertEqual(result.status, OrderStatus.PARTIAL)
         self.assertAlmostEqual(result.filled_qty, 5.0)
 
+    def test_buy_filled_detected_on_final_check(self):
+        """wait_for_fill times out but get_order_by_id shows 'filled' → FILLED result.
+
+        Covers pre-market orders that fill at market open after the wait window closes.
+        """
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-late")
+        final_order = MagicMock()
+        final_order.status = "filled"
+        final_order.filled_qty = 23.5
+        final_order.filled_avg_price = 420.69
+        client.get_order_by_id.return_value = final_order
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_buy_order(client, "NVDA", 10_000.0)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 23.5)
+        self.assertAlmostEqual(result.filled_avg_price, 420.69)
+        self.assertEqual(result.broker_order_id, "order-late")
+
     def test_buy_client_order_id_is_symbol_date_stable(self):
         """client_order_id must be stable across same-day reruns for idempotency."""
         from config import today_et

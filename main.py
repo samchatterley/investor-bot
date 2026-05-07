@@ -1338,6 +1338,59 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     if not dry_run:
         trader.ensure_stops_attached(client)
 
+    # ── Late-fill reconciliation ─────────────────────────────────────────────
+    # Detect buy orders placed pre-market that filled at open after wait_for_fill
+    # timed out. These show up in Alpaca positions but are absent from all_trades.
+    if not dry_run:
+        try:
+            current_live = trader.get_open_positions(client)
+            live_syms = {p["symbol"] for p in current_live}
+            candidate_syms = {c["symbol"] for c in decisions.get("buy_candidates", [])}
+            late_fills = (live_syms & candidate_syms) - executed_symbols - held_symbols
+            for sym in late_fills:
+                pos = next((p for p in current_live if p["symbol"] == sym), None)
+                if pos is None:
+                    continue
+                entry_price = pos["avg_entry_price"]
+                candidate = next(
+                    (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
+                    {},
+                )
+                logger.info(
+                    f"Late-fill reconciliation: {sym} found in broker positions "
+                    f"@ ${entry_price:.4f} — recording buy"
+                )
+                trader.record_buy(
+                    sym,
+                    entry_price,
+                    signal=candidate.get("key_signal", "unknown"),
+                    regime=regime.get("regime", "UNKNOWN"),
+                    confidence=candidate.get("confidence", 0),
+                )
+                executed_symbols.add(sym)
+                all_trades.append(
+                    {
+                        "symbol": sym,
+                        "action": "BUY",
+                        "detail": (
+                            f"late-fill @ ${entry_price:.2f} | "
+                            f"{candidate.get('key_signal')} | "
+                            f"conf={candidate.get('confidence')}"
+                        ),
+                    }
+                )
+                audit_log.log_event(
+                    "ORDER_LATE_FILL_RECONCILED",
+                    {
+                        "symbol": sym,
+                        "entry_price": round(entry_price, 4),
+                        "signal": candidate.get("key_signal"),
+                        "confidence": candidate.get("confidence"),
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"Late-fill reconciliation failed: {e}")
+
     # ── Finalise ──────────────────────────────────────────────────────────────
     account_after = trader.get_account_info(client)
     save_date = today if mode == "open" else f"{today}-{mode}"
