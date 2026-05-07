@@ -193,15 +193,13 @@ def run_startup_health_check(client) -> HealthReport:
         from utils.order_ledger import (
             auto_cancel_timeout_intents,
             get_unresolved_intents,
-            reconcile_filled_intents,
         )
 
         today = config.today_et().isoformat()
-        # Auto-resolve in both directions before checking for remaining issues:
-        # - cancel timeouts with no broker position (order never filled)
-        # - fill timeouts with a confirmed broker position (late fill confirmed)
+        # Cancel timeout intents where the broker has NO position (order never filled).
+        # Do NOT call reconcile_filled_intents here — that consumes timeout intents
+        # before the main.py reconciliation block can record them in all_trades.
         auto_cancel_timeout_intents(broker_symbols, today)
-        reconcile_filled_intents(broker_symbols, today)
         unresolved = get_unresolved_intents(trade_date=today)
         if unresolved:
             for intent in unresolved:
