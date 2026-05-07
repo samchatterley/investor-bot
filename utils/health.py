@@ -190,12 +190,18 @@ def run_startup_health_check(client) -> HealthReport:
 
     # ── 7. Unresolved order intents ───────────────────────────────────────────
     try:
-        from utils.order_ledger import auto_cancel_timeout_intents, get_unresolved_intents
+        from utils.order_ledger import (
+            auto_cancel_timeout_intents,
+            get_unresolved_intents,
+            reconcile_filled_intents,
+        )
 
         today = config.today_et().isoformat()
-        # Auto-resolve timeout intents where the broker holds no matching position.
-        # A timeout with no broker position means the order never filled — safe to cancel.
+        # Auto-resolve in both directions before checking for remaining issues:
+        # - cancel timeouts with no broker position (order never filled)
+        # - fill timeouts with a confirmed broker position (late fill confirmed)
         auto_cancel_timeout_intents(broker_symbols, today)
+        reconcile_filled_intents(broker_symbols, today)
         unresolved = get_unresolved_intents(trade_date=today)
         if unresolved:
             for intent in unresolved:

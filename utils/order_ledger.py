@@ -152,6 +152,39 @@ def auto_cancel_timeout_intents(broker_symbols: set[str], trade_date: str) -> in
     return resolved
 
 
+def reconcile_filled_intents(broker_symbols: set[str], trade_date: str) -> int:
+    """Auto-resolve timeout intents where a broker position confirms the fill.
+
+    Complements auto_cancel_timeout_intents: where that function cancels timeouts
+    with no broker position, this function marks timeouts with a confirmed broker
+    position as filled. Clears the YELLOW health warning without manual DB intervention.
+
+    Returns the number of intents resolved.
+    """
+    resolved = 0
+    try:
+        unresolved = get_unresolved_intents(trade_date=trade_date)
+        for intent in unresolved:
+            if intent["status"] != "timeout":
+                continue
+            if intent["symbol"] in broker_symbols:
+                update_intent(intent["client_order_id"], "filled")
+                log_order_event(
+                    intent["client_order_id"],
+                    "ORDER_LATE_FILL_RECONCILED",
+                    {"source": "reconcile_filled_intents", "trade_date": trade_date},
+                    broker_order_id=intent.get("broker_order_id"),
+                )
+                logger.info(
+                    f"reconcile_filled_intents: {intent['symbol']} BUY has broker position "
+                    f"— auto-resolved intent {intent['client_order_id']} as filled"
+                )
+                resolved += 1
+    except Exception as e:
+        logger.warning(f"reconcile_filled_intents: {e}")
+    return resolved
+
+
 def get_unresolved_intents(trade_date: str | None = None) -> list[dict]:
     """Return intents in ambiguous states (submitted/timeout) that need reconciliation.
 

@@ -1339,55 +1339,84 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         trader.ensure_stops_attached(client)
 
     # ── Late-fill reconciliation ─────────────────────────────────────────────
-    # Detect buy orders placed pre-market that filled at open after wait_for_fill
-    # timed out. These show up in Alpaca positions but are absent from all_trades.
+    # Detect buy orders that filled after wait_for_fill timed out (e.g. pre-market
+    # orders queued until market open). Uses the order-ledger as source — works in
+    # all run modes so midday/close can pick up fills from the morning open run.
     if not dry_run:
         try:
-            current_live = trader.get_open_positions(client)
-            live_syms = {p["symbol"] for p in current_live}
-            candidate_syms = {c["symbol"] for c in decisions.get("buy_candidates", [])}
-            late_fills = (live_syms & candidate_syms) - executed_symbols - held_symbols
-            for sym in late_fills:
-                pos = next((p for p in current_live if p["symbol"] == sym), None)
-                if pos is None:
-                    continue
-                entry_price = pos["avg_entry_price"]
-                candidate = next(
-                    (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
-                    {},
-                )
-                logger.info(
-                    f"Late-fill reconciliation: {sym} found in broker positions "
-                    f"@ ${entry_price:.4f} — recording buy"
-                )
-                trader.record_buy(
-                    sym,
-                    entry_price,
-                    signal=candidate.get("key_signal", "unknown"),
-                    regime=regime.get("regime", "UNKNOWN"),
-                    confidence=candidate.get("confidence", 0),
-                )
-                executed_symbols.add(sym)
-                all_trades.append(
-                    {
-                        "symbol": sym,
-                        "action": "BUY",
-                        "detail": (
-                            f"late-fill @ ${entry_price:.2f} | "
-                            f"{candidate.get('key_signal')} | "
-                            f"conf={candidate.get('confidence')}"
-                        ),
-                    }
-                )
-                audit_log.log_event(
-                    "ORDER_LATE_FILL_RECONCILED",
-                    {
-                        "symbol": sym,
-                        "entry_price": round(entry_price, 4),
-                        "signal": candidate.get("key_signal"),
-                        "confidence": candidate.get("confidence"),
-                    },
-                )
+            from utils.order_ledger import (
+                get_unresolved_intents,
+            )
+            from utils.order_ledger import (
+                log_order_event as _log_oe,
+            )
+            from utils.order_ledger import (
+                update_intent as _update_intent,
+            )
+
+            timeout_intents = [
+                i for i in get_unresolved_intents(trade_date=today) if i["status"] == "timeout"
+            ]
+            if timeout_intents:
+                current_live = trader.get_open_positions(client)
+                live_pos_map = {p["symbol"]: p for p in current_live}
+                for intent in timeout_intents:
+                    sym = intent["symbol"]
+                    if sym not in live_pos_map:
+                        continue
+                    if sym in executed_symbols:
+                        continue
+                    pos = live_pos_map[sym]
+                    entry_price = pos["avg_entry_price"]
+                    candidate = next(
+                        (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
+                        {},
+                    )
+                    signal = candidate.get("key_signal") or trader.get_position_meta(sym).get(
+                        "signal", "unknown"
+                    )
+                    confidence = candidate.get("confidence") or trader.get_position_meta(sym).get(
+                        "confidence", 0
+                    )
+                    logger.info(
+                        f"Late-fill reconciliation: {sym} found in broker positions "
+                        f"@ ${entry_price:.4f} — recording buy (mode={mode})"
+                    )
+                    _update_intent(intent["client_order_id"], "filled")
+                    _log_oe(
+                        intent["client_order_id"],
+                        "ORDER_LATE_FILL_RECONCILED",
+                        {"entry_price": round(entry_price, 4), "run_mode": mode},
+                        broker_order_id=intent.get("broker_order_id"),
+                    )
+                    trader.record_buy(
+                        sym,
+                        entry_price,
+                        signal=signal,
+                        regime=regime.get("regime", "UNKNOWN"),
+                        confidence=confidence,
+                    )
+                    executed_symbols.add(sym)
+                    all_trades.append(
+                        {
+                            "symbol": sym,
+                            "action": "BUY",
+                            "detail": (
+                                f"late-fill @ ${entry_price:.2f} | "
+                                f"{signal} | conf={confidence} | mode={mode}"
+                            ),
+                        }
+                    )
+                    audit_log.log_event(
+                        "ORDER_LATE_FILL_RECONCILED",
+                        {
+                            "symbol": sym,
+                            "entry_price": round(entry_price, 4),
+                            "signal": signal,
+                            "confidence": confidence,
+                            "run_mode": mode,
+                        },
+                    )
         except Exception as e:
             logger.warning(f"Late-fill reconciliation failed: {e}")
 

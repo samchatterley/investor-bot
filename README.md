@@ -181,7 +181,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1315 tests, 94% coverage)
+├── tests/             Unit test suite (1321 tests, 94% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -752,13 +752,14 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
-### 1.17 — May 2026 — Pre-market order fill reconciliation
+### 1.17 — May 2026 — Pre-market order fill reconciliation + ledger self-healing
 
-- **`place_buy_order()` final-check "filled" path.** The post-timeout `get_order_by_id` check previously only handled `"partially_filled"`, not `"filled"`. Orders that filled between `wait_for_fill` exhausting its poll window and the final broker query (a real gap for pre-market submissions) fell through to `TIMEOUT` with `filled_qty=0.0`. The fix adds a `"filled"` status branch that returns `OrderResult(FILLED)` with the correct qty and avg price, and records the fill in the order-intent ledger.
-- **Late-fill reconciliation in `main.py`.** After `ensure_stops_attached()`, a new block queries live Alpaca positions and identifies any buy candidate that is now held at the broker but was never recorded in `all_trades` (i.e., the order returned `TIMEOUT` in the buy loop but filled at market open). For each such symbol, `record_buy()` is called, the trade is appended to `all_trades`, and an `ORDER_LATE_FILL_RECONCILED` audit event is emitted. Guarded by `not dry_run`; exceptions are caught so a failed reconciliation never aborts a run.
-- **Root cause:** Today's pre-market orders for AMAT, TSM, and NVDA all placed between 14:01–14:03 UTC and queued until market open at 14:30 UTC. `wait_for_fill` (30s poll) timed out seeing `NEW` status, the final check found them `NEW` too, all three returned `TIMEOUT`, and `trades_executed: []` was logged despite all three fills appearing in Alpaca and $11,287 cash leaving the account.
-- **3 new tests** (total 1315): `test_buy_filled_detected_on_final_check` in `TestPlaceBuyOrder`; `test_late_filled_order_recorded_in_all_trades` and `test_already_held_symbol_not_double_recorded` in `TestLateFilledOrderReconciliation`.
-- **1315 tests, 94% coverage, zero ruff violations.**
+- **`place_buy_order()` final-check "filled" path.** The post-timeout `get_order_by_id` check previously only handled `"partially_filled"`, not `"filled"`. Orders that filled between `wait_for_fill` exhausting its poll window and the final broker query fell through to `TIMEOUT` with `filled_qty=0.0`. The fix adds a `"filled"` status branch that returns `OrderResult(FILLED)` with the correct qty and avg price, and records the fill in the order-intent ledger.
+- **Late-fill reconciliation in `main.py` (all run modes).** After `ensure_stops_attached()`, a new block queries the order-ledger for today's `timeout` intents, cross-references against live Alpaca positions, and for any confirmed fill: updates the intent to `filled`, calls `record_buy()`, appends to `all_trades`, and emits `ORDER_LATE_FILL_RECONCILED`. Using the ledger as source (not `buy_candidates`) means midday and close runs can resolve fills from the morning open.
+- **`reconcile_filled_intents()` in `order_ledger.py`.** Mirror of `auto_cancel_timeout_intents()`. Where the existing function cancels timeout intents where the broker has NO position, the new function marks timeouts as `filled` where the broker DOES have a position. Called in the startup health check after `auto_cancel_timeout_intents()`, so stale `timeout` intents from confirmed fills self-heal before the unresolved-intent count is evaluated — clearing the YELLOW health warning automatically on the next run.
+- **Root cause:** Today's AMAT/TSM/NVDA orders were placed at 14:01–14:03 UTC (pre-market). `wait_for_fill` (30s poll) saw `NEW` status throughout; final check also saw `NEW`; all three returned `TIMEOUT`. The midday run flagged YELLOW ("unresolved order intent × 3") because the ledger had no mechanism to confirm the fills at market open (14:30 UTC). All three positions ARE in Alpaca, trailing stops are attached — only the log file and ledger were wrong.
+- **6 new tests** (total 1321): `test_buy_filled_detected_on_final_check`; `TestReconcileFilledIntents` (5 cases); `TestLateFilledOrderReconciliation` (3 cases).
+- **1321 tests, 94% coverage, zero ruff violations.**
 
 ---
 

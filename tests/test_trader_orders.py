@@ -1401,3 +1401,79 @@ class TestAutoCancelTimeoutIntents(unittest.TestCase):
             except Exception:
                 self.fail("auto_cancel_timeout_intents raised unexpectedly")
         self.assertEqual(result, 0)
+
+
+class TestReconcileFilledIntents(unittest.TestCase):
+    """reconcile_filled_intents marks timeout intents filled when broker position confirmed."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def _insert_intent(self, symbol, status, trade_date="2026-05-07"):
+        from utils.order_ledger import create_intent, update_intent
+
+        client_id = f"ib-{symbol}-BUY-{trade_date}"
+        create_intent(symbol, "BUY", trade_date, 1000.0, client_id)
+        if status != "pending":
+            update_intent(client_id, status, broker_order_id=f"broker-{symbol}")
+        return client_id
+
+    def test_resolves_timeout_when_broker_has_position(self):
+        from utils.order_ledger import get_unresolved_intents, reconcile_filled_intents
+
+        self._insert_intent("NVDA", "timeout")
+        resolved = reconcile_filled_intents(broker_symbols={"NVDA"}, trade_date="2026-05-07")
+        self.assertEqual(resolved, 1)
+        remaining = get_unresolved_intents(trade_date="2026-05-07")
+        self.assertEqual(len(remaining), 0)
+
+    def test_preserves_timeout_when_broker_has_no_position(self):
+        from utils.order_ledger import get_unresolved_intents, reconcile_filled_intents
+
+        self._insert_intent("NVDA", "timeout")
+        resolved = reconcile_filled_intents(broker_symbols=set(), trade_date="2026-05-07")
+        self.assertEqual(resolved, 0)
+        remaining = get_unresolved_intents(trade_date="2026-05-07")
+        self.assertEqual(len(remaining), 1)
+
+    def test_does_not_resolve_submitted_intents(self):
+        from utils.order_ledger import get_unresolved_intents, reconcile_filled_intents
+
+        self._insert_intent("NVDA", "submitted")
+        resolved = reconcile_filled_intents(broker_symbols={"NVDA"}, trade_date="2026-05-07")
+        self.assertEqual(resolved, 0)
+        remaining = get_unresolved_intents(trade_date="2026-05-07")
+        self.assertEqual(len(remaining), 1)
+
+    def test_resolves_multiple_timeout_intents(self):
+        from utils.order_ledger import get_unresolved_intents, reconcile_filled_intents
+
+        for sym in ("AMAT", "TSM", "NVDA"):
+            self._insert_intent(sym, "timeout")
+        resolved = reconcile_filled_intents(
+            broker_symbols={"AMAT", "TSM", "NVDA"}, trade_date="2026-05-07"
+        )
+        self.assertEqual(resolved, 3)
+        remaining = get_unresolved_intents(trade_date="2026-05-07")
+        self.assertEqual(len(remaining), 0)
+
+    def test_handles_exception_gracefully(self):
+        from utils.order_ledger import reconcile_filled_intents
+
+        with patch("utils.order_ledger.get_unresolved_intents", side_effect=Exception("db fail")):
+            try:
+                result = reconcile_filled_intents(broker_symbols={"NVDA"}, trade_date="2026-05-07")
+            except Exception:
+                self.fail("reconcile_filled_intents raised unexpectedly")
+        self.assertEqual(result, 0)
