@@ -683,7 +683,14 @@ class TestValidationScope(unittest.TestCase):
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-03-01", "2025-03-07")
         result = _run_simulation(indicators, dates, initial_capital=10_000.0)
-        for sig in ("bb_squeeze_breakout", "breakout_52w", "rs_leader"):
+        for sig in (
+            "bb_squeeze",
+            "breakout_52w",
+            "rs_leader",
+            "vwap_reclaim",
+            "orb_breakout",
+            "intraday_momentum",
+        ):
             self.assertIn(sig, result["signals_not_tested"])
 
     def test_run_backtest_propagates_validation_scope(self):

@@ -64,6 +64,9 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset(
         "rs_leader",
         "inside_day_breakout",
         "trend_pullback",
+        "vwap_reclaim",
+        "orb_breakout",
+        "intraday_momentum",
     }
 )
 

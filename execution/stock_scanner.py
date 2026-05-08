@@ -211,11 +211,11 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
 
         mean_reversion = rsi < 38 and bb < 0.30 and vol > 1.0
         momentum = ema_up and macd_diff > 0 and ret_5d > 0 and vol > 1.2
-        fresh_breakout = macd_cross and vol > 1.2
+        macd_cross_signal = macd_cross and vol > 1.2
 
         # ── New signals ───────────────────────────────────────────────────────
         # Volatility squeeze: bands contracting → expansion imminent
-        bb_squeeze_breakout = s.get("bb_squeeze", False) and (ema_up or macd_diff > 0) and vol > 1.2
+        bb_squeeze_signal = s.get("bb_squeeze", False) and (ema_up or macd_diff > 0) and vol > 1.2
         # Near 52-week high with volume: growth / breakout momentum
         breakout_52w = s.get("price_vs_52w_high_pct", -999) >= -3.0 and vol > 1.2 and weekly_up
         # Consistent SPY outperformance: market leader in sustained uptrend
@@ -264,10 +264,10 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("mean_reversion")
         if momentum:
             matched.append("momentum")
-        if fresh_breakout:
-            matched.append("fresh_breakout")
-        if bb_squeeze_breakout:
-            matched.append("bb_squeeze_breakout")
+        if macd_cross_signal:
+            matched.append("macd_crossover")
+        if bb_squeeze_signal:
+            matched.append("bb_squeeze")
         if breakout_52w:
             matched.append("breakout_52w")
         if rs_leader:

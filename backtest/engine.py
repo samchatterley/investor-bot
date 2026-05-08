@@ -3,10 +3,11 @@ Rule-based backtester — validates technical signal quality on historical data
 without calling Claude (avoids API cost).
 
 RULE PROXY ONLY: This engine tests mean_reversion and momentum signals with
-deterministic rules. It does NOT test bb_squeeze_breakout, breakout_52w,
-rs_leader, inside_day_breakout, or trend_pullback signals, and does not use
-Claude's judgment, news, options flow, or macro context. Results measure
-signal quality only and must not be interpreted as deployed-strategy validation.
+deterministic rules. It does NOT test macd_crossover, bb_squeeze, breakout_52w,
+rs_leader, inside_day_breakout, trend_pullback, vwap_reclaim, orb_breakout, or
+intraday_momentum signals, and does not use Claude's judgment, news, options
+flow, or macro context. Results measure signal quality only and must not be
+interpreted as deployed-strategy validation.
 
 Usage:
     python backtest/engine.py --start 2025-01-01 --end 2025-12-31
@@ -287,12 +288,15 @@ def _run_simulation(
         "validation_scope": "rule_proxy_only",
         "signals_tested": ["mean_reversion", "momentum"],
         "signals_not_tested": [
-            "fresh_breakout",
-            "bb_squeeze_breakout",
+            "macd_crossover",
+            "bb_squeeze",
             "breakout_52w",
             "rs_leader",
             "inside_day_breakout",
             "trend_pullback",
+            "vwap_reclaim",
+            "orb_breakout",
+            "intraday_momentum",
         ],
     }
 
