@@ -20,7 +20,43 @@ _ROOT = os.path.dirname(_SCRIPTS_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # pragma: no cover
 
+# ── Single-instance guard ─────────────────────────────────────────────────────
+# Prevent duplicate schedulers accumulating across tmux sessions / restarts.
+# Uses a PID file so stale locks from crashes are auto-cleared on next start.
+_PID_FILE = os.path.join(_ROOT, "logs", "scheduler.pid")
+
+
+def _check_singleton() -> None:
+    if os.path.exists(_PID_FILE):
+        try:
+            with open(_PID_FILE) as _f:
+                _old_pid = int(_f.read().strip())
+            # Check if that process is still alive
+            os.kill(_old_pid, 0)
+            print(
+                f"ERROR: scheduler already running (PID {_old_pid}). "
+                f"Kill it first or remove {_PID_FILE}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            pass  # stale PID file — previous run crashed; safe to continue
+
+    os.makedirs(os.path.dirname(_PID_FILE), exist_ok=True)
+    with open(_PID_FILE, "w") as _f:
+        _f.write(str(os.getpid()))
+
+
+def _remove_pid_file() -> None:
+    import contextlib
+
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(_PID_FILE)
+
+
+import atexit  # noqa: E402
 import logging  # noqa: E402
+import signal  # noqa: E402
 import time  # noqa: E402
 
 import schedule  # noqa: E402
@@ -105,7 +141,15 @@ def _weekly_review():
         logger.error(f"Weekly review failed: {e}", exc_info=True)
 
 
+def _sigterm_handler(_signum, _frame):
+    _remove_pid_file()
+    sys.exit(0)
+
+
 if __name__ == "__main__":
+    _check_singleton()
+    atexit.register(_remove_pid_file)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
     _ET = "America/New_York"
     for _day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
         getattr(schedule.every(), _day).at("09:31", _ET).do(_open_sells)
