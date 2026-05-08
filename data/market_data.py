@@ -294,8 +294,8 @@ def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
     if now_et < market_open_et:
         return {}
 
-    # Fetch from one day before open so we have previous close for gap calculation
-    start_utc = (market_open_et - timedelta(days=1)).astimezone(UTC)
+    # Start 30 min before open to capture the last pre-market bar for gap calculation
+    start_utc = (market_open_et - timedelta(minutes=30)).astimezone(UTC)
     end_utc = now_et.astimezone(UTC)
 
     try:
@@ -312,11 +312,12 @@ def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
         logger.warning(f"Intraday data fetch failed: {e}")
         return {}
 
+    bar_data = bars_response.data  # BarSet wraps a plain dict under .data
     result: dict[str, dict] = {}
 
     for sym in symbols:
         try:
-            sym_bars = bars_response.get(sym)
+            sym_bars = bar_data.get(sym)
             if not sym_bars:
                 continue
 
