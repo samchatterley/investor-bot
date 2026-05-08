@@ -104,7 +104,9 @@ The daily scan universe is built dynamically at runtime rather than from a fixed
 
 ### Signal types
 
-The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of twelve signal patterns before Claude sees it. This keeps Claude's input focused on genuine technical setups and prevents it from making decisions on featureless data.
+The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of fifteen signal patterns before Claude sees it. This keeps Claude's input focused on genuine technical setups and prevents it from making decisions on featureless data.
+
+**Daily signals** (computed from end-of-day bar history via yfinance):
 
 | Signal | Entry conditions | Hold limit |
 |--------|-----------------|------------|
@@ -121,7 +123,17 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment — sustained market leader | 5 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`), and **catalyst** (`news_catalyst`).
+**Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
+
+| Signal | Entry conditions |
+|--------|-----------------|
+| `vwap_reclaim` | Price above VWAP + >1% gain from open + not overextended (pct vs VWAP ≤ 3%) |
+| `orb_breakout` | Price broke above the first-30-minute high with above-average volume |
+| `intraday_momentum` | >2% gain from open + above VWAP + intraday RSI < 75 + daily trend confirms |
+
+Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
+
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`), **catalyst** (`news_catalyst`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
 
 ---
 
@@ -181,7 +193,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1457 tests, 100% coverage)
+├── tests/             Unit test suite (1457 tests, 98.73% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -751,6 +763,17 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.18 — May 2026 — Intraday signals: VWAP, opening range breakout, intraday momentum
+
+- **Alpaca minute-bar intraday layer (`data/market_data.get_intraday_data`).** Fetches Alpaca minute bars from market open to now and computes: `gap_pct` (open vs prior close), `intraday_change_pct` (price vs open), VWAP + `price_above_vwap` + `pct_vs_vwap`, opening range high/low (`orb_high`/`orb_low`) with `orb_breakout_up` (volume-confirmed break above 30-min range), and `intraday_rsi` (RSI-14 on 5-minute bars). Fails gracefully per-symbol; never blocks the pipeline.
+- **Three new prefilter signals** (`execution/stock_scanner.prefilter_candidates`): `vwap_reclaim` (price above VWAP, >1% gain from open, not overextended), `orb_breakout` (price broke 30-min high with volume), `intraday_momentum` (>2% from open, above VWAP, intraday RSI < 75, daily trend confirms). Signals are absent when Alpaca data is unavailable, so daily signals continue to work in backtest mode.
+- **Midday run now eligible for buys.** `skip_buys` gate changed from `mode in ("midday", "close", "open_sells")` to `mode in ("close", "open_sells")`. The 12:00 ET run can now act on intraday setups that develop after the open rather than being purely a position-management pass.
+- **News context restricted to prefiltered symbols.** `news_fetcher.fetch_news` was being called with all `scan_symbols` (including prefilter-rejected top movers). Changed to `ai_known_symbols` — the set of symbols the AI actually received snapshots for. Eliminates the recurring pattern where the AI recommended news-driven tickers it had no technical data for, triggering validation failures and blocking valid buys.
+- **AI prompt updated**: new signal family descriptions, three new entries in `key_signal` enum (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`), and split indicator guide into daily vs. intraday sections.
+- **1457 tests, 98.73% coverage, zero ruff violations.**
+
+---
 
 ### 1.17 — May 2026 — Pre-market order fill reconciliation
 

@@ -1,14 +1,24 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands
 
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+
 logger = logging.getLogger(__name__)
+
+_ET = ZoneInfo("America/New_York")
+_MARKET_OPEN_TIME = (9, 30)  # hour, minute ET
+_ORB_MINUTES = 30  # opening range window
 
 
 def fetch_stock_data(
@@ -253,3 +263,162 @@ def get_market_snapshots(
             if snap is not None:
                 snapshots.append(snap)
     return snapshots
+
+
+def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
+    """Fetch Alpaca minute bars from market open and compute intraday metrics.
+
+    Returns a dict keyed by symbol.  Each value contains:
+      gap_pct              — (open - prev_close) / prev_close * 100
+      intraday_change_pct  — (current - open) / open * 100
+      intraday_vol_ratio   — cumulative volume / expected volume at this time of day
+      price_above_vwap     — bool: current price > VWAP
+      pct_vs_vwap          — (current - vwap) / vwap * 100
+      orb_high / orb_low   — opening range (first _ORB_MINUTES minutes) high/low
+      orb_breakout_up      — current price crossed above orb_high with vol confirmation
+      orb_breakout_down    — current price crossed below orb_low
+      intraday_rsi         — RSI-14 computed on 5-minute bars (None if < 15 bars)
+
+    Returns an empty dict for any symbol where Alpaca data is unavailable.
+    Failures are per-symbol and silent so they never block the main pipeline.
+    """
+    if not symbols:
+        return {}
+
+    now_et = datetime.now(_ET)
+    market_open_et = now_et.replace(
+        hour=_MARKET_OPEN_TIME[0], minute=_MARKET_OPEN_TIME[1], second=0, microsecond=0
+    )
+
+    # Nothing to compute before market open
+    if now_et < market_open_et:
+        return {}
+
+    # Fetch from one day before open so we have previous close for gap calculation
+    start_utc = (market_open_et - timedelta(days=1)).astimezone(UTC)
+    end_utc = now_et.astimezone(UTC)
+
+    try:
+        data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        req = StockBarsRequest(
+            symbol_or_symbols=symbols,
+            timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+            start=start_utc,
+            end=end_utc,
+            feed="iex",
+        )
+        bars_response = data_client.get_stock_bars(req)
+    except Exception as e:
+        logger.warning(f"Intraday data fetch failed: {e}")
+        return {}
+
+    result: dict[str, dict] = {}
+
+    for sym in symbols:
+        try:
+            sym_bars = bars_response.get(sym)
+            if not sym_bars:
+                continue
+
+            df = pd.DataFrame(
+                [
+                    {
+                        "t": b.timestamp,
+                        "open": float(b.open),
+                        "high": float(b.high),
+                        "low": float(b.low),
+                        "close": float(b.close),
+                        "volume": float(b.volume),
+                    }
+                    for b in sym_bars
+                ]
+            )
+            df["t"] = pd.to_datetime(df["t"], utc=True).dt.tz_convert(_ET)
+            df = df.sort_values("t").reset_index(drop=True)
+
+            if df.empty:
+                continue
+
+            # Previous close = last bar before today's market open
+            pre_market = df[df["t"] < market_open_et]
+            today_bars = df[df["t"] >= market_open_et]
+
+            if today_bars.empty:
+                continue
+
+            prev_close = float(pre_market["close"].iloc[-1]) if not pre_market.empty else None
+            day_open = float(today_bars["open"].iloc[0])
+            current_price = float(today_bars["close"].iloc[-1])
+
+            # Gap
+            gap_pct = round((day_open / prev_close - 1) * 100, 2) if prev_close else None
+
+            # Intraday change (price action after the open)
+            intraday_change_pct = round((current_price / day_open - 1) * 100, 2)
+
+            # VWAP (typical price * volume method, cumulative from open)
+            typical = (today_bars["high"] + today_bars["low"] + today_bars["close"]) / 3
+            cum_tpv = (typical * today_bars["volume"]).cumsum()
+            cum_vol = today_bars["volume"].cumsum()
+            vwap = float((cum_tpv / cum_vol.replace(0, float("nan"))).iloc[-1])
+            price_above_vwap = current_price > vwap
+            pct_vs_vwap = round((current_price / vwap - 1) * 100, 2)
+
+            # Intraday volume pace
+            cum_volume = float(today_bars["volume"].sum())
+            intraday_cumvol = int(cum_volume)
+
+            # Opening range
+            orb_end = market_open_et + timedelta(minutes=_ORB_MINUTES)
+            orb_bars = today_bars[today_bars["t"] < orb_end]
+            post_orb = today_bars[today_bars["t"] >= orb_end]
+
+            orb_high = orb_low = None
+            orb_breakout_up = orb_breakout_down = False
+
+            if not orb_bars.empty:
+                orb_high = round(float(orb_bars["high"].max()), 2)
+                orb_low = round(float(orb_bars["low"].min()), 2)
+
+                if not post_orb.empty and orb_high and orb_low:
+                    # Breakout: post-ORB bar closed above/below the range
+                    post_closes = post_orb["close"]
+                    post_vols = post_orb["volume"]
+                    avg_orb_vol = float(orb_bars["volume"].mean()) if not orb_bars.empty else 1
+                    orb_breakout_up = bool(
+                        (post_closes > orb_high).any()
+                        and float(post_vols[post_closes > orb_high].mean()) > avg_orb_vol
+                    )
+                    orb_breakout_down = bool((post_closes < orb_low).any())
+
+            # Intraday RSI on 5-minute bars
+            intraday_rsi = None
+            five_min = today_bars.set_index("t")["close"].resample("5min").last().dropna()
+            if len(five_min) >= 15:
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    intraday_rsi = round(
+                        float(RSIIndicator(close=five_min, window=14).rsi().iloc[-1]), 1
+                    )
+
+            result[sym] = {
+                "gap_pct": gap_pct,
+                "intraday_change_pct": intraday_change_pct,
+                "intraday_cumvol": intraday_cumvol,
+                "price_above_vwap": price_above_vwap,
+                "pct_vs_vwap": pct_vs_vwap,
+                "vwap": round(vwap, 2),
+                "orb_high": orb_high,
+                "orb_low": orb_low,
+                "orb_breakout_up": orb_breakout_up,
+                "orb_breakout_down": orb_breakout_down,
+                "intraday_rsi": intraday_rsi,
+            }
+
+        except Exception as e:
+            logger.debug(f"Intraday metrics failed for {sym}: {e}")
+            continue
+
+    logger.info(f"Intraday data: {len(result)}/{len(symbols)} symbols enriched")
+    return result

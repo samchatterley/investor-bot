@@ -32,6 +32,12 @@ You focus on these signal families:
   price breaks out of that compression with volume, it often accelerates
 - Trend pullback (trend_pullback): uptrend intact (EMA9 > EMA21), price has pulled back to
   within 0.5–3% below EMA21, RSI between 40–58 — buy the dip in a healthy trend
+- VWAP reclaim (vwap_reclaim): price moved above VWAP intraday with positive momentum and not
+  extended — institutional support confirmed, high-probability continuation
+- Opening range breakout (orb_breakout): price broke above the first-30-minute high with
+  above-average volume — classic intraday momentum signal valid all session
+- Intraday momentum (intraday_momentum): stock up >2% from open, above VWAP, intraday RSI not
+  overbought, and daily trend confirms — catches moves that develop during the session
 
 You are disciplined: you only recommend trades with high conviction. You do NOT chase
 already-extended moves. You protect capital — recommending SELL on positions showing
@@ -121,6 +127,9 @@ _DECISION_TOOL = {
                                 "rs_leader",
                                 "inside_day_breakout",
                                 "trend_pullback",
+                                "vwap_reclaim",
+                                "orb_breakout",
+                                "intraday_momentum",
                                 "unknown",
                             ],
                         },
@@ -346,6 +355,7 @@ TODAY'S MARKET SNAPSHOTS (technical indicators):
 {snapshots_json}
 
 INDICATOR GUIDE:
+Daily indicators (based on close prices):
 - rsi_14: <30 oversold (reversal up), >70 overbought (caution)
 - macd_diff: positive = bullish momentum; macd_crossed_up = fresh buy signal
 - ema9_above_ema21: true = uptrend confirmed
@@ -359,6 +369,15 @@ INDICATOR GUIDE:
 - rel_strength_10d: 10-day return minus SPY return (positive = sustained outperformance)
 - is_inside_day: true = today's range was contained within the previous day's range (coiling)
 - weekly_trend_up: true = weekly trend is upward (buy candidates failing this are blocked upstream)
+
+Intraday indicators (from Alpaca minute bars; absent if market not yet open or data unavailable):
+- gap_pct: (today's open − yesterday's close) / yesterday's close × 100; positive = gap up
+- intraday_change_pct: (current price − today's open) / open × 100; measures post-open momentum
+- price_above_vwap / pct_vs_vwap: position relative to VWAP; above = institutional bid side
+- orb_high / orb_low: first-30-minute range high and low
+- orb_breakout_up: true = price broke above orb_high with volume confirmation
+- intraday_rsi: RSI-14 on 5-minute bars; >75 = short-term overbought, <30 = short-term oversold
+- intraday_cumvol: cumulative shares traded today (compare to avg_volume for pacing context)
 
 PRE-FILTER NOTE: All buy candidates in the snapshots below have already passed a rule-based
 technical screen (confirmed momentum or oversold signal with volume). Your role is to rank

@@ -230,6 +230,35 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         pct_ema21 = s.get("price_vs_ema21_pct", 0)
         trend_pullback = ema_up and -3.0 <= pct_ema21 <= -0.5 and 40 <= rsi <= 58 and vol > 1.0
 
+        # ── Intraday signals (only present when Alpaca intraday fetch succeeded) ──
+        # VWAP reclaim: price moved above VWAP with positive intraday momentum —
+        # institutional support level confirmed, high-probability continuation.
+        intraday_chg = s.get("intraday_change_pct")
+        above_vwap = s.get("price_above_vwap")
+        pct_vwap = s.get("pct_vs_vwap", 0)
+        vwap_reclaim = (
+            above_vwap is True
+            and intraday_chg is not None
+            and intraday_chg > 1.0
+            and pct_vwap <= 3.0  # not so extended above VWAP that it's a chase
+        )
+
+        # Opening range breakout: price broke above the first-30-min range with
+        # above-average volume — classic intraday momentum signal.
+        orb_breakout = s.get("orb_breakout_up", False) is True
+
+        # Intraday momentum: stock is up meaningfully from open, above VWAP,
+        # and daily technicals confirm the trend — catch moves that develop during
+        # the session rather than only at the open.
+        id_rsi = s.get("intraday_rsi")
+        intraday_momentum = (
+            intraday_chg is not None
+            and intraday_chg > 2.0
+            and above_vwap is True
+            and (id_rsi is None or id_rsi < 75)  # not overbought on 5-min bars
+            and (ema_up or ret_5d > 3.0)  # daily trend supports the move
+        )
+
         matched = []
         if mean_reversion:
             matched.append("mean_reversion")
@@ -247,6 +276,12 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("inside_day_breakout")
         if trend_pullback:
             matched.append("trend_pullback")
+        if vwap_reclaim:
+            matched.append("vwap_reclaim")
+        if orb_breakout:
+            matched.append("orb_breakout")
+        if intraday_momentum:
+            matched.append("intraday_momentum")
 
         if not matched:
             continue

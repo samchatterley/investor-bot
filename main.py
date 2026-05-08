@@ -3,7 +3,7 @@ Daily trading run.
 
 Usage:
     python main.py                     # Full cycle at market open
-    python main.py --mode midday       # Manage positions, partial exits, no new buys
+    python main.py --mode midday       # Manage positions, partial exits, buys on intraday signals
     python main.py --mode close        # Final review before close
     python main.py --dry-run           # Analyse only, no orders placed
     python main.py --kill-switch       # Emergency: cancel all orders, close all positions, halt bot
@@ -775,6 +775,13 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         logger.error("No market data. Aborting.")
         return
 
+    # ── Intraday enrichment (VWAP, ORB, gap, intraday momentum) ─────────────
+    intraday = market_data.get_intraday_data([s["symbol"] for s in snapshots])
+    if intraday:
+        for snap in snapshots:
+            if snap["symbol"] in intraday:
+                snap.update(intraday[snap["symbol"]])
+
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in held_symbols]
     candidate_snaps = [s for s in snapshots if s["symbol"] not in held_symbols]
@@ -833,8 +840,12 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         logger.info(f"Options signals fetched for: {list(options_sigs.keys())}")
 
     # ── News (sanitized against prompt injection) ─────────────────────────────
+    # Restrict to symbols the AI actually received snapshots for — sending news
+    # for prefilter-rejected top movers causes the AI to recommend them despite
+    # having no snapshot data, producing validator rejections on every run.
     logger.info("Fetching news and sentiment...")
-    raw_news = news_fetcher.fetch_news(scan_symbols)
+    news_symbols = list(ai_known_symbols)
+    raw_news = news_fetcher.fetch_news(news_symbols)
     news = sanitize_headlines(raw_news)
 
     sent = sentiment_module.get_sentiment(list(held_symbols) + top_movers[:10])
@@ -981,9 +992,11 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                 all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
             executed_symbols.add(symbol)
 
-    # ── Execute buys (open mode only; midday/close are position-management runs) ──
+    # ── Execute buys (open + midday modes; close/open_sells are exits only) ────
+    # midday is now eligible for buys because intraday signals (VWAP, ORB,
+    # intraday_momentum) surface setups that develop after the open.
     skip_buys = (
-        mode in ("midday", "close", "open_sells")
+        mode in ("close", "open_sells")
         or cb_triggered
         or regime.get("is_bearish")
         or macro.get("is_high_risk")
@@ -992,8 +1005,8 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     )
     if skip_buys:
         reasons = []
-        if mode in ("midday", "close"):
-            reasons.append(f"{mode} mode")
+        if mode == "close":
+            reasons.append("close mode")
         if cb_triggered:
             reasons.append("circuit breaker")
         if regime.get("is_bearish"):
