@@ -519,25 +519,24 @@ By signal:
 **All signals including intraday (11 signals, via Alpaca minute bars):**
 ```
 Initial capital:   $25,000
-Final value:       $28,430
-Total return:      +13.7%
-Total trades:      620
+Final value:       $36,171
+Total return:      +44.7%
+Total trades:      619
 Win rate:          52%
-Avg return/trade:  +0.17%
-Max drawdown:      -23.9%
-Sharpe ratio:      0.52
+Avg return/trade:  +0.37%
+Max drawdown:      -30.8%
+Sharpe ratio:      1.10
 
 By signal:
-  orb_breakout         393 trades  WR 53%  avg +0.20%
-  mean_reversion       170 trades  WR 48%  avg -0.07%
-  bb_squeeze            35 trades  WR 57%  avg +1.09%
-  trend_pullback        16 trades  WR 56%  avg +0.73%
-  vwap_reclaim           3 trades  WR 67%  avg -0.09%
-  inside_day_breakout    2 trades  WR  0%  avg -3.40%
-  macd_crossover         1 trade   WR  0%  avg -1.61%
+  bb_squeeze           294 trades  WR 48%  avg -0.18%
+  rs_leader            182 trades  WR 60%  avg +0.87%
+  breakout_52w         124 trades  WR 56%  avg +1.04%
+  macd_crossover         2 trades  WR 50%  avg -0.72%
+  trend_pullback         3 trades  WR  0%  avg -4.62%
+  orb_breakout          10 trades  WR 30%  avg -0.52%
+  mean_reversion         3 trades  WR 33%  avg +1.49%
+  inside_day_breakout    1 trade   WR 100% avg +7.27%
 ```
-
-> **Simulation note:** In the intraday run the ORB signal (393 trades) dominates candidate selection. Because slot allocation sorts by ascending RSI, strongly-trending signals like `rs_leader`, `momentum`, and `breakout_52w` — which typically fire on high-RSI stocks — are crowded out on busy days. This is a known limitation of the candidate-ranking heuristic, not a signal deficiency; it will be addressed in a future multi-signal portfolio allocation pass.
 
 ### Backtest caveats
 
