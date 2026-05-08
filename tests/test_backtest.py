@@ -15,6 +15,7 @@ import pandas as pd
 from backtest.engine import (
     _CORE_COLS,
     _DEFAULT_PARAMS,
+    _SIGNAL_PRIORITY,
     _compute_indicators,
     _compute_intraday_day,
     _entry_signal,
@@ -1128,6 +1129,181 @@ def _build_indicator_df(idx, close_vals, open_vals=None, include_open=True):
             else [c * 0.999 if c is not None else None for c in close_vals]
         )
     return pd.DataFrame(data, index=idx)
+
+
+class TestSignalPriority(unittest.TestCase):
+    """Tests for _SIGNAL_PRIORITY dict and slot-allocation sort order."""
+
+    _ALL_SIGNALS = [
+        "mean_reversion",
+        "momentum",
+        "macd_crossover",
+        "bb_squeeze",
+        "inside_day_breakout",
+        "trend_pullback",
+        "breakout_52w",
+        "rs_leader",
+        "vwap_reclaim",
+        "orb_breakout",
+        "intraday_momentum",
+    ]
+
+    def test_all_signals_in_priority_dict(self):
+        for sig in self._ALL_SIGNALS:
+            self.assertIn(sig, _SIGNAL_PRIORITY, f"{sig} missing from _SIGNAL_PRIORITY")
+
+    def test_high_edge_signals_rank_above_orb(self):
+        for sig in ("bb_squeeze", "breakout_52w", "rs_leader", "momentum"):
+            self.assertLess(
+                _SIGNAL_PRIORITY[sig],
+                _SIGNAL_PRIORITY["orb_breakout"],
+                f"{sig} should outrank orb_breakout",
+            )
+
+    def test_slot_allocation_prefers_bb_squeeze_over_orb(self):
+        """When one slot is available and both bb_squeeze and orb fire, bb_squeeze wins."""
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        trading_dates = idx[1:]
+
+        # AAPL: indicators fire bb_squeeze (bb_squeeze=True, ema9>ema21, vol_ratio>1.2)
+        n = len(idx)
+        aapl_data = {
+            "Close": [100.0, 100.0, 101.0],
+            "Open": [99.5, 99.5, 100.5],
+            "Volume": [2_000_000] * n,
+            "rsi": [55.0] * n,
+            "bb_pct": [0.5] * n,
+            "vol_ratio": [1.5] * n,
+            "ema9": [101.0] * n,
+            "ema21": [100.0] * n,
+            "macd_diff": [0.5] * n,
+            "ret_5d": [2.0] * n,
+            "bb_squeeze": [True] * n,
+            "macd_cross": [False] * n,
+            "ret_10d": [4.0] * n,
+            "pct_vs_ema21": [1.0] * n,
+            "price_vs_52w_high_pct": [-50.0] * n,
+            "is_inside_day": [False] * n,
+        }
+        aapl_df = pd.DataFrame(aapl_data, index=idx)
+
+        # MSFT: indicators that would fire orb_breakout (via intraday) but not any daily signal
+        msft_data = {
+            "Close": [200.0, 200.0, 201.0],
+            "Open": [199.5, 199.5, 200.5],
+            "Volume": [2_000_000] * n,
+            "rsi": [50.0] * n,  # neutral RSI — no daily signal fires
+            "bb_pct": [0.5] * n,
+            "vol_ratio": [1.0] * n,  # below vol threshold for daily signals
+            "ema9": [99.0] * n,  # ema9 < ema21 — blocks momentum / bb_squeeze
+            "ema21": [100.0] * n,
+            "macd_diff": [-0.1] * n,  # negative — blocks several signals
+            "ret_5d": [0.5] * n,
+            "bb_squeeze": [False] * n,
+            "macd_cross": [False] * n,
+            "ret_10d": [1.0] * n,
+            "pct_vs_ema21": [0.0] * n,
+            "price_vs_52w_high_pct": [-50.0] * n,
+            "is_inside_day": [False] * n,
+        }
+        msft_df = pd.DataFrame(msft_data, index=idx)
+
+        intraday = {
+            "MSFT": {
+                idx[1].strftime("%Y-%m-%d"): {
+                    "orb_breakout_up": True,
+                    "price_above_vwap": False,
+                    "intraday_change_pct": None,
+                    "pct_vs_vwap": 0.0,
+                }
+            }
+        }
+
+        result = _run_simulation(
+            {"AAPL": aapl_df, "MSFT": msft_df},
+            trading_dates,
+            initial_capital=10_000.0,
+            max_positions=1,
+            max_hold_days=2,
+            intraday_data=intraday,
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        bought_symbols = [t["symbol"] for t in buy_trades]
+        # AAPL (bb_squeeze, priority 0) should win over MSFT (orb_breakout, priority 8)
+        self.assertIn("AAPL", bought_symbols)
+        self.assertNotIn("MSFT", bought_symbols)
+
+    def test_mean_reversion_beats_orb_when_competing(self):
+        """mean_reversion (priority 7) should win over orb_breakout (priority 8)."""
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        trading_dates = idx[1:]
+        n = len(idx)
+
+        # AAPL: fires mean_reversion (low RSI, low bb_pct, high vol)
+        aapl_data = {
+            "Close": [100.0] * n,
+            "Open": [99.5] * n,
+            "Volume": [2_000_000] * n,
+            "rsi": [28.0] * n,
+            "bb_pct": [0.15] * n,
+            "vol_ratio": [1.5] * n,
+            "ema9": [99.0] * n,
+            "ema21": [100.0] * n,
+            "macd_diff": [-0.1] * n,
+            "ret_5d": [0.5] * n,
+            "bb_squeeze": [False] * n,
+            "macd_cross": [False] * n,
+            "ret_10d": [1.0] * n,
+            "pct_vs_ema21": [0.0] * n,
+            "price_vs_52w_high_pct": [-50.0] * n,
+            "is_inside_day": [False] * n,
+        }
+        aapl_df = pd.DataFrame(aapl_data, index=idx)
+
+        # MSFT: neutral daily indicators, orb_breakout via intraday
+        msft_data = {
+            "Close": [200.0] * n,
+            "Open": [199.5] * n,
+            "Volume": [2_000_000] * n,
+            "rsi": [50.0] * n,
+            "bb_pct": [0.5] * n,
+            "vol_ratio": [1.0] * n,
+            "ema9": [99.0] * n,
+            "ema21": [100.0] * n,
+            "macd_diff": [-0.1] * n,
+            "ret_5d": [0.5] * n,
+            "bb_squeeze": [False] * n,
+            "macd_cross": [False] * n,
+            "ret_10d": [1.0] * n,
+            "pct_vs_ema21": [0.0] * n,
+            "price_vs_52w_high_pct": [-50.0] * n,
+            "is_inside_day": [False] * n,
+        }
+        msft_df = pd.DataFrame(msft_data, index=idx)
+
+        intraday = {
+            "MSFT": {
+                idx[1].strftime("%Y-%m-%d"): {
+                    "orb_breakout_up": True,
+                    "price_above_vwap": False,
+                    "intraday_change_pct": None,
+                    "pct_vs_vwap": 0.0,
+                }
+            }
+        }
+
+        result = _run_simulation(
+            {"AAPL": aapl_df, "MSFT": msft_df},
+            trading_dates,
+            initial_capital=10_000.0,
+            max_positions=1,
+            max_hold_days=2,
+            intraday_data=intraday,
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        bought_symbols = [t["symbol"] for t in buy_trades]
+        self.assertIn("AAPL", bought_symbols)
+        self.assertNotIn("MSFT", bought_symbols)
 
 
 class TestRunSimulationEdgeCases(unittest.TestCase):

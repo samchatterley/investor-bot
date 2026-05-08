@@ -43,6 +43,23 @@ _ET = ZoneInfo("America/New_York")
 # Core indicator columns that must be non-NaN for a row to be used
 _CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5d"]
 
+# Signal priority for candidate slot allocation (lower number = higher priority).
+# Ranked by selectivity and observed avg return. Intraday signals rank below daily
+# because they fire on a much larger fraction of symbol-days.
+_SIGNAL_PRIORITY: dict[str, int] = {
+    "bb_squeeze": 0,
+    "breakout_52w": 1,
+    "rs_leader": 2,
+    "inside_day_breakout": 3,
+    "momentum": 4,
+    "macd_crossover": 5,
+    "trend_pullback": 6,
+    "mean_reversion": 7,
+    "orb_breakout": 8,
+    "vwap_reclaim": 9,
+    "intraday_momentum": 10,
+}
+
 # Default signal thresholds — match the prefilter rules in stock_scanner.py
 _DEFAULT_PARAMS: dict[str, float] = {
     "rsi_threshold": 35.0,
@@ -454,7 +471,15 @@ def _run_simulation(
             if signal:
                 candidates.append((sym, signal, float(prev_row["rsi"])))
 
-        candidates.sort(key=lambda x: x[2])
+        def _sort_key(item: tuple) -> tuple:
+            _, sig, rsi = item
+            priority = _SIGNAL_PRIORITY.get(sig, 99)
+            # mean_reversion: ascending RSI (most oversold first)
+            # everything else: descending RSI distance from neutral (strongest confirmation first)
+            rsi_key = rsi if sig == "mean_reversion" else -abs(rsi - 50)
+            return (priority, rsi_key)
+
+        candidates.sort(key=_sort_key)
         for sym, signal, _ in candidates[:slots]:
             try:
                 try:
