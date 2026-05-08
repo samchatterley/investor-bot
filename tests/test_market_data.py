@@ -581,3 +581,16 @@ class TestGetMarketSnapshots(unittest.TestCase):
         ):
             result = get_market_snapshots([])
         self.assertEqual(result, [])
+
+
+class TestSpyReturnFromPreloadedException(unittest.TestCase):
+    """Lines 221-222: exception in _spy_return_from_preloaded returns None."""
+
+    def test_exception_returns_none(self):
+        from data.market_data import _spy_return_from_preloaded
+
+        idx = pd.bdate_range("2025-01-01", periods=20)
+        spy_df = pd.DataFrame({"Close": [100.0 + i for i in range(20)]}, index=idx)
+        # "not-a-date" causes pd.Timestamp to raise ValueError → except branch fires
+        result = _spy_return_from_preloaded({"SPY": spy_df}, "not-a-date", 5)
+        self.assertIsNone(result)

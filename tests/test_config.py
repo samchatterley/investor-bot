@@ -72,6 +72,28 @@ class TestValidate(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.validate()
 
+    def test_max_deployed_usd_negative_fails(self):
+        self._patch("MAX_DEPLOYED_USD", -1.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_max_daily_loss_usd_negative_fails(self):
+        self._patch("MAX_DAILY_LOSS_USD", -1.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_max_experiment_drawdown_usd_negative_fails(self):
+        self._patch("MAX_EXPERIMENT_DRAWDOWN_USD", -1.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_small_account_single_order_exceeds_daily_notional_fails(self):
+        self._patch("SMALL_ACCOUNT_MODE", True)
+        self._patch("MAX_SINGLE_ORDER_USD", 1000.0)
+        self._patch("MAX_DAILY_NOTIONAL_USD", 500.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
     def test_audit_config_event_suppresses_write_error(self):
         with patch("utils.audit_log._write", side_effect=RuntimeError("disk full")):
             # Must not raise — the except clause suppresses all exceptions

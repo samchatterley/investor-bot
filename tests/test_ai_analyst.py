@@ -465,3 +465,13 @@ class TestBuildPromptPositionAges(unittest.TestCase):
     def test_no_ages_block_when_none(self):
         result = self._build(position_ages=None)
         self.assertNotIn("CURRENT POSITION AGES", result)
+
+
+class TestRecordLlmCallAuditException(unittest.TestCase):
+    """Lines 428-429: exception in _record_llm_call_audit is swallowed."""
+
+    def test_audit_log_exception_does_not_propagate(self):
+        from analysis.ai_analyst import _record_llm_call_audit
+
+        with patch("utils.audit_log.log_event", side_effect=RuntimeError("disk full")):
+            _record_llm_call_audit("run-1", "abc123", "raw response text")

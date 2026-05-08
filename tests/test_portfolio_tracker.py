@@ -358,3 +358,60 @@ class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
         # Non-ISO date triggers ValueError → falls back to today()
         result = _weekly_log_dir("not-a-date-at-all!!")
         self.assertTrue(os.path.isdir(result))
+
+
+class TestExperimentBaseline(PortfolioTrackerBase):
+    """Lines 209-220, 225-230: save/load_experiment_baseline."""
+
+    def _experiment_path(self):
+        return os.path.join(self.tmpdir, "experiment_baseline.json")
+
+    def test_save_writes_file(self):
+        import json
+
+        from utils.portfolio_tracker import save_experiment_baseline
+
+        path = self._experiment_path()
+        with patch("utils.portfolio_tracker._EXPERIMENT_BASELINE_PATH", path):
+            save_experiment_baseline(95_000.0)
+        self.assertTrue(os.path.exists(path))
+        with open(path) as f:
+            data = json.load(f)
+        self.assertAlmostEqual(data["portfolio_value"], 95_000.0)
+
+    def test_save_never_overwrites_existing(self):
+        import json
+
+        from utils.portfolio_tracker import save_experiment_baseline
+
+        path = self._experiment_path()
+        with open(path, "w") as f:
+            json.dump({"portfolio_value": 100_000.0}, f)
+
+        with patch("utils.portfolio_tracker._EXPERIMENT_BASELINE_PATH", path):
+            save_experiment_baseline(50_000.0)
+
+        with open(path) as f:
+            data = json.load(f)
+        self.assertAlmostEqual(data["portfolio_value"], 100_000.0)
+
+    def test_load_returns_stored_value(self):
+        import json
+
+        from utils.portfolio_tracker import load_experiment_baseline
+
+        path = self._experiment_path()
+        with open(path, "w") as f:
+            json.dump({"set_at": "2026-01-15T09:00:00+00:00", "portfolio_value": 88_500.0}, f)
+
+        with patch("utils.portfolio_tracker._EXPERIMENT_BASELINE_PATH", path):
+            result = load_experiment_baseline()
+        self.assertAlmostEqual(result, 88_500.0)
+
+    def test_load_returns_none_when_file_missing(self):
+        from utils.portfolio_tracker import load_experiment_baseline
+
+        path = self._experiment_path()
+        with patch("utils.portfolio_tracker._EXPERIMENT_BASELINE_PATH", path):
+            result = load_experiment_baseline()
+        self.assertIsNone(result)

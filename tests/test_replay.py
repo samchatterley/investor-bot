@@ -95,6 +95,53 @@ class TestComputeRegime(unittest.TestCase):
         # Just verify it doesn't crash and returns a valid dict
         self.assertIn("regime", result)
 
+    def test_high_vol_regime_when_vix_high_and_spy_down(self):
+        """Line 87: vix > 25 and spy_5d < -3 and not bearish → HIGH_VOL."""
+        from backtest.replay import _compute_regime
+
+        n = 20
+        idx = pd.bdate_range("2025-01-01", periods=n)
+        closes = [100.0] * n
+        # spy_5d: close[-6]=104, close[-1]=100 → -3.85%; spy_1d: close[-2]=101 → -0.99% (not bearish)
+        closes[-6] = 104.0
+        closes[-5] = 103.5
+        closes[-4] = 103.0
+        closes[-3] = 102.5
+        closes[-2] = 101.0
+        closes[-1] = 100.0
+        spy = pd.DataFrame({"Close": closes}, index=idx)
+        vix_df = pd.DataFrame({"Close": [26.0] * n}, index=idx)
+        as_of = str(idx[-1].date())
+        result = _compute_regime({"SPY": spy, "^VIX": vix_df}, as_of)
+        self.assertEqual(result["regime"], "HIGH_VOL")
+
+    def test_bull_trending_regime_when_spy_strong(self):
+        """Line 89: spy_5d > 2 and spy_1d > 0 → BULL_TRENDING."""
+        from backtest.replay import _compute_regime
+
+        n = 20
+        idx = pd.bdate_range("2025-01-01", periods=n)
+        closes = [100.0] * n
+        # spy_5d: close[-6]=100, close[-1]=103 → +3%; spy_1d: close[-2]=102 → +0.98%
+        closes[-6] = 100.0
+        closes[-5] = 100.5
+        closes[-4] = 101.0
+        closes[-3] = 101.5
+        closes[-2] = 102.0
+        closes[-1] = 103.0
+        spy = pd.DataFrame({"Close": closes}, index=idx)
+        as_of = str(idx[-1].date())
+        result = _compute_regime({"SPY": spy}, as_of)
+        self.assertEqual(result["regime"], "BULL_TRENDING")
+
+    def test_compute_regime_exception_returns_unknown(self):
+        """Lines 100-102: invalid as_of causes Timestamp error → returns UNKNOWN."""
+        from backtest.replay import _compute_regime
+
+        spy = pd.DataFrame({"Close": [100.0]}, index=pd.bdate_range("2025-01-01", periods=1))
+        result = _compute_regime({"SPY": spy}, "not-a-valid-date")
+        self.assertEqual(result["regime"], "UNKNOWN")
+
 
 class TestBuildPreloaded(unittest.TestCase):
     def test_calls_yf_download_with_all_symbols(self):
@@ -139,6 +186,28 @@ class TestBuildPreloaded(unittest.TestCase):
             result = _build_preloaded(["AAPL"], date(2024, 1, 1), date(2024, 2, 1))
         self.assertIn("AAPL", result)
         self.assertIn("SPY", result)
+
+    def test_single_ticker_non_multiindex_with_data_stores_entry(self):
+        """Line 53: non-MultiIndex non-empty result → stored in preloaded."""
+        from backtest.replay import _build_preloaded
+
+        n = 5
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        single_df = pd.DataFrame(
+            {
+                "Open": [100.0] * n,
+                "High": [101.0] * n,
+                "Low": [99.0] * n,
+                "Close": [100.0] * n,
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+        # Columns is a plain Index, not MultiIndex
+        self.assertFalse(isinstance(single_df.columns, pd.MultiIndex))
+        with patch("backtest.replay.yf.download", return_value=single_df):
+            result = _build_preloaded(["SPY"], date(2024, 1, 1), date(2024, 6, 1))
+        self.assertGreater(len(result), 0)
 
 
 class TestRunHistoricalReplayDryRun(unittest.TestCase):
@@ -526,3 +595,209 @@ class TestSpyReturnFromPreloaded(unittest.TestCase):
         sliced = spy[spy.index <= pd.Timestamp(as_of)]
         expected = round((sliced["Close"].iloc[-1] / sliced["Close"].iloc[-6] - 1) * 100, 2)
         self.assertAlmostEqual(result, expected, places=4)
+
+
+class TestRunHistoricalReplayEdgeCases(unittest.TestCase):
+    """Cover edge-case branches in run_historical_replay."""
+
+    def _base_preloaded(self, aapl_end="2025-01-15"):
+        spy_idx = pd.bdate_range("2024-06-01", "2025-01-15")
+        spy = pd.DataFrame(
+            {"Open": 400.0, "High": 401.0, "Low": 399.0, "Close": 400.0, "Volume": 1e7},
+            index=spy_idx,
+        )
+        aapl_idx = pd.bdate_range("2024-06-01", aapl_end)
+        aapl = pd.DataFrame(
+            {"Open": 150.0, "High": 151.0, "Low": 149.0, "Close": 150.0, "Volume": 5e6},
+            index=aapl_idx,
+        )
+        return {"SPY": spy, "AAPL": aapl}
+
+    def _snap(self, symbol="AAPL", price=150.0):
+        return [{"symbol": symbol, "current_price": price, "ret_5d_pct": 2.0, "ret_10d_pct": 3.0}]
+
+    def test_no_data_downloaded_returns_error(self):
+        """Lines 140-141: _build_preloaded returns empty dict → error."""
+        from backtest.replay import run_historical_replay
+
+        with patch("backtest.replay._build_preloaded", return_value={}):
+            result = run_historical_replay(
+                symbols=["AAPL"], start_date="2025-01-06", end_date="2025-01-10"
+            )
+        self.assertIn("error", result)
+        self.assertIn("no data downloaded", result["error"])
+
+    def test_no_trading_dates_in_range_returns_error(self):
+        """Line 151: SPY data has no dates inside the requested range → error."""
+        from backtest.replay import run_historical_replay
+
+        old_idx = pd.bdate_range("2020-01-01", "2020-12-31")
+        spy = pd.DataFrame(
+            {"Open": 300.0, "High": 301.0, "Low": 299.0, "Close": 300.0, "Volume": 1e7},
+            index=old_idx,
+        )
+        with patch("backtest.replay._build_preloaded", return_value={"SPY": spy}):
+            result = run_historical_replay(
+                symbols=["AAPL"], start_date="2025-01-06", end_date="2025-01-10"
+            )
+        self.assertIn("error", result)
+
+    def test_empty_snapshots_skips_day(self):
+        """Lines 173-174: empty snapshots → day skipped with warning, no trades."""
+        from backtest.replay import run_historical_replay
+
+        with (
+            patch("backtest.replay._build_preloaded", return_value=self._base_preloaded()),
+            patch("backtest.replay.market_data.get_market_snapshots", return_value=[]),
+            patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+            patch(
+                "analysis.ai_analyst.get_trading_decisions",
+                return_value={"buy_candidates": [], "position_decisions": []},
+            ),
+        ):
+            result = run_historical_replay(
+                symbols=["AAPL"],
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                initial_capital=100_000.0,
+                dry_run=False,
+            )
+        self.assertEqual(result["all_trades"], [])
+
+    def test_ai_call_exception_treated_as_empty_decisions(self):
+        """Lines 243-245: AI raises → decisions = {} → no buys that day."""
+        from backtest.replay import run_historical_replay
+
+        with (
+            patch("backtest.replay._build_preloaded", return_value=self._base_preloaded()),
+            patch("backtest.replay.market_data.get_market_snapshots", return_value=self._snap()),
+            patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+            patch(
+                "analysis.ai_analyst.get_trading_decisions",
+                side_effect=RuntimeError("api timeout"),
+            ),
+        ):
+            result = run_historical_replay(
+                symbols=["AAPL"],
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                initial_capital=100_000.0,
+                dry_run=False,
+            )
+        buys = [t for t in result["all_trades"] if t["action"] == "BUY"]
+        self.assertEqual(buys, [])
+
+    def test_sell_signal_for_unheld_symbol_skipped(self):
+        """Line 284: SELL decision for symbol not in positions → continue."""
+        from backtest.replay import run_historical_replay
+
+        decisions = {
+            "buy_candidates": [],
+            "position_decisions": [{"symbol": "GOOG", "action": "SELL", "reasoning": "exit"}],
+        }
+        with (
+            patch("backtest.replay._build_preloaded", return_value=self._base_preloaded()),
+            patch("backtest.replay.market_data.get_market_snapshots", return_value=self._snap()),
+            patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+            patch("analysis.ai_analyst.get_trading_decisions", return_value=decisions),
+        ):
+            result = run_historical_replay(
+                symbols=["AAPL"],
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                initial_capital=100_000.0,
+                dry_run=False,
+            )
+        sells = [t for t in result["all_trades"] if t["action"] == "SELL"]
+        self.assertEqual(sells, [])
+
+    def test_fallback_exit_price_when_no_next_day_open(self):
+        """Lines 294-295: no Open data for exit date → fallback to snapshot price."""
+        from backtest.replay import run_historical_replay
+
+        # AAPL preloaded ends Jan 8; exit at Jan 9 Open → no data → fallback
+        preloaded = self._base_preloaded(aapl_end="2025-01-08")
+        buy_decisions = {
+            "buy_candidates": [{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}],
+            "position_decisions": [],
+        }
+        with (
+            patch("backtest.replay._build_preloaded", return_value=preloaded),
+            patch("backtest.replay.market_data.get_market_snapshots", return_value=self._snap()),
+            patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+            patch("analysis.ai_analyst.get_trading_decisions", return_value=buy_decisions),
+        ):
+            result = run_historical_replay(
+                symbols=["AAPL"],
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                initial_capital=100_000.0,
+                max_hold_days=1,
+                dry_run=False,
+            )
+        sells = [t for t in result["all_trades"] if t["action"] == "SELL"]
+        self.assertGreater(len(sells), 0)
+
+    def test_entry_px_none_when_symbol_not_in_preloaded(self):
+        """Line 341: buy candidate absent from preloaded → entry_px=None → skipped."""
+        from backtest.replay import run_historical_replay
+
+        # Only SPY in preloaded — GOOG buy candidate has no data
+        spy_idx = pd.bdate_range("2024-06-01", "2025-01-15")
+        spy = pd.DataFrame(
+            {"Open": 400.0, "High": 401.0, "Low": 399.0, "Close": 400.0, "Volume": 1e7},
+            index=spy_idx,
+        )
+        decisions = {
+            "buy_candidates": [{"symbol": "GOOG", "confidence": 9, "key_signal": "momentum"}],
+            "position_decisions": [],
+        }
+        snap = [{"symbol": "GOOG", "current_price": 150.0, "ret_5d_pct": 2.0, "ret_10d_pct": 3.0}]
+        with (
+            patch("backtest.replay._build_preloaded", return_value={"SPY": spy}),
+            patch("backtest.replay.market_data.get_market_snapshots", return_value=snap),
+            patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+            patch("analysis.ai_analyst.get_trading_decisions", return_value=decisions),
+        ):
+            result = run_historical_replay(
+                symbols=["GOOG"],
+                start_date="2025-01-06",
+                end_date="2025-01-10",
+                initial_capital=100_000.0,
+                dry_run=False,
+            )
+        buys = [t for t in result["all_trades"] if t["action"] == "BUY"]
+        self.assertEqual(buys, [])
+
+    def test_cost_exceeds_cash_skips_buy(self):
+        """Line 350: injected min() makes notional > cash → buy skipped."""
+        import backtest.replay as _replay_mod
+        from backtest.replay import run_historical_replay
+
+        decisions = {
+            "buy_candidates": [{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}],
+            "position_decisions": [],
+        }
+        # Override min() in module globals so notional = b * 25 > cash
+        _replay_mod.min = lambda a, b: b * 25.0
+        try:
+            with (
+                patch("backtest.replay._build_preloaded", return_value=self._base_preloaded()),
+                patch(
+                    "backtest.replay.market_data.get_market_snapshots",
+                    return_value=self._snap(),
+                ),
+                patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
+                patch("analysis.ai_analyst.get_trading_decisions", return_value=decisions),
+            ):
+                result = run_historical_replay(
+                    symbols=["AAPL"],
+                    start_date="2025-01-06",
+                    end_date="2025-01-10",
+                    initial_capital=100_000.0,
+                    dry_run=False,
+                )
+        finally:
+            del _replay_mod.min
+        buys = [t for t in result["all_trades"] if t["action"] == "BUY"]
+        self.assertEqual(buys, [])

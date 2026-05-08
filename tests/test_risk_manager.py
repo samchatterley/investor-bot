@@ -1,4 +1,6 @@
+import builtins
 import unittest
+from unittest.mock import patch
 
 from risk.risk_manager import (
     check_circuit_breaker,
@@ -189,3 +191,15 @@ class TestCircuitBreakerEdgeCases(unittest.TestCase):
         history = [_r(0), _r(0), _r(0), _r(0), _r(0)]
         triggered, drawdown = check_circuit_breaker(history)
         self.assertFalse(triggered)
+
+    def test_peak_zero_guard_line_covered(self):
+        """Line 34: peak <= 0 guard — patch max() to simulate edge case."""
+
+        def _r(v):
+            return {"account_after": {"portfolio_value": v}}
+
+        history = [_r(1_000), _r(1_000), _r(1_000), _r(1_000), _r(1_000)]
+        with patch.object(builtins, "max", return_value=0.0):
+            triggered, drawdown = check_circuit_breaker(history)
+        self.assertFalse(triggered)
+        self.assertEqual(drawdown, 0.0)

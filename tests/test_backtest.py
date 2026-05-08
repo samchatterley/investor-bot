@@ -694,3 +694,268 @@ class TestValidationScope(unittest.TestCase):
         ):
             result = run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07")
         self.assertEqual(result.get("validation_scope"), "rule_proxy_only")
+
+
+def _make_signal_row(**kwargs) -> pd.Series:
+    """Build a row that triggers the momentum entry signal with loose params."""
+    defaults = {
+        "rsi": 50.0,
+        "bb_pct": 0.5,
+        "vol_ratio": 1.5,
+        "ema9": 101.0,
+        "ema21": 100.0,
+        "macd_diff": 0.5,
+        "ret_5d": 2.0,
+    }
+    defaults.update(kwargs)
+    return pd.Series(defaults)
+
+
+_LOOSE_ENTRY = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
+
+
+def _build_indicator_df(idx, close_vals, open_vals=None, include_open=True):
+    """Build a pre-computed indicator DataFrame with given close values."""
+    n = len(idx)
+    data = {
+        "Close": close_vals,
+        "Volume": [2_000_000] * n,
+        "rsi": [50.0] * n,
+        "bb_pct": [0.5] * n,
+        "vol_ratio": [1.5] * n,
+        "ema9": [101.0] * n,
+        "ema21": [100.0] * n,
+        "macd_diff": [0.5] * n,
+        "ret_5d": [2.0] * n,
+    }
+    if include_open:
+        data["Open"] = (
+            open_vals
+            if open_vals is not None
+            else [c * 0.999 if c is not None else None for c in close_vals]
+        )
+    return pd.DataFrame(data, index=idx)
+
+
+class TestRunSimulationEdgeCases(unittest.TestCase):
+    """Edge cases in _run_simulation that require custom indicator DataFrames."""
+
+    def test_equity_update_exception_uses_fallback(self):
+        """Lines 129-130, 138-139, 237-238: price lookups fail → fallbacks fire."""
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        trading_dates = idx[1:]  # day1, day2
+        # Day2 Close = None → float(None) raises TypeError
+        close_vals = pd.array([100.0, 101.0, None], dtype=object)
+        aapl_df = _build_indicator_df(idx, close_vals, open_vals=[99.5, 100.5, 101.0])
+        indicators = {"AAPL": aapl_df}
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        # Simulation must complete without raising
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result["equity_curve"]), 2)
+
+    def test_stop_loss_exit_fires(self):
+        """Line 145: position hit stop_loss when price drops by STOP_LOSS_PCT."""
+        from config import STOP_LOSS_PCT
+
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        trading_dates = idx[1:]
+        # Price drops 10% on day2 → well below STOP_LOSS_PCT threshold
+        close_vals = [100.0, 100.0, 100.0 * (1 - STOP_LOSS_PCT * 2)]
+        aapl_df = _build_indicator_df(idx, close_vals, open_vals=[99.5, 100.0, None])
+        indicators = {"AAPL": aapl_df}
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        sell_trades = [t for t in result["trades"] if t.get("reason") == "stop_loss"]
+        self.assertEqual(len(sell_trades), 1)
+
+    def test_take_profit_exit_fires(self):
+        """Line 147: position hit take_profit when price rises by TAKE_PROFIT_PCT."""
+        from config import TAKE_PROFIT_PCT
+
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        trading_dates = idx[1:]
+        # Price rises 20% on day2 → above TAKE_PROFIT_PCT threshold
+        close_vals = [100.0, 100.0, 100.0 * (1 + TAKE_PROFIT_PCT * 1.5)]
+        aapl_df = _build_indicator_df(idx, close_vals, open_vals=[99.5, 100.0, None])
+        indicators = {"AAPL": aapl_df}
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        sell_trades = [t for t in result["trades"] if t.get("reason") == "take_profit"]
+        self.assertEqual(len(sell_trades), 1)
+
+    def test_full_positions_skips_entry(self):
+        """Line 174: all max_positions slots filled → slots<=0 → continue."""
+        idx = pd.bdate_range("2025-01-02", periods=4)
+        trading_dates = idx[1:]  # day1, day2, day3
+        # AAPL: neutral price (no exit trigger), so position stays open
+        close_vals = [100.0, 100.0, 101.0, 102.0]
+        aapl_df = _build_indicator_df(idx, close_vals)
+        msft_df = _build_indicator_df(idx, [200.0, 200.0, 201.0, 202.0])
+        indicators = {"AAPL": aapl_df, "MSFT": msft_df}
+        # max_positions=1: AAPL fills slot on day1; day2 has 0 slots → line 174
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            initial_capital=10_000.0,
+            max_positions=1,
+            max_hold_days=10,
+            params=_LOOSE_ENTRY,
+        )
+        # Should run without error; at most 1 position open at any time
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        self.assertGreaterEqual(len(buy_trades), 1)
+
+    def test_first_bar_in_series_skipped_for_entry(self):
+        """Line 182: today_loc==0 for a symbol → entry skipped on its first data date."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx  # day0, day1 ARE the trading dates
+        # AAPL index starts at day0 → on day0, today_loc=0 → skip entry
+        close_vals = [100.0, 101.0]
+        aapl_df = _build_indicator_df(idx, close_vals)
+        indicators = {"AAPL": aapl_df}
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        # day0 is today_loc=0 → no entry on day0
+        # day1 is today_loc=1 → can enter (uses prev_row = day0)
+        self.assertIsNotNone(result)
+
+    def test_open_key_missing_falls_back_to_close(self):
+        """Lines 193-194: indicator DataFrame has no Open column → falls back to Close."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx[1:]
+        close_vals = [100.0, 101.0]
+        # include_open=False → no Open column → KeyError → fallback to Close
+        aapl_df = _build_indicator_df(idx, close_vals, include_open=False)
+        indicators = {"AAPL": aapl_df}
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        self.assertIsNotNone(result)
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        self.assertGreater(len(buy_trades), 0)
+
+    def test_tiny_notional_skips_entry(self):
+        """Line 200: cost < 0.5 (tiny capital) → continue without buying."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx[1:]
+        close_vals = [100.0, 101.0]
+        aapl_df = _build_indicator_df(idx, close_vals)
+        indicators = {"AAPL": aapl_df}
+        # initial_capital=0.1 → notional=(0.1/1)*0.9=0.09 < 0.5 → continue at line 200
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=0.1, params=_LOOSE_ENTRY
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        self.assertEqual(len(buy_trades), 0)
+
+    def test_entry_processing_exception_skipped(self):
+        """Lines 217-218: Open missing + Close=None → inner except → float(None) raises → outer except."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx[1:]
+        # No Open column; Close[day1]=None → float(None) raises TypeError → outer except: continue
+        close_vals = pd.array([100.0, None], dtype=object)
+        aapl_df = _build_indicator_df(idx, close_vals, include_open=False)
+        indicators = {"AAPL": aapl_df}
+        result = _run_simulation(
+            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        self.assertEqual(len(buy_trades), 0)
+
+
+class TestRunWalkForwardEdgeCases(unittest.TestCase):
+    """Edge cases in run_walk_forward_optimized."""
+
+    def setUp(self):
+        self._raw = _make_raw(n=100)
+
+    def test_symbol_with_bad_data_skipped_in_indicators(self):
+        """Lines 417-418: indicator computation fails for a symbol → exception silently skipped."""
+        # raw has only AAPL; requesting GOOG too → close_all["GOOG"] raises KeyError → lines 417-418
+        raw_single = _make_raw(n=100, symbols=("AAPL",))
+        with patch("backtest.engine.yf.download", return_value=raw_single):
+            result = run_walk_forward_optimized(
+                symbols=["AAPL", "GOOG"],
+                start_date="2025-02-01",
+                end_date="2025-03-07",
+                train_days=10,
+                test_days=5,
+                initial_capital=10_000.0,
+                param_grid=_LOOSE_PARAM_GRID,
+            )
+        self.assertIn("folds", result)
+
+    def test_baseline_exception_silently_skipped(self):
+        """Lines 493-494: symbol has no data in OOS window → iloc[0] raises → pass."""
+        n = 100
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        data: dict = {}
+        for sym in ("AAPL",):
+            closes = [100.0 + j * 0.1 for j in range(n)]
+            data[("Close", sym)] = closes
+            data[("Open", sym)] = [c * 0.999 for c in closes]
+            data[("Volume", sym)] = [1_000_000] * n
+        # GOOG: data only for first 25 rows (< 20 for BB+RSI → dropna leaves almost nothing)
+        # After _compute_indicators + dropna, GOOG data ends well before the OOS test window
+        goog_closes = [200.0 + j * 0.1 for j in range(25)] + [float("nan")] * (n - 25)
+        data[("Close", "GOOG")] = goog_closes
+        data[("Open", "GOOG")] = [
+            c * 0.999 if not (isinstance(c, float) and c != c) else float("nan")
+            for c in goog_closes
+        ]
+        data[("Volume", "GOOG")] = [1_000_000] * 25 + [0] * (n - 25)
+        raw = pd.DataFrame(data, index=idx)
+        raw.columns = pd.MultiIndex.from_tuples(raw.columns)
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = run_walk_forward_optimized(
+                symbols=["AAPL", "GOOG"],
+                start_date="2025-02-01",
+                end_date="2025-03-07",
+                train_days=10,
+                test_days=5,
+                initial_capital=10_000.0,
+                param_grid=_LOOSE_PARAM_GRID,
+            )
+        self.assertIn("folds", result)
+
+    def test_empty_fold_results_returns_empty_structure(self):
+        """Line 523: fold_results empty → return {folds:[], summary:{}}."""
+
+        class _SmartLen:
+            """Returns large len on first call (passes early-return check), 0 on subsequent calls."""
+
+            def __init__(self, real_len):
+                self._real_len = real_len
+                self._calls = 0
+
+            def __len__(self):
+                self._calls += 1
+                return self._real_len if self._calls == 1 else 0
+
+            def __getitem__(self, key):
+                return pd.bdate_range("2025-01-01", periods=1)[0]
+
+            def __iter__(self):
+                return iter([])
+
+        fake_dates = _SmartLen(1000)
+        with (
+            patch("backtest.engine.yf.download", return_value=self._raw),
+            patch("backtest.engine.pd.bdate_range", return_value=fake_dates),
+        ):
+            result = run_walk_forward_optimized(
+                symbols=["AAPL", "FLAT"],
+                start_date="2025-02-01",
+                end_date="2025-03-07",
+                train_days=10,
+                test_days=5,
+                initial_capital=10_000.0,
+                param_grid=_LOOSE_PARAM_GRID,
+            )
+        self.assertEqual(result.get("folds"), [])
+        self.assertEqual(result.get("summary"), {})

@@ -340,5 +340,40 @@ class TestWeeklyReview(unittest.TestCase):
                 self.fail(f"_weekly_review raised unexpectedly: {exc}")
 
 
+class TestWrapperFunctions(unittest.TestCase):
+    """Lines 56, 60, 64, 68: _open_sells, _open, _midday, _close delegate to _run."""
+
+    def _mod_with_bot(self):
+        mod = _load_scheduler_module()
+        mock_bot = MagicMock()
+        mod.bot = mock_bot
+        mod.config.HALT_FILE = "/tmp/.test_halt_wrappers"
+        return mod, mock_bot
+
+    def test_open_sells_delegates_to_run(self):
+        mod, mock_bot = self._mod_with_bot()
+        with patch("os.path.exists", return_value=False):
+            mod._open_sells()
+        mock_bot.run.assert_called_once_with(mode="open_sells")
+
+    def test_open_delegates_to_run(self):
+        mod, mock_bot = self._mod_with_bot()
+        with patch("os.path.exists", return_value=False):
+            mod._open()
+        mock_bot.run.assert_called_once_with(mode="open")
+
+    def test_midday_delegates_to_run(self):
+        mod, mock_bot = self._mod_with_bot()
+        with patch("os.path.exists", return_value=False):
+            mod._midday()
+        mock_bot.run.assert_called_once_with(mode="midday")
+
+    def test_close_delegates_to_run(self):
+        mod, mock_bot = self._mod_with_bot()
+        with patch("os.path.exists", return_value=False):
+            mod._close()
+        mock_bot.run.assert_called_once_with(mode="close")
+
+
 if __name__ == "__main__":
     unittest.main()

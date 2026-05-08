@@ -675,6 +675,17 @@ class TestAssertAccountSafety(unittest.TestCase):
             except RuntimeError:
                 self.fail("Normal cash account should pass")
 
+    def test_generic_exception_wraps_in_runtime_error(self):
+        """Lines 330-331: non-RuntimeError from broker wraps as RuntimeError."""
+        client = MagicMock()
+        client.get_account.side_effect = ConnectionError("broker timeout")
+        with patch("main.config.IS_PAPER", False), patch("main.config.ALLOW_MARGIN", False):
+            from main import _assert_account_safety
+
+            with self.assertRaises(RuntimeError) as cm:
+                _assert_account_safety(client)
+        self.assertIn("cannot verify account constraints", str(cm.exception))
+
 
 # ── get_total_open_exposure includes pending orders ───────────────────────────
 

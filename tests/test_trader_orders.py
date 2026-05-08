@@ -1477,3 +1477,213 @@ class TestReconcileFilledIntents(unittest.TestCase):
             except Exception:
                 self.fail("reconcile_filled_intents raised unexpectedly")
         self.assertEqual(result, 0)
+
+
+class TestPlaceBuyOrderLedgerImportFails(unittest.TestCase):
+    """Lines 121-122: ImportError from utils.order_ledger sets _ledger=False; order still completes."""
+
+    def test_proceeds_without_ledger_when_import_fails(self):
+        import sys
+
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-nolg")
+        with (
+            patch("execution.trader.wait_for_fill", return_value=(10.0, 150.0)),
+            patch.dict(sys.modules, {"utils.order_ledger": None}),
+        ):
+            result = place_buy_order(client, "AAPL", 5_000.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+
+
+class TestPlaceBuyOrderFinalCheckRaises(unittest.TestCase):
+    """Lines 214-215: get_order_by_id raises after wait_for_fill timeout → except passes, TIMEOUT returned."""
+
+    def test_get_order_by_id_exception_is_swallowed(self):
+        from execution.trader import place_buy_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("order-xyz")
+        client.get_order_by_id.side_effect = Exception("API error")
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_buy_order(client, "AAPL", 5_000.0)
+        self.assertEqual(result.status, OrderStatus.TIMEOUT)
+
+
+class TestPlaceTrailingStopFractionalRemainderRaises(unittest.TestCase):
+    """Lines 327-328: fractional remainder submit_order raises → warning logged, FILLED still returned."""
+
+    def _make_order(self, order_id="stop-123"):
+        o = MagicMock()
+        o.id = order_id
+        return o
+
+    def test_fractional_remainder_exception_is_swallowed(self):
+        from execution.trader import place_trailing_stop
+
+        client = MagicMock()
+        client.submit_order.side_effect = [
+            self._make_order("stop-fixed"),
+            Exception("fractional sell rejected"),
+        ]
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertTrue(result.is_success)
+
+
+class TestClosePositionLateFilledOnFinalCheck(unittest.TestCase):
+    """Line 423: wait_for_fill times out; get_order_by_id shows 'filled' → FILLED result."""
+
+    def test_late_fill_detected_on_final_check(self):
+        from execution.trader import close_position
+
+        client = MagicMock()
+        client.close_position.return_value = _mock_order("close-late", status="new")
+        final = MagicMock()
+        final.status = "filled"
+        final.filled_qty = 8.0
+        client.get_order_by_id.return_value = final
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = close_position(client, "AAPL")
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 8.0)
+
+
+class TestGetTotalOpenExposureBrokerUnavailableReraise(unittest.TestCase):
+    """Line 683: BrokerStateUnavailable from get_all_positions is re-raised, not wrapped."""
+
+    def test_broker_unavailable_is_reraised(self):
+        from execution.trader import get_total_open_exposure
+        from models import BrokerStateUnavailable
+
+        client = MagicMock()
+        client.get_all_positions.side_effect = BrokerStateUnavailable("already unavailable")
+        with self.assertRaises(BrokerStateUnavailable):
+            get_total_open_exposure(client)
+
+
+class TestCancelOpenOrdersCancelRaises(unittest.TestCase):
+    """Lines 724-725 and 738-739: cancel_orders() raises → warning; poll get_open_position raises → return."""
+
+    def _make_held_pos(self, qty=10, qty_available=0):
+        pos = MagicMock()
+        pos.qty = str(qty)
+        pos.qty_available = str(qty_available)
+        return pos
+
+    def test_cancel_orders_exception_and_poll_exception(self):
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_open_position.side_effect = [
+            self._make_held_pos(),
+            Exception("position gone"),
+        ]
+        client.cancel_orders.side_effect = Exception("cancel failed")
+        with (
+            patch("execution.trader.time.sleep"),
+            patch("execution.trader.time.time", return_value=0),
+        ):
+            cancel_open_orders(client, "AAPL")
+        client.cancel_orders.assert_called_once()
+
+
+class TestCancelOpenOrdersSharesStillHeldAfterTimeout(unittest.TestCase):
+    """Lines 740-742: shares still held after deadline expires → timeout warning logged."""
+
+    def _make_held_pos(self, qty=10, qty_available=0):
+        pos = MagicMock()
+        pos.qty = str(qty)
+        pos.qty_available = str(qty_available)
+        return pos
+
+    def test_shares_not_freed_after_timeout(self):
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_open_position.return_value = self._make_held_pos(qty_available=0)
+        # _CANCEL_WAIT_SECS=-1 makes deadline already past → while loop never runs → timeout fires
+        with patch("execution.trader._CANCEL_WAIT_SECS", -1):
+            cancel_open_orders(client, "AAPL")
+        client.cancel_orders.assert_called_once()
+
+
+class TestCancelOpenOrdersOuterException(unittest.TestCase):
+    """Lines 743-744: outer exception handler fires when _CANCEL_WAIT_SECS is non-numeric."""
+
+    def _make_held_pos(self, qty=10, qty_available=0):
+        pos = MagicMock()
+        pos.qty = str(qty)
+        pos.qty_available = str(qty_available)
+        return pos
+
+    def test_outer_exception_does_not_propagate(self):
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_open_position.return_value = self._make_held_pos()
+        # "bad" string causes time.time() + "bad" → TypeError → outer except fires
+        with patch("execution.trader._CANCEL_WAIT_SECS", "bad"):
+            try:
+                cancel_open_orders(client, "AAPL")
+            except Exception:
+                self.fail("cancel_open_orders raised unexpectedly")
+
+
+class TestGetDailyNotionalSuccess(unittest.TestCase):
+    """Lines 801-804: get_daily_notional success path returns stored value from DB."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_returns_stored_notional(self):
+        from execution.trader import add_daily_notional, get_daily_notional
+
+        add_daily_notional("2026-01-15", 1500.0)
+        result = get_daily_notional("2026-01-15")
+        self.assertAlmostEqual(result, 1500.0)
+
+    def test_returns_zero_for_missing_date(self):
+        from execution.trader import get_daily_notional
+
+        result = get_daily_notional("2099-12-31")
+        self.assertAlmostEqual(result, 0.0)
+
+
+class TestAddDailyNotionalSuccess(unittest.TestCase):
+    """Line 815: add_daily_notional success path accumulates notional correctly."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_accumulates_notional(self):
+        from execution.trader import add_daily_notional, get_daily_notional
+
+        add_daily_notional("2026-02-01", 500.0)
+        add_daily_notional("2026-02-01", 300.0)
+        result = get_daily_notional("2026-02-01")
+        self.assertAlmostEqual(result, 800.0)
