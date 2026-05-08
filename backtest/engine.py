@@ -2,15 +2,19 @@
 Rule-based backtester — validates technical signal quality on historical data
 without calling Claude (avoids API cost).
 
-RULE PROXY ONLY: This engine tests mean_reversion and momentum signals with
-deterministic rules. It does NOT test macd_crossover, bb_squeeze, breakout_52w,
-rs_leader, inside_day_breakout, trend_pullback, vwap_reclaim, orb_breakout, or
-intraday_momentum signals, and does not use Claude's judgment, news, options
-flow, or macro context. Results measure signal quality only and must not be
-interpreted as deployed-strategy validation.
+RULE PROXY ONLY: This engine implements deterministic rule proxies for eight
+daily signals (mean_reversion, momentum, macd_crossover, bb_squeeze,
+inside_day_breakout, trend_pullback, breakout_52w, rs_leader) and three
+intraday signals (vwap_reclaim, orb_breakout, intraday_momentum). Intraday
+signals require Alpaca API credentials and --use-intraday.
+
+This engine does not use Claude's judgment, news, options flow, or macro
+context. Results measure signal quality only and must not be interpreted as
+deployed-strategy validation.
 
 Usage:
     python backtest/engine.py --start 2025-01-01 --end 2025-12-31
+    python backtest/engine.py --start 2025-01-01 --end 2025-12-31 --use-intraday
     python backtest/engine.py --start 2025-01-01 --end 2025-12-31 --capital 25000
 """
 
@@ -18,8 +22,10 @@ import argparse
 import json
 import logging
 import os
+from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import product
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
@@ -31,6 +37,11 @@ from config import LOG_DIR, SLIPPAGE_BPS, SPREAD_BPS, STOCK_UNIVERSE, STOP_LOSS_
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
+
+_ET = ZoneInfo("America/New_York")
+
+# Core indicator columns that must be non-NaN for a row to be used
+_CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5d"]
 
 # Default signal thresholds — match the prefilter rules in stock_scanner.py
 _DEFAULT_PARAMS: dict[str, float] = {
@@ -58,6 +69,8 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     close = df["Close"]
     volume = df["Volume"]
     df = df.copy()
+
+    # ── Core indicators ───────────────────────────────────────────────────────
     df["rsi"] = RSIIndicator(close=close, window=14).rsi()
     macd = MACD(close=close)
     df["macd_diff"] = macd.macd_diff()
@@ -67,22 +80,101 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_pct"] = bb.bollinger_pband()
     df["vol_ratio"] = volume / volume.rolling(20).mean()
     df["ret_5d"] = close.pct_change(5) * 100
-    return df.dropna()
+
+    # ── Extended indicators for new daily signals ─────────────────────────────
+    df["ret_10d"] = close.pct_change(10) * 100
+
+    # MACD cross: diff crosses from <= 0 to > 0 (NaN comparisons return False)
+    df["macd_cross"] = (df["macd_diff"].shift(1) <= 0) & (df["macd_diff"] > 0)
+
+    # BB squeeze: bandwidth in bottom 20% of its recent range
+    bb_bw = bb.bollinger_wband()
+    bw_min = bb_bw.rolling(20, min_periods=10).min()
+    bw_max = bb_bw.rolling(20, min_periods=10).max()
+    bw_range = bw_max - bw_min
+    bw_norm = (bb_bw - bw_min) / bw_range.where(bw_range > 0, other=float("nan"))
+    df["bb_squeeze"] = (bw_norm < 0.2).fillna(False)
+
+    # Price vs EMA21 (for trend_pullback)
+    df["pct_vs_ema21"] = (close / df["ema21"] - 1) * 100
+
+    # 52-week high — rolling max with min_periods=20 so warmup rows get a value
+    df["high_52w"] = close.rolling(252, min_periods=20).max()
+    df["price_vs_52w_high_pct"] = (close / df["high_52w"] - 1) * 100
+
+    # Inside day: today's range strictly within yesterday's (needs High/Low)
+    if "High" in df.columns and "Low" in df.columns:
+        df["is_inside_day"] = (
+            (df["High"] < df["High"].shift(1)) & (df["Low"] > df["Low"].shift(1))
+        ).fillna(False)
+
+    # Drop rows where any core indicator is NaN (warmup period)
+    return df.dropna(subset=_CORE_COLS)
 
 
-def _entry_signal(row: pd.Series, params: dict | None = None) -> str | None:
+def _entry_signal(
+    row: pd.Series,
+    params: dict | None = None,
+    intraday: dict | None = None,
+    spy_ret_5d: float | None = None,
+    spy_ret_10d: float | None = None,
+) -> str | None:
     """
-    Simplified entry rules (proxy for Claude's analysis):
-    - Mean reversion: RSI < rsi_threshold AND bb_pct < bb_threshold AND vol_ratio > mr_vol_threshold
-    - Momentum: ema9 > ema21 AND macd_diff > 0 AND ret_5d > mom_ret5d_threshold AND vol_ratio > mom_vol_threshold
+    Returns the first matching signal in priority order, or None.
+    Priority: mean_reversion > macd_crossover > bb_squeeze > inside_day_breakout
+              > breakout_52w > rs_leader > trend_pullback > momentum
+              > vwap_reclaim > orb_breakout > intraday_momentum
+    Intraday signals only fire when intraday data is supplied.
     """
     p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
+
+    # ── Daily signals ─────────────────────────────────────────────────────────
     if (
         row["rsi"] < p["rsi_threshold"]
         and row["bb_pct"] < p["bb_threshold"]
         and row["vol_ratio"] > p["mr_vol_threshold"]
     ):
         return "mean_reversion"
+
+    if row.get("macd_cross", False) and row["vol_ratio"] > 1.2:
+        return "macd_crossover"
+
+    if (
+        row.get("bb_squeeze", False)
+        and row["vol_ratio"] > 1.2
+        and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
+    ):
+        return "bb_squeeze"
+
+    if (
+        row.get("is_inside_day", False)
+        and row["vol_ratio"] > 1.1
+        and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
+    ):
+        return "inside_day_breakout"
+
+    if (
+        row.get("price_vs_52w_high_pct", -999) >= -3.0
+        and row["vol_ratio"] > 1.2
+        and row["ema9"] > row["ema21"]
+    ):
+        return "breakout_52w"
+
+    if spy_ret_5d is not None and spy_ret_10d is not None:
+        rel_5d = row["ret_5d"] - spy_ret_5d
+        rel_10d = row.get("ret_10d", 0.0) - spy_ret_10d
+        if rel_5d > 2.0 and rel_10d > 3.0 and row["ema9"] > row["ema21"]:
+            return "rs_leader"
+
+    pct_vs_ema21 = row.get("pct_vs_ema21", 0.0)
+    if (
+        row["ema9"] > row["ema21"]
+        and -3.0 <= pct_vs_ema21 <= -0.5
+        and 40 <= row["rsi"] <= 58
+        and row["vol_ratio"] > 1.0
+    ):
+        return "trend_pullback"
+
     if (
         row["ema9"] > row["ema21"]
         and row["macd_diff"] > 0
@@ -90,7 +182,165 @@ def _entry_signal(row: pd.Series, params: dict | None = None) -> str | None:
         and row["vol_ratio"] > p["mom_vol_threshold"]
     ):
         return "momentum"
+
+    # ── Intraday signals (only when Alpaca data provided) ─────────────────────
+    if intraday:
+        if intraday.get("orb_breakout_up") is True:
+            return "orb_breakout"
+
+        id_chg = intraday.get("intraday_change_pct")
+        above_vwap = intraday.get("price_above_vwap")
+        pct_vwap = intraday.get("pct_vs_vwap", 0)
+        if above_vwap is True and id_chg is not None and id_chg > 1.0 and pct_vwap <= 3.0:
+            return "vwap_reclaim"
+
+        id_rsi = intraday.get("intraday_rsi")
+        ema_up = row["ema9"] > row["ema21"]
+        if (
+            id_chg is not None
+            and id_chg > 2.0
+            and above_vwap is True
+            and (id_rsi is None or id_rsi < 75)
+            and (ema_up or row["ret_5d"] > 3.0)
+        ):
+            return "intraday_momentum"
+
     return None
+
+
+def _compute_intraday_day(date_str: str, timed_bars: list) -> dict | None:
+    """
+    Pure computation: derive intraday signal inputs from a sorted list of
+    (datetime, bar) pairs for one trading day.
+    Returns a metrics dict or None if the day has insufficient data.
+    bar objects must expose .open, .high, .low, .close, .volume attributes.
+    """
+    times = [t for t, _ in timed_bars]
+    bars = [b for _, b in timed_bars]
+
+    opens = [b.open for b in bars]
+    closes = [b.close for b in bars]
+    highs = [b.high for b in bars]
+    lows = [b.low for b in bars]
+    vols = [b.volume for b in bars]
+
+    total_vol = sum(vols)
+    if total_vol <= 0 or not closes:
+        return None
+
+    typical = [(hi + lo + c) / 3 for hi, lo, c in zip(highs, lows, closes, strict=True)]
+    vwap = sum(tp * v for tp, v in zip(typical, vols, strict=True)) / total_vol
+
+    orb_cutoff = datetime.strptime(f"{date_str} 10:00", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+    orb_idxs = [i for i, t in enumerate(times) if t <= orb_cutoff]
+    post_orb_idxs = [i for i, t in enumerate(times) if t > orb_cutoff]
+
+    orb_high = max(highs[i] for i in orb_idxs) if len(orb_idxs) >= 5 else None
+    orb_low = min(lows[i] for i in orb_idxs) if len(orb_idxs) >= 5 else None
+
+    avg_bar_vol = total_vol / len(bars)
+    orb_breakout_up = False
+    if orb_high and post_orb_idxs:
+        orb_breakout_up = any(closes[i] > orb_high and vols[i] > avg_bar_vol for i in post_orb_idxs)
+
+    last_close = closes[-1]
+    intraday_change_pct = (last_close / opens[0] - 1) * 100 if opens and opens[0] > 0 else None
+    price_above_vwap = last_close > vwap
+    pct_vs_vwap = (last_close / vwap - 1) * 100 if vwap > 0 else 0.0
+
+    intraday_rsi = None
+    closes_5m = closes[::5]
+    if len(closes_5m) >= 14:
+        try:
+            close_s = pd.Series(closes_5m, dtype=float)
+            intraday_rsi = float(RSIIndicator(close=close_s, window=14).rsi().iloc[-1])
+        except Exception:
+            pass
+
+    return {
+        "vwap": vwap,
+        "orb_high": orb_high,
+        "orb_low": orb_low,
+        "orb_breakout_up": orb_breakout_up,
+        "intraday_change_pct": intraday_change_pct,
+        "price_above_vwap": price_above_vwap,
+        "pct_vs_vwap": pct_vs_vwap,
+        "intraday_rsi": intraday_rsi,
+    }
+
+
+def _fetch_intraday_bars(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+) -> dict[str, dict[str, dict]]:
+    """
+    Fetch Alpaca 1-min bars and compute per-day intraday signal inputs.
+    Returns {symbol: {date_str: {vwap, orb_high, orb_low, orb_breakout_up,
+                                  intraday_change_pct, price_above_vwap,
+                                  pct_vs_vwap, intraday_rsi}}}
+    Requires ALPACA_API_KEY / ALPACA_SECRET_KEY in environment.
+    """
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+        import config as _cfg
+    except ImportError as exc:
+        logger.error(f"Alpaca SDK unavailable — cannot fetch intraday bars: {exc}")
+        return {}
+
+    if not (_cfg.ALPACA_API_KEY and _cfg.ALPACA_SECRET_KEY):
+        logger.error("ALPACA_API_KEY / ALPACA_SECRET_KEY not set — skipping intraday fetch")
+        return {}
+
+    client = StockHistoricalDataClient(
+        api_key=_cfg.ALPACA_API_KEY,
+        secret_key=_cfg.ALPACA_SECRET_KEY,
+    )
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=_ET)
+    end_dt = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).replace(tzinfo=_ET)
+
+    result: dict[str, dict[str, dict]] = {}
+
+    for idx, sym in enumerate(symbols):
+        logger.info(f"Intraday fetch {sym} ({idx + 1}/{len(symbols)})")
+        try:
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+            req = StockBarsRequest(
+                symbol_or_symbols=sym,
+                start=start_dt,
+                end=end_dt,
+                timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+                feed="iex",
+            )
+            bars_resp = client.get_stock_bars(req)
+            bars_data = bars_resp.data.get(sym, [])
+            if not bars_data:
+                continue
+
+            bars_by_date: dict[str, list] = defaultdict(list)
+            for bar in bars_data:
+                bar_et = bar.timestamp.astimezone(_ET)
+                bars_by_date[bar_et.strftime("%Y-%m-%d")].append((bar_et, bar))
+
+            sym_result: dict[str, dict] = {}
+            for date_str, timed_bars in bars_by_date.items():
+                timed_bars.sort(key=lambda x: x[0])
+                metrics = _compute_intraday_day(date_str, timed_bars)
+                if metrics is not None:
+                    sym_result[date_str] = metrics
+
+            result[sym] = sym_result
+
+        except Exception as exc:
+            logger.warning(f"Intraday fetch failed for {sym}: {exc}")
+
+    logger.info(f"Intraday bars fetched for {len(result)}/{len(symbols)} symbols")
+    return result
 
 
 def _run_simulation(
@@ -102,6 +352,8 @@ def _run_simulation(
     params: dict | None = None,
     slippage_bps: int | None = None,
     spread_bps: int | None = None,
+    intraday_data: dict[str, dict[str, dict]] | None = None,
+    spy_indicators: pd.DataFrame | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
@@ -182,7 +434,23 @@ def _run_simulation(
             if today_loc == 0:
                 continue
             prev_row = df.iloc[today_loc - 1]
-            signal = _entry_signal(prev_row, params)
+            prev_date_str = df.index[today_loc - 1].strftime("%Y-%m-%d")
+
+            # Look up intraday data for T-1 (when signal fired)
+            intraday = intraday_data.get(sym, {}).get(prev_date_str) if intraday_data else None
+
+            # SPY returns for T-1 (for rs_leader)
+            spy_5d = spy_10d = None
+            if spy_indicators is not None:
+                prev_ts = df.index[today_loc - 1]
+                if prev_ts in spy_indicators.index:
+                    spy_row = spy_indicators.loc[prev_ts]
+                    spy_5d = spy_row.get("ret_5d")
+                    spy_10d = spy_row.get("ret_10d")
+
+            signal = _entry_signal(
+                prev_row, params, intraday=intraday, spy_ret_5d=spy_5d, spy_ret_10d=spy_10d
+            )
             if signal:
                 candidates.append((sym, signal, float(prev_row["rsi"])))
 
@@ -273,6 +541,38 @@ def _run_simulation(
         float(daily_rets.mean() / daily_rets.std() * (252**0.5)) if daily_rets.std() > 0 else 0.0
     )
 
+    # Derive signals_tested from what data was provided
+    signals_tested = [
+        "mean_reversion",
+        "momentum",
+        "macd_crossover",
+        "bb_squeeze",
+        "trend_pullback",
+        "breakout_52w",
+    ]
+    # Check if any indicator df has High/Low (inside_day_breakout)
+    if any("is_inside_day" in df.columns for df in indicators.values()):
+        signals_tested.append("inside_day_breakout")
+    if spy_indicators is not None:
+        signals_tested.append("rs_leader")
+    if intraday_data:
+        signals_tested.extend(["vwap_reclaim", "orb_breakout", "intraday_momentum"])
+
+    all_backtestable = {
+        "mean_reversion",
+        "momentum",
+        "macd_crossover",
+        "bb_squeeze",
+        "trend_pullback",
+        "breakout_52w",
+        "inside_day_breakout",
+        "rs_leader",
+        "vwap_reclaim",
+        "orb_breakout",
+        "intraday_momentum",
+    }
+    signals_not_tested = sorted(all_backtestable - set(signals_tested))
+
     return {
         "initial_capital": initial_capital,
         "final_value": round(final_value, 2),
@@ -286,19 +586,39 @@ def _run_simulation(
         "equity_curve": equity_curve,
         "trades": trades,
         "validation_scope": "rule_proxy_only",
-        "signals_tested": ["mean_reversion", "momentum"],
-        "signals_not_tested": [
-            "macd_crossover",
-            "bb_squeeze",
-            "breakout_52w",
-            "rs_leader",
-            "inside_day_breakout",
-            "trend_pullback",
-            "vwap_reclaim",
-            "orb_breakout",
-            "intraday_momentum",
-        ],
+        "signals_tested": signals_tested,
+        "signals_not_tested": signals_not_tested,
     }
+
+
+def _build_indicators(
+    raw: pd.DataFrame,
+    symbols: list[str],
+) -> dict[str, pd.DataFrame]:
+    """Extract per-symbol OHLCV from a multi-symbol yfinance download and compute indicators."""
+    close_all = raw["Close"]
+    open_all = raw["Open"]
+    volume_all = raw["Volume"]
+    high_all = raw.get("High")
+    low_all = raw.get("Low")
+
+    indicators = {}
+    for sym in symbols:
+        try:
+            cols = {
+                "Close": close_all[sym],
+                "Open": open_all[sym],
+                "Volume": volume_all[sym],
+            }
+            if high_all is not None:
+                cols["High"] = high_all[sym]
+            if low_all is not None:
+                cols["Low"] = low_all[sym]
+            df = pd.DataFrame(cols).dropna()
+            indicators[sym] = _compute_indicators(df)
+        except Exception:
+            pass
+    return indicators
 
 
 def run_backtest(
@@ -311,10 +631,12 @@ def run_backtest(
     params: dict | None = None,
     slippage_bps: int | None = None,
     spread_bps: int | None = None,
+    use_intraday: bool = False,
 ) -> dict:
 
     logger.info(
         f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital"
+        + (" | intraday=ON" if use_intraday else "")
     )
 
     fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime(
@@ -325,20 +647,33 @@ def run_backtest(
         logger.error("No data fetched")
         return {}
 
-    close_all = raw["Close"]
-    open_all = raw["Open"]
-    volume_all = raw["Volume"]
+    indicators = _build_indicators(raw, symbols)
 
-    indicators = {}
-    for sym in symbols:
+    # SPY indicators for rs_leader signal
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:
         try:
-            df = pd.DataFrame(
-                {"Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]}
-            ).dropna()
-            df = _compute_indicators(df)
-            indicators[sym] = df
-        except Exception:
-            pass
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed — rs_leader signal disabled: {exc}")
+
+    # Alpaca intraday bars for vwap_reclaim / orb_breakout / intraday_momentum
+    intraday_data: dict | None = None
+    if use_intraday:
+        intraday_data = _fetch_intraday_bars(symbols, start_date, end_date)
+        if not intraday_data:
+            logger.warning("Intraday fetch returned no data — intraday signals disabled")
+            intraday_data = None
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     results = _run_simulation(
@@ -350,6 +685,8 @@ def run_backtest(
         params,
         slippage_bps=slippage_bps,
         spread_bps=spread_bps,
+        intraday_data=intraday_data,
+        spy_indicators=spy_indicators,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -397,7 +734,6 @@ def run_walk_forward_optimized(
         f"| {len(all_combos)} param combos | {len(symbols)} symbols"
     )
 
-    # Download once — indicators are computed once and reused across all folds and combos
     fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime(
         "%Y-%m-%d"
     )
@@ -406,20 +742,25 @@ def run_walk_forward_optimized(
         logger.error("No data fetched for walk-forward")
         return {}
 
-    close_all = raw["Close"]
-    open_all = raw["Open"]
-    volume_all = raw["Volume"]
+    indicators = _build_indicators(raw, symbols)
 
-    indicators = {}
-    for sym in symbols:
+    # SPY for rs_leader
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:
         try:
-            df = pd.DataFrame(
-                {"Close": close_all[sym], "Open": open_all[sym], "Volume": volume_all[sym]}
-            ).dropna()
-            df = _compute_indicators(df)
-            indicators[sym] = df
-        except Exception:
-            pass
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed for walk-forward: {exc}")
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     if len(trading_dates) < train_days + test_days:
@@ -429,7 +770,6 @@ def run_walk_forward_optimized(
         )
         return {}
 
-    # Generate non-overlapping test windows (train windows can overlap)
     folds_meta = []
     i = 0
     while i + train_days + test_days <= len(trading_dates):
@@ -452,7 +792,6 @@ def run_walk_forward_optimized(
         train_dates = trading_dates[fold["train_slice"]]
         test_dates = trading_dates[fold["test_slice"]]
 
-        # Grid search: find params with best Sharpe on the train window
         best_params = _DEFAULT_PARAMS.copy()
         best_score = -float("inf")
         best_train_trades = 0
@@ -467,6 +806,7 @@ def run_walk_forward_optimized(
                 combo,
                 slippage_bps=slippage_bps,
                 spread_bps=spread_bps,
+                spy_indicators=spy_indicators,
             )
             if r["total_trades"] < _MIN_TRAIN_TRADES:
                 continue
@@ -475,7 +815,6 @@ def run_walk_forward_optimized(
                 best_params = combo
                 best_train_trades = r["total_trades"]
 
-        # OOS test — test window data was never seen during param selection
         oos = _run_simulation(
             indicators,
             test_dates,
@@ -485,9 +824,9 @@ def run_walk_forward_optimized(
             best_params,
             slippage_bps=slippage_bps,
             spread_bps=spread_bps,
+            spy_indicators=spy_indicators,
         )
 
-        # Buy-and-hold baseline: equal-weight all symbols over the OOS window
         baseline_rets = []
         for _sym, df in indicators.items():
             try:
@@ -529,7 +868,6 @@ def run_walk_forward_optimized(
     n = len(fold_results)
     profitable = sum(1 for f in fold_results if f["oos_total_return_pct"] > 0)
 
-    # Param stability: % of folds that selected the modal (most common) param set
     sig_counts: dict = {}
     for f in fold_results:
         key = tuple(sorted(f["best_params"].items()))
@@ -574,11 +912,13 @@ def _save_results(r: dict):
 
 
 def _print_results(r: dict):
-    print("\n" + "=" * 50)
+    tested = r.get("signals_tested", [])
+    print("\n" + "=" * 60)
     print(f"  BACKTEST RESULTS  {r['start']} → {r['end']}")
-    print("=" * 50)
-    print("  NOTE: Rule proxy only — mean_reversion + momentum signals tested.")
-    print("  Does not reflect deployed strategy (Claude, news, options, macro).")
+    print("=" * 60)
+    print("  NOTE: Rule proxy only — does not reflect deployed strategy")
+    print("        (Claude, news, options, macro context excluded).")
+    print(f"  Signals tested:    {', '.join(tested)}")
     print(f"  Initial capital:   ${r['initial_capital']:.2f}")
     print(f"  Final value:       ${r['final_value']:.2f}")
     print(f"  Total return:      {r['total_return_pct']:+.1f}%")
@@ -593,8 +933,8 @@ def _print_results(r: dict):
         total = data["wins"] + data["losses"]
         wr = data["wins"] / total * 100 if total else 0
         avg = data["total_return"] / total if total else 0
-        print(f"    {sig:<20} {total:>3} trades  WR {wr:.0f}%  avg {avg:+.2f}%")
-    print("=" * 50 + "\n")
+        print(f"    {sig:<25} {total:>3} trades  WR {wr:.0f}%  avg {avg:+.2f}%")
+    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
@@ -602,5 +942,16 @@ if __name__ == "__main__":
     parser.add_argument("--start", default="2025-01-01")
     parser.add_argument("--end", default=datetime.today().strftime("%Y-%m-%d"))
     parser.add_argument("--capital", type=float, default=25000.0)
+    parser.add_argument(
+        "--use-intraday",
+        action="store_true",
+        help="Fetch Alpaca minute bars to test vwap_reclaim/orb_breakout/intraday_momentum",
+    )
     args = parser.parse_args()
-    run_backtest(STOCK_UNIVERSE, args.start, args.end, initial_capital=args.capital)
+    run_backtest(
+        STOCK_UNIVERSE,
+        args.start,
+        args.end,
+        initial_capital=args.capital,
+        use_intraday=args.use_intraday,
+    )

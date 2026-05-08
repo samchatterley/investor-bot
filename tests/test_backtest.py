@@ -1,17 +1,22 @@
 """Tests for backtest/engine.py — _compute_indicators, _entry_signal, run_backtest,
-_run_simulation, run_walk_forward_optimized."""
+_run_simulation, run_walk_forward_optimized, _compute_intraday_day."""
 
 import json
 import os
 import tempfile
 import unittest
+from collections import namedtuple
+from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from backtest.engine import (
+    _CORE_COLS,
     _DEFAULT_PARAMS,
     _compute_indicators,
+    _compute_intraday_day,
     _entry_signal,
     _print_results,
     _run_simulation,
@@ -20,11 +25,30 @@ from backtest.engine import (
     run_walk_forward_optimized,
 )
 
+_ET = ZoneInfo("America/New_York")
+_Bar = namedtuple("_Bar", ["open", "high", "low", "close", "volume"])
+
 
 def _make_ohlcv(n: int = 60) -> pd.DataFrame:
     idx = pd.bdate_range("2024-11-01", periods=n)
     prices = [100.0 + i * 0.5 for i in range(n)]
     return pd.DataFrame({"Close": prices, "Volume": [1_000_000] * n}, index=idx)
+
+
+def _make_ohlcv_full(n: int = 60) -> pd.DataFrame:
+    """OHLCV with High and Low for inside_day indicator tests."""
+    idx = pd.bdate_range("2024-11-01", periods=n)
+    prices = [100.0 + i * 0.5 for i in range(n)]
+    return pd.DataFrame(
+        {
+            "Close": prices,
+            "Open": [p * 0.999 for p in prices],
+            "High": [p * 1.01 for p in prices],
+            "Low": [p * 0.99 for p in prices],
+            "Volume": [1_000_000] * n,
+        },
+        index=idx,
+    )
 
 
 def _make_raw(n: int = 100, symbols: tuple = ("AAPL", "FLAT")) -> pd.DataFrame:
@@ -51,6 +75,12 @@ def _make_row(**kwargs) -> pd.Series:
         "ema21": 100.0,
         "macd_diff": 0.0,
         "ret_5d": 0.0,
+        "ret_10d": 0.0,
+        "macd_cross": False,
+        "bb_squeeze": False,
+        "pct_vs_ema21": 0.0,
+        "price_vs_52w_high_pct": -50.0,
+        "is_inside_day": False,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -81,14 +111,38 @@ class TestComputeIndicators(unittest.TestCase):
     def test_returns_dataframe(self):
         self.assertIsInstance(_compute_indicators(_make_ohlcv(60)), pd.DataFrame)
 
-    def test_has_expected_columns(self):
+    def test_has_core_columns(self):
         result = _compute_indicators(_make_ohlcv(60))
-        for col in ("rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5d"):
-            self.assertIn(col, result.columns, f"Missing column: {col}")
+        for col in _CORE_COLS:
+            self.assertIn(col, result.columns, f"Missing core column: {col}")
 
-    def test_result_has_no_nans(self):
+    def test_has_extended_columns(self):
         result = _compute_indicators(_make_ohlcv(60))
-        self.assertFalse(result.isnull().any().any())
+        for col in (
+            "ret_10d",
+            "macd_cross",
+            "bb_squeeze",
+            "pct_vs_ema21",
+            "high_52w",
+            "price_vs_52w_high_pct",
+        ):
+            self.assertIn(col, result.columns, f"Missing extended column: {col}")
+
+    def test_core_columns_have_no_nans(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertFalse(result[_CORE_COLS].isnull().any().any())
+
+    def test_inside_day_present_when_high_low_provided(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        self.assertIn("is_inside_day", result.columns)
+        self.assertTrue(
+            result["is_inside_day"].dtype == bool
+            or result["is_inside_day"].isin([True, False]).all()
+        )
+
+    def test_inside_day_absent_when_high_low_missing(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertNotIn("is_inside_day", result.columns)
 
     def test_few_rows_produces_empty_result(self):
         self.assertTrue(_compute_indicators(_make_ohlcv(5)).empty)
@@ -102,6 +156,14 @@ class TestComputeIndicators(unittest.TestCase):
     def test_result_index_is_datetime(self):
         result = _compute_indicators(_make_ohlcv(60))
         self.assertIsInstance(result.index, pd.DatetimeIndex)
+
+    def test_bb_squeeze_is_boolean(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertTrue(result["bb_squeeze"].isin([True, False]).all())
+
+    def test_macd_cross_is_boolean(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertTrue(result["macd_cross"].isin([True, False]).all())
 
 
 # ── _entry_signal ─────────────────────────────────────────────────────────────
@@ -162,6 +224,300 @@ class TestEntrySignal(unittest.TestCase):
             ret_5d=2.0,
         )
         self.assertEqual(_entry_signal(row), "mean_reversion")
+
+
+class TestEntrySignalNewDailySignals(unittest.TestCase):
+    """Tests for the six new daily signals added to _entry_signal."""
+
+    def test_macd_crossover_fires(self):
+        self.assertEqual(_entry_signal(_make_row(macd_cross=True, vol_ratio=1.3)), "macd_crossover")
+
+    def test_macd_crossover_requires_volume(self):
+        self.assertIsNone(_entry_signal(_make_row(macd_cross=True, vol_ratio=1.1)))
+
+    def test_macd_crossover_blocked_by_mean_reversion(self):
+        # mean_reversion has higher priority
+        row = _make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5, macd_cross=True)
+        self.assertEqual(_entry_signal(row), "mean_reversion")
+
+    def test_bb_squeeze_fires_with_ema_up(self):
+        self.assertEqual(
+            _entry_signal(_make_row(bb_squeeze=True, vol_ratio=1.3, ema9=101, ema21=100)),
+            "bb_squeeze",
+        )
+
+    def test_bb_squeeze_fires_with_positive_macd(self):
+        self.assertEqual(
+            _entry_signal(_make_row(bb_squeeze=True, vol_ratio=1.3, macd_diff=0.1)),
+            "bb_squeeze",
+        )
+
+    def test_bb_squeeze_requires_directional_confirmation(self):
+        self.assertIsNone(
+            _entry_signal(
+                _make_row(bb_squeeze=True, vol_ratio=1.3, ema9=99, ema21=100, macd_diff=-0.1)
+            )
+        )
+
+    def test_bb_squeeze_requires_volume(self):
+        self.assertIsNone(
+            _entry_signal(_make_row(bb_squeeze=True, ema9=101, ema21=100, vol_ratio=1.1))
+        )
+
+    def test_inside_day_breakout_fires(self):
+        self.assertEqual(
+            _entry_signal(_make_row(is_inside_day=True, vol_ratio=1.2, ema9=101, ema21=100)),
+            "inside_day_breakout",
+        )
+
+    def test_inside_day_breakout_requires_volume(self):
+        self.assertIsNone(
+            _entry_signal(_make_row(is_inside_day=True, vol_ratio=1.0, ema9=101, ema21=100))
+        )
+
+    def test_inside_day_requires_directional_confirmation(self):
+        self.assertIsNone(
+            _entry_signal(
+                _make_row(is_inside_day=True, vol_ratio=1.2, ema9=99, ema21=100, macd_diff=-0.1)
+            )
+        )
+
+    def test_breakout_52w_fires(self):
+        self.assertEqual(
+            _entry_signal(
+                _make_row(price_vs_52w_high_pct=-1.0, vol_ratio=1.3, ema9=101, ema21=100)
+            ),
+            "breakout_52w",
+        )
+
+    def test_breakout_52w_requires_proximity_to_high(self):
+        self.assertIsNone(
+            _entry_signal(_make_row(price_vs_52w_high_pct=-5.0, vol_ratio=1.3, ema9=101, ema21=100))
+        )
+
+    def test_breakout_52w_requires_ema_alignment(self):
+        self.assertIsNone(
+            _entry_signal(_make_row(price_vs_52w_high_pct=-1.0, vol_ratio=1.3, ema9=99, ema21=100))
+        )
+
+    def test_rs_leader_fires_with_spy_data(self):
+        row = _make_row(ret_5d=6.0, ret_10d=8.0, ema9=101, ema21=100)
+        self.assertEqual(_entry_signal(row, spy_ret_5d=3.0, spy_ret_10d=4.0), "rs_leader")
+
+    def test_rs_leader_blocked_without_spy_data(self):
+        row = _make_row(ret_5d=6.0, ret_10d=8.0, ema9=101, ema21=100)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_rs_leader_requires_sufficient_outperformance(self):
+        row = _make_row(ret_5d=4.0, ret_10d=6.0, ema9=101, ema21=100)
+        # rel_5d = 1.0 (< 2.0 threshold) → no signal
+        self.assertIsNone(_entry_signal(row, spy_ret_5d=3.0, spy_ret_10d=4.0))
+
+    def test_trend_pullback_fires(self):
+        row = _make_row(ema9=101, ema21=100, pct_vs_ema21=-1.5, rsi=50, vol_ratio=1.1)
+        self.assertEqual(_entry_signal(row), "trend_pullback")
+
+    def test_trend_pullback_requires_ema_alignment(self):
+        row = _make_row(ema9=99, ema21=100, pct_vs_ema21=-1.5, rsi=50, vol_ratio=1.1)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_trend_pullback_requires_rsi_in_range(self):
+        row = _make_row(ema9=101, ema21=100, pct_vs_ema21=-1.5, rsi=30, vol_ratio=1.1)
+        # RSI=30 is below 40 threshold for trend_pullback
+        self.assertNotEqual(_entry_signal(row), "trend_pullback")
+
+    def test_trend_pullback_requires_pullback_depth(self):
+        # pct_vs_ema21 = 0.0 means price is AT ema21, not below it
+        row = _make_row(ema9=101, ema21=100, pct_vs_ema21=0.0, rsi=50, vol_ratio=1.1)
+        self.assertNotEqual(_entry_signal(row), "trend_pullback")
+
+
+class TestEntrySignalIntraday(unittest.TestCase):
+    """Tests for the three intraday signals."""
+
+    def _id(self, **kwargs) -> dict:
+        base = {
+            "vwap": 100.0,
+            "orb_high": 101.0,
+            "orb_low": 99.0,
+            "orb_breakout_up": False,
+            "intraday_change_pct": 0.5,
+            "price_above_vwap": False,
+            "pct_vs_vwap": 0.0,
+            "intraday_rsi": 55.0,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_orb_breakout_fires(self):
+        self.assertEqual(
+            _entry_signal(_make_row(), intraday=self._id(orb_breakout_up=True)), "orb_breakout"
+        )
+
+    def test_vwap_reclaim_fires(self):
+        id_data = self._id(price_above_vwap=True, intraday_change_pct=1.5, pct_vs_vwap=1.0)
+        self.assertEqual(_entry_signal(_make_row(), intraday=id_data), "vwap_reclaim")
+
+    def test_vwap_reclaim_requires_gain_above_1pct(self):
+        id_data = self._id(price_above_vwap=True, intraday_change_pct=0.8, pct_vs_vwap=1.0)
+        self.assertIsNone(_entry_signal(_make_row(), intraday=id_data))
+
+    def test_vwap_reclaim_blocked_when_overextended(self):
+        id_data = self._id(price_above_vwap=True, intraday_change_pct=2.0, pct_vs_vwap=4.0)
+        self.assertIsNone(_entry_signal(_make_row(), intraday=id_data))
+
+    def test_intraday_momentum_fires(self):
+        row = _make_row(ema9=101, ema21=100)
+        # pct_vs_vwap=4.0 blocks vwap_reclaim (needs ≤3%) so intraday_momentum wins
+        id_data = self._id(
+            intraday_change_pct=2.5, price_above_vwap=True, intraday_rsi=65, pct_vs_vwap=4.0
+        )
+        self.assertEqual(_entry_signal(row, intraday=id_data), "intraday_momentum")
+
+    def test_intraday_momentum_requires_above_vwap(self):
+        row = _make_row(ema9=101, ema21=100)
+        id_data = self._id(intraday_change_pct=2.5, price_above_vwap=False, intraday_rsi=65)
+        self.assertIsNone(_entry_signal(row, intraday=id_data))
+
+    def test_intraday_momentum_blocked_by_high_rsi(self):
+        row = _make_row(ema9=101, ema21=100)
+        # pct_vs_vwap=5.0 blocks vwap_reclaim (needs ≤3%); intraday_rsi=80 blocks intraday_momentum
+        id_data = self._id(
+            intraday_change_pct=2.5, price_above_vwap=True, intraday_rsi=80, pct_vs_vwap=5.0
+        )
+        self.assertIsNone(_entry_signal(row, intraday=id_data))
+
+    def test_intraday_signals_blocked_without_intraday_data(self):
+        row = _make_row(ema9=101, ema21=100)
+        # Without intraday kwarg, all intraday signals are blocked
+        self.assertIsNone(_entry_signal(row, intraday=None))
+
+    def test_orb_takes_priority_over_vwap_reclaim(self):
+        # Both fire — orb should win (higher priority)
+        id_data = self._id(
+            orb_breakout_up=True,
+            price_above_vwap=True,
+            intraday_change_pct=1.5,
+            pct_vs_vwap=1.0,
+        )
+        self.assertEqual(_entry_signal(_make_row(), intraday=id_data), "orb_breakout")
+
+
+class TestComputeIntradayDay(unittest.TestCase):
+    """Tests for the pure _compute_intraday_day helper."""
+
+    def _make_bars(self, n_orb: int = 30, n_post: int = 60) -> list:
+        """Build synthetic (datetime, Bar) pairs: n_orb ORB bars then n_post post-ORB bars."""
+        bars = []
+        # ORB window: 09:30 → 10:00 ET (30 bars, 1-min each)
+        for i in range(n_orb):
+            h, m = divmod(9 * 60 + 30 + i, 60)
+            t = datetime(2025, 1, 2, h, m, tzinfo=_ET)
+            bars.append((t, _Bar(open=100.0, high=101.0, low=99.0, close=100.5, volume=1000)))
+        # Post-ORB: 10:01 onwards
+        for i in range(n_post):
+            h, m = divmod(10 * 60 + 1 + i, 60)
+            t = datetime(2025, 1, 2, h, m, tzinfo=_ET)
+            bars.append((t, _Bar(open=100.5, high=102.0, low=100.0, close=101.0, volume=1200)))
+        return bars
+
+    def test_returns_dict(self):
+        result = _compute_intraday_day("2025-01-02", self._make_bars())
+        self.assertIsInstance(result, dict)
+
+    def test_returns_none_for_empty_bars(self):
+        self.assertIsNone(_compute_intraday_day("2025-01-02", []))
+
+    def test_vwap_computed(self):
+        result = _compute_intraday_day("2025-01-02", self._make_bars())
+        self.assertIn("vwap", result)
+        self.assertGreater(result["vwap"], 0)
+
+    def test_vwap_formula_correct(self):
+        t = datetime(2025, 1, 2, 9, 31, tzinfo=_ET)
+        bar = _Bar(open=100, high=102, low=98, close=101, volume=1000)
+        result = _compute_intraday_day("2025-01-02", [(t, bar)])
+        expected_vwap = (102 + 98 + 101) / 3  # typical price = (H+L+C)/3
+        self.assertAlmostEqual(result["vwap"], expected_vwap, places=5)
+
+    def test_orb_high_low_computed_from_first_30_bars(self):
+        result = _compute_intraday_day("2025-01-02", self._make_bars())
+        self.assertEqual(result["orb_high"], 101.0)
+        self.assertEqual(result["orb_low"], 99.0)
+
+    def test_orb_high_none_when_fewer_than_5_orb_bars(self):
+        bars = self._make_bars(n_orb=3, n_post=10)
+        result = _compute_intraday_day("2025-01-02", bars)
+        self.assertIsNone(result["orb_high"])
+        self.assertIsNone(result["orb_low"])
+
+    def test_orb_breakout_detected(self):
+        # Post-ORB bar closes above orb_high (101) with above-avg volume
+        bars = self._make_bars(n_orb=30, n_post=0)
+        t_post = datetime(2025, 1, 2, 10, 5, tzinfo=_ET)
+        bars.append((t_post, _Bar(open=101.0, high=103.0, low=100.5, close=102.5, volume=5000)))
+        result = _compute_intraday_day("2025-01-02", bars)
+        self.assertTrue(result["orb_breakout_up"])
+
+    def test_no_orb_breakout_when_close_below_orb_high(self):
+        result = _compute_intraday_day("2025-01-02", self._make_bars())
+        # Post-ORB closes at 101, orb_high is 101 — needs close ABOVE orb_high
+        self.assertFalse(result["orb_breakout_up"])
+
+    def test_intraday_change_pct_computed(self):
+        bars = [
+            (
+                datetime(2025, 1, 2, 9, 31, tzinfo=_ET),
+                _Bar(open=100, high=101, low=99, close=100, volume=1000),
+            ),
+            (
+                datetime(2025, 1, 2, 15, 59, tzinfo=_ET),
+                _Bar(open=102, high=103, low=101, close=103, volume=1000),
+            ),
+        ]
+        result = _compute_intraday_day("2025-01-02", bars)
+        self.assertAlmostEqual(result["intraday_change_pct"], 3.0, places=5)
+
+    def test_price_above_vwap_flag(self):
+        # Single bar: close = high = typical = vwap → not strictly above
+        t = datetime(2025, 1, 2, 9, 31, tzinfo=_ET)
+        bar = _Bar(open=100, high=100, low=100, close=100, volume=1000)
+        result = _compute_intraday_day("2025-01-02", [(t, bar)])
+        self.assertFalse(result["price_above_vwap"])
+
+    def test_intraday_rsi_computed_when_enough_bars(self):
+        bars = []
+        for i in range(80):
+            t = datetime(2025, 1, 2, 9, 31 + i // 60, i % 60, tzinfo=_ET)
+            close = 100 + (i % 10) * 0.1
+            bars.append(
+                (t, _Bar(open=close, high=close + 0.5, low=close - 0.5, close=close, volume=500))
+            )
+        result = _compute_intraday_day("2025-01-02", bars)
+        # 80 bars → 80//5 = 16 five-min bars ≥ 14 → RSI computed
+        self.assertIsNotNone(result["intraday_rsi"])
+        self.assertGreater(result["intraday_rsi"], 0)
+        self.assertLessEqual(result["intraday_rsi"], 100)
+
+    def test_intraday_rsi_none_when_too_few_bars(self):
+        bars = self._make_bars(n_orb=5, n_post=0)
+        result = _compute_intraday_day("2025-01-02", bars)
+        # 5 bars → 5//5 = 1 five-min bar < 14 → RSI not computed
+        self.assertIsNone(result["intraday_rsi"])
+
+    def test_required_keys_present(self):
+        result = _compute_intraday_day("2025-01-02", self._make_bars())
+        for key in (
+            "vwap",
+            "orb_high",
+            "orb_low",
+            "orb_breakout_up",
+            "intraday_change_pct",
+            "price_above_vwap",
+            "pct_vs_vwap",
+            "intraday_rsi",
+        ):
+            self.assertIn(key, result)
 
 
 class TestEntrySignalWithParams(unittest.TestCase):
@@ -672,26 +1028,56 @@ class TestValidationScope(unittest.TestCase):
         result = _run_simulation(indicators, dates, initial_capital=10_000.0)
         self.assertEqual(result["validation_scope"], "rule_proxy_only")
 
-    def test_signals_tested_contains_expected_signals(self):
-        indicators = self._build_indicators()
-        dates = pd.bdate_range("2025-03-01", "2025-03-07")
-        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
-        self.assertIn("mean_reversion", result["signals_tested"])
-        self.assertIn("momentum", result["signals_tested"])
-
-    def test_signals_not_tested_excludes_untested_signals(self):
+    def test_signals_tested_contains_daily_signals(self):
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-03-01", "2025-03-07")
         result = _run_simulation(indicators, dates, initial_capital=10_000.0)
         for sig in (
+            "mean_reversion",
+            "momentum",
+            "macd_crossover",
             "bb_squeeze",
+            "trend_pullback",
             "breakout_52w",
-            "rs_leader",
-            "vwap_reclaim",
-            "orb_breakout",
-            "intraday_momentum",
         ):
+            self.assertIn(sig, result["signals_tested"])
+
+    def test_signals_not_tested_excludes_signals_needing_missing_data(self):
+        # _make_raw has no High/Low → inside_day not tested
+        # no spy_indicators → rs_leader not tested
+        # no intraday_data → intraday signals not tested
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
+        for sig in ("rs_leader", "vwap_reclaim", "orb_breakout", "intraday_momentum"):
             self.assertIn(sig, result["signals_not_tested"])
+
+    def test_intraday_signals_appear_in_tested_when_data_provided(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        fake_intraday = {
+            "AAPL": {
+                "2025-03-03": {
+                    "orb_breakout_up": False,
+                    "price_above_vwap": True,
+                    "intraday_change_pct": 0.5,
+                    "pct_vs_vwap": 0.5,
+                    "intraday_rsi": 55,
+                }
+            }
+        }
+        result = _run_simulation(
+            indicators, dates, initial_capital=10_000.0, intraday_data=fake_intraday
+        )
+        for sig in ("vwap_reclaim", "orb_breakout", "intraday_momentum"):
+            self.assertIn(sig, result["signals_tested"])
+
+    def test_rs_leader_in_tested_when_spy_provided(self):
+        indicators = self._build_indicators()
+        spy = _compute_indicators(_make_ohlcv(100))
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0, spy_indicators=spy)
+        self.assertIn("rs_leader", result["signals_tested"])
 
     def test_run_backtest_propagates_validation_scope(self):
         with (
