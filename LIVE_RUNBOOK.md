@@ -154,7 +154,7 @@ python main.py --mode open_sells
 | Stop attached | `stop_ok=True` in `ORDER_TIMING` | `stop_ok=False` or stop missing |
 | Slippage reasonable | `slippage_vs_mid_bps` between −50 and +50 | Outside ±100 bps |
 | Position closed | Balance restored (minus spread/slippage) | Position still open |
-| No HALT file | No `logs/HALT` file | HALT file written |
+| No HALT file | No `logs/.HALTED` file | HALT file written |
 
 If all pass: canary complete. Proceed to [Going Live](#3-going-live).
 
@@ -239,7 +239,7 @@ Symptom: `ORDER_TIMING` shows `stop_ok=False`, or `STOP FAILED` alert received.
 Response (live mode only):
 1. Log in to Alpaca dashboard immediately
 2. Manually set a stop-loss order for the unprotected position
-3. Check if bot wrote a HALT file: `ls logs/HALT`
+3. Check if bot wrote a HALT file: `ls logs/.HALTED`
 4. After manual stop placed: `python main.py --clear-halt && python main.py --safety-check`
 
 ### 5.2 Duplicate scheduler processes (lock race)
@@ -291,7 +291,7 @@ Stop all trading immediately and liquidate all open positions:
 python main.py --kill-switch
 ```
 
-This cancels all open orders, submits market-sell for every position, waits for fill confirmation, and writes `logs/HALT`. The bot will refuse to run again until the halt is explicitly cleared.
+This cancels all open orders, submits market-sell for every position, waits for fill confirmation, and writes `logs/.HALTED`. The bot will refuse to run again until the halt is explicitly cleared.
 
 To resume after the incident is resolved:
 

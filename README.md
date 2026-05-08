@@ -1,8 +1,10 @@
 # InvestorBot — AI Governance & Execution Control System
 
-An autonomous AI decision-support system for US equities portfolio management. Claude (Anthropic) performs analysis and issues structured recommendations; a deterministic validator, risk gate, and human-override layer decide whether to act. The system never allows an AI model to place, cancel, or modify orders directly.
+An AI-governed execution-control system for US equities portfolio management. Claude (Anthropic) performs analysis and issues structured recommendations; a deterministic validator, risk gate, and human-override layer decide whether to act. The system never allows an AI model to place, cancel, or modify orders directly.
 
 **Paper trading by default.** The system runs in Alpaca's simulation environment until the operator explicitly confirms live mode with a required acknowledgement string. There is no fast path to real orders.
+
+> **Claude cannot:** place, modify, or cancel orders · read or write configuration · access account balances or position metadata · trigger alerts or emails · modify its own operating parameters. Every Claude output is validated by a deterministic layer before any action is taken. See [AI Governance](#ai-governance) for the full authority boundary.
 
 ---
 
@@ -72,7 +74,7 @@ flowchart TD
     Domain: whitelist · confidence · signal · conflict"]:::validate
 
     D["🛡️ &nbsp;Risk gate
-    Kelly sizing · position limits · sector cap
+    risk-budget sizing · position limits · sector cap
     fat-finger guard · bear filter · VIX adjustment"]:::risk
 
     E["⚡ &nbsp;Execute
@@ -720,7 +722,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1267 unit tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1457 tests, 98.73% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -978,4 +980,4 @@ Added web dashboard (Streamlit, 5 pages), CLI (`cli.py`), Docker deploy, AI deci
 
 ### 1.0 — April 2026
 
-Initial release. Full autonomous paper-trading capability with AI-driven decision making, Kelly Criterion sizing, multi-layer risk management, regime-aware signal tracking, weekly self-review with bounded parameter recommendations, and multi-recipient email reporting.
+Initial release. Full AI-governed paper-trading capability with AI-driven decision making, risk-budget sizing with Kelly telemetry, multi-layer risk management, regime-aware signal tracking, weekly self-review with constrained parameter proposals, and multi-recipient email reporting.
