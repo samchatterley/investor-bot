@@ -195,7 +195,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1457 tests, 98.73% coverage)
+├── tests/             Unit test suite (1506 tests, 98.25% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -488,24 +488,56 @@ python cli.py resume              # Clear halt when ready
 
 ## Evaluation Evidence
 
-### Backtest results (Jan 2025 → Apr 2026)
+### Backtest results (Jan 2025 → May 2026)
 
 The backtester replays the strategy's rule-based entry signals on historical OHLCV data. This is a **proxy for the strategy's signal quality** — it does not call Claude, so it measures whether the underlying technical signals have edge, not whether Claude interprets them well.
 
+Two runs are maintained: daily signals only (no Alpaca dependency), and all 11 signals including the three intraday signals which require Alpaca minute bars (`--use-intraday`).
+
+**Daily signals only (8 signals):**
 ```
 Initial capital:   $25,000
-Final value:       $29,486
-Total return:      +17.9%
-Total trades:      290
-Win rate:          53%
-Avg return/trade:  +0.37%
-Max drawdown:      -10.7%
-Sharpe ratio:      0.94
+Final value:       $21,534
+Total return:      -13.9%
+Total trades:      630
+Win rate:          50%
+Avg return/trade:  -0.09%
+Max drawdown:      n/a
+Sharpe ratio:      -0.30
 
 By signal:
-  momentum        158 trades  WR 58%  avg +0.48%
-  mean_reversion  132 trades  WR 48%  avg +0.23%
+  mean_reversion       210 trades  WR 50%  avg -0.06%
+  rs_leader            136 trades  WR 52%  avg +0.09%
+  bb_squeeze           141 trades  WR 52%  avg +0.37%
+  trend_pullback        75 trades  WR 44%  avg -0.50%
+  macd_crossover        26 trades  WR 42%  avg -0.41%
+  breakout_52w          19 trades  WR 47%  avg -0.92%
+  inside_day_breakout   15 trades  WR 60%  avg +0.18%
+  momentum               8 trades  WR 12%  avg -3.03%
 ```
+
+**All signals including intraday (11 signals, via Alpaca minute bars):**
+```
+Initial capital:   $25,000
+Final value:       $28,430
+Total return:      +13.7%
+Total trades:      620
+Win rate:          52%
+Avg return/trade:  +0.17%
+Max drawdown:      -23.9%
+Sharpe ratio:      0.52
+
+By signal:
+  orb_breakout         393 trades  WR 53%  avg +0.20%
+  mean_reversion       170 trades  WR 48%  avg -0.07%
+  bb_squeeze            35 trades  WR 57%  avg +1.09%
+  trend_pullback        16 trades  WR 56%  avg +0.73%
+  vwap_reclaim           3 trades  WR 67%  avg -0.09%
+  inside_day_breakout    2 trades  WR  0%  avg -3.40%
+  macd_crossover         1 trade   WR  0%  avg -1.61%
+```
+
+> **Simulation note:** In the intraday run the ORB signal (393 trades) dominates candidate selection. Because slot allocation sorts by ascending RSI, strongly-trending signals like `rs_leader`, `momentum`, and `breakout_52w` — which typically fire on high-RSI stocks — are crowded out on busy days. This is a known limitation of the candidate-ranking heuristic, not a signal deficiency; it will be addressed in a future multi-signal portfolio allocation pass.
 
 ### Backtest caveats
 
@@ -513,7 +545,7 @@ By signal:
 - **Transaction costs modelled.** Fills include 5 bps slippage + 1.5 bps half-spread on each side (`SLIPPAGE_BPS=5`, `SPREAD_BPS=3` in `config.py`). These are conservative estimates; actual costs depend on liquidity.
 - **No lookahead bias.** Signals use T-1 bar indicators; entries fill at T open price. Indicator warmup is buffered by 90 days.
 - **Survivorship bias.** The universe is fixed to the current symbol list, which contains names that have survived and grown. Pre-2025 signals on this list are upward-biased.
-- **Past performance.** 2025 included the DeepSeek shock (January), tariff volatility (April), and a significant drawdown. Sharpe of 0.94 over this period is reasonable but not exceptional.
+- **Past performance.** 2025 included the DeepSeek shock (January), tariff volatility (April), and a significant drawdown.
 
 ### Known failure modes
 
@@ -722,7 +754,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1457 tests, 98.73% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1506 tests, 98.25% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -773,7 +805,7 @@ Additional live-mode safety gates active in all modes:
 - **Midday run now eligible for buys.** `skip_buys` gate changed from `mode in ("midday", "close", "open_sells")` to `mode in ("close", "open_sells")`. The 12:00 ET run can now act on intraday setups that develop after the open rather than being purely a position-management pass.
 - **News context restricted to prefiltered symbols.** `news_fetcher.fetch_news` was being called with all `scan_symbols` (including prefilter-rejected top movers). Changed to `ai_known_symbols` — the set of symbols the AI actually received snapshots for. Eliminates the recurring pattern where the AI recommended news-driven tickers it had no technical data for, triggering validation failures and blocking valid buys.
 - **AI prompt updated**: new signal family descriptions, three new entries in `key_signal` enum (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`), and split indicator guide into daily vs. intraday sections.
-- **1457 tests, 98.73% coverage, zero ruff violations.**
+- **1506 tests, 98.25% coverage, zero ruff violations.**
 
 ---
 
