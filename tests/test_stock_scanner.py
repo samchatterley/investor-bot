@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from execution.stock_scanner import get_market_regime, prefilter_candidates, score_candidate
+from execution.stock_scanner import (
+    _passes_quality_screen,
+    get_market_regime,
+    prefilter_candidates,
+    score_candidate,
+)
 
 
 def _spy_history(prices: list[float]) -> pd.DataFrame:
@@ -389,3 +394,49 @@ class TestGetTopMovers(unittest.TestCase):
         with patch("execution.stock_scanner.yf.download", return_value=mock):
             result = get_top_movers()
         self.assertEqual(result, [])
+
+
+class TestPassesQualityScreen(unittest.TestCase):
+    """_passes_quality_screen: fundamental quality gate."""
+
+    def test_passes_when_all_fields_absent(self):
+        self.assertTrue(_passes_quality_screen({}))
+
+    def test_passes_when_only_debt_equity_present(self):
+        # roe and profit_margin both absent → permissive pass regardless of d/e
+        self.assertTrue(_passes_quality_screen({"debt_to_equity": 50.0}))
+
+    def test_passes_positive_roe(self):
+        self.assertTrue(_passes_quality_screen({"roe": 0.15, "profit_margin": 0.10}))
+
+    def test_fails_negative_roe(self):
+        self.assertFalse(_passes_quality_screen({"roe": -0.05, "profit_margin": 0.10}))
+
+    def test_fails_negative_profit_margin(self):
+        self.assertFalse(_passes_quality_screen({"roe": 0.10, "profit_margin": -0.02}))
+
+    def test_fails_excessive_debt_to_equity(self):
+        self.assertFalse(
+            _passes_quality_screen({"roe": 0.10, "profit_margin": 0.05, "debt_to_equity": 350.0})
+        )
+
+    def test_passes_high_but_acceptable_debt_to_equity(self):
+        # Financials/REITs can have D/E up to 300
+        self.assertTrue(
+            _passes_quality_screen({"roe": 0.10, "profit_margin": 0.05, "debt_to_equity": 280.0})
+        )
+
+    def test_passes_when_profit_margin_absent_but_roe_positive(self):
+        self.assertTrue(_passes_quality_screen({"roe": 0.12}))
+
+    def test_fails_when_profit_margin_absent_but_roe_negative(self):
+        self.assertFalse(_passes_quality_screen({"roe": -0.01}))
+
+    def test_prefilter_rejects_stock_with_negative_roe(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2, roe=-0.05, profit_margin=0.05)
+        self.assertEqual(prefilter_candidates([snap]), [])
+
+    def test_prefilter_passes_stock_without_quality_fields(self):
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)

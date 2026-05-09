@@ -2,11 +2,12 @@
 Rule-based backtester — validates technical signal quality on historical data
 without calling Claude (avoids API cost).
 
-RULE PROXY ONLY: This engine implements deterministic rule proxies for eight
-daily signals (mean_reversion, momentum, macd_crossover, bb_squeeze,
-inside_day_breakout, trend_pullback, breakout_52w, rs_leader) and three
-intraday signals (vwap_reclaim, orb_breakout, intraday_momentum). Intraday
-signals require Alpaca API credentials and --use-intraday.
+RULE PROXY ONLY: This engine implements deterministic rule proxies for ten
+daily signals (mean_reversion, momentum, momentum_12_1, macd_crossover,
+bb_squeeze, inside_day_breakout, trend_pullback, breakout_52w, rs_leader,
+gap_and_go, vix_fear_reversion) and three intraday signals (vwap_reclaim,
+orb_breakout, intraday_momentum). Intraday signals require Alpaca API
+credentials and --use-intraday.
 
 This engine does not use Claude's judgment, news, options flow, or macro
 context. Results measure signal quality only and must not be interpreted as
@@ -49,16 +50,17 @@ _SIGNAL_PRIORITY: dict[str, int] = {
     "vix_fear_reversion": 0,
     "rs_leader": 1,
     "breakout_52w": 2,
-    "gap_and_go": 3,
-    "inside_day_breakout": 4,
-    "bb_squeeze": 5,
-    "momentum": 6,
-    "macd_crossover": 7,
-    "trend_pullback": 8,
-    "mean_reversion": 9,
-    "orb_breakout": 10,
-    "vwap_reclaim": 11,
-    "intraday_momentum": 12,
+    "momentum_12_1": 3,
+    "gap_and_go": 4,
+    "inside_day_breakout": 5,
+    "bb_squeeze": 6,
+    "momentum": 7,
+    "macd_crossover": 8,
+    "trend_pullback": 9,
+    "mean_reversion": 10,
+    "orb_breakout": 11,
+    "vwap_reclaim": 12,
+    "intraday_momentum": 13,
 }
 
 # Signals blocked per market regime.
@@ -68,6 +70,7 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
         {
             "rs_leader",
             "breakout_52w",
+            "momentum_12_1",
             "momentum",
             "macd_crossover",
             "bb_squeeze",
@@ -91,6 +94,7 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
         {
             "rs_leader",
             "breakout_52w",
+            "momentum_12_1",
             "momentum",
             "gap_and_go",
         }
@@ -104,6 +108,7 @@ _DEFAULT_PARAMS: dict[str, float] = {
     "mr_vol_threshold": 1.2,
     "mom_vol_threshold": 1.3,
     "mom_ret5d_threshold": 1.0,
+    "mom12_1_threshold": 10.0,
 }
 
 # Search space for walk-forward parameter optimisation
@@ -169,6 +174,12 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if "Open" in df.columns:
         df["gap_pct"] = ((df["Open"] / close.shift(1)) - 1) * 100
         df["close_above_open"] = (close > df["Open"]).fillna(False)
+
+    # 12-1 medium-term momentum (Jegadeesh-Titman): 12-month return minus 1-month return.
+    # Positive values indicate sustained trend that hasn't overextended short-term.
+    df["ret_12m"] = close.pct_change(252) * 100
+    df["ret_1m"] = close.pct_change(21) * 100
+    df["mom_12_1"] = df["ret_12m"] - df["ret_1m"]
 
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
@@ -248,6 +259,14 @@ def _entry_signal(
         and "breakout_52w" not in blocked
     ):
         return "breakout_52w"
+
+    if (
+        row.get("mom_12_1", -999) > p["mom12_1_threshold"]
+        and row["ema9"] > row["ema21"]
+        and adx >= 20
+        and "momentum_12_1" not in blocked
+    ):
+        return "momentum_12_1"
 
     if (
         row.get("gap_pct", 0) > 2.0
@@ -722,6 +741,8 @@ def _run_simulation(
         signals_tested.append("inside_day_breakout")
     if any("gap_pct" in df.columns for df in indicators.values()):
         signals_tested.append("gap_and_go")
+    if any("mom_12_1" in df.columns for df in indicators.values()):
+        signals_tested.append("momentum_12_1")
     if spy_indicators is not None:
         signals_tested.append("rs_leader")
     if vix_spike_by_date:
@@ -738,6 +759,7 @@ def _run_simulation(
         "breakout_52w",
         "inside_day_breakout",
         "gap_and_go",
+        "momentum_12_1",
         "rs_leader",
         "vix_fear_reversion",
         "vwap_reclaim",
@@ -813,7 +835,7 @@ def run_backtest(
         + (" | intraday=ON" if use_intraday else "")
     )
 
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime(
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
         "%Y-%m-%d"
     )
     raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
@@ -937,7 +959,7 @@ def run_walk_forward_optimized(
         f"| {len(all_combos)} param combos | {len(symbols)} symbols"
     )
 
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=90)).strftime(
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
         "%Y-%m-%d"
     )
     raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
@@ -995,7 +1017,7 @@ def run_walk_forward_optimized(
         train_dates = trading_dates[fold["train_slice"]]
         test_dates = trading_dates[fold["test_slice"]]
 
-        best_params = _DEFAULT_PARAMS.copy()
+        best_params = all_combos[0]
         best_score = -float("inf")
         best_train_trades = 0
 

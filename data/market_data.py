@@ -255,6 +255,15 @@ def get_market_snapshots(
             snap["rel_strength_5d"] = round(snap["ret_5d_pct"] - spy_5d, 2)
         if spy_10d is not None:
             snap["rel_strength_10d"] = round(snap["ret_10d_pct"] - spy_10d, 2)
+        if preloaded is None:
+            try:
+                info = yf.Ticker(sym).info
+                snap["roe"] = info.get("returnOnEquity")
+                snap["profit_margin"] = info.get("profitMargins")
+                snap["debt_to_equity"] = info.get("debtToEquity")
+                snap["current_ratio"] = info.get("currentRatio")
+            except Exception:
+                pass
         return snap
 
     snapshots = []

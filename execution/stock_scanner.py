@@ -188,6 +188,28 @@ def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> 
         return {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"}
 
 
+def _passes_quality_screen(snapshot: dict) -> bool:
+    """Fundamental quality gate. Permissive when fields are absent (ETFs, backtest mode).
+
+    Rejects stocks with: negative ROE, negative profit margins, or extreme leverage (D/E > 300).
+    D/E threshold of 300 is intentionally loose to accommodate financials and REITs.
+    """
+    roe = snapshot.get("roe")
+    profit_margin = snapshot.get("profit_margin")
+    debt_to_equity = snapshot.get("debt_to_equity")
+
+    if roe is None and profit_margin is None:
+        return True
+
+    if roe is not None and roe < 0:
+        return False
+
+    if profit_margin is not None and profit_margin < 0:
+        return False
+
+    return not (debt_to_equity is not None and debt_to_equity > 300)
+
+
 def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
     """
     Rule-based screen applied before Claude analysis.
@@ -198,6 +220,9 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
     qualified = []
     for s in snapshots:
         if s.get("avg_volume", 0) < MIN_VOLUME:
+            continue
+
+        if not _passes_quality_screen(s):
             continue
 
         rsi = s.get("rsi_14", 50)

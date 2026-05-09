@@ -103,6 +103,7 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "intraday_momentum": 1,  # intraday continuation — exit same day or next open
     "gap_and_go": 2,  # confirmed gap continuation — typically resolves in 1–2 days
     "vix_fear_reversion": 3,  # fear-spike bounce — hold for the relief rally
+    "momentum_12_1": 5,  # medium-term Jegadeesh-Titman factor — needs room to develop
     "unknown": 3,  # conservative default
 }
 

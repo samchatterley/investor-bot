@@ -69,6 +69,7 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset(
         "intraday_momentum",
         "gap_and_go",
         "vix_fear_reversion",
+        "momentum_12_1",
     }
 )
 

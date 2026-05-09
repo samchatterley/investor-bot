@@ -85,6 +85,7 @@ def _make_row(**kwargs) -> pd.Series:
         "adx": 30.0,
         "gap_pct": 0.0,
         "close_above_open": False,
+        "mom_12_1": 0.0,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -535,6 +536,82 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
             }
         )
         self.assertEqual(_entry_signal(row), "momentum")
+
+
+class TestMomentum121Signal(unittest.TestCase):
+    """momentum_12_1: Jegadeesh-Titman 12-1 medium-term momentum signal."""
+
+    def test_fires_above_threshold(self):
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
+        self.assertEqual(_entry_signal(row), "momentum_12_1")
+
+    def test_no_fire_below_threshold(self):
+        row = _make_row(mom_12_1=5.0, ema9=101, ema21=100, adx=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_when_downtrend(self):
+        row = _make_row(mom_12_1=15.0, ema9=99, ema21=100, adx=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_blocked_by_low_adx(self):
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=15)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_blocked_on_bear_day(self):
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
+        self.assertIsNone(_entry_signal(row, regime="BEAR_DAY"))
+
+    def test_blocked_on_choppy(self):
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
+        self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
+
+    def test_allowed_on_bull_trending(self):
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
+        self.assertEqual(_entry_signal(row, regime="BULL_TRENDING"), "momentum_12_1")
+
+    def test_allowed_on_high_vol(self):
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
+        self.assertEqual(_entry_signal(row, regime="HIGH_VOL"), "momentum_12_1")
+
+    def test_absent_defaults_to_no_fire(self):
+        # When mom_12_1 absent, defaults to -999 → no signal
+        row = _make_row(ema9=101, ema21=100, adx=25)
+        self.assertNotEqual(_entry_signal(row), "momentum_12_1")
+
+    def test_custom_threshold(self):
+        row = _make_row(mom_12_1=8.0, ema9=101, ema21=100, adx=25)
+        self.assertNotEqual(_entry_signal(row), "momentum_12_1")
+        self.assertEqual(_entry_signal(row, params={"mom12_1_threshold": 5.0}), "momentum_12_1")
+
+    def test_in_signal_priority(self):
+        self.assertIn("momentum_12_1", _SIGNAL_PRIORITY)
+
+    def test_priority_between_breakout52w_and_gap_and_go(self):
+        self.assertLess(_SIGNAL_PRIORITY["breakout_52w"], _SIGNAL_PRIORITY["momentum_12_1"])
+        self.assertLess(_SIGNAL_PRIORITY["momentum_12_1"], _SIGNAL_PRIORITY["gap_and_go"])
+
+    def test_signals_not_tested_excludes_momentum_12_1_when_column_present(self):
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        n = len(idx)
+        df = pd.DataFrame(
+            {
+                "Close": [100.0] * n,
+                "Open": [99.5] * n,
+                "Volume": [1_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.0] * n,
+                "ema9": [100.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.0] * n,
+                "ret_5d": [0.0] * n,
+                "mom_12_1": [5.0] * n,
+            },
+            index=idx,
+        )
+        result = _run_simulation({"AAPL": df}, idx[1:])
+        self.assertIn("momentum_12_1", result["signals_tested"])
+        self.assertNotIn("momentum_12_1", result["signals_not_tested"])
 
 
 class TestComputeIntradayDay(unittest.TestCase):
