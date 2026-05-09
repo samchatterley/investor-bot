@@ -125,6 +125,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment — sustained market leader | 5 days |
 | `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; blocked on BEAR_DAY and CHOPPY | 5 days |
 | `insider_buying` | ≥2 distinct corporate insiders made open-market Form 4 purchases (SEC EDGAR) within 10 days; bypasses weekly trend filter | 5 days |
+| `pead` | Post-Earnings Announcement Drift: EPS beat ≥5% within 30 days + price still drifting up (ret_5d > 0); bypasses weekly trend filter | 3 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
 **Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
@@ -137,7 +138,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
 
 ---
 
@@ -197,7 +198,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1597 tests, 96% coverage)
+├── tests/             Unit test suite (1613 tests, 96% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -719,7 +720,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 1. **Live paper-trading evidence** — currently running a full week of live paper trading (w/c 28 April 2026) before committing real capital. The Sunday weekly review will produce an automated performance analysis and parameter adjustment. The backtest is signal evidence; paper trading is execution evidence.
 2. **Drawdown-based position sizing** — reduce Kelly fraction automatically when the portfolio is in a drawdown, not just when individual signals are weak.
-3. **Post-earnings momentum (PEAD)** — the bot currently blocks buys near earnings; adding a PEAD signal would flip that to an entry trigger when earnings beat + gap up, holding for 2–3 days of drift.
+3. ~~Post-earnings momentum (PEAD)~~ — implemented in v1.20.
 4. **Centralised logging** — move from local SQLite to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
 5. **Account-level performance attribution** — track alpha vs SPY benchmark, not just absolute return. The current metrics don't adjust for beta.
 
@@ -756,7 +757,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1597 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1613 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -799,6 +800,16 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.20 — May 2026 — PEAD signal: post-earnings announcement drift
+
+- **`pead` signal (`data/earnings_surprise.py`).** Fetches `earnings_dates` from yfinance for each symbol (no API key required). Finds the most recent completed earnings event within the last 30 days; fires when `Surprise(%) >= 5.0%` (analyst beat) and the 5-day return is still positive (price confirming drift, not reversing). Bypasses the weekly trend filter — earnings conviction is a fundamental signal. Hold limit: 3 days to capture the initial repricing window.
+- Earnings surprise fields enriched into snapshots: `earnings_surprise_pct`, `earnings_date`, `earnings_days_ago`, `pead_candidate`. Wired in `main.py` after insider and AV sentiment enrichment, before the prefilter.
+- `_PEAD_WINDOW_DAYS = 30`, `_MIN_SURPRISE_PCT = 5.0`. Both are configurable at call time (`lookback_days`, `min_surprise` params).
+- **16 new tests** (total 1613): `tests/test_earnings_surprise.py` (11 tests — above-threshold, below-threshold, outside lookback, custom lookback, future earnings ignored, None/network failure, days_ago, ISO date format, multi-symbol, custom threshold); 5 PEAD prefilter tests in `test_stock_scanner.py`.
+- **1613 tests, 96% coverage, zero ruff violations.**
+
+---
 
 ### 1.19 — May 2026 — momentum_12_1, insider buying (SEC EDGAR Form 4), AV news sentiment, quality pre-filter
 
