@@ -293,6 +293,11 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         # confirmation required since the conviction comes from the insider data.
         insider_buying = s.get("insider_cluster", False) is True
 
+        # Post-earnings drift: stock beat consensus EPS by ≥5% within the last 30 days
+        # and price is still confirming upward drift (positive 5d return).
+        # Standalone signal — earnings conviction overrides the weekly trend filter.
+        pead = s.get("pead_candidate", False) is True and s.get("ret_5d_pct", 0) > 0
+
         matched = []
         if mean_reversion:
             matched.append("mean_reversion")
@@ -320,13 +325,21 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("intraday_momentum")
         if insider_buying:
             matched.append("insider_buying")
+        if pead:
+            matched.append("pead")
 
         if not matched:
             continue
 
-        # Block buys against the weekly trend unless deeply oversold or an insider
-        # cluster is present (fundamental conviction overrides the trend filter).
-        if not weekly_up and not (rsi < 30 and bb < 0.15) and "insider_buying" not in matched:
+        # Block buys against the weekly trend unless deeply oversold, an insider
+        # cluster is present, or a PEAD signal fired (fundamental conviction overrides
+        # the technical trend filter for both insider and earnings-surprise signals).
+        if (
+            not weekly_up
+            and not (rsi < 30 and bb < 0.15)
+            and "insider_buying" not in matched
+            and "pead" not in matched
+        ):
             continue
 
         qualified.append({**s, "matched_signals": matched})

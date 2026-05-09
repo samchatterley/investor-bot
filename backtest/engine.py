@@ -767,6 +767,8 @@ def _run_simulation(
         "intraday_momentum",
         # insider_buying requires historical Form 4 data not available in this engine
         "insider_buying",
+        # pead requires historical EPS surprise data not available in this engine
+        "pead",
     }
     signals_not_tested = sorted(all_backtestable - set(signals_tested))
 

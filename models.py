@@ -71,6 +71,7 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset(
         "vix_fear_reversion",
         "momentum_12_1",
         "insider_buying",
+        "pead",
     }
 )
 

@@ -26,7 +26,15 @@ from datetime import UTC, datetime
 import config
 from analysis import ai_analyst, performance
 from analysis.weekly_review import get_latest_review
-from data import av_sentiment, insider_feed, market_data, news_fetcher, options_scanner, sector_data
+from data import (
+    av_sentiment,
+    earnings_surprise,
+    insider_feed,
+    market_data,
+    news_fetcher,
+    options_scanner,
+    sector_data,
+)
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
 from execution.quote_gate import check_quote_gate
@@ -795,6 +803,13 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     for snap in snapshots:
         if snap["symbol"] in av_data:
             snap.update(av_data[snap["symbol"]])
+
+    # ── PEAD (Post-Earnings Announcement Drift) candidates ───────────────────
+    logger.info("Fetching earnings surprise data...")
+    pead_data = earnings_surprise.get_earnings_surprise([s["symbol"] for s in snapshots])
+    for snap in snapshots:
+        if snap["symbol"] in pead_data:
+            snap.update(pead_data[snap["symbol"]])
 
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in held_symbols]

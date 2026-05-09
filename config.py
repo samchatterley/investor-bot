@@ -107,6 +107,7 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "vix_fear_reversion": 3,  # fear-spike bounce — hold for the relief rally
     "momentum_12_1": 5,  # medium-term Jegadeesh-Titman factor — needs room to develop
     "insider_buying": 5,  # cluster insider purchases — drift plays out over days-weeks
+    "pead": 3,  # post-earnings drift — capture the initial repricing window
     "unknown": 3,  # conservative default
 }
 
