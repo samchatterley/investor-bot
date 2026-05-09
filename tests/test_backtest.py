@@ -20,11 +20,13 @@ from backtest.engine import (
     _compute_intraday_day,
     _entry_signal,
     _print_ablation_results,
+    _print_backward_elimination_results,
     _print_results,
     _run_simulation,
     _save_results,
     run_ablation,
     run_backtest,
+    run_backward_elimination,
     run_walk_forward_optimized,
 )
 
@@ -2127,3 +2129,111 @@ class TestRunAblation(unittest.TestCase):
             _print_ablation_results(result, "2025-01-01", "2025-06-30")
         except Exception as exc:
             self.fail(f"_print_ablation_results raised: {exc}")
+
+
+# ── run_backward_elimination ──────────────────────────────────────────────────
+
+
+class TestRunBackwardElimination(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_expected_top_level_keys(self):
+        result = self._run()
+        for key in (
+            "steps",
+            "original_baseline",
+            "final_result",
+            "signals_kept",
+            "signals_removed",
+        ):
+            self.assertIn(key, result)
+
+    def test_signals_kept_and_removed_are_disjoint(self):
+        result = self._run()
+        kept = set(result["signals_kept"])
+        removed = set(result["signals_removed"])
+        self.assertTrue(kept.isdisjoint(removed))
+
+    def test_signals_kept_union_removed_is_subset_of_priority(self):
+        result = self._run()
+        all_signals = set(result["signals_kept"]) | set(result["signals_removed"])
+        self.assertTrue(all_signals <= set(_SIGNAL_PRIORITY.keys()))
+
+    def test_steps_count_matches_signals_removed(self):
+        result = self._run()
+        self.assertEqual(len(result["steps"]), len(result["signals_removed"]))
+
+    def test_each_step_has_required_keys(self):
+        result = self._run()
+        for s in result["steps"]:
+            for key in (
+                "step",
+                "signal_removed",
+                "sharpe_delta",
+                "sharpe_after",
+                "return_after",
+                "trades_removed",
+            ):
+                self.assertIn(key, s)
+
+    def test_step_numbers_are_sequential(self):
+        result = self._run()
+        for i, s in enumerate(result["steps"], start=1):
+            self.assertEqual(s["step"], i)
+
+    def test_each_step_sharpe_delta_positive(self):
+        result = self._run()
+        for s in result["steps"]:
+            self.assertGreater(s["sharpe_delta"], 0)
+
+    def test_final_result_sharpe_ge_baseline(self):
+        result = self._run()
+        self.assertGreaterEqual(
+            result["final_result"]["sharpe_ratio"],
+            result["original_baseline"]["sharpe_ratio"],
+        )
+
+    def test_returns_empty_on_empty_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_backward_elimination(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_use_earnings_only_fetches_earnings_not_insider(self):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_insider,
+        ):
+            run_backward_elimination(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", use_earnings_only=True
+            )
+        mock_earn.assert_called_once()
+        mock_insider.assert_not_called()
+
+    def test_print_backward_elimination_results_no_error(self):
+        result = self._run()
+        try:
+            _print_backward_elimination_results(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_backward_elimination_results raised: {exc}")
+
+    def test_print_backward_elimination_no_steps_no_error(self):
+        r = {
+            "steps": [],
+            "original_baseline": {"sharpe_ratio": 0.5, "total_return_pct": 5.0, "total_trades": 10},
+            "final_result": {"sharpe_ratio": 0.5, "total_return_pct": 5.0, "total_trades": 10},
+            "signals_kept": ["momentum", "mean_reversion"],
+            "signals_removed": [],
+        }
+        try:
+            _print_backward_elimination_results(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_backward_elimination_results raised: {exc}")

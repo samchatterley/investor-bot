@@ -1228,6 +1228,7 @@ def run_ablation(
     spread_bps: int | None = None,
     per_signal_cap: int = 2,
     use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
 ) -> dict:
     """Measure each signal's marginal contribution to portfolio Sharpe.
 
@@ -1256,7 +1257,9 @@ def run_ablation(
     """
     logger.info(
         f"Ablation: {start_date} → {end_date} | {len(symbols)} symbols | "
-        f"{len(_SIGNAL_PRIORITY)} signals" + (" | fundamentals=ON" if use_fundamentals else "")
+        f"{len(_SIGNAL_PRIORITY)} signals"
+        + (" | earnings=ON" if use_earnings_only else "")
+        + (" | fundamentals=ON" if use_fundamentals else "")
     )
 
     fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
@@ -1309,9 +1312,11 @@ def run_ablation(
 
     earnings_history: dict[str, list[dict]] | None = None
     insider_history: dict[str, list[dict]] | None = None
-    if use_fundamentals:
-        logger.info("Ablation: pre-fetching fundamental data…")
+    if use_fundamentals or use_earnings_only:
+        logger.info("Ablation: pre-fetching earnings history…")
         earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        logger.info("Ablation: pre-fetching insider history…")
         insider_history = prefetch_insider_history(symbols)
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
@@ -1359,6 +1364,228 @@ def run_ablation(
     out = {"baseline": baseline, "ablations": ablations}
     _print_ablation_results(out, start_date, end_date)
     return out
+
+
+def run_backward_elimination(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
+) -> dict:
+    """Greedy backward elimination: iteratively remove the signal that most
+    improves Sharpe, until no remaining signal is a net drag.
+
+    Unlike single-pass ablation, each step re-evaluates all remaining signals
+    against the *current* disabled set — capturing slot-competition interactions
+    that independent ablation misses.
+
+    Stops when removing any remaining signal produces ΔSharpe ≤ 0.
+
+    Returns::
+
+        {
+            "steps": [
+                {
+                    "step":           int,
+                    "signal_removed": str,
+                    "sharpe_delta":   float,
+                    "sharpe_after":   float,
+                    "return_after":   float,
+                    "trades_removed": int,
+                },
+                ...
+            ],
+            "original_baseline": full _run_simulation result,
+            "final_result":      full _run_simulation result after all removals,
+            "signals_kept":      list[str],
+            "signals_removed":   list[str],
+        }
+    """
+    use_any_fundamentals = use_fundamentals or use_earnings_only
+    logger.info(
+        f"Backward elimination: {start_date} → {end_date} | {len(symbols)} symbols"
+        + (" | earnings=ON" if use_earnings_only else "")
+        + (" | fundamentals=ON" if use_fundamentals else "")
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed: {exc}")
+
+    vix_spike_by_date: dict[str, bool] = {}
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):
+                vix_close = vix_close.iloc[:, 0]
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_any_fundamentals:
+        logger.info("Backward elimination: pre-fetching earnings history…")
+        earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        logger.info("Backward elimination: pre-fetching insider history…")
+        insider_history = prefetch_insider_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "params": params,
+        "slippage_bps": slippage_bps,
+        "spread_bps": spread_bps,
+        "spy_indicators": spy_indicators,
+        "per_signal_cap": per_signal_cap,
+        "regime_by_date": regime_by_date or None,
+        "vix_spike_by_date": vix_spike_by_date or None,
+        "earnings_history": earnings_history,
+        "insider_history": insider_history,
+    }
+
+    logger.info("Backward elimination: running baseline…")
+    original_baseline = _run_simulation(indicators, trading_dates, **sim_kwargs)
+
+    disabled: set[str] = set()
+    current_result = original_baseline
+    steps: list[dict] = []
+
+    while True:
+        remaining = [s for s in _SIGNAL_PRIORITY if s not in disabled]
+        if not remaining:
+            break
+
+        best_signal: str | None = None
+        best_delta = 0.0
+        best_result: dict | None = None
+        best_trades = 0
+
+        for signal_name in remaining:
+            trial = _run_simulation(
+                indicators,
+                trading_dates,
+                **sim_kwargs,
+                disabled_signals=frozenset(disabled | {signal_name}),
+            )
+            delta = trial["sharpe_ratio"] - current_result["sharpe_ratio"]
+            sig_data = current_result["by_signal"].get(signal_name, {})
+            trades = sig_data.get("wins", 0) + sig_data.get("losses", 0)
+            if delta > best_delta or (delta == best_delta and trades > best_trades):
+                best_signal = signal_name
+                best_delta = delta
+                best_result = trial
+                best_trades = trades
+
+        if best_delta <= 0 or best_result is None or best_signal is None:
+            break
+
+        disabled.add(best_signal)
+        steps.append(
+            {
+                "step": len(steps) + 1,
+                "signal_removed": best_signal,
+                "sharpe_delta": round(best_delta, 3),
+                "sharpe_after": round(best_result["sharpe_ratio"], 3),
+                "return_after": round(best_result["total_return_pct"], 2),
+                "trades_removed": best_trades,
+            }
+        )
+        logger.info(
+            f"  Step {len(steps)}: removed {best_signal} "
+            f"(ΔSharpe={best_delta:+.3f}, now {best_result['sharpe_ratio']:.3f})"
+        )
+        current_result = best_result
+
+    signals_kept = sorted(
+        [s for s in _SIGNAL_PRIORITY if s not in disabled],
+        key=lambda s: _SIGNAL_PRIORITY[s],
+    )
+    out = {
+        "steps": steps,
+        "original_baseline": original_baseline,
+        "final_result": current_result,
+        "signals_kept": signals_kept,
+        "signals_removed": [s["signal_removed"] for s in steps],
+    }
+    _print_backward_elimination_results(out, start_date, end_date)
+    return out
+
+
+def _print_backward_elimination_results(r: dict, start_date: str, end_date: str) -> None:
+    ob = r["original_baseline"]
+    fr = r["final_result"]
+    print("\n" + "=" * 65)
+    print(f"  BACKWARD ELIMINATION  {start_date} → {end_date}")
+    print("=" * 65)
+    print(
+        f"  Start:  Sharpe {ob['sharpe_ratio']:.3f} | "
+        f"Return {ob['total_return_pct']:+.1f}% | {ob['total_trades']} trades"
+    )
+    print(
+        f"  Final:  Sharpe {fr['sharpe_ratio']:.3f} | "
+        f"Return {fr['total_return_pct']:+.1f}% | {fr['total_trades']} trades"
+    )
+    print()
+    if r["steps"]:
+        print(f"  {'Step':<5} {'Signal removed':<25} {'ΔSharpe':>8}  {'Sharpe':>8}  {'Trades':>6}")
+        print("  " + "-" * 58)
+        for s in r["steps"]:
+            print(
+                f"  {s['step']:<5} {s['signal_removed']:<25} "
+                f"{s['sharpe_delta']:>+8.3f}  {s['sharpe_after']:>8.3f}  {s['trades_removed']:>6}"
+            )
+    else:
+        print("  No signals identified as net drags — baseline is optimal.")
+    print()
+    print(f"  Signals kept:    {', '.join(r['signals_kept'])}")
+    print(f"  Signals removed: {', '.join(r['signals_removed']) or 'none'}")
+    print("=" * 65 + "\n")
 
 
 def _print_ablation_results(r: dict, start_date: str, end_date: str) -> None:
@@ -1446,12 +1673,32 @@ if __name__ == "__main__":
         help="Pre-fetch SEC EDGAR Form 4 + yfinance EPS history to test pead/insider_buying",
     )
     parser.add_argument(
+        "--use-earnings-only",
+        action="store_true",
+        help="Pre-fetch yfinance EPS history only (skips slow EDGAR insider fetch, enables pead)",
+    )
+    parser.add_argument(
         "--ablation",
         action="store_true",
         help="Run ablation study: disable each signal in turn to measure marginal Sharpe contribution",
     )
+    parser.add_argument(
+        "--backward-elimination",
+        action="store_true",
+        help="Greedy backward elimination: iteratively remove the worst signal until none are drags",
+    )
     args = parser.parse_args()
-    if args.ablation:
+    if args.backward_elimination:
+        run_backward_elimination(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
+        )
+    elif args.ablation:
         run_ablation(
             STOCK_UNIVERSE,
             args.start,
@@ -1459,6 +1706,7 @@ if __name__ == "__main__":
             initial_capital=args.capital,
             per_signal_cap=args.per_signal_cap,
             use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
         )
     else:
         run_backtest(

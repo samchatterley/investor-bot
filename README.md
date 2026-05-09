@@ -199,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1667 tests, 97% coverage)
+├── tests/             Unit test suite (1691 tests, 96% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -758,7 +758,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1667 tests, 97% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1691 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -801,6 +801,29 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.24 — May 2026 — greedy backward elimination + --use-earnings-only
+
+- **`run_backward_elimination` (new function).** Greedy backward elimination: iteratively disables the signal whose removal most improves Sharpe, re-evaluating all remaining signals against the updated disabled set at each step. Stops when no remaining signal produces ΔSharpe > 0. Captures slot-competition interactions that single-pass independent ablation misses (e.g. when pead fills 56% of slots, rs_leader and macd_crossover are evaluated on biased 13–14 trade samples; elimination re-measures them after pead is removed).
+- **`--backward-elimination` CLI flag.** Runs `run_backward_elimination` instead of `run_backtest`. Prints a step table showing removed signal, ΔSharpe, Sharpe after, and trades freed per step; prints final `signals_kept` / `signals_removed` summary.
+- **`--use-earnings-only` flag** (on both `run_ablation` and `run_backward_elimination`). Prefetches yfinance EPS history only — skips the 90-minute EDGAR insider fetch — enabling `pead` in ~2 minutes. `insider_buying` is disabled. Use with `--backward-elimination` or `--ablation` to run pead-inclusive evaluation without the full fundamentals fetch.
+- **`disabled_signals` parameter** added to `_entry_signal` and `_run_simulation`. Merged into `blocked` frozenset at top of `_entry_signal` so all existing `"signal" not in blocked` guards apply automatically. Used internally by both ablation and backward elimination.
+- **`_print_backward_elimination_results` helper.** Prints a formatted step table plus before/after Sharpe and trade count.
+- **24 new tests** (total 1691): `TestRunBackwardElimination` (12 tests — return shape, step sequentiality, sharpe monotonicity, signals_kept/removed disjointness, empty data, `use_earnings_only` prefetch, print helper); `TestDisabledSignals` (5 tests) and `TestRunAblation` (7 tests) added in v1.23.
+- **1691 tests, 96% coverage, zero ruff violations.**
+
+---
+
+### 1.23 — May 2026 — independent ablation study
+
+- **`run_ablation` (new function).** Single-pass independent ablation: disables each signal in isolation against the same baseline, measuring ΔSharpe ("what happens when this signal is removed?"). ΔSharpe < 0 → KEEP; ΔSharpe > 0 → REVIEW. Prints a sorted table by ΔSharpe. Superseded for interaction analysis by backward elimination (v1.24), but retained for fast per-signal attribution.
+- **`--ablation` CLI flag.** Runs `run_ablation` instead of `run_backtest`.
+- **`--use-earnings-only` flag** on `run_ablation` (same semantics as v1.24 — added in same release).
+- **`disabled_signals`** wired into `_entry_signal` and `_run_simulation` (see v1.24 entry for full detail).
+- **12 new tests** (total 1679, incremental from v1.22): `TestDisabledSignals` (5 tests) and `TestRunAblation` (7 tests) in `test_backtest.py`.
+- **1679 tests, 96% coverage, zero ruff violations.**
+
+---
 
 ### 1.22 — May 2026 — historical fundamentals: point-in-time pead + insider_buying backtesting
 
