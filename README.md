@@ -126,6 +126,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; blocked on BEAR_DAY and CHOPPY | 5 days |
 | `insider_buying` | ≥2 distinct corporate insiders made open-market Form 4 purchases (SEC EDGAR) within 10 days; bypasses weekly trend filter | 5 days |
 | `pead` | Post-Earnings Announcement Drift: EPS beat ≥5% within 30 days + price still drifting up (ret_5d > 0); bypasses weekly trend filter | 3 days |
+| `iv_compression` | Historical volatility rank in bottom 20th percentile of its 52-week range + directional confirmation (EMA or MACD) + volume — coiling for expansion | 4 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
 **Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
@@ -138,7 +139,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
 
 ---
 
@@ -198,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1613 tests, 96% coverage)
+├── tests/             Unit test suite (1626 tests, 96% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -757,7 +758,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1613 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1626 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -800,6 +801,17 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.21 — May 2026 — iv_compression signal: historical volatility percentile squeeze
+
+- **`iv_compression` signal.** Measures where today's 20-day annualized realized volatility (`hv_20d`) sits in its rolling 252-day range. `hv_rank < 0.20` means the stock is in the bottom quintile of its annual vol history — coiling for an expansion move.
+- **`hv_20d` and `hv_rank` indicators** added to both `data/market_data.py` (live enrichment, surfaced in every snapshot) and `backtest/engine.py` (`_compute_indicators`). Signal is fully backtestable without external data.
+- **Prefilter conditions**: `hv_rank < 0.20` + directional confirmation (EMA9 > EMA21 or MACD positive) + vol_ratio > 1.1. Not regime-blocked (vol squeezes are regime-agnostic). Priority rank 7 (between bb_squeeze and momentum). Hold limit: 4 days.
+- Complementary to but distinct from `bb_squeeze` — `bb_squeeze` measures band width relative to recent short history; `iv_compression` measures where annual vol sits in its own long-run range.
+- **13 new tests** (total 1626): `TestIvCompressionSignal` in both `test_backtest.py` (8 tests — fires with EMA/MACD confirmation, no-fire conditions, regime, priority ordering, signals_tested integration) and `test_stock_scanner.py` (5 tests — prefilter conditions).
+- **1626 tests, 96% coverage, zero ruff violations.**
+
+---
 
 ### 1.20 — May 2026 — PEAD signal: post-earnings announcement drift
 
