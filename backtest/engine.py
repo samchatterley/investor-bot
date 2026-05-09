@@ -373,6 +373,7 @@ def _run_simulation(
     spread_bps: int | None = None,
     intraday_data: dict[str, dict[str, dict]] | None = None,
     spy_indicators: pd.DataFrame | None = None,
+    per_signal_cap: int = 2,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
@@ -482,7 +483,20 @@ def _run_simulation(
             return (priority, rsi_key)
 
         candidates.sort(key=_sort_key)
-        for sym, signal, _ in candidates[:slots]:
+
+        # Apply per-signal cap: at most `per_signal_cap` positions from any one
+        # signal per day, so no single signal monopolises all available slots.
+        signal_counts: dict[str, int] = defaultdict(int)
+        capped: list[tuple] = []
+        for item in candidates:
+            if len(capped) >= slots:
+                break
+            _, sig, _ = item
+            if signal_counts[sig] < per_signal_cap:
+                capped.append(item)
+                signal_counts[sig] += 1
+
+        for sym, signal, _ in capped:
             try:
                 try:
                     entry_px = float(indicators[sym].loc[today, "Open"])
@@ -659,6 +673,7 @@ def run_backtest(
     slippage_bps: int | None = None,
     spread_bps: int | None = None,
     use_intraday: bool = False,
+    per_signal_cap: int = 2,
 ) -> dict:
 
     logger.info(
@@ -714,6 +729,7 @@ def run_backtest(
         spread_bps=spread_bps,
         intraday_data=intraday_data,
         spy_indicators=spy_indicators,
+        per_signal_cap=per_signal_cap,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -974,6 +990,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Fetch Alpaca minute bars to test vwap_reclaim/orb_breakout/intraday_momentum",
     )
+    parser.add_argument(
+        "--per-signal-cap",
+        type=int,
+        default=2,
+        help="Max positions opened from any single signal per day (default 2)",
+    )
     args = parser.parse_args()
     run_backtest(
         STOCK_UNIVERSE,
@@ -981,4 +1003,5 @@ if __name__ == "__main__":
         args.end,
         initial_capital=args.capital,
         use_intraday=args.use_intraday,
+        per_signal_cap=args.per_signal_cap,
     )

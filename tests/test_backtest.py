@@ -1313,6 +1313,112 @@ class TestSignalPriority(unittest.TestCase):
         self.assertIn("AAPL", bought_symbols)
         self.assertNotIn("MSFT", bought_symbols)
 
+    def _make_signal_df(self, idx, signal_row_overrides: dict) -> pd.DataFrame:
+        """Build a pre-computed indicator DataFrame that fires a specific signal."""
+        n = len(idx)
+        defaults = {
+            "Close": [100.0] * n,
+            "Open": [99.5] * n,
+            "Volume": [2_000_000] * n,
+            "rsi": [50.0] * n,
+            "bb_pct": [0.5] * n,
+            "vol_ratio": [1.5] * n,
+            "ema9": [101.0] * n,
+            "ema21": [100.0] * n,
+            "macd_diff": [0.5] * n,
+            "ret_5d": [2.0] * n,
+            "bb_squeeze": [False] * n,
+            "macd_cross": [False] * n,
+            "ret_10d": [4.0] * n,
+            "pct_vs_ema21": [1.0] * n,
+            "price_vs_52w_high_pct": [-50.0] * n,
+            "is_inside_day": [False] * n,
+        }
+        defaults.update(signal_row_overrides)
+        return pd.DataFrame(defaults, index=idx)
+
+    def test_per_signal_cap_limits_same_signal_entries(self):
+        """With cap=1, at most 1 position from any single signal on a single trading day."""
+        # Use 2 periods → 1 trading day (idx[1:]) so the cap is unambiguously per-day.
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx[1:]
+        n = len(idx)
+
+        # Three symbols all firing bb_squeeze on the same day
+        bb_overrides = {"bb_squeeze": [True] * n}
+        indicators = {f"SYM{i}": self._make_signal_df(idx, bb_overrides) for i in range(3)}
+
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            initial_capital=30_000.0,
+            max_positions=5,
+            max_hold_days=2,
+            per_signal_cap=1,
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        bb_buys = [t for t in buy_trades if t["signal"] == "bb_squeeze"]
+        # Cap of 1 → exactly 1 bb_squeeze buy on the single trading day
+        self.assertEqual(len(bb_buys), 1)
+
+    def test_per_signal_cap_2_allows_two_same_signal(self):
+        """With cap=2, exactly 2 entries from the same signal are allowed in one day."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx[1:]
+        n = len(idx)
+
+        bb_overrides = {"bb_squeeze": [True] * n}
+        indicators = {f"SYM{i}": self._make_signal_df(idx, bb_overrides) for i in range(4)}
+
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            initial_capital=40_000.0,
+            max_positions=5,
+            max_hold_days=2,
+            per_signal_cap=2,
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        bb_buys = [t for t in buy_trades if t["signal"] == "bb_squeeze"]
+        # Cap of 2 → exactly 2 bb_squeeze buys (4 candidates, cap stops at 2)
+        self.assertEqual(len(bb_buys), 2)
+
+    def test_per_signal_cap_does_not_prevent_fills_from_other_signals(self):
+        """When cap blocks the dominant signal, other signals still fill remaining slots."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        trading_dates = idx[1:]
+        n = len(idx)
+
+        # SYM0–SYM1: bb_squeeze; SYM2: mean_reversion (rsi<35, bb_pct<0.25, vol>1.2)
+        bb_overrides = {"bb_squeeze": [True] * n}
+        mr_overrides = {
+            "rsi": [28.0] * n,
+            "bb_pct": [0.15] * n,
+            "vol_ratio": [1.5] * n,
+            "ema9": [99.0] * n,
+            "ema21": [100.0] * n,
+            "macd_diff": [-0.1] * n,
+            "bb_squeeze": [False] * n,
+        }
+        indicators = {
+            "SYM0": self._make_signal_df(idx, bb_overrides),
+            "SYM1": self._make_signal_df(idx, bb_overrides),
+            "SYM2": self._make_signal_df(idx, mr_overrides),
+        }
+
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            initial_capital=30_000.0,
+            max_positions=5,
+            max_hold_days=2,
+            per_signal_cap=1,
+        )
+        buy_trades = [t for t in result["trades"] if t["action"] == "BUY"]
+        signals_bought = {t["signal"] for t in buy_trades}
+        # cap=1 limits bb_squeeze to 1; mean_reversion should still get a slot
+        self.assertIn("mean_reversion", signals_bought)
+
 
 class TestRunSimulationEdgeCases(unittest.TestCase):
     """Edge cases in _run_simulation that require custom indicator DataFrames."""
