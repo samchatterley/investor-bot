@@ -44,13 +44,15 @@ _ET = ZoneInfo("America/New_York")
 _CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5d"]
 
 # Signal priority for candidate slot allocation (lower number = higher priority).
-# Ranked by selectivity and observed avg return. Intraday signals rank below daily
-# because they fire on a much larger fraction of symbol-days.
+# Ordered by observed edge: WR × avg_return from backtest evidence.
+# rs_leader (WR 60%, +0.87 avg) and breakout_52w (WR 56%, +1.04 avg) lead;
+# bb_squeeze demoted from rank 0 — fires too broadly when given top priority,
+# degrading avg return from +0.37% to -0.18%. Intraday signals trail daily.
 _SIGNAL_PRIORITY: dict[str, int] = {
-    "bb_squeeze": 0,
+    "rs_leader": 0,
     "breakout_52w": 1,
-    "rs_leader": 2,
-    "inside_day_breakout": 3,
+    "inside_day_breakout": 2,
+    "bb_squeeze": 3,
     "momentum": 4,
     "macd_crossover": 5,
     "trend_pullback": 6,

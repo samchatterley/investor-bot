@@ -1160,6 +1160,14 @@ class TestSignalPriority(unittest.TestCase):
                 f"{sig} should outrank orb_breakout",
             )
 
+    def test_rs_leader_and_breakout_52w_rank_above_bb_squeeze(self):
+        for sig in ("rs_leader", "breakout_52w"):
+            self.assertLess(
+                _SIGNAL_PRIORITY[sig],
+                _SIGNAL_PRIORITY["bb_squeeze"],
+                f"{sig} should outrank bb_squeeze",
+            )
+
     def test_slot_allocation_prefers_bb_squeeze_over_orb(self):
         """When one slot is available and both bb_squeeze and orb fire, bb_squeeze wins."""
         idx = pd.bdate_range("2025-01-02", periods=3)
