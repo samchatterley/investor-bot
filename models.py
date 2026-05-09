@@ -67,6 +67,8 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset(
         "vwap_reclaim",
         "orb_breakout",
         "intraday_momentum",
+        "gap_and_go",
+        "vix_fear_reversion",
     }
 )
 

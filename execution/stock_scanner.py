@@ -226,6 +226,10 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         inside_day_breakout = (
             s.get("is_inside_day", False) and (ema_up or macd_diff > 0) and vol > 1.1
         )
+        # Gap and go: confirmed gap-up held through the day with strong volume
+        gap_and_go = (
+            s.get("gap_pct", 0) > 2.0 and s.get("close_above_open", False) and vol > 1.5 and ema_up
+        )
         # Pullback to EMA21 within an established uptrend
         pct_ema21 = s.get("price_vs_ema21_pct", 0)
         trend_pullback = ema_up and -3.0 <= pct_ema21 <= -0.5 and 40 <= rsi <= 58 and vol > 1.0
@@ -274,6 +278,8 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("rs_leader")
         if inside_day_breakout:
             matched.append("inside_day_breakout")
+        if gap_and_go:
+            matched.append("gap_and_go")
         if trend_pullback:
             matched.append("trend_pullback")
         if vwap_reclaim:

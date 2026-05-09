@@ -101,6 +101,8 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "vwap_reclaim": 1,  # intraday flow signal — exit same day or next open
     "orb_breakout": 1,  # intraday breakout — hold expires at next open
     "intraday_momentum": 1,  # intraday continuation — exit same day or next open
+    "gap_and_go": 2,  # confirmed gap continuation — typically resolves in 1–2 days
+    "vix_fear_reversion": 3,  # fear-spike bounce — hold for the relief rally
     "unknown": 3,  # conservative default
 }
 

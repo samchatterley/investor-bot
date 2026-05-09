@@ -82,6 +82,9 @@ def _make_row(**kwargs) -> pd.Series:
         "pct_vs_ema21": 0.0,
         "price_vs_52w_high_pct": -50.0,
         "is_inside_day": False,
+        "adx": 30.0,
+        "gap_pct": 0.0,
+        "close_above_open": False,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -144,6 +147,21 @@ class TestComputeIndicators(unittest.TestCase):
     def test_inside_day_absent_when_high_low_missing(self):
         result = _compute_indicators(_make_ohlcv(60))
         self.assertNotIn("is_inside_day", result.columns)
+
+    def test_adx_present_when_high_low_provided(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        self.assertIn("adx", result.columns)
+        self.assertTrue((result["adx"] >= 0).all())
+
+    def test_adx_absent_when_high_low_missing(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertNotIn("adx", result.columns)
+
+    def test_gap_pct_and_close_above_open_present_when_open_provided(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        self.assertIn("gap_pct", result.columns)
+        self.assertIn("close_above_open", result.columns)
+        self.assertTrue(result["close_above_open"].isin([True, False]).all())
 
     def test_few_rows_produces_empty_result(self):
         self.assertTrue(_compute_indicators(_make_ohlcv(5)).empty)
@@ -402,6 +420,121 @@ class TestEntrySignalIntraday(unittest.TestCase):
             pct_vs_vwap=1.0,
         )
         self.assertEqual(_entry_signal(_make_row(), intraday=id_data), "orb_breakout")
+
+
+class TestEntrySignalNewFeatures(unittest.TestCase):
+    """ADX gate, regime blocking, gap_and_go, vix_fear_reversion."""
+
+    # ── gap_and_go ────────────────────────────────────────────────────────────
+    def test_gap_and_go_fires(self):
+        row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=1.6, adx=25)
+        self.assertEqual(_entry_signal(row), "gap_and_go")
+
+    def test_gap_and_go_blocked_by_low_adx(self):
+        row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=1.6, adx=15)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_gap_and_go_blocked_by_small_gap(self):
+        row = _make_row(gap_pct=1.5, close_above_open=True, vol_ratio=1.6, adx=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_gap_and_go_blocked_by_gap_not_held(self):
+        row = _make_row(gap_pct=3.0, close_above_open=False, vol_ratio=1.6, adx=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_gap_and_go_blocked_by_low_volume(self):
+        row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=1.3, adx=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_gap_and_go_blocked_on_bear_day(self):
+        row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=1.6, adx=25)
+        self.assertIsNone(_entry_signal(row, regime="BEAR_DAY"))
+
+    # ── vix_fear_reversion ────────────────────────────────────────────────────
+    def test_vix_fear_reversion_fires(self):
+        self.assertEqual(
+            _entry_signal(_make_row(vol_ratio=1.2), vix_spike=True), "vix_fear_reversion"
+        )
+
+    def test_vix_fear_reversion_not_fire_without_spike(self):
+        self.assertIsNone(_entry_signal(_make_row(vol_ratio=1.2), vix_spike=False))
+
+    def test_vix_fear_reversion_fires_on_bear_day(self):
+        # vix_fear_reversion is not regime-blocked — counter-cyclical
+        row = _make_row(vol_ratio=1.2)
+        self.assertEqual(
+            _entry_signal(row, regime="BEAR_DAY", vix_spike=True), "vix_fear_reversion"
+        )
+
+    def test_vix_fear_reversion_takes_priority_over_mean_reversion(self):
+        # Both could fire — vix_fear_reversion has higher priority
+        row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row, vix_spike=True), "vix_fear_reversion")
+
+    # ── regime blocking ───────────────────────────────────────────────────────
+    def test_bear_day_blocks_rs_leader(self):
+        row = _make_row(ret_5d=5.0, ret_10d=7.0, ema9=101, ema21=100, adx=30)
+        result = _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="BEAR_DAY")
+        self.assertNotEqual(result, "rs_leader")
+
+    def test_bear_day_allows_mean_reversion(self):
+        row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row, regime="BEAR_DAY"), "mean_reversion")
+
+    def test_bull_trending_allows_rs_leader(self):
+        row = _make_row(ret_5d=5.0, ret_10d=7.0, ema9=101, ema21=100, adx=30)
+        self.assertEqual(
+            _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="BULL_TRENDING"),
+            "rs_leader",
+        )
+
+    def test_choppy_blocks_momentum(self):
+        row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
+        self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
+
+    def test_choppy_allows_mean_reversion(self):
+        row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row, regime="CHOPPY"), "mean_reversion")
+
+    def test_none_regime_blocks_nothing(self):
+        row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
+        self.assertEqual(_entry_signal(row, regime=None), "momentum")
+
+    # ── ADX gate ──────────────────────────────────────────────────────────────
+    def test_adx_blocks_momentum_when_low(self):
+        row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=15)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_adx_allows_momentum_when_sufficient(self):
+        row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
+        self.assertEqual(_entry_signal(row), "momentum")
+
+    def test_mean_reversion_not_adx_gated(self):
+        row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5, adx=5)
+        self.assertEqual(_entry_signal(row), "mean_reversion")
+
+    def test_adx_blocks_bb_squeeze_when_low(self):
+        row = _make_row(bb_squeeze=True, vol_ratio=1.3, ema9=101, ema21=100, adx=15)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_adx_blocks_breakout_52w_when_low(self):
+        row = _make_row(price_vs_52w_high_pct=-1.0, vol_ratio=1.3, ema9=101, ema21=100, adx=15)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_default_adx_passes_gate_when_column_missing(self):
+        # When adx is absent from row, default=30 → gate passes
+        row = pd.Series(
+            {
+                "rsi": 50.0,
+                "bb_pct": 0.5,
+                "vol_ratio": 1.5,
+                "ema9": 105.0,
+                "ema21": 100.0,
+                "macd_diff": 0.5,
+                "ret_5d": 2.0,
+            }
+        )
+        self.assertEqual(_entry_signal(row), "momentum")
 
 
 class TestComputeIntradayDay(unittest.TestCase):
@@ -1046,12 +1179,35 @@ class TestValidationScope(unittest.TestCase):
     def test_signals_not_tested_excludes_signals_needing_missing_data(self):
         # _make_raw has no High/Low → inside_day not tested
         # no spy_indicators → rs_leader not tested
+        # no vix_spike_by_date → vix_fear_reversion not tested
         # no intraday_data → intraday signals not tested
         indicators = self._build_indicators()
         dates = pd.bdate_range("2025-03-01", "2025-03-07")
         result = _run_simulation(indicators, dates, initial_capital=10_000.0)
-        for sig in ("rs_leader", "vwap_reclaim", "orb_breakout", "intraday_momentum"):
+        for sig in (
+            "rs_leader",
+            "vix_fear_reversion",
+            "vwap_reclaim",
+            "orb_breakout",
+            "intraday_momentum",
+        ):
             self.assertIn(sig, result["signals_not_tested"])
+
+    def test_gap_and_go_in_tested_when_open_present(self):
+        # _make_raw includes Open → gap_pct is computed → gap_and_go is testable
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0)
+        self.assertIn("gap_and_go", result["signals_tested"])
+
+    def test_vix_fear_reversion_in_tested_when_spike_data_provided(self):
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        fake_vix = {"2025-03-03": True, "2025-03-04": False}
+        result = _run_simulation(
+            indicators, dates, initial_capital=10_000.0, vix_spike_by_date=fake_vix
+        )
+        self.assertIn("vix_fear_reversion", result["signals_tested"])
 
     def test_intraday_signals_appear_in_tested_when_data_provided(self):
         indicators = self._build_indicators()

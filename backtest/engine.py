@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yfinance as yf
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, EMAIndicator
+from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
 from config import LOG_DIR, SLIPPAGE_BPS, SPREAD_BPS, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
@@ -44,22 +44,57 @@ _ET = ZoneInfo("America/New_York")
 _CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5d"]
 
 # Signal priority for candidate slot allocation (lower number = higher priority).
-# Ordered by observed edge: WR × avg_return from backtest evidence.
-# rs_leader (WR 60%, +0.87 avg) and breakout_52w (WR 56%, +1.04 avg) lead;
-# bb_squeeze demoted from rank 0 — fires too broadly when given top priority,
-# degrading avg return from +0.37% to -0.18%. Intraday signals trail daily.
+# Ordered by observed edge. Intraday signals trail daily.
 _SIGNAL_PRIORITY: dict[str, int] = {
-    "rs_leader": 0,
-    "breakout_52w": 1,
-    "inside_day_breakout": 2,
-    "bb_squeeze": 3,
-    "momentum": 4,
-    "macd_crossover": 5,
-    "trend_pullback": 6,
-    "mean_reversion": 7,
-    "orb_breakout": 8,
-    "vwap_reclaim": 9,
-    "intraday_momentum": 10,
+    "vix_fear_reversion": 0,
+    "rs_leader": 1,
+    "breakout_52w": 2,
+    "gap_and_go": 3,
+    "inside_day_breakout": 4,
+    "bb_squeeze": 5,
+    "momentum": 6,
+    "macd_crossover": 7,
+    "trend_pullback": 8,
+    "mean_reversion": 9,
+    "orb_breakout": 10,
+    "vwap_reclaim": 11,
+    "intraday_momentum": 12,
+}
+
+# Signals blocked per market regime.
+# mean_reversion and vix_fear_reversion are always permitted (counter-cyclical).
+_REGIME_BLOCKED: dict[str, frozenset[str]] = {
+    "BEAR_DAY": frozenset(
+        {
+            "rs_leader",
+            "breakout_52w",
+            "momentum",
+            "macd_crossover",
+            "bb_squeeze",
+            "trend_pullback",
+            "inside_day_breakout",
+            "gap_and_go",
+            "orb_breakout",
+            "intraday_momentum",
+        }
+    ),
+    "HIGH_VOL": frozenset(
+        {
+            "rs_leader",
+            "breakout_52w",
+            "momentum",
+            "gap_and_go",
+            "orb_breakout",
+        }
+    ),
+    "CHOPPY": frozenset(
+        {
+            "rs_leader",
+            "breakout_52w",
+            "momentum",
+            "gap_and_go",
+        }
+    ),
 }
 
 # Default signal thresholds — match the prefilter rules in stock_scanner.py
@@ -121,11 +156,19 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["high_52w"] = close.rolling(252, min_periods=20).max()
     df["price_vs_52w_high_pct"] = (close / df["high_52w"] - 1) * 100
 
-    # Inside day: today's range strictly within yesterday's (needs High/Low)
+    # Inside day and ADX trend strength (both need High/Low)
     if "High" in df.columns and "Low" in df.columns:
         df["is_inside_day"] = (
             (df["High"] < df["High"].shift(1)) & (df["Low"] > df["Low"].shift(1))
         ).fillna(False)
+        df["adx"] = (
+            ADXIndicator(high=df["High"], low=df["Low"], close=close, window=14).adx().fillna(0)
+        )
+
+    # Gap and go (needs Open)
+    if "Open" in df.columns:
+        df["gap_pct"] = ((df["Open"] / close.shift(1)) - 1) * 100
+        df["close_above_open"] = (close > df["Open"]).fillna(False)
 
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
@@ -137,31 +180,54 @@ def _entry_signal(
     intraday: dict | None = None,
     spy_ret_5d: float | None = None,
     spy_ret_10d: float | None = None,
+    regime: str | None = None,
+    vix_spike: bool = False,
 ) -> str | None:
     """
     Returns the first matching signal in priority order, or None.
-    Priority: mean_reversion > macd_crossover > bb_squeeze > inside_day_breakout
-              > breakout_52w > rs_leader > trend_pullback > momentum
-              > vwap_reclaim > orb_breakout > intraday_momentum
+
+    Priority (within a single symbol):
+      vix_fear_reversion > mean_reversion > macd_crossover > bb_squeeze
+      > inside_day_breakout > breakout_52w > gap_and_go > rs_leader
+      > trend_pullback > momentum > orb_breakout > vwap_reclaim > intraday_momentum
+
+    Regime blocking: BEAR_DAY/HIGH_VOL/CHOPPY suppress trending signals.
+    ADX gate (>= 20): required for all momentum-type signals.
+    mean_reversion and vix_fear_reversion are never regime-blocked.
     Intraday signals only fire when intraday data is supplied.
     """
     p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
+    blocked = _REGIME_BLOCKED.get(regime, frozenset())
+    # Default adx=30 (assume trending) when High/Low weren't available
+    adx = float(row.get("adx", 30))
+
+    # ── Counter-cyclical — fires during fear spikes, never regime-blocked ──────
+    if vix_spike and row["vol_ratio"] > 1.0:
+        return "vix_fear_reversion"
 
     # ── Daily signals ─────────────────────────────────────────────────────────
     if (
         row["rsi"] < p["rsi_threshold"]
         and row["bb_pct"] < p["bb_threshold"]
         and row["vol_ratio"] > p["mr_vol_threshold"]
+        and "mean_reversion" not in blocked
     ):
         return "mean_reversion"
 
-    if row.get("macd_cross", False) and row["vol_ratio"] > 1.2:
+    if (
+        row.get("macd_cross", False)
+        and row["vol_ratio"] > 1.2
+        and adx >= 20
+        and "macd_crossover" not in blocked
+    ):
         return "macd_crossover"
 
     if (
         row.get("bb_squeeze", False)
         and row["vol_ratio"] > 1.2
         and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
+        and adx >= 20
+        and "bb_squeeze" not in blocked
     ):
         return "bb_squeeze"
 
@@ -169,6 +235,8 @@ def _entry_signal(
         row.get("is_inside_day", False)
         and row["vol_ratio"] > 1.1
         and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
+        and adx >= 20
+        and "inside_day_breakout" not in blocked
     ):
         return "inside_day_breakout"
 
@@ -176,13 +244,24 @@ def _entry_signal(
         row.get("price_vs_52w_high_pct", -999) >= -3.0
         and row["vol_ratio"] > 1.2
         and row["ema9"] > row["ema21"]
+        and adx >= 20
+        and "breakout_52w" not in blocked
     ):
         return "breakout_52w"
 
-    if spy_ret_5d is not None and spy_ret_10d is not None:
+    if (
+        row.get("gap_pct", 0) > 2.0
+        and row.get("close_above_open", False)
+        and row["vol_ratio"] > 1.5
+        and adx >= 20
+        and "gap_and_go" not in blocked
+    ):
+        return "gap_and_go"
+
+    if spy_ret_5d is not None and spy_ret_10d is not None and "rs_leader" not in blocked:
         rel_5d = row["ret_5d"] - spy_ret_5d
         rel_10d = row.get("ret_10d", 0.0) - spy_ret_10d
-        if rel_5d > 2.0 and rel_10d > 3.0 and row["ema9"] > row["ema21"]:
+        if rel_5d > 2.0 and rel_10d > 3.0 and row["ema9"] > row["ema21"] and adx >= 20:
             return "rs_leader"
 
     pct_vs_ema21 = row.get("pct_vs_ema21", 0.0)
@@ -191,6 +270,8 @@ def _entry_signal(
         and -3.0 <= pct_vs_ema21 <= -0.5
         and 40 <= row["rsi"] <= 58
         and row["vol_ratio"] > 1.0
+        and adx >= 20
+        and "trend_pullback" not in blocked
     ):
         return "trend_pullback"
 
@@ -199,18 +280,26 @@ def _entry_signal(
         and row["macd_diff"] > 0
         and row["ret_5d"] > p["mom_ret5d_threshold"]
         and row["vol_ratio"] > p["mom_vol_threshold"]
+        and adx >= 20
+        and "momentum" not in blocked
     ):
         return "momentum"
 
     # ── Intraday signals (only when Alpaca data provided) ─────────────────────
     if intraday:
-        if intraday.get("orb_breakout_up") is True:
+        if intraday.get("orb_breakout_up") is True and "orb_breakout" not in blocked:
             return "orb_breakout"
 
         id_chg = intraday.get("intraday_change_pct")
         above_vwap = intraday.get("price_above_vwap")
         pct_vwap = intraday.get("pct_vs_vwap", 0)
-        if above_vwap is True and id_chg is not None and id_chg > 1.0 and pct_vwap <= 3.0:
+        if (
+            above_vwap is True
+            and id_chg is not None
+            and id_chg > 1.0
+            and pct_vwap <= 3.0
+            and "vwap_reclaim" not in blocked
+        ):
             return "vwap_reclaim"
 
         id_rsi = intraday.get("intraday_rsi")
@@ -221,6 +310,7 @@ def _entry_signal(
             and above_vwap is True
             and (id_rsi is None or id_rsi < 75)
             and (ema_up or row["ret_5d"] > 3.0)
+            and "intraday_momentum" not in blocked
         ):
             return "intraday_momentum"
 
@@ -362,6 +452,30 @@ def _fetch_intraday_bars(
     return result
 
 
+def _compute_regimes(
+    spy_indicators: pd.DataFrame,
+    vix_spike_by_date: dict[str, bool],
+) -> dict[str, str]:
+    """Map each date to a market regime string using SPY returns and VIX spike flag."""
+    spy_close = spy_indicators["Close"]
+    spy_ret_1d = (spy_close / spy_close.shift(1) - 1) * 100
+    regimes: dict[str, str] = {}
+    for ts in spy_indicators.index:
+        date_str = ts.strftime("%Y-%m-%d")
+        spy_1d = float(spy_ret_1d.get(ts, 0) or 0)
+        spy_5d = float(spy_indicators.loc[ts].get("ret_5d", 0) or 0)
+        vix_spike = vix_spike_by_date.get(date_str, False)
+        if spy_1d <= -1.5:
+            regimes[date_str] = "BEAR_DAY"
+        elif vix_spike and spy_5d < -3:
+            regimes[date_str] = "HIGH_VOL"
+        elif spy_5d > 2 and spy_1d > 0:
+            regimes[date_str] = "BULL_TRENDING"
+        else:
+            regimes[date_str] = "CHOPPY"
+    return regimes
+
+
 def _run_simulation(
     indicators: dict[str, pd.DataFrame],
     trading_dates: pd.DatetimeIndex,
@@ -374,6 +488,8 @@ def _run_simulation(
     intraday_data: dict[str, dict[str, dict]] | None = None,
     spy_indicators: pd.DataFrame | None = None,
     per_signal_cap: int = 2,
+    regime_by_date: dict[str, str] | None = None,
+    vix_spike_by_date: dict[str, bool] | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
@@ -468,8 +584,19 @@ def _run_simulation(
                     spy_5d = spy_row.get("ret_5d")
                     spy_10d = spy_row.get("ret_10d")
 
+            regime = regime_by_date.get(prev_date_str) if regime_by_date else None
+            vix_spike = (
+                bool(vix_spike_by_date.get(prev_date_str, False)) if vix_spike_by_date else False
+            )
+
             signal = _entry_signal(
-                prev_row, params, intraday=intraday, spy_ret_5d=spy_5d, spy_ret_10d=spy_10d
+                prev_row,
+                params,
+                intraday=intraday,
+                spy_ret_5d=spy_5d,
+                spy_ret_10d=spy_10d,
+                regime=regime,
+                vix_spike=vix_spike,
             )
             if signal:
                 candidates.append((sym, signal, float(prev_row["rsi"])))
@@ -591,11 +718,14 @@ def _run_simulation(
         "trend_pullback",
         "breakout_52w",
     ]
-    # Check if any indicator df has High/Low (inside_day_breakout)
     if any("is_inside_day" in df.columns for df in indicators.values()):
         signals_tested.append("inside_day_breakout")
+    if any("gap_pct" in df.columns for df in indicators.values()):
+        signals_tested.append("gap_and_go")
     if spy_indicators is not None:
         signals_tested.append("rs_leader")
+    if vix_spike_by_date:
+        signals_tested.append("vix_fear_reversion")
     if intraday_data:
         signals_tested.extend(["vwap_reclaim", "orb_breakout", "intraday_momentum"])
 
@@ -607,7 +737,9 @@ def _run_simulation(
         "trend_pullback",
         "breakout_52w",
         "inside_day_breakout",
+        "gap_and_go",
         "rs_leader",
+        "vix_fear_reversion",
         "vwap_reclaim",
         "orb_breakout",
         "intraday_momentum",
@@ -709,6 +841,32 @@ def run_backtest(
         except Exception as exc:
             logger.warning(f"SPY fetch failed — rs_leader signal disabled: {exc}")
 
+    # VIX data for fear-reversion signal and regime detection
+    vix_spike_by_date: dict[str, bool] = {}
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):
+                vix_close = vix_close.iloc[:, 0]
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+            logger.info(f"VIX fetched — {sum(vix_spike_by_date.values())} fear-spike days")
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed — vix_fear_reversion and regime filter disabled: {exc}")
+
+    # Regime map for trend-signal gating
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+        bear_days = sum(1 for r in regime_by_date.values() if r == "BEAR_DAY")
+        logger.info(f"Regime map computed — {bear_days} BEAR_DAY sessions")
+
     # Alpaca intraday bars for vwap_reclaim / orb_breakout / intraday_momentum
     intraday_data: dict | None = None
     if use_intraday:
@@ -730,6 +888,8 @@ def run_backtest(
         intraday_data=intraday_data,
         spy_indicators=spy_indicators,
         per_signal_cap=per_signal_cap,
+        regime_by_date=regime_by_date or None,
+        vix_spike_by_date=vix_spike_by_date or None,
     )
     results["start"] = start_date
     results["end"] = end_date
