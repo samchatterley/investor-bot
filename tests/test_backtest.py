@@ -86,6 +86,7 @@ def _make_row(**kwargs) -> pd.Series:
         "gap_pct": 0.0,
         "close_above_open": False,
         "mom_12_1": 0.0,
+        "hv_rank": 1.0,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -1875,3 +1876,59 @@ class TestRunWalkForwardEdgeCases(unittest.TestCase):
             )
         self.assertEqual(result.get("folds"), [])
         self.assertEqual(result.get("summary"), {})
+
+
+class TestIvCompressionSignal(unittest.TestCase):
+    """iv_compression: historical volatility percentile squeeze."""
+
+    def test_fires_with_ema_confirmation(self):
+        row = _make_row(hv_rank=0.10, ema9=101, ema21=100, vol_ratio=1.2)
+        self.assertEqual(_entry_signal(row), "iv_compression")
+
+    def test_fires_with_macd_confirmation(self):
+        row = _make_row(hv_rank=0.15, ema9=99, ema21=100, macd_diff=0.1, vol_ratio=1.15)
+        self.assertEqual(_entry_signal(row), "iv_compression")
+
+    def test_no_fire_when_hv_rank_above_threshold(self):
+        row = _make_row(hv_rank=0.25, ema9=101, ema21=100, vol_ratio=1.5)
+        # hv_rank=0.25 is above 0.20 → no iv_compression; other signals also absent
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_without_directional_confirmation(self):
+        # ema9 < ema21 and macd_diff <= 0
+        row = _make_row(hv_rank=0.10, ema9=99, ema21=100, macd_diff=-0.05, vol_ratio=1.2)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_without_volume(self):
+        row = _make_row(hv_rank=0.10, ema9=101, ema21=100, vol_ratio=1.0)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_in_signal_priority(self):
+        self.assertIn("iv_compression", _SIGNAL_PRIORITY)
+
+    def test_priority_between_bb_squeeze_and_momentum(self):
+        self.assertLess(_SIGNAL_PRIORITY["bb_squeeze"], _SIGNAL_PRIORITY["iv_compression"])
+        self.assertLess(_SIGNAL_PRIORITY["iv_compression"], _SIGNAL_PRIORITY["momentum"])
+
+    def test_signals_not_tested_excludes_iv_compression_when_column_present(self):
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        n = len(idx)
+        df = pd.DataFrame(
+            {
+                "Close": [100.0] * n,
+                "Open": [99.5] * n,
+                "Volume": [1_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.0] * n,
+                "ema9": [100.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.0] * n,
+                "ret_5d": [0.0] * n,
+                "hv_rank": [0.50] * n,
+            },
+            index=idx,
+        )
+        result = _run_simulation({"AAPL": df}, idx[1:])
+        self.assertIn("iv_compression", result["signals_tested"])
+        self.assertNotIn("iv_compression", result["signals_not_tested"])

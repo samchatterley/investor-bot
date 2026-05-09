@@ -101,6 +101,14 @@ def fetch_stock_data(
         df["ret_5d"] = close.pct_change(5) * 100
         df["ret_10d"] = close.pct_change(10) * 100
 
+        # Historical volatility percentile: where today's 20-day HV sits in its 252-day range.
+        # hv_rank=0.10 means current HV is in the bottom 10% → vol compression → squeeze likely.
+        import math
+
+        daily_returns = close.pct_change()
+        df["hv_20d"] = daily_returns.rolling(20).std() * math.sqrt(252) * 100
+        df["hv_rank"] = df["hv_20d"].rolling(252, min_periods=30).rank(pct=True)
+
         df = df.dropna(subset=["rsi", "macd"])
 
         # 52-week high (rolling 252-day max; min_periods=1 so short histories still work)
@@ -178,6 +186,9 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "price_vs_52w_high_pct": round((float(latest["Close"]) / float(_h52w) - 1) * 100, 2)
         if (_h52w := latest.get("high_52w")) is not None and pd.notna(_h52w)
         else 0.0,
+        "hv_rank": round(float(_hvr), 2)
+        if (_hvr := latest.get("hv_rank")) is not None and pd.notna(_hvr)
+        else 1.0,
     }
 
 

@@ -108,6 +108,7 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "momentum_12_1": 5,  # medium-term Jegadeesh-Titman factor — needs room to develop
     "insider_buying": 5,  # cluster insider purchases — drift plays out over days-weeks
     "pead": 3,  # post-earnings drift — capture the initial repricing window
+    "iv_compression": 4,  # vol squeeze → expansion; hold for the directional move
     "unknown": 3,  # conservative default
 }
 

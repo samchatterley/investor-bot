@@ -476,3 +476,71 @@ class TestPassesQualityScreen(unittest.TestCase):
         snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.2)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
+
+
+class TestPeadSignal(unittest.TestCase):
+    """prefilter_candidates: pead signal — post-earnings announcement drift."""
+
+    def test_pead_fires_with_beat_and_positive_return(self):
+        snap = _snap(pead_candidate=True, ret_5d_pct=2.5)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("pead", result[0]["matched_signals"])
+
+    def test_pead_absent_when_no_beat(self):
+        # pead_candidate not set → signal absent; no other signal → rejected
+        snap = _snap(ret_5d_pct=3.0)
+        result = prefilter_candidates([snap])
+        self.assertEqual(result, [])
+
+    def test_pead_absent_when_negative_return(self):
+        # Beat happened but price is now drifting down → no signal
+        snap = _snap(pead_candidate=True, ret_5d_pct=-1.0)
+        result = prefilter_candidates([snap])
+        self.assertEqual(result, [])
+
+    def test_pead_fires_against_weekly_downtrend(self):
+        # PEAD bypasses the weekly trend filter (fundamental conviction)
+        snap = _snap(pead_candidate=True, ret_5d_pct=2.5, weekly_trend_up=False)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("pead", result[0]["matched_signals"])
+
+    def test_pead_absent_when_pead_candidate_is_false(self):
+        snap = _snap(pead_candidate=False, ret_5d_pct=3.0)
+        result = prefilter_candidates([snap])
+        self.assertEqual(result, [])
+
+
+class TestIvCompressionSignal(unittest.TestCase):
+    """prefilter_candidates: iv_compression — historical volatility percentile squeeze."""
+
+    def test_iv_compression_fires_with_ema_confirmation(self):
+        snap = _snap(hv_rank=0.10, ema9_above_ema21=True, vol_ratio=1.2)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("iv_compression", result[0]["matched_signals"])
+
+    def test_iv_compression_fires_with_macd_confirmation(self):
+        snap = _snap(hv_rank=0.15, ema9_above_ema21=False, macd_diff=0.05, vol_ratio=1.15)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("iv_compression", result[0]["matched_signals"])
+
+    def test_iv_compression_absent_when_hv_rank_above_threshold(self):
+        # hv_rank=0.50 → mid-range vol; no other signals → rejected
+        snap = _snap(hv_rank=0.50, ema9_above_ema21=True, vol_ratio=1.5)
+        result = prefilter_candidates([snap])
+        self.assertEqual(result, [])
+
+    def test_iv_compression_absent_without_directional_confirmation(self):
+        # hv_rank is low but neither EMA nor MACD confirms direction → no signal
+        snap = _snap(hv_rank=0.10, ema9_above_ema21=False, macd_diff=-0.1, vol_ratio=1.2)
+        result = prefilter_candidates([snap])
+        self.assertEqual(result, [])
+
+    def test_iv_compression_absent_without_volume(self):
+        # hv_rank is low, EMA confirms, but volume is below threshold
+        snap = _snap(hv_rank=0.10, ema9_above_ema21=True, vol_ratio=1.0)
+        result = prefilter_candidates([snap])
+        self.assertEqual(result, [])

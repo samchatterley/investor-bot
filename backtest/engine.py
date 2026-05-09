@@ -54,13 +54,14 @@ _SIGNAL_PRIORITY: dict[str, int] = {
     "gap_and_go": 4,
     "inside_day_breakout": 5,
     "bb_squeeze": 6,
-    "momentum": 7,
-    "macd_crossover": 8,
-    "trend_pullback": 9,
-    "mean_reversion": 10,
-    "orb_breakout": 11,
-    "vwap_reclaim": 12,
-    "intraday_momentum": 13,
+    "iv_compression": 7,
+    "momentum": 8,
+    "macd_crossover": 9,
+    "trend_pullback": 10,
+    "mean_reversion": 11,
+    "orb_breakout": 12,
+    "vwap_reclaim": 13,
+    "intraday_momentum": 14,
 }
 
 # Signals blocked per market regime.
@@ -181,6 +182,15 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ret_1m"] = close.pct_change(21) * 100
     df["mom_12_1"] = df["ret_12m"] - df["ret_1m"]
 
+    # Historical volatility percentile: where today's 20-day annualized HV sits in its
+    # 252-day range (0 = all-time annual low, 1 = all-time annual high).
+    # hv_rank < 0.20 → bottom quintile → IV compression → expansion likely.
+    import math
+
+    daily_returns = close.pct_change()
+    df["hv_20d"] = daily_returns.rolling(20).std() * math.sqrt(252) * 100
+    df["hv_rank"] = df["hv_20d"].rolling(252, min_periods=30).rank(pct=True)
+
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
 
@@ -293,6 +303,14 @@ def _entry_signal(
         and "trend_pullback" not in blocked
     ):
         return "trend_pullback"
+
+    if (
+        row.get("hv_rank", 1.0) < 0.20
+        and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
+        and row["vol_ratio"] > 1.1
+        and "iv_compression" not in blocked
+    ):
+        return "iv_compression"
 
     if (
         row["ema9"] > row["ema21"]
@@ -743,6 +761,8 @@ def _run_simulation(
         signals_tested.append("gap_and_go")
     if any("mom_12_1" in df.columns for df in indicators.values()):
         signals_tested.append("momentum_12_1")
+    if any("hv_rank" in df.columns for df in indicators.values()):
+        signals_tested.append("iv_compression")
     if spy_indicators is not None:
         signals_tested.append("rs_leader")
     if vix_spike_by_date:
@@ -760,6 +780,7 @@ def _run_simulation(
         "inside_day_breakout",
         "gap_and_go",
         "momentum_12_1",
+        "iv_compression",
         "rs_leader",
         "vix_fear_reversion",
         "vwap_reclaim",

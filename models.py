@@ -72,6 +72,7 @@ VALID_BUY_SIGNALS: frozenset[str] = frozenset(
         "momentum_12_1",
         "insider_buying",
         "pead",
+        "iv_compression",
     }
 )
 

@@ -298,6 +298,11 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         # Standalone signal — earnings conviction overrides the weekly trend filter.
         pead = s.get("pead_candidate", False) is True and s.get("ret_5d_pct", 0) > 0
 
+        # IV percentile compression: 20-day HV in the bottom 20th percentile of its
+        # 52-week range → coiling for an expansion move.  Requires directional
+        # confirmation (EMA or MACD) and a modest volume pickup.
+        iv_compression = s.get("hv_rank", 1.0) < 0.20 and (ema_up or macd_diff > 0) and vol > 1.1
+
         matched = []
         if mean_reversion:
             matched.append("mean_reversion")
@@ -327,6 +332,8 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("insider_buying")
         if pead:
             matched.append("pead")
+        if iv_compression:
+            matched.append("iv_compression")
 
         if not matched:
             continue
