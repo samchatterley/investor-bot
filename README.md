@@ -199,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1626 tests, 96% coverage)
+├── tests/             Unit test suite (1667 tests, 97% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -758,7 +758,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1626 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1667 tests, 97% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -801,6 +801,17 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.22 — May 2026 — historical fundamentals: point-in-time pead + insider_buying backtesting
+
+- **`backtest/historical_fundamentals.py` (new module).** Pre-fetches all available historical EPS surprise events and SEC EDGAR Form 4 open-market purchases once at backtest startup, storing them in sorted lists. During simulation, `pead_active_on_date` and `insider_state_on_date` walk these lists with `O(n)` per-date filtering — strictly no lookahead. Data is window-bounded to the simulation date to guarantee point-in-time accuracy.
+- **`pead` and `insider_buying` fully backtestable.** Both signals now fire in the simulation engine when historical data is loaded. `prefetch_earnings_history` uses `yf.Ticker(sym).earnings_dates` (~6–12 quarters depth). `prefetch_insider_history` uses the same SEC EDGAR submissions API as the live `data/insider_feed.py` with `lookback_days=730` for ~2 years of Form 4 data.
+- **`backtest/engine.py` changes**: Added `earnings_history` and `insider_history` parameters to `_run_simulation`; added `fundamentals: dict | None` parameter to `_entry_signal`; `insider_buying` (priority 1) and `pead` (priority 2) now appear in `_SIGNAL_PRIORITY` immediately after `vix_fear_reversion`. Both bypass regime blocking (fundamental conviction). `pead` requires `ret_5d > 0` (price confirming drift). Added `use_fundamentals: bool = False` to `run_backtest` and `run_walk_forward_optimized` with prefetch logic and a `--use-fundamentals` CLI flag.
+- **`signals_tested` updated**: `pead` and `insider_buying` are added to `signals_tested` (and removed from `signals_not_tested`) when their respective history dicts are loaded.
+- **41 new tests** (total 1667): `tests/test_historical_fundamentals.py` (33 tests across `TestPrefetchEarningsHistory`, `TestPeadActiveOnDate`, `TestPrefetchInsiderHistory`, `TestInsiderStateOnDate`); `TestFundamentalSignals` in `test_backtest.py` (8 tests — signal firing, priority, suppression conditions, signals_tested integration).
+- **1667 tests, 97% coverage, zero ruff violations.**
+
+---
 
 ### 1.21 — May 2026 — iv_compression signal: historical volatility percentile squeeze
 

@@ -58,7 +58,7 @@ files = [
 # that mypy cannot resolve. Suppress SDK-generated codes; our own typed code
 # (OrderResult, dataclasses) is still checked.
 module = "execution.trader"
-disable_error_code = ["union-attr", "arg-type", "index", "operator"]
+disable_error_code = ["union-attr", "arg-type", "index", "operator", "misc"]
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 

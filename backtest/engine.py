@@ -34,6 +34,12 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
+from backtest.historical_fundamentals import (
+    insider_state_on_date,
+    pead_active_on_date,
+    prefetch_earnings_history,
+    prefetch_insider_history,
+)
 from config import LOG_DIR, SLIPPAGE_BPS, SPREAD_BPS, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
@@ -48,20 +54,22 @@ _CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5
 # Ordered by observed edge. Intraday signals trail daily.
 _SIGNAL_PRIORITY: dict[str, int] = {
     "vix_fear_reversion": 0,
-    "rs_leader": 1,
-    "breakout_52w": 2,
-    "momentum_12_1": 3,
-    "gap_and_go": 4,
-    "inside_day_breakout": 5,
-    "bb_squeeze": 6,
-    "iv_compression": 7,
-    "momentum": 8,
-    "macd_crossover": 9,
-    "trend_pullback": 10,
-    "mean_reversion": 11,
-    "orb_breakout": 12,
-    "vwap_reclaim": 13,
-    "intraday_momentum": 14,
+    "insider_buying": 1,
+    "pead": 2,
+    "rs_leader": 3,
+    "breakout_52w": 4,
+    "momentum_12_1": 5,
+    "gap_and_go": 6,
+    "inside_day_breakout": 7,
+    "bb_squeeze": 8,
+    "iv_compression": 9,
+    "momentum": 10,
+    "macd_crossover": 11,
+    "trend_pullback": 12,
+    "mean_reversion": 13,
+    "orb_breakout": 14,
+    "vwap_reclaim": 15,
+    "intraday_momentum": 16,
 }
 
 # Signals blocked per market regime.
@@ -203,6 +211,7 @@ def _entry_signal(
     spy_ret_10d: float | None = None,
     regime: str | None = None,
     vix_spike: bool = False,
+    fundamentals: dict | None = None,
 ) -> str | None:
     """
     Returns the first matching signal in priority order, or None.
@@ -225,6 +234,13 @@ def _entry_signal(
     # ── Counter-cyclical — fires during fear spikes, never regime-blocked ──────
     if vix_spike and row["vol_ratio"] > 1.0:
         return "vix_fear_reversion"
+
+    # ── Fundamental conviction — bypass weekly trend filter (not in REGIME_BLOCKED) ──
+    if fundamentals:
+        if fundamentals.get("insider_cluster"):
+            return "insider_buying"
+        if fundamentals.get("pead_active") and row.get("ret_5d", 0) > 0:
+            return "pead"
 
     # ── Daily signals ─────────────────────────────────────────────────────────
     if (
@@ -527,6 +543,8 @@ def _run_simulation(
     per_signal_cap: int = 2,
     regime_by_date: dict[str, str] | None = None,
     vix_spike_by_date: dict[str, bool] | None = None,
+    earnings_history: dict[str, list[dict]] | None = None,
+    insider_history: dict[str, list[dict]] | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
@@ -626,6 +644,17 @@ def _run_simulation(
                 bool(vix_spike_by_date.get(prev_date_str, False)) if vix_spike_by_date else False
             )
 
+            # Point-in-time fundamentals (only computed when histories are loaded)
+            fundamentals: dict | None = None
+            if earnings_history is not None or insider_history is not None:
+                prev_date = df.index[today_loc - 1].date()
+                fund: dict = {}
+                if earnings_history is not None:
+                    fund["pead_active"] = pead_active_on_date(sym, prev_date, earnings_history)
+                if insider_history is not None:
+                    fund.update(insider_state_on_date(sym, prev_date, insider_history))
+                fundamentals = fund
+
             signal = _entry_signal(
                 prev_row,
                 params,
@@ -634,6 +663,7 @@ def _run_simulation(
                 spy_ret_10d=spy_10d,
                 regime=regime,
                 vix_spike=vix_spike,
+                fundamentals=fundamentals,
             )
             if signal:
                 candidates.append((sym, signal, float(prev_row["rsi"])))
@@ -763,6 +793,10 @@ def _run_simulation(
         signals_tested.append("momentum_12_1")
     if any("hv_rank" in df.columns for df in indicators.values()):
         signals_tested.append("iv_compression")
+    if earnings_history is not None:
+        signals_tested.append("pead")
+    if insider_history is not None:
+        signals_tested.append("insider_buying")
     if spy_indicators is not None:
         signals_tested.append("rs_leader")
     if vix_spike_by_date:
@@ -786,9 +820,7 @@ def _run_simulation(
         "vwap_reclaim",
         "orb_breakout",
         "intraday_momentum",
-        # insider_buying requires historical Form 4 data not available in this engine
         "insider_buying",
-        # pead requires historical EPS surprise data not available in this engine
         "pead",
     }
     signals_not_tested = sorted(all_backtestable - set(signals_tested))
@@ -853,11 +885,13 @@ def run_backtest(
     spread_bps: int | None = None,
     use_intraday: bool = False,
     per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
 ) -> dict:
 
     logger.info(
         f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital"
         + (" | intraday=ON" if use_intraday else "")
+        + (" | fundamentals=ON" if use_fundamentals else "")
     )
 
     fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
@@ -922,6 +956,18 @@ def run_backtest(
             logger.warning("Intraday fetch returned no data — intraday signals disabled")
             intraday_data = None
 
+    # Historical fundamentals for pead / insider_buying point-in-time simulation
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals:
+        logger.info("Pre-fetching fundamental data (earnings + insider)…")
+        earnings_history = prefetch_earnings_history(symbols)
+        insider_history = prefetch_insider_history(symbols)
+        logger.info(
+            f"Fundamentals ready: {len(earnings_history)} earnings, "
+            f"{len(insider_history)} insider histories"
+        )
+
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     results = _run_simulation(
         indicators,
@@ -937,6 +983,8 @@ def run_backtest(
         per_signal_cap=per_signal_cap,
         regime_by_date=regime_by_date or None,
         vix_spike_by_date=vix_spike_by_date or None,
+        earnings_history=earnings_history,
+        insider_history=insider_history,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -958,6 +1006,7 @@ def run_walk_forward_optimized(
     param_grid: dict | None = None,
     slippage_bps: int | None = None,
     spread_bps: int | None = None,
+    use_fundamentals: bool = False,
 ) -> dict:
     """
     Walk-forward optimised backtest — genuine out-of-sample validation.
@@ -1012,6 +1061,17 @@ def run_walk_forward_optimized(
         except Exception as exc:
             logger.warning(f"SPY fetch failed for walk-forward: {exc}")
 
+    wf_earnings_history: dict[str, list[dict]] | None = None
+    wf_insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals:
+        logger.info("Walk-forward: pre-fetching fundamental data…")
+        wf_earnings_history = prefetch_earnings_history(symbols)
+        wf_insider_history = prefetch_insider_history(symbols)
+        logger.info(
+            f"Walk-forward fundamentals ready: {len(wf_earnings_history)} earnings, "
+            f"{len(wf_insider_history)} insider histories"
+        )
+
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     if len(trading_dates) < train_days + test_days:
         logger.warning(
@@ -1057,6 +1117,8 @@ def run_walk_forward_optimized(
                 slippage_bps=slippage_bps,
                 spread_bps=spread_bps,
                 spy_indicators=spy_indicators,
+                earnings_history=wf_earnings_history,
+                insider_history=wf_insider_history,
             )
             if r["total_trades"] < _MIN_TRAIN_TRADES:
                 continue
@@ -1075,6 +1137,8 @@ def run_walk_forward_optimized(
             slippage_bps=slippage_bps,
             spread_bps=spread_bps,
             spy_indicators=spy_indicators,
+            earnings_history=wf_earnings_history,
+            insider_history=wf_insider_history,
         )
 
         baseline_rets = []
@@ -1203,6 +1267,11 @@ if __name__ == "__main__":
         default=2,
         help="Max positions opened from any single signal per day (default 2)",
     )
+    parser.add_argument(
+        "--use-fundamentals",
+        action="store_true",
+        help="Pre-fetch SEC EDGAR Form 4 + yfinance EPS history to test pead/insider_buying",
+    )
     args = parser.parse_args()
     run_backtest(
         STOCK_UNIVERSE,
@@ -1211,4 +1280,5 @@ if __name__ == "__main__":
         initial_capital=args.capital,
         use_intraday=args.use_intraday,
         per_signal_cap=args.per_signal_cap,
+        use_fundamentals=args.use_fundamentals,
     )

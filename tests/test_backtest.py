@@ -1932,3 +1932,86 @@ class TestIvCompressionSignal(unittest.TestCase):
         result = _run_simulation({"AAPL": df}, idx[1:])
         self.assertIn("iv_compression", result["signals_tested"])
         self.assertNotIn("iv_compression", result["signals_not_tested"])
+
+
+class TestFundamentalSignals(unittest.TestCase):
+    """insider_buying and pead signals via the fundamentals kwarg."""
+
+    def test_insider_buying_fires_when_cluster(self):
+        row = _make_row()
+        sig = _entry_signal(row, fundamentals={"insider_cluster": True})
+        self.assertEqual(sig, "insider_buying")
+
+    def test_pead_fires_when_active_and_positive_5d(self):
+        row = _make_row(ret_5d=2.0)
+        sig = _entry_signal(row, fundamentals={"pead_active": True, "insider_cluster": False})
+        self.assertEqual(sig, "pead")
+
+    def test_pead_suppressed_when_ret_5d_negative(self):
+        row = _make_row(ret_5d=-1.0)
+        sig = _entry_signal(row, fundamentals={"pead_active": True, "insider_cluster": False})
+        self.assertIsNone(sig)
+
+    def test_insider_buying_priority_above_pead(self):
+        row = _make_row(ret_5d=2.0)
+        sig = _entry_signal(row, fundamentals={"insider_cluster": True, "pead_active": True})
+        self.assertEqual(sig, "insider_buying")
+
+    def test_no_fundamental_signal_without_fundamentals_arg(self):
+        row = _make_row(ret_5d=2.0)
+        sig = _entry_signal(row)
+        self.assertIsNone(sig)
+
+    def test_insider_buying_priority_in_dict(self):
+        self.assertIn("insider_buying", _SIGNAL_PRIORITY)
+        self.assertIn("pead", _SIGNAL_PRIORITY)
+
+    def test_insider_buying_ranks_above_rs_leader(self):
+        self.assertLess(_SIGNAL_PRIORITY["insider_buying"], _SIGNAL_PRIORITY["rs_leader"])
+
+    def test_pead_ranks_above_rs_leader(self):
+        self.assertLess(_SIGNAL_PRIORITY["pead"], _SIGNAL_PRIORITY["rs_leader"])
+
+    def test_pead_in_signals_tested_when_earnings_history_passed(self):
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        n = len(idx)
+        df = pd.DataFrame(
+            {
+                "Close": [100.0] * n,
+                "Open": [99.5] * n,
+                "Volume": [1_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.0] * n,
+                "ema9": [100.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.0] * n,
+                "ret_5d": [0.0] * n,
+            },
+            index=idx,
+        )
+        result = _run_simulation({"AAPL": df}, idx[1:], earnings_history={})
+        self.assertIn("pead", result["signals_tested"])
+        self.assertNotIn("pead", result["signals_not_tested"])
+
+    def test_insider_buying_in_signals_tested_when_insider_history_passed(self):
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        n = len(idx)
+        df = pd.DataFrame(
+            {
+                "Close": [100.0] * n,
+                "Open": [99.5] * n,
+                "Volume": [1_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.0] * n,
+                "ema9": [100.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.0] * n,
+                "ret_5d": [0.0] * n,
+            },
+            index=idx,
+        )
+        result = _run_simulation({"AAPL": df}, idx[1:], insider_history={})
+        self.assertIn("insider_buying", result["signals_tested"])
+        self.assertNotIn("insider_buying", result["signals_not_tested"])
