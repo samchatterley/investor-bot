@@ -212,6 +212,7 @@ def _entry_signal(
     regime: str | None = None,
     vix_spike: bool = False,
     fundamentals: dict | None = None,
+    disabled_signals: frozenset[str] | None = None,
 ) -> str | None:
     """
     Returns the first matching signal in priority order, or None.
@@ -228,6 +229,8 @@ def _entry_signal(
     """
     p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
     blocked = _REGIME_BLOCKED.get(regime, frozenset())
+    if disabled_signals:
+        blocked = blocked | disabled_signals
     # Default adx=30 (assume trending) when High/Low weren't available
     adx = float(row.get("adx", 30))
 
@@ -235,11 +238,11 @@ def _entry_signal(
     if vix_spike and row["vol_ratio"] > 1.0:
         return "vix_fear_reversion"
 
-    # ── Fundamental conviction — bypass weekly trend filter (not in REGIME_BLOCKED) ──
+    # ── Fundamental conviction — bypass regime filter but respect disabled_signals ──
     if fundamentals:
-        if fundamentals.get("insider_cluster"):
+        if fundamentals.get("insider_cluster") and "insider_buying" not in blocked:
             return "insider_buying"
-        if fundamentals.get("pead_active") and row.get("ret_5d", 0) > 0:
+        if fundamentals.get("pead_active") and row.get("ret_5d", 0) > 0 and "pead" not in blocked:
             return "pead"
 
     # ── Daily signals ─────────────────────────────────────────────────────────
@@ -545,6 +548,7 @@ def _run_simulation(
     vix_spike_by_date: dict[str, bool] | None = None,
     earnings_history: dict[str, list[dict]] | None = None,
     insider_history: dict[str, list[dict]] | None = None,
+    disabled_signals: frozenset[str] | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
@@ -664,6 +668,7 @@ def _run_simulation(
                 regime=regime,
                 vix_spike=vix_spike,
                 fundamentals=fundamentals,
+                disabled_signals=disabled_signals,
             )
             if signal:
                 candidates.append((sym, signal, float(prev_row["rsi"])))
@@ -1211,6 +1216,172 @@ def run_walk_forward_optimized(
     return {"folds": fold_results, "summary": summary}
 
 
+def run_ablation(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
+) -> dict:
+    """Measure each signal's marginal contribution to portfolio Sharpe.
+
+    Fetches data once, then runs N+1 simulations: one baseline (all signals
+    enabled) and one per signal (that signal disabled).  The ΔSharpe column
+    answers "what happens to portfolio Sharpe when this signal is removed?"
+
+      ΔSharpe < 0  → removing it hurts  → KEEP
+      ΔSharpe > 0  → removing it helps  → REVIEW (signal is a drag)
+
+    Returns::
+
+        {
+            "baseline":  full _run_simulation result dict,
+            "ablations": [
+                {
+                    "signal":          str,
+                    "baseline_trades": int,
+                    "sharpe_delta":    float,
+                    "return_delta":    float,
+                    "verdict":         "KEEP" | "REVIEW",
+                },
+                ...
+            ],
+        }
+    """
+    logger.info(
+        f"Ablation: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"{len(_SIGNAL_PRIORITY)} signals" + (" | fundamentals=ON" if use_fundamentals else "")
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed: {exc}")
+
+    vix_spike_by_date: dict[str, bool] = {}
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):
+                vix_close = vix_close.iloc[:, 0]
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals:
+        logger.info("Ablation: pre-fetching fundamental data…")
+        earnings_history = prefetch_earnings_history(symbols)
+        insider_history = prefetch_insider_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "params": params,
+        "slippage_bps": slippage_bps,
+        "spread_bps": spread_bps,
+        "spy_indicators": spy_indicators,
+        "per_signal_cap": per_signal_cap,
+        "regime_by_date": regime_by_date or None,
+        "vix_spike_by_date": vix_spike_by_date or None,
+        "earnings_history": earnings_history,
+        "insider_history": insider_history,
+    }
+
+    logger.info("Ablation: running baseline…")
+    baseline = _run_simulation(indicators, trading_dates, **sim_kwargs)
+
+    ablations = []
+    for signal_name in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
+        logger.info(f"Ablation: disabling {signal_name}…")
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            **sim_kwargs,
+            disabled_signals=frozenset({signal_name}),
+        )
+        baseline_sig = baseline["by_signal"].get(signal_name, {})
+        baseline_trades = baseline_sig.get("wins", 0) + baseline_sig.get("losses", 0)
+        sharpe_delta = round(result["sharpe_ratio"] - baseline["sharpe_ratio"], 3)
+        return_delta = round(result["total_return_pct"] - baseline["total_return_pct"], 2)
+        ablations.append(
+            {
+                "signal": signal_name,
+                "baseline_trades": baseline_trades,
+                "sharpe_delta": sharpe_delta,
+                "return_delta": return_delta,
+                "verdict": "KEEP" if sharpe_delta < 0 else "REVIEW",
+            }
+        )
+
+    out = {"baseline": baseline, "ablations": ablations}
+    _print_ablation_results(out, start_date, end_date)
+    return out
+
+
+def _print_ablation_results(r: dict, start_date: str, end_date: str) -> None:
+    b = r["baseline"]
+    print("\n" + "=" * 65)
+    print(f"  ABLATION STUDY  {start_date} → {end_date}")
+    print("=" * 65)
+    print(
+        f"  Baseline: Sharpe {b['sharpe_ratio']:.2f} | "
+        f"Return {b['total_return_pct']:+.1f}% | {b['total_trades']} trades"
+    )
+    print()
+    print(f"  {'Signal':<25} {'Trades':>6}  {'ΔSharpe':>8}  {'ΔReturn':>8}  Verdict")
+    print("  " + "-" * 58)
+    for a in sorted(r["ablations"], key=lambda x: x["sharpe_delta"]):
+        verdict = "KEEP" if a["verdict"] == "KEEP" else "REVIEW"
+        print(
+            f"  {a['signal']:<25} {a['baseline_trades']:>6}  "
+            f"{a['sharpe_delta']:>+8.3f}  {a['return_delta']:>+7.1f}%  {verdict}"
+        )
+    print("=" * 65 + "\n")
+
+
 def _save_results(r: dict):
     """Persist latest backtest results for the dashboard to read."""
     try:
@@ -1274,13 +1445,28 @@ if __name__ == "__main__":
         action="store_true",
         help="Pre-fetch SEC EDGAR Form 4 + yfinance EPS history to test pead/insider_buying",
     )
-    args = parser.parse_args()
-    run_backtest(
-        STOCK_UNIVERSE,
-        args.start,
-        args.end,
-        initial_capital=args.capital,
-        use_intraday=args.use_intraday,
-        per_signal_cap=args.per_signal_cap,
-        use_fundamentals=args.use_fundamentals,
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Run ablation study: disable each signal in turn to measure marginal Sharpe contribution",
     )
+    args = parser.parse_args()
+    if args.ablation:
+        run_ablation(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+        )
+    else:
+        run_backtest(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            use_intraday=args.use_intraday,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+        )

@@ -19,9 +19,11 @@ from backtest.engine import (
     _compute_indicators,
     _compute_intraday_day,
     _entry_signal,
+    _print_ablation_results,
     _print_results,
     _run_simulation,
     _save_results,
+    run_ablation,
     run_backtest,
     run_walk_forward_optimized,
 )
@@ -2015,3 +2017,113 @@ class TestFundamentalSignals(unittest.TestCase):
         result = _run_simulation({"AAPL": df}, idx[1:], insider_history={})
         self.assertIn("insider_buying", result["signals_tested"])
         self.assertNotIn("insider_buying", result["signals_not_tested"])
+
+
+# ── disabled_signals / ablation ───────────────────────────────────────────────
+
+
+class TestDisabledSignals(unittest.TestCase):
+    def test_disabled_signal_does_not_fire(self):
+        row = _make_row(rsi=25.0, bb_pct=0.1, vol_ratio=1.5)
+        self.assertEqual(_entry_signal(row), "mean_reversion")
+        self.assertIsNone(_entry_signal(row, disabled_signals=frozenset({"mean_reversion"})))
+
+    def test_multiple_disabled_signals_skipped(self):
+        row = _make_row(rsi=25.0, bb_pct=0.1, vol_ratio=1.5)
+        result = _entry_signal(
+            row, disabled_signals=frozenset({"mean_reversion", "momentum", "macd_crossover"})
+        )
+        self.assertNotIn(result, {"mean_reversion", "momentum", "macd_crossover"})
+
+    def test_disabled_signal_absent_from_simulation_by_signal(self):
+        idx = pd.bdate_range("2025-01-02", periods=60)
+        prices = [100.0 - i * 0.3 for i in range(60)]
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": [p * 0.999 for p in prices],
+                "Volume": [2_000_000] * 60,
+                "rsi": [28.0] * 60,
+                "bb_pct": [0.08] * 60,
+                "vol_ratio": [1.6] * 60,
+                "ema9": [99.0] * 60,
+                "ema21": [100.0] * 60,
+                "macd_diff": [-0.1] * 60,
+                "ret_5d": [-2.0] * 60,
+            },
+            index=idx,
+        )
+        result = _run_simulation(
+            {"AAPL": df}, idx[1:], disabled_signals=frozenset({"mean_reversion"})
+        )
+        self.assertNotIn("mean_reversion", result["by_signal"])
+
+    def test_empty_disabled_signals_has_no_effect(self):
+        row = _make_row(rsi=25.0, bb_pct=0.1, vol_ratio=1.5)
+        self.assertEqual(
+            _entry_signal(row),
+            _entry_signal(row, disabled_signals=frozenset()),
+        )
+
+    def test_fundamental_signal_disabled(self):
+        row = _make_row(ret_5d=2.0)
+        self.assertEqual(
+            _entry_signal(row, fundamentals={"pead_active": True}),
+            "pead",
+        )
+        self.assertIsNone(
+            _entry_signal(
+                row,
+                fundamentals={"pead_active": True},
+                disabled_signals=frozenset({"pead"}),
+            )
+        )
+
+
+class TestRunAblation(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_ablation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_baseline_and_ablations(self):
+        result = self._run()
+        self.assertIn("baseline", result)
+        self.assertIn("ablations", result)
+
+    def test_ablations_count_matches_signal_priority(self):
+        result = self._run()
+        self.assertEqual(len(result["ablations"]), len(_SIGNAL_PRIORITY))
+
+    def test_each_ablation_has_required_keys(self):
+        result = self._run()
+        for a in result["ablations"]:
+            for key in ("signal", "baseline_trades", "sharpe_delta", "return_delta", "verdict"):
+                self.assertIn(key, a)
+
+    def test_verdict_keep_when_sharpe_delta_negative(self):
+        result = self._run()
+        for a in result["ablations"]:
+            expected = "KEEP" if a["sharpe_delta"] < 0 else "REVIEW"
+            self.assertEqual(a["verdict"], expected)
+
+    def test_all_signals_represented(self):
+        result = self._run()
+        ablated = {a["signal"] for a in result["ablations"]}
+        self.assertEqual(ablated, set(_SIGNAL_PRIORITY.keys()))
+
+    def test_baseline_trades_non_negative(self):
+        result = self._run()
+        for a in result["ablations"]:
+            self.assertGreaterEqual(a["baseline_trades"], 0)
+
+    def test_print_ablation_results_no_error(self):
+        result = self._run()
+        try:
+            _print_ablation_results(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_ablation_results raised: {exc}")
