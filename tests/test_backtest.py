@@ -501,9 +501,9 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
         self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
 
-    def test_choppy_allows_mean_reversion(self):
+    def test_choppy_blocks_mean_reversion(self):
         row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
-        self.assertEqual(_entry_signal(row, regime="CHOPPY"), "mean_reversion")
+        self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
 
     def test_none_regime_blocks_nothing(self):
         row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)

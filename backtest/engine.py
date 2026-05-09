@@ -88,6 +88,7 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
             "gap_and_go",
             "orb_breakout",
             "intraday_momentum",
+            "iv_compression",  # avg -1.3% in BEAR_DAY (24 trades)
         }
     ),
     "HIGH_VOL": frozenset(
@@ -106,6 +107,9 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
             "momentum_12_1",
             "momentum",
             "gap_and_go",
+            "mean_reversion",  # avg -0.5% in CHOPPY (108 trades)
+            "macd_crossover",  # avg -2.0% in CHOPPY (33 trades)
+            "inside_day_breakout",  # avg -0.6% in CHOPPY (101 trades)
         }
     ),
 }
@@ -1025,6 +1029,8 @@ def run_walk_forward_optimized(
     slippage_bps: int | None = None,
     spread_bps: int | None = None,
     use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
 ) -> dict:
     """
     Walk-forward optimised backtest — genuine out-of-sample validation.
@@ -1081,13 +1087,16 @@ def run_walk_forward_optimized(
 
     wf_earnings_history: dict[str, list[dict]] | None = None
     wf_insider_history: dict[str, list[dict]] | None = None
-    if use_fundamentals:
-        logger.info("Walk-forward: pre-fetching fundamental data…")
+    if use_fundamentals or use_earnings_only:
+        logger.info("Walk-forward: pre-fetching earnings history…")
         wf_earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        logger.info("Walk-forward: pre-fetching insider history…")
         wf_insider_history = prefetch_insider_history(symbols)
+    if use_fundamentals and not use_earnings_only and wf_earnings_history is not None:
         logger.info(
             f"Walk-forward fundamentals ready: {len(wf_earnings_history)} earnings, "
-            f"{len(wf_insider_history)} insider histories"
+            f"{len(wf_insider_history or {})} insider histories"
         )
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
@@ -1137,6 +1146,7 @@ def run_walk_forward_optimized(
                 spy_indicators=spy_indicators,
                 earnings_history=wf_earnings_history,
                 insider_history=wf_insider_history,
+                disabled_signals=disabled_signals,
             )
             if r["total_trades"] < _MIN_TRAIN_TRADES:
                 continue
@@ -1157,6 +1167,7 @@ def run_walk_forward_optimized(
             spy_indicators=spy_indicators,
             earnings_history=wf_earnings_history,
             insider_history=wf_insider_history,
+            disabled_signals=disabled_signals,
         )
 
         baseline_rets = []
@@ -1908,6 +1919,19 @@ if __name__ == "__main__":
         action="store_true",
         help="Regime-stratified breakdown + hold-period decay for each signal",
     )
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help="Walk-forward optimised backtest (genuine OOS validation)",
+    )
+    parser.add_argument("--train-days", type=int, default=252)
+    parser.add_argument("--test-days", type=int, default=126)
+    parser.add_argument(
+        "--disabled-signals",
+        type=str,
+        default="",
+        help="Comma-separated signals to disable globally (e.g. rs_leader,momentum_12_1)",
+    )
     args = parser.parse_args()
     if args.signal_analysis:
         run_signal_analysis(
@@ -1919,6 +1943,35 @@ if __name__ == "__main__":
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
         )
+    elif args.walk_forward:
+        _disabled = (
+            frozenset(s.strip() for s in args.disabled_signals.split(",") if s.strip())
+            if args.disabled_signals
+            else None
+        )
+        import json as _json
+
+        result = run_walk_forward_optimized(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            train_days=args.train_days,
+            test_days=args.test_days,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
+        )
+        print("\n=== WALK-FORWARD SUMMARY ===")
+        print(_json.dumps(result["summary"], indent=2))
+        for f in result["folds"]:
+            print(
+                f"  {f['test_start']} → {f['test_end']}  "
+                f"OOS Sharpe={f['oos_sharpe']:.3f}  "
+                f"return={f['oos_total_return_pct']:+.1f}%  "
+                f"trades={f['oos_total_trades']}"
+            )
     elif args.backward_elimination:
         run_backward_elimination(
             STOCK_UNIVERSE,
