@@ -123,6 +123,8 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `trend_continuation` | AI-classified continuation of an established trend | 5 days |
 | `breakout_52w` | Within 3% of 52-week high + above-average volume + weekly trend intact | 5 days |
 | `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment — sustained market leader | 5 days |
+| `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; blocked on BEAR_DAY and CHOPPY | 5 days |
+| `insider_buying` | ≥2 distinct corporate insiders made open-market Form 4 purchases (SEC EDGAR) within 10 days; bypasses weekly trend filter | 5 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
 **Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
@@ -135,7 +137,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`), **catalyst** (`news_catalyst`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
 
 ---
 
@@ -195,7 +197,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1506 tests, 98.25% coverage)
+├── tests/             Unit test suite (1597 tests, 96% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -340,6 +342,7 @@ This starts two containers: the trading scheduler (`investorbot`) and the web da
 | `EMAIL_TO` | Owner address — emergency alerts only |
 | `EMAIL_RECIPIENTS` | Named recipients for daily summary + weekly review: `Sam:sam@gmail.com,Harri:harri@outlook.com` |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (not your login password) |
+| `ALPHA_VANTAGE_API_KEY` | Optional. Alpha Vantage API key for news sentiment enrichment. Free tier: 500 calls/day, 5 calls/min. When absent, AV sentiment is silently disabled. |
 
 **Live trading:** The system is designed as a paper-trading governance and simulation framework. Live mode (changing `ALPACA_BASE_URL` to the live endpoint) additionally requires setting `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` in your `.env`. Do this only after extended paper trading, after reviewing all risk parameters, and with full understanding of every circuit breaker and kill switch in the system.
 
@@ -753,7 +756,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1506 tests, 98.25% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **1597 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -796,6 +799,19 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.19 — May 2026 — momentum_12_1, insider buying (SEC EDGAR Form 4), AV news sentiment, quality pre-filter
+
+- **`momentum_12_1` signal (Jegadeesh-Titman 12-1).** Computes 12-month return minus 1-month return (`ret_12m - ret_1m`) in `backtest/engine.py`. Fires when the factor exceeds `mom12_1_threshold` (default 10.0%), EMA9 > EMA21, and ADX ≥ 20. Blocked on `BEAR_DAY` and `CHOPPY` regimes. Priority rank 3 (highest priority of any trend signal). Hold limit 5 days.
+- **Fundamental quality pre-filter (`_passes_quality_screen`).** Applied in `prefilter_candidates` before technical screening. Rejects stocks with negative ROE, negative profit margins, or debt-to-equity > 300. Permissive when fields are absent (ETFs, backtest mode). Fundamental ratios (`roe`, `profit_margin`, `debt_to_equity`) fetched from yfinance `.info` in `get_market_snapshots`.
+- **Insider cluster buying signal.** New `data/insider_feed.py` queries the SEC EDGAR submissions API (no auth, free) for Form 4 filings. Only open-market purchases (transaction code `P`, acquired/disposed code `A`) are counted — option exercises, RSU vesting, and gifts are excluded. Fires when ≥2 distinct corporate insiders buy within 10 days (`insider_cluster=True`). Single large purchase (> $100k notional) also flagged (`insider_large_buy`). Insider data bypasses the weekly trend filter in `prefilter_candidates` — fundamental conviction overrides technical direction.
+- **Alpha Vantage NEWS_SENTIMENT enrichment.** New `data/av_sentiment.py` fetches structured per-ticker sentiment scores (−1 to +1) from the AV news API. Articles filtered by relevance (≥ 0.30) and publication time (configurable lookback window, default 24h). Results include `av_sentiment_score`, `av_article_count`, `av_sentiment_label` (Bullish/Neutral/Bearish), and `av_top_headline`. Batches 10 symbols per request with 13-second inter-batch delay (free tier: 5 req/min). Silently disabled when `ALPHA_VANTAGE_API_KEY` is absent. Set the key in `.env` to enable.
+- **Walk-forward fallback fix.** `best_params` now initialises from `all_combos[0]` (first param grid entry) instead of `_DEFAULT_PARAMS.copy()`, preventing a key-mismatch failure when no combo cleared `_MIN_TRAIN_TRADES`.
+- **Enrichment wiring in `main.py`.** Insider activity and AV sentiment are fetched in bulk after intraday enrichment and merged into snapshots via `snap.update()`, matching the existing intraday enrichment pattern.
+- **91 new tests** (total 1597): `TestMomentum121Signal` (13), `TestInsiderBuyingSignal` (5), `TestPassesQualityScreen` (11) in existing test files; `tests/test_insider_feed.py` (20 tests for `_get_cik_map`, `_recent_form4_filings`, `_parse_form4`, and `get_insider_activity`); `tests/test_av_sentiment.py` (9 tests for `get_av_sentiment`).
+- **1597 tests, 96% coverage, zero ruff violations.**
+
+---
 
 ### 1.18 — May 2026 — Intraday signals: VWAP, opening range breakout, intraday momentum
 
