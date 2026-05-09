@@ -21,12 +21,15 @@ from backtest.engine import (
     _entry_signal,
     _print_ablation_results,
     _print_backward_elimination_results,
+    _print_hold_period_table,
+    _print_regime_table,
     _print_results,
     _run_simulation,
     _save_results,
     run_ablation,
     run_backtest,
     run_backward_elimination,
+    run_signal_analysis,
     run_walk_forward_optimized,
 )
 
@@ -2237,3 +2240,157 @@ class TestRunBackwardElimination(unittest.TestCase):
             _print_backward_elimination_results(r, "2025-01-01", "2025-06-30")
         except Exception as exc:
             self.fail(f"_print_backward_elimination_results raised: {exc}")
+
+
+# ── enriched SELL trade metadata ──────────────────────────────────────────────
+
+
+class TestEnrichedSellTrades(unittest.TestCase):
+    """SELL trades now carry entry_date, entry_regime, days_held."""
+
+    def _build_indicators_with_loose_signal(self):
+        idx = pd.bdate_range("2025-01-02", periods=5)
+        n = len(idx)
+        df = pd.DataFrame(
+            {
+                "Close": [100.0, 101.0, 102.0, 103.0, 104.0],
+                "Open": [99.5, 100.5, 101.5, 102.5, 103.5],
+                "Volume": [2_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.5] * n,
+                "ema9": [101.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.5] * n,
+                "ret_5d": [2.0] * n,
+            },
+            index=idx,
+        )
+        return {"AAPL": df}
+
+    def test_sell_trades_include_entry_date(self):
+        indicators = self._build_indicators_with_loose_signal()
+        dates = pd.bdate_range("2025-01-03", "2025-01-08")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0, params=_LOOSE_ENTRY)
+        sell_trades = [t for t in result["trades"] if t["action"] == "SELL" and "pnl_pct" in t]
+        for t in sell_trades:
+            self.assertIn("entry_date", t)
+            self.assertIsInstance(t["entry_date"], str)
+
+    def test_sell_trades_include_days_held(self):
+        indicators = self._build_indicators_with_loose_signal()
+        dates = pd.bdate_range("2025-01-03", "2025-01-08")
+        result = _run_simulation(indicators, dates, initial_capital=10_000.0, params=_LOOSE_ENTRY)
+        sell_trades = [t for t in result["trades"] if t["action"] == "SELL" and "pnl_pct" in t]
+        for t in sell_trades:
+            self.assertIn("days_held", t)
+            self.assertGreaterEqual(t["days_held"], 0)
+
+    def test_sell_trades_include_entry_regime(self):
+        indicators = self._build_indicators_with_loose_signal()
+        dates = pd.bdate_range("2025-01-03", "2025-01-08")
+        fake_regime = {d.strftime("%Y-%m-%d"): "BULL_TRENDING" for d in dates}
+        result = _run_simulation(
+            indicators,
+            dates,
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            regime_by_date=fake_regime,
+        )
+        sell_trades = [t for t in result["trades"] if t["action"] == "SELL" and "pnl_pct" in t]
+        for t in sell_trades:
+            self.assertIn("entry_regime", t)
+
+    def test_days_held_matches_time_exit_hold(self):
+        indicators = self._build_indicators_with_loose_signal()
+        dates = pd.bdate_range("2025-01-03", "2025-01-08")
+        result = _run_simulation(
+            indicators, dates, initial_capital=10_000.0, max_hold_days=2, params=_LOOSE_ENTRY
+        )
+        time_exits = [t for t in result["trades"] if t.get("reason") == "time_exit"]
+        for t in time_exits:
+            self.assertEqual(t["days_held"], 2)
+
+
+# ── run_signal_analysis ───────────────────────────────────────────────────────
+
+
+class TestRunSignalAnalysis(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_signal_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_expected_top_level_keys(self):
+        result = self._run()
+        for key in ("baseline", "regime_stats", "decay_stats"):
+            self.assertIn(key, result)
+
+    def test_regime_stats_is_dict(self):
+        result = self._run()
+        self.assertIsInstance(result["regime_stats"], dict)
+
+    def test_decay_stats_is_dict(self):
+        result = self._run()
+        self.assertIsInstance(result["decay_stats"], dict)
+
+    def test_regime_stats_signal_keys_are_valid(self):
+        result = self._run()
+        for sig in result["regime_stats"]:
+            self.assertIn(sig, _SIGNAL_PRIORITY)
+
+    def test_decay_stats_signal_keys_are_valid(self):
+        result = self._run()
+        for sig in result["decay_stats"]:
+            self.assertIn(sig, _SIGNAL_PRIORITY)
+
+    def test_regime_buckets_have_required_fields(self):
+        result = self._run()
+        for sig_data in result["regime_stats"].values():
+            for reg_data in sig_data.values():
+                for field in ("wins", "losses", "total_return"):
+                    self.assertIn(field, reg_data)
+
+    def test_decay_buckets_have_required_fields(self):
+        result = self._run()
+        for sig_data in result["decay_stats"].values():
+            for dh_data in sig_data.values():
+                for field in ("wins", "losses", "total_return"):
+                    self.assertIn(field, dh_data)
+
+    def test_returns_empty_on_empty_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_signal_analysis(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_print_regime_table_no_error(self):
+        result = self._run()
+        try:
+            _print_regime_table(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_regime_table raised: {exc}")
+
+    def test_print_hold_period_table_no_error(self):
+        result = self._run()
+        try:
+            _print_hold_period_table(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_hold_period_table raised: {exc}")
+
+    def test_print_regime_table_empty_stats_no_error(self):
+        r = {"regime_stats": {}, "decay_stats": {}}
+        try:
+            _print_regime_table(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_regime_table raised on empty stats: {exc}")
+
+    def test_print_hold_period_table_empty_stats_no_error(self):
+        r = {"regime_stats": {}, "decay_stats": {}}
+        try:
+            _print_hold_period_table(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_hold_period_table raised on empty stats: {exc}")

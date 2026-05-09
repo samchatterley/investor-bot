@@ -609,6 +609,9 @@ def _run_simulation(
                         "exit_price": exit_px,
                         "pnl_pct": round((exit_px / pos["entry_price"] - 1) * 100, 2),
                         "signal": pos["signal"],
+                        "entry_date": pos["entry_date"].strftime("%Y-%m-%d"),
+                        "entry_regime": pos.get("entry_regime"),
+                        "days_held": trading_days_held,
                     }
                 )
                 to_close.append(sym)
@@ -713,6 +716,7 @@ def _run_simulation(
                     "entry_date": today,
                     "shares": shares,
                     "signal": signal,
+                    "entry_regime": regime,
                 }
                 trades.append(
                     {
@@ -727,12 +731,18 @@ def _run_simulation(
                 continue
 
     # Close remaining positions at end of window
+    last_date = trading_dates[-1] if len(trading_dates) else None
     for sym, pos in positions.items():
         try:
             px = float(indicators[sym].iloc[-1]["Close"])
             exit_px = px * sell_factor
             cash += pos["shares"] * exit_px
             pnl_pct = (exit_px / pos["entry_price"] - 1) * 100
+            days_held = (
+                sum(1 for _ in pd.bdate_range(pos["entry_date"], last_date)) - 1
+                if last_date is not None
+                else 0
+            )
             trades.append(
                 {
                     "date": "end",
@@ -741,6 +751,9 @@ def _run_simulation(
                     "reason": "end_of_backtest",
                     "pnl_pct": round(pnl_pct, 2),
                     "signal": pos["signal"],
+                    "entry_date": pos["entry_date"].strftime("%Y-%m-%d"),
+                    "entry_regime": pos.get("entry_regime"),
+                    "days_held": days_held,
                 }
             )
         except Exception:
@@ -1609,6 +1622,209 @@ def _print_ablation_results(r: dict, start_date: str, end_date: str) -> None:
     print("=" * 65 + "\n")
 
 
+_REGIMES_ORDER = ["BULL_TRENDING", "BEAR_DAY", "HIGH_VOL", "CHOPPY"]
+
+
+def run_signal_analysis(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
+) -> dict:
+    """Run a single simulation with enriched trade metadata, then produce:
+
+    1. Regime-stratified signal breakdown — win rate and avg return per signal
+       per market regime (BULL_TRENDING / BEAR_DAY / HIGH_VOL / CHOPPY).
+    2. Hold-period decay — win rate and avg return per signal broken down by
+       days held (1 … max_hold_days).
+
+    end_of_backtest exits are excluded from both tables (truncated holds).
+
+    Returns::
+
+        {
+            "baseline":     full _run_simulation result,
+            "regime_stats": {signal: {regime: {wins, losses, total_return}}},
+            "decay_stats":  {signal: {days_held: {wins, losses, total_return}}},
+        }
+    """
+    logger.info(
+        f"Signal analysis: {start_date} → {end_date} | {len(symbols)} symbols"
+        + (" | earnings=ON" if use_earnings_only else "")
+        + (" | fundamentals=ON" if use_fundamentals else "")
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed: {exc}")
+
+    vix_spike_by_date: dict[str, bool] = {}
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):
+                vix_close = vix_close.iloc[:, 0]
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals or use_earnings_only:
+        logger.info("Signal analysis: pre-fetching earnings history…")
+        earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        logger.info("Signal analysis: pre-fetching insider history…")
+        insider_history = prefetch_insider_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    results = _run_simulation(
+        indicators,
+        trading_dates,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        max_hold_days=max_hold_days,
+        params=params,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+        spy_indicators=spy_indicators,
+        per_signal_cap=per_signal_cap,
+        regime_by_date=regime_by_date or None,
+        vix_spike_by_date=vix_spike_by_date or None,
+        earnings_history=earnings_history,
+        insider_history=insider_history,
+    )
+
+    closed = [
+        t
+        for t in results["trades"]
+        if t["action"] == "SELL"
+        and "pnl_pct" in t
+        and t.get("reason") != "end_of_backtest"
+        and t.get("entry_regime") is not None
+        and t.get("days_held") is not None
+    ]
+
+    regime_stats: dict[str, dict[str, dict]] = {}
+    for t in closed:
+        sig = t.get("signal", "unknown")
+        reg = t["entry_regime"]
+        regime_stats.setdefault(sig, {}).setdefault(
+            reg, {"wins": 0, "losses": 0, "total_return": 0.0}
+        )
+        regime_stats[sig][reg]["total_return"] += t["pnl_pct"]
+        if t["pnl_pct"] > 0:
+            regime_stats[sig][reg]["wins"] += 1
+        else:
+            regime_stats[sig][reg]["losses"] += 1
+
+    decay_stats: dict[str, dict[int, dict]] = {}
+    for t in closed:
+        sig = t.get("signal", "unknown")
+        dh = int(t["days_held"])
+        decay_stats.setdefault(sig, {}).setdefault(
+            dh, {"wins": 0, "losses": 0, "total_return": 0.0}
+        )
+        decay_stats[sig][dh]["total_return"] += t["pnl_pct"]
+        if t["pnl_pct"] > 0:
+            decay_stats[sig][dh]["wins"] += 1
+        else:
+            decay_stats[sig][dh]["losses"] += 1
+
+    out = {"baseline": results, "regime_stats": regime_stats, "decay_stats": decay_stats}
+    _print_regime_table(out, start_date, end_date)
+    _print_hold_period_table(out, start_date, end_date)
+    return out
+
+
+def _print_regime_table(r: dict, start_date: str, end_date: str) -> None:
+    stats = r["regime_stats"]
+    print("\n" + "=" * 68)
+    print(f"  REGIME-STRATIFIED SIGNAL BREAKDOWN  {start_date} → {end_date}")
+    print("=" * 68)
+    for sig in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
+        if sig not in stats:
+            continue
+        total = sum(v["wins"] + v["losses"] for v in stats[sig].values())
+        print(f"\n  {sig}  ({total} trades)")
+        for reg in _REGIMES_ORDER:
+            if reg not in stats[sig]:
+                continue
+            d = stats[sig][reg]
+            n = d["wins"] + d["losses"]
+            wr = d["wins"] / n * 100 if n else 0
+            avg = d["total_return"] / n if n else 0
+            flag = "  ← drag" if avg < -0.1 else ""
+            print(f"    {reg:<15}  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{flag}")
+    print("\n" + "=" * 68 + "\n")
+
+
+def _print_hold_period_table(r: dict, start_date: str, end_date: str) -> None:
+    stats = r["decay_stats"]
+    max_hold = max((dh for sig_d in stats.values() for dh in sig_d), default=3)
+    days = list(range(1, max_hold + 1))
+    print("\n" + "=" * 68)
+    print(f"  HOLD-PERIOD DECAY  {start_date} → {end_date}")
+    print("=" * 68)
+    for sig in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
+        if sig not in stats:
+            continue
+        total = sum(v["wins"] + v["losses"] for v in stats[sig].values())
+        print(f"\n  {sig}  ({total} trades)")
+        for d in days:
+            if d not in stats[sig]:
+                continue
+            dh = stats[sig][d]
+            n = dh["wins"] + dh["losses"]
+            wr = dh["wins"] / n * 100 if n else 0
+            avg = dh["total_return"] / n if n else 0
+            flag = "  ← decays" if avg < -0.1 else ""
+            print(f"    Day {d}:  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{flag}")
+    print("\n" + "=" * 68 + "\n")
+
+
 def _save_results(r: dict):
     """Persist latest backtest results for the dashboard to read."""
     try:
@@ -1687,8 +1903,23 @@ if __name__ == "__main__":
         action="store_true",
         help="Greedy backward elimination: iteratively remove the worst signal until none are drags",
     )
+    parser.add_argument(
+        "--signal-analysis",
+        action="store_true",
+        help="Regime-stratified breakdown + hold-period decay for each signal",
+    )
     args = parser.parse_args()
-    if args.backward_elimination:
+    if args.signal_analysis:
+        run_signal_analysis(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
+        )
+    elif args.backward_elimination:
         run_backward_elimination(
             STOCK_UNIVERSE,
             args.start,
