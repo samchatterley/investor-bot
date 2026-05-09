@@ -288,6 +288,11 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             and (ema_up or ret_5d > 3.0)  # daily trend supports the move
         )
 
+        # Insider cluster buying: ≥2 corporate insiders made open-market purchases
+        # within the last 10 trading days.  The signal is standalone — no technical
+        # confirmation required since the conviction comes from the insider data.
+        insider_buying = s.get("insider_cluster", False) is True
+
         matched = []
         if mean_reversion:
             matched.append("mean_reversion")
@@ -313,12 +318,15 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("orb_breakout")
         if intraday_momentum:
             matched.append("intraday_momentum")
+        if insider_buying:
+            matched.append("insider_buying")
 
         if not matched:
             continue
 
-        # Block buys against the weekly trend unless the stock is deeply oversold
-        if not weekly_up and not (rsi < 30 and bb < 0.15):
+        # Block buys against the weekly trend unless deeply oversold or an insider
+        # cluster is present (fundamental conviction overrides the trend filter).
+        if not weekly_up and not (rsi < 30 and bb < 0.15) and "insider_buying" not in matched:
             continue
 
         qualified.append({**s, "matched_signals": matched})

@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 import config
 from analysis import ai_analyst, performance
 from analysis.weekly_review import get_latest_review
-from data import market_data, news_fetcher, options_scanner, sector_data
+from data import av_sentiment, insider_feed, market_data, news_fetcher, options_scanner, sector_data
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
 from execution.quote_gate import check_quote_gate
@@ -781,6 +781,20 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         for snap in snapshots:
             if snap["symbol"] in intraday:
                 snap.update(intraday[snap["symbol"]])
+
+    # ── Insider activity (SEC EDGAR Form 4 — open-market cluster purchases) ──
+    logger.info("Fetching insider activity...")
+    insider_data = insider_feed.get_insider_activity([s["symbol"] for s in snapshots])
+    for snap in snapshots:
+        if snap["symbol"] in insider_data:
+            snap.update(insider_data[snap["symbol"]])
+
+    # ── News sentiment (Alpha Vantage structured scores) ─────────────────────
+    logger.info("Fetching AV news sentiment...")
+    av_data = av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])
+    for snap in snapshots:
+        if snap["symbol"] in av_data:
+            snap.update(av_data[snap["symbol"]])
 
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in held_symbols]

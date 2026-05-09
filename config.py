@@ -20,6 +20,8 @@ ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
+
 # Explicit trading mode — set TRADING_MODE=live to enable live trading.
 # If TRADING_MODE is set, the URL is validated against the expected Alpaca endpoint.
 # If unset, falls back to substring detection for backward compatibility.
@@ -104,6 +106,7 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "gap_and_go": 2,  # confirmed gap continuation — typically resolves in 1–2 days
     "vix_fear_reversion": 3,  # fear-spike bounce — hold for the relief rally
     "momentum_12_1": 5,  # medium-term Jegadeesh-Titman factor — needs room to develop
+    "insider_buying": 5,  # cluster insider purchases — drift plays out over days-weeks
     "unknown": 3,  # conservative default
 }
 

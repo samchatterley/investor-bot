@@ -765,6 +765,8 @@ def _run_simulation(
         "vwap_reclaim",
         "orb_breakout",
         "intraday_momentum",
+        # insider_buying requires historical Form 4 data not available in this engine
+        "insider_buying",
     }
     signals_not_tested = sorted(all_backtestable - set(signals_tested))
 
