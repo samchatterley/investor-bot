@@ -802,6 +802,19 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.28 — May 2026 — backtest validity warnings + beat-baseline metric + test reliability
+
+- **`_REGIME_BLOCKED` and `_LIVE_REGIME_BLOCKED` relabelled as working hypotheses.** Comments now explicitly state that regime blocks are economically plausible and empirically suggestive from walk-forward analysis, but not independently validated — survivorship risk present, some cells have low trade counts (n=24 for `iv_compression` BEAR_DAY), and blocks were derived from the same data used to assess them. Treat as paper-trading hypotheses, not proven improvements.
+- **Low-confidence cell warnings in regime table output.** `_print_regime_table` now flags any cell with n < 30 trades with `*` and prints a footnote. First-time viewers see low-sample cells flagged inline rather than requiring knowledge of the underlying trade counts.
+- **Intraday signal disclaimer in regime table.** `vwap_reclaim`, `orb_breakout`, and `intraday_momentum` are marked `[intraday†]` with a footnote noting that backtest results for these signals (full-day summary, next-day entry) do not validate live same-session execution.
+- **`beat_baseline_folds` / `beat_baseline_pct` added to walk-forward summary.** The summary now reports how many OOS folds beat the equal-weight universe baseline, not just how many were profitable. Walk-forward output shows a per-fold `Beat?` column alongside return and Sharpe.
+- **Survivorship bias warning on all backtest print output.** `_print_results` now prints a `BIAS:` line noting the universe is constructed from current tradable listings and does not include delistings or historical failures.
+- **`test_av_sentiment.py` fixture timestamps made dynamic.** Hardcoded `time_published` values from 2026-05-09 were stale and the 24-hour lookback filter was excluding them. Fixtures now use `_ts(hours_ago)` computed at import time.
+- **6 new tests** (total 1713): `test_summary_beat_baseline_folds_le_n_folds`, `test_beat_baseline_pct_is_valid_percentage`. 4 pre-existing `test_av_sentiment` failures resolved.
+- **1713 tests, zero ruff violations, zero mypy errors.**
+
+---
+
 ### 1.27 — May 2026 — regime-aware live scanner + backtest signal sync
 
 - **`_LIVE_REGIME_BLOCKED` (new module-level dict in `execution/stock_scanner.py`).** Mirrors the backtest engine's `_REGIME_BLOCKED` for the live trading path. Blocks signals whose per-regime performance was validated negative across the 2021–2026 walk-forward OOS run: CHOPPY suppresses `mean_reversion`, `macd_crossover`, and `inside_day_breakout`; BEAR_DAY suppresses `iv_compression`.

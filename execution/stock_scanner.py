@@ -210,6 +210,11 @@ def _passes_quality_screen(snapshot: dict) -> bool:
     return not (debt_to_equity is not None and debt_to_equity > 300)
 
 
+# Working hypotheses ported from backtest walk-forward analysis (2021–2026).
+# Treat as signal-suppression candidates to validate in live paper trading,
+# not as proven improvements.  Universe survivorship risk, low trade counts
+# in some cells, and iterative WF analysis mean these are empirically
+# suggestive but not independently validated.
 _LIVE_REGIME_BLOCKED: dict[str, set[str]] = {
     "CHOPPY": {"mean_reversion", "macd_crossover", "inside_day_breakout"},
     "BEAR_DAY": {"iv_compression"},

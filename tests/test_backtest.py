@@ -1027,7 +1027,9 @@ _WF_SUMMARY_KEYS = {
     "mean_oos_win_rate_pct",
     "mean_oos_sharpe",
     "profitable_folds",
+    "beat_baseline_folds",
     "consistency_pct",
+    "beat_baseline_pct",
     "param_stability_pct",
     "mean_oos_degradation",
     "random_baseline_return_pct",
@@ -1139,6 +1141,18 @@ class TestRunWalkForwardOptimized(unittest.TestCase):
     def test_summary_profitable_folds_le_n_folds(self):
         result = self._run_wf()
         self.assertLessEqual(result["summary"]["profitable_folds"], result["summary"]["n_folds"])
+
+    def test_summary_beat_baseline_folds_le_n_folds(self):
+        result = self._run_wf()
+        s = result["summary"]
+        self.assertLessEqual(s["beat_baseline_folds"], s["n_folds"])
+        self.assertGreaterEqual(s["beat_baseline_folds"], 0)
+
+    def test_beat_baseline_pct_is_valid_percentage(self):
+        result = self._run_wf()
+        pct = result["summary"]["beat_baseline_pct"]
+        self.assertGreaterEqual(pct, 0.0)
+        self.assertLessEqual(pct, 100.0)
 
     def test_param_stability_pct_is_valid_percentage(self):
         result = self._run_wf()

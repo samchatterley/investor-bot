@@ -74,6 +74,17 @@ _SIGNAL_PRIORITY: dict[str, int] = {
 
 # Signals blocked per market regime.
 # mean_reversion and vix_fear_reversion are always permitted (counter-cyclical).
+# Signals blocked per regime.
+#
+# WORKING HYPOTHESES — pending paper-trading validation.
+# Blocks are economically plausible and empirically suggestive from the 2021–2026
+# walk-forward analysis, but are NOT proven improvements:
+#   - universe is constructed from current tradable listings (survivorship risk)
+#   - some cells have low trade counts (see n= annotations below)
+#   - signal blocks were derived from the same data used to validate them
+#
+# Treat every entry here as a hypothesis to confirm in live paper trading,
+# not as a settled fact.
 _REGIME_BLOCKED: dict[str, frozenset[str]] = {
     "BEAR_DAY": frozenset(
         {
@@ -88,7 +99,7 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
             "gap_and_go",
             "orb_breakout",
             "intraday_momentum",
-            "iv_compression",  # avg -1.3% in BEAR_DAY (24 trades)
+            "iv_compression",  # -1.3% avg in BEAR_DAY — n=24 (low confidence)
         }
     ),
     "HIGH_VOL": frozenset(
@@ -107,9 +118,9 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
             "momentum_12_1",
             "momentum",
             "gap_and_go",
-            "mean_reversion",  # avg -0.5% in CHOPPY (108 trades)
-            "macd_crossover",  # avg -2.0% in CHOPPY (33 trades)
-            "inside_day_breakout",  # avg -0.6% in CHOPPY (101 trades)
+            "mean_reversion",  # -0.5% avg in CHOPPY — n=108
+            "macd_crossover",  # -2.0% avg in CHOPPY — n=33 (low confidence)
+            "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
         }
     ),
 }
@@ -1213,6 +1224,9 @@ def run_walk_forward_optimized(
 
     n = len(fold_results)
     profitable = sum(1 for f in fold_results if f["oos_total_return_pct"] > 0)
+    beat_baseline = sum(
+        1 for f in fold_results if f["oos_total_return_pct"] > f["random_baseline_return_pct"]
+    )
 
     sig_counts: dict = {}
     for f in fold_results:
@@ -1226,7 +1240,9 @@ def run_walk_forward_optimized(
         "mean_oos_win_rate_pct": round(sum(f["oos_win_rate_pct"] for f in fold_results) / n, 1),
         "mean_oos_sharpe": round(sum(f["oos_sharpe"] for f in fold_results) / n, 2),
         "profitable_folds": profitable,
+        "beat_baseline_folds": beat_baseline,
         "consistency_pct": round(profitable / n * 100, 1),
+        "beat_baseline_pct": round(beat_baseline / n * 100, 1),
         "param_stability_pct": round(modal_count / n * 100, 1),
         "mean_oos_degradation": round(sum(f["oos_degradation"] for f in fold_results) / n, 2),
         "random_baseline_return_pct": round(
@@ -1237,6 +1253,7 @@ def run_walk_forward_optimized(
     logger.info(
         f"Walk-forward summary: {n} folds | mean OOS return {summary['mean_oos_return_pct']:+.2f}% "
         f"vs baseline {summary['random_baseline_return_pct']:+.2f}% "
+        f"| beat baseline {summary['beat_baseline_pct']:.0f}% of folds "
         f"| consistency {summary['consistency_pct']:.0f}% | param stability {summary['param_stability_pct']:.0f}%"
     )
 
@@ -1793,16 +1810,26 @@ def run_signal_analysis(
     return out
 
 
+_INTRADAY_SIGNALS = {"vwap_reclaim", "orb_breakout", "intraday_momentum"}
+_LOW_CONFIDENCE_N = 30
+
+
 def _print_regime_table(r: dict, start_date: str, end_date: str) -> None:
     stats = r["regime_stats"]
+    low_n_found = False
+    intraday_found = False
     print("\n" + "=" * 68)
     print(f"  REGIME-STRATIFIED SIGNAL BREAKDOWN  {start_date} → {end_date}")
     print("=" * 68)
+    print("  NOTE: Rule proxy only — survivorship risk, no delisted symbols.")
     for sig in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
         if sig not in stats:
             continue
         total = sum(v["wins"] + v["losses"] for v in stats[sig].values())
-        print(f"\n  {sig}  ({total} trades)")
+        intraday_marker = " [intraday†]" if sig in _INTRADAY_SIGNALS else ""
+        if sig in _INTRADAY_SIGNALS:
+            intraday_found = True
+        print(f"\n  {sig}  ({total} trades){intraday_marker}")
         for reg in _REGIMES_ORDER:
             if reg not in stats[sig]:
                 continue
@@ -1810,9 +1837,22 @@ def _print_regime_table(r: dict, start_date: str, end_date: str) -> None:
             n = d["wins"] + d["losses"]
             wr = d["wins"] / n * 100 if n else 0
             avg = d["total_return"] / n if n else 0
-            flag = "  ← drag" if avg < -0.1 else ""
-            print(f"    {reg:<15}  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{flag}")
-    print("\n" + "=" * 68 + "\n")
+            drag_flag = "  ← drag" if avg < -0.1 else ""
+            low_n_flag = " *" if n < _LOW_CONFIDENCE_N else ""
+            if n < _LOW_CONFIDENCE_N:
+                low_n_found = True
+            print(
+                f"    {reg:<15}  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{drag_flag}{low_n_flag}"
+            )
+    print()
+    if low_n_found:
+        print(
+            f"  * n < {_LOW_CONFIDENCE_N}: low confidence — suggestive only, not statistically reliable."
+        )
+    if intraday_found:
+        print("  † intraday signals: backtest summarises full day; does NOT validate")
+        print("    live same-session execution (VWAP/ORB/intraday_momentum).")
+    print("=" * 68 + "\n")
 
 
 def _print_hold_period_table(r: dict, start_date: str, end_date: str) -> None:
@@ -1860,6 +1900,8 @@ def _print_results(r: dict):
     print("=" * 60)
     print("  NOTE: Rule proxy only — does not reflect deployed strategy")
     print("        (Claude, news, options, macro context excluded).")
+    print("  BIAS: Universe from current tradable listings — survivorship")
+    print("        risk present; delistings and failures not represented.")
     print(f"  Signals tested:    {', '.join(tested)}")
     print(f"  Initial capital:   ${r['initial_capital']:.2f}")
     print(f"  Final value:       ${r['final_value']:.2f}")
@@ -1952,8 +1994,6 @@ if __name__ == "__main__":
             if args.disabled_signals
             else None
         )
-        import json as _json
-
         result = run_walk_forward_optimized(
             STOCK_UNIVERSE,
             args.start,
@@ -1966,15 +2006,41 @@ if __name__ == "__main__":
             use_earnings_only=args.use_earnings_only,
             disabled_signals=_disabled,
         )
-        print("\n=== WALK-FORWARD SUMMARY ===")
-        print(_json.dumps(result["summary"], indent=2))
+        s = result["summary"]
+        print("\n" + "=" * 65)
+        print("  WALK-FORWARD SUMMARY")
+        print("=" * 65)
+        print("  NOTE: Universe built from current tradable listings.")
+        print("        Survivorship bias not controlled. Working hypotheses only.")
+        print()
+        print(f"  Folds:              {s['n_folds']}")
+        print(f"  Mean OOS return:    {s['mean_oos_return_pct']:+.2f}%")
+        print(f"  Mean OOS Sharpe:    {s['mean_oos_sharpe']:.3f}")
+        print(f"  Equal-weight base:  {s['random_baseline_return_pct']:+.2f}%")
+        print(
+            f"  Profitable folds:   {s['profitable_folds']}/{s['n_folds']}  ({s['consistency_pct']:.0f}%)"
+        )
+        print(
+            f"  Beat baseline:      {s['beat_baseline_folds']}/{s['n_folds']}  ({s['beat_baseline_pct']:.0f}%)"
+        )
+        print(f"  Param stability:    {s['param_stability_pct']:.0f}%")
+        print(f"  Mean train→OOS deg: {s['mean_oos_degradation']:+.3f} Sharpe")
+        print()
+        print(
+            f"  {'Period':<25}  {'OOS Ret':>8}  {'Baseline':>9}  {'Beat?':>5}  {'Sharpe':>7}  {'Trades':>6}"
+        )
+        print("  " + "-" * 65)
         for f in result["folds"]:
+            beat = "yes" if f["oos_total_return_pct"] > f["random_baseline_return_pct"] else "no"
             print(
                 f"  {f['test_start']} → {f['test_end']}  "
-                f"OOS Sharpe={f['oos_sharpe']:.3f}  "
-                f"return={f['oos_total_return_pct']:+.1f}%  "
-                f"trades={f['oos_total_trades']}"
+                f"{f['oos_total_return_pct']:>+7.1f}%  "
+                f"{f['random_baseline_return_pct']:>+8.1f}%  "
+                f"{beat:>5}  "
+                f"{f['oos_sharpe']:>7.3f}  "
+                f"{f['oos_total_trades']:>6}"
             )
+        print("=" * 65 + "\n")
     elif args.backward_elimination:
         run_backward_elimination(
             STOCK_UNIVERSE,

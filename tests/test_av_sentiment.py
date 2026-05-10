@@ -1,15 +1,22 @@
 """Tests for data/av_sentiment.py — Alpha Vantage news sentiment enrichment."""
 
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from data.av_sentiment import get_av_sentiment
+
+
+def _ts(hours_ago: float = 1.0) -> str:
+    """AV-format timestamp N hours in the past (always within the 24h lookback window)."""
+    return (datetime.now(UTC) - timedelta(hours=hours_ago)).strftime("%Y%m%dT%H%M%S")
+
 
 _AV_RESPONSE = {
     "feed": [
         {
             "title": "Apple hits record high on AI announcement",
-            "time_published": "20260509T100000",
+            "time_published": _ts(1),
             "ticker_sentiment": [
                 {"ticker": "AAPL", "ticker_sentiment_score": "0.45", "relevance_score": "0.85"},
                 {"ticker": "MSFT", "ticker_sentiment_score": "0.10", "relevance_score": "0.20"},
@@ -17,7 +24,7 @@ _AV_RESPONSE = {
         },
         {
             "title": "Apple supply chain concerns ease",
-            "time_published": "20260509T080000",
+            "time_published": _ts(2),
             "ticker_sentiment": [
                 {"ticker": "AAPL", "ticker_sentiment_score": "0.25", "relevance_score": "0.70"},
             ],
@@ -29,7 +36,7 @@ _AV_RESPONSE_BEARISH = {
     "feed": [
         {
             "title": "NVDA misses estimates",
-            "time_published": "20260509T120000",
+            "time_published": _ts(1),
             "ticker_sentiment": [
                 {"ticker": "NVDA", "ticker_sentiment_score": "-0.50", "relevance_score": "0.90"},
             ],
@@ -146,7 +153,7 @@ class TestGetAvSentiment(unittest.TestCase):
             "feed": [
                 {
                     "title": "Stock update",
-                    "time_published": "20260509T100000",
+                    "time_published": _ts(1),
                     "ticker_sentiment": [
                         {
                             "ticker": "AAPL",
