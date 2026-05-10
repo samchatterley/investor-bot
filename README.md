@@ -802,6 +802,39 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.27 — May 2026 — regime-aware live scanner + backtest signal sync
+
+- **`_LIVE_REGIME_BLOCKED` (new module-level dict in `execution/stock_scanner.py`).** Mirrors the backtest engine's `_REGIME_BLOCKED` for the live trading path. Blocks signals whose per-regime performance was validated negative across the 2021–2026 walk-forward OOS run: CHOPPY suppresses `mean_reversion`, `macd_crossover`, and `inside_day_breakout`; BEAR_DAY suppresses `iv_compression`.
+- **`prefilter_candidates` now accepts `regime: str | None = None`.** When a regime is supplied, signals in the corresponding blocked set are silently skipped before the matched-signals list is assembled. Unrecognised or `None` regime → no suppression (safe default).
+- **`rs_leader` removed from live scanner.** No positive edge in any regime across 57 backtest trades; signal removed from `prefilter_candidates`. Was already absent from the backtest engine's `_SIGNAL_PRIORITY`.
+- **`main.py` passes detected regime to `prefilter_candidates`.** `regime.get("regime")` (the string name, e.g. `"CHOPPY"`) is now forwarded at the prefilter call site so live regime gates match backtest behaviour.
+- **8 new tests** (total 1711): `TestRegimeBlocking` (8 tests — CHOPPY blocks mean_reversion/macd_crossover/inside_day_breakout, BEAR_DAY blocks iv_compression, BULL_TRENDING and `None` don't suppress). 4 rs_leader tests removed.
+- **1711 tests, 96% coverage, zero ruff violations.**
+
+---
+
+### 1.26 — May 2026 — regime-stratified signal analysis + walk-forward OOS validation
+
+- **`run_signal_analysis` (new function).** Runs a full simulation then groups closed trades by (signal, entry_regime) and (signal, days_held) to produce regime-stratified win-rate/avg-return tables and hold-period decay tables. Same data setup as `run_backtest`; no separate prefetch needed.
+- **`--signal-analysis` CLI flag.** Runs `run_signal_analysis` instead of `run_backtest`.
+- **`entry_regime` added to SELL trade records.** `_run_simulation` stores `entry_regime` on every position at entry time; SELL records include `entry_regime`, `entry_date`, and `days_held` (trading-day count). End-of-backtest forced-close records include the same fields.
+- **`_REGIME_BLOCKED` updated** with evidence-backed additions: `iv_compression` added to BEAR_DAY block (avg -1.3%, 24 trades); `mean_reversion`, `macd_crossover`, `inside_day_breakout` added to CHOPPY block (regime-stratified avg returns all negative).
+- **`run_walk_forward_optimized` extended** with `disabled_signals: frozenset[str] | None = None` parameter; both `_run_simulation` calls in the WF loop now pass `disabled_signals`. Used to validate proposed `_REGIME_BLOCKED` changes OOS before committing: baseline mean OOS Sharpe -0.09 → proposed +0.69; 100% profitable folds vs 89%.
+- **`--walk-forward`, `--train-days`, `--test-days`, `--disabled-signals` CLI flags** added.
+- **16 new tests** (total 1707): `TestEnrichedSellTrades` (4 tests — entry_date/days_held/entry_regime in SELL records), `TestRunSignalAnalysis` (12 tests — return shape, regime/decay stat keys, empty data, print helpers).
+- **1707 tests, 96% coverage, zero ruff violations.**
+
+---
+
+### 1.25 — May 2026 — regime-stratified signal breakdown + hold-period decay
+
+- **Regime detection added to backtest simulation.** `get_market_regime` output now included in `_run_simulation` context. Entry regime stored on each position at open time.
+- **`run_regime_analysis` / `run_hold_decay_analysis` (new functions).** Group closed trades by regime and hold period respectively to surface signal-level edge by market condition.
+- **`_print_regime_table` and `_print_hold_period_table` helpers.**
+- **12 new tests** (total 1691, incremental from v1.24).
+
+---
+
 ### 1.24 — May 2026 — greedy backward elimination + --use-earnings-only
 
 - **`run_backward_elimination` (new function).** Greedy backward elimination: iteratively disables the signal whose removal most improves Sharpe, re-evaluating all remaining signals against the updated disabled set at each step. Stops when no remaining signal produces ΔSharpe > 0. Captures slot-competition interactions that single-pass independent ablation misses (e.g. when pead fills 56% of slots, rs_leader and macd_crossover are evaluated on biased 13–14 trade samples; elimination re-measures them after pead is removed).

@@ -256,7 +256,7 @@ Respond with ONLY this JSON:
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.content[0].text.strip()
+        raw = response.content[0].text.strip()  # type: ignore[union-attr]
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

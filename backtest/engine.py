@@ -232,7 +232,7 @@ def _entry_signal(
     Intraday signals only fire when intraday data is supplied.
     """
     p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
-    blocked = _REGIME_BLOCKED.get(regime, frozenset())
+    blocked = _REGIME_BLOCKED.get(regime or "", frozenset())
     if disabled_signals:
         blocked = blocked | disabled_signals
     # Default adx=30 (assume trending) when High/Low weren't available
@@ -484,10 +484,10 @@ def _fetch_intraday_bars(
                 start=start_dt,
                 end=end_dt,
                 timeframe=TimeFrame(1, TimeFrameUnit.Minute),
-                feed="iex",
+                feed="iex",  # type: ignore[arg-type]
             )
             bars_resp = client.get_stock_bars(req)
-            bars_data = bars_resp.data.get(sym, [])
+            bars_data = bars_resp.data.get(sym, [])  # type: ignore[union-attr]
             if not bars_data:
                 continue
 
@@ -1031,6 +1031,7 @@ def run_walk_forward_optimized(
     use_fundamentals: bool = False,
     use_earnings_only: bool = False,
     disabled_signals: frozenset[str] | None = None,
+    per_signal_cap: int = 2,
 ) -> dict:
     """
     Walk-forward optimised backtest — genuine out-of-sample validation.
@@ -1147,6 +1148,7 @@ def run_walk_forward_optimized(
                 earnings_history=wf_earnings_history,
                 insider_history=wf_insider_history,
                 disabled_signals=disabled_signals,
+                per_signal_cap=per_signal_cap,
             )
             if r["total_trades"] < _MIN_TRAIN_TRADES:
                 continue
@@ -1168,6 +1170,7 @@ def run_walk_forward_optimized(
             earnings_history=wf_earnings_history,
             insider_history=wf_insider_history,
             disabled_signals=disabled_signals,
+            per_signal_cap=per_signal_cap,
         )
 
         baseline_rets = []

@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from functools import lru_cache
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from config import EMAIL_FROM
 

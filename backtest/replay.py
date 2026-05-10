@@ -271,7 +271,7 @@ def run_historical_replay(
         # Sells
         sell_symbols = {
             d["symbol"]
-            for d in decisions.get("position_decisions", [])
+            for d in (decisions or {}).get("position_decisions", [])
             if d.get("action") == "SELL"
         }
         # Stale exits
@@ -318,7 +318,7 @@ def run_historical_replay(
             buys = sorted(
                 [
                     c
-                    for c in decisions.get("buy_candidates", [])
+                    for c in (decisions or {}).get("buy_candidates", [])
                     if c["confidence"] >= config.MIN_CONFIDENCE
                 ],
                 key=lambda x: x["confidence"],

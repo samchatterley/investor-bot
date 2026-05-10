@@ -422,9 +422,14 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
                 result = trader.place_partial_sell(client, symbol, half_qty)
                 if result and result.is_success:
                     audit_log.log_order_placed(
-                        symbol, "SELL_PARTIAL", pos["market_value"] / 2, result.broker_order_id
+                        symbol,
+                        "SELL_PARTIAL",
+                        pos["market_value"] / 2,
+                        result.broker_order_id or "",
                     )
-                    audit_log.log_order_filled(symbol, result.broker_order_id, result.filled_qty)
+                    audit_log.log_order_filled(
+                        symbol, result.broker_order_id or "", result.filled_qty
+                    )
                     trader.record_partial_exit(symbol)
                     trader.place_trailing_stop(
                         client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"]
@@ -830,7 +835,9 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             f"{before_price_filter} → {len(candidate_snaps)} candidates"
         )
 
-    filtered_candidates = stock_scanner.prefilter_candidates(candidate_snaps)
+    filtered_candidates = stock_scanner.prefilter_candidates(
+        candidate_snaps, regime=regime.get("regime")
+    )
     ai_snapshots = held_snaps + filtered_candidates
     logger.info(
         f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
@@ -1222,7 +1229,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
                         break
 
-                snap = next((s for s in snapshots if s["symbol"] == symbol), None)
+                snap = next(
+                    (s for s in snapshots if s["symbol"] == symbol),
+                    None,  # type: ignore[arg-type]
+                )
                 if notional >= 1.0:
                     # Guard: skip if notional buys < 1 whole share — Alpaca cannot stop-protect sub-share positions
                     if snap and notional / snap["current_price"] < 1.0:
@@ -1233,9 +1243,9 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         continue
                     if not dry_run:
                         t_buy_submit = time.monotonic()
-                        result = trader.place_buy_order(client, symbol, notional)
+                        buy_result = trader.place_buy_order(client, symbol, notional)
                         t_fill = time.monotonic()
-                        if result and result.is_success:
+                        if buy_result and buy_result.is_success:
                             fill_latency_ms = round((t_fill - t_buy_submit) * 1000)
                             orders_placed += 1
                             daily_notional_spent += notional
@@ -1249,15 +1259,15 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                 confidence=confidence,
                             )
                             audit_log.log_order_placed(
-                                symbol, "BUY", notional, result.broker_order_id
+                                symbol, "BUY", notional, buy_result.broker_order_id or ""
                             )
-                            if result.filled_qty:
+                            if buy_result.filled_qty:
                                 audit_log.log_order_filled(
-                                    symbol, result.broker_order_id, result.filled_qty
+                                    symbol, buy_result.broker_order_id or "", buy_result.filled_qty
                                 )
                                 current_price = snap["current_price"] if snap else None
                                 # Floor to whole shares — Alpaca rejects fractional stop orders
-                                stop_qty = int(math.floor(result.filled_qty))
+                                stop_qty = int(math.floor(buy_result.filled_qty))
                                 t_stop_submit = time.monotonic()
                                 stop_result = (
                                     trader.place_trailing_stop(
@@ -1284,7 +1294,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                         and stop_result.is_success,
                                     },
                                 )
-                                fill_avg = result.filled_avg_price
+                                fill_avg = buy_result.filled_avg_price
                                 if qg and qg.bid and qg.ask and fill_avg:
                                     mid = (qg.bid + qg.ask) / 2
                                     slippage_bps = (
@@ -1310,7 +1320,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | {candidate.get('key_signal')} | confidence={confidence}"
                             all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})
-                        elif result and result.status in (
+                        elif buy_result and buy_result.status in (
                             OrderStatus.PARTIAL,
                             OrderStatus.TIMEOUT,
                         ):
@@ -1318,22 +1328,22 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             # Re-query immediately and attach stops; don't wait until next startup.
                             logger.warning(
                                 f"  BUY {symbol}: ambiguous result "
-                                f"status={result.status.name} "
-                                f"filled_qty={result.filled_qty} — "
+                                f"status={buy_result.status.name} "
+                                f"filled_qty={buy_result.filled_qty} — "
                                 "running immediate stop coverage check"
                             )
                             audit_log.log_event(
                                 "ORDER_AMBIGUOUS",
                                 {
                                     "symbol": symbol,
-                                    "status": result.status.name,
-                                    "filled_qty": result.filled_qty,
-                                    "broker_order_id": result.broker_order_id,
+                                    "status": buy_result.status.name,
+                                    "filled_qty": buy_result.filled_qty,
+                                    "broker_order_id": buy_result.broker_order_id,
                                 },
                             )
                             alerts.alert_error(
                                 "ORDER AMBIGUOUS",
-                                f"{symbol} buy returned {result.status.name} — "
+                                f"{symbol} buy returned {buy_result.status.name} — "
                                 "checking stop coverage now.",
                             )
                             immediate_stops_ok = trader.ensure_stops_attached(client)

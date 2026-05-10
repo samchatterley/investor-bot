@@ -210,13 +210,20 @@ def _passes_quality_screen(snapshot: dict) -> bool:
     return not (debt_to_equity is not None and debt_to_equity > 300)
 
 
-def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
+_LIVE_REGIME_BLOCKED: dict[str, set[str]] = {
+    "CHOPPY": {"mean_reversion", "macd_crossover", "inside_day_breakout"},
+    "BEAR_DAY": {"iv_compression"},
+}
+
+
+def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> list[dict]:
     """
     Rule-based screen applied before Claude analysis.
     A stock must match at least one credible technical pattern.
     Stocks trading against their weekly trend are blocked unless deeply oversold.
     This reduces Claude's input size and focuses it on genuine setups.
     """
+    blocked: set[str] = _LIVE_REGIME_BLOCKED.get(regime, set()) if regime else set()
     qualified = []
     for s in snapshots:
         if s.get("avg_volume", 0) < MIN_VOLUME:
@@ -243,10 +250,6 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         bb_squeeze_signal = s.get("bb_squeeze", False) and (ema_up or macd_diff > 0) and vol > 1.2
         # Near 52-week high with volume: growth / breakout momentum
         breakout_52w = s.get("price_vs_52w_high_pct", -999) >= -3.0 and vol > 1.2 and weekly_up
-        # Consistent SPY outperformance: market leader in sustained uptrend
-        rs_leader = (
-            s.get("rel_strength_5d", 0) > 2.0 and s.get("rel_strength_10d", 0) > 3.0 and ema_up
-        )
         # Inside day followed by directional confirmation: coiled spring
         inside_day_breakout = (
             s.get("is_inside_day", False) and (ema_up or macd_diff > 0) and vol > 1.1
@@ -304,19 +307,17 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
         iv_compression = s.get("hv_rank", 1.0) < 0.20 and (ema_up or macd_diff > 0) and vol > 1.1
 
         matched = []
-        if mean_reversion:
+        if mean_reversion and "mean_reversion" not in blocked:
             matched.append("mean_reversion")
         if momentum:
             matched.append("momentum")
-        if macd_cross_signal:
+        if macd_cross_signal and "macd_crossover" not in blocked:
             matched.append("macd_crossover")
         if bb_squeeze_signal:
             matched.append("bb_squeeze")
         if breakout_52w:
             matched.append("breakout_52w")
-        if rs_leader:
-            matched.append("rs_leader")
-        if inside_day_breakout:
+        if inside_day_breakout and "inside_day_breakout" not in blocked:
             matched.append("inside_day_breakout")
         if gap_and_go:
             matched.append("gap_and_go")
@@ -332,7 +333,7 @@ def prefilter_candidates(snapshots: list[dict]) -> list[dict]:
             matched.append("insider_buying")
         if pead:
             matched.append("pead")
-        if iv_compression:
+        if iv_compression and "iv_compression" not in blocked:
             matched.append("iv_compression")
 
         if not matched:

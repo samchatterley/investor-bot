@@ -198,24 +198,6 @@ class TestPrefilterCandidates(unittest.TestCase):
         snap = _snap(price_vs_52w_high_pct=-1.0, vol_ratio=0.9, weekly_trend_up=True)
         self.assertEqual(len(prefilter_candidates([snap])), 0)
 
-    # ── rs_leader ────────────────────────────────────────────────────────────
-
-    def test_rs_leader_strong_outperformance_ema_up_passes(self):
-        snap = _snap(rel_strength_5d=3.0, rel_strength_10d=4.0, ema9_above_ema21=True)
-        self.assertEqual(len(prefilter_candidates([snap])), 1)
-
-    def test_rs_leader_weak_5d_fails(self):
-        snap = _snap(rel_strength_5d=1.0, rel_strength_10d=4.0, ema9_above_ema21=True)
-        self.assertEqual(len(prefilter_candidates([snap])), 0)
-
-    def test_rs_leader_weak_10d_fails(self):
-        snap = _snap(rel_strength_5d=3.0, rel_strength_10d=2.0, ema9_above_ema21=True)
-        self.assertEqual(len(prefilter_candidates([snap])), 0)
-
-    def test_rs_leader_ema_not_up_fails(self):
-        snap = _snap(rel_strength_5d=3.0, rel_strength_10d=4.0, ema9_above_ema21=False)
-        self.assertEqual(len(prefilter_candidates([snap])), 0)
-
     # ── inside_day_breakout ──────────────────────────────────────────────────
 
     def test_inside_day_ema_up_and_volume_passes(self):
@@ -544,3 +526,57 @@ class TestIvCompressionSignal(unittest.TestCase):
         snap = _snap(hv_rank=0.10, ema9_above_ema21=True, vol_ratio=1.0)
         result = prefilter_candidates([snap])
         self.assertEqual(result, [])
+
+
+class TestRegimeBlocking(unittest.TestCase):
+    """prefilter_candidates: regime-conditional signal suppression."""
+
+    # ── CHOPPY blocks ────────────────────────────────────────────────────────
+
+    def test_choppy_blocks_mean_reversion(self):
+        snap = _snap(rsi_14=35, bb_pct=0.25, vol_ratio=1.1)
+        result = prefilter_candidates([snap], regime="CHOPPY")
+        self.assertEqual(result, [])
+
+    def test_choppy_blocks_macd_crossover(self):
+        snap = _snap(macd_crossed_up=True, vol_ratio=1.3)
+        result = prefilter_candidates([snap], regime="CHOPPY")
+        self.assertEqual(result, [])
+
+    def test_choppy_blocks_inside_day_breakout(self):
+        snap = _snap(is_inside_day=True, ema9_above_ema21=True, vol_ratio=1.2)
+        result = prefilter_candidates([snap], regime="CHOPPY")
+        self.assertEqual(result, [])
+
+    def test_choppy_does_not_block_momentum(self):
+        snap = _snap(ema9_above_ema21=True, macd_diff=0.5, ret_5d_pct=1.0, vol_ratio=1.3)
+        result = prefilter_candidates([snap], regime="CHOPPY")
+        self.assertEqual(len(result), 1)
+        self.assertIn("momentum", result[0]["matched_signals"])
+
+    # ── BEAR_DAY blocks ──────────────────────────────────────────────────────
+
+    def test_bear_day_blocks_iv_compression(self):
+        snap = _snap(hv_rank=0.10, ema9_above_ema21=True, vol_ratio=1.2)
+        result = prefilter_candidates([snap], regime="BEAR_DAY")
+        self.assertEqual(result, [])
+
+    def test_bear_day_does_not_block_mean_reversion(self):
+        snap = _snap(rsi_14=35, bb_pct=0.25, vol_ratio=1.1)
+        result = prefilter_candidates([snap], regime="BEAR_DAY")
+        self.assertEqual(len(result), 1)
+        self.assertIn("mean_reversion", result[0]["matched_signals"])
+
+    # ── No blocking when regime is None or unrecognised ──────────────────────
+
+    def test_no_regime_does_not_block_mean_reversion(self):
+        snap = _snap(rsi_14=35, bb_pct=0.25, vol_ratio=1.1)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("mean_reversion", result[0]["matched_signals"])
+
+    def test_bull_trending_does_not_block_any_signal(self):
+        snap = _snap(rsi_14=35, bb_pct=0.25, vol_ratio=1.1)
+        result = prefilter_candidates([snap], regime="BULL_TRENDING")
+        self.assertEqual(len(result), 1)
+        self.assertIn("mean_reversion", result[0]["matched_signals"])

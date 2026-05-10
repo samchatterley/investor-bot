@@ -16,7 +16,7 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
-import requests
+import requests  # type: ignore[import-untyped]
 
 from config import ALPHA_VANTAGE_API_KEY
 

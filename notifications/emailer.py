@@ -530,7 +530,7 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
           {_section("Lessons injected into next week&#39;s prompts", _bullets(lessons, "#1565c0"))}
           {_section("Proposed config changes", changes_block)}
           {rejected_block}
-          {_build_diagnostics_section(test_report)}
+          {_build_diagnostics_section(test_report or {})}
 
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#bbb;margin:32px 0 0;text-align:center">
             Weekly self-review &nbsp;&#183;&nbsp; Your trading bot

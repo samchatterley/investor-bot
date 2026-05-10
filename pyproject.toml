@@ -66,6 +66,11 @@ disable_error_code = ["union-attr", "arg-type", "index", "operator", "misc"]
 testpaths = ["tests"]
 addopts = "--tb=short -q --cov --cov-report=term-missing --cov-fail-under=80"
 log_cli = false
+filterwarnings = [
+    # alpaca-py's streaming module imports websockets.legacy at import time;
+    # we do not use streaming, and the warning is from the vendor library.
+    "ignore::DeprecationWarning:websockets",
+]
 
 [tool.coverage.run]
 source = ["."]

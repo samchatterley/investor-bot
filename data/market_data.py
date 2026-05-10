@@ -325,14 +325,14 @@ def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
             timeframe=TimeFrame(1, TimeFrameUnit.Minute),
             start=start_utc,
             end=end_utc,
-            feed="iex",
+            feed="iex",  # type: ignore[arg-type]
         )
         bars_response = data_client.get_stock_bars(req)
     except Exception as e:
         logger.warning(f"Intraday data fetch failed: {e}")
         return {}
 
-    bar_data = bars_response.data  # BarSet wraps a plain dict under .data
+    bar_data = bars_response.data  # type: ignore[union-attr]
     result: dict[str, dict] = {}
 
     for sym in symbols:

@@ -91,7 +91,9 @@ def _get_eligible_symbols(client: TradingClient) -> list[str]:
     req = GetAssetsRequest(asset_class=AssetClass.US_EQUITY, status=AssetStatus.ACTIVE)
     assets = client.get_all_assets(req)
     eligible = [
-        a.symbol for a in assets if a.tradable and a.fractionable and a.exchange in _MAJOR_EXCHANGES
+        a.symbol  # type: ignore[union-attr]
+        for a in assets
+        if a.tradable and a.fractionable and a.exchange in _MAJOR_EXCHANGES  # type: ignore[union-attr]
     ]
     logger.info(f"Alpaca eligible symbols: {len(eligible)}")
     return eligible

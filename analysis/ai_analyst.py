@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from collections.abc import Sequence
 from datetime import UTC
 
 import anthropic
@@ -185,7 +186,7 @@ def build_prompt(
     macro_risk: dict | None = None,
     leading_sectors: list[str] | None = None,
     options_signals: dict | None = None,
-    lessons: list[str] | None = None,
+    lessons: Sequence[str | dict] | None = None,
 ) -> str:
 
     # Market regime (4-state)
@@ -465,7 +466,7 @@ def get_trading_decisions(
     macro_risk: dict | None = None,
     leading_sectors: list[str] | None = None,
     options_signals: dict | None = None,
-    lessons: list[str] | None = None,
+    lessons: Sequence[str | dict] | None = None,
     run_id: str | None = None,
 ) -> dict | None:
     prompt = build_prompt(
@@ -489,7 +490,7 @@ def get_trading_decisions(
     )
 
     try:
-        response = client.messages.create(
+        response = client.messages.create(  # type: ignore[call-overload]
             model=CLAUDE_MODEL,
             max_tokens=4096,
             system=SYSTEM_PROMPT,
