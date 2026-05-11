@@ -71,7 +71,80 @@ _SIGNAL_LABELS = {
     "macd_crossover": "Momentum shift",
     "rsi_oversold": "Oversold reversal",
     "news_catalyst": "News-driven move",
+    "bb_squeeze": "Volatility squeeze breakout",
+    "orb_breakout": "Opening range breakout",
+    "orb_breakout_down": "Opening range breakdown",
+    "breakout_52w": "52-week high breakout",
+    "inside_day_breakout": "Inside day breakout",
     "unknown": "Mixed signals",
+}
+
+_TICKER_NAMES: dict[str, str] = {
+    # Mega-cap tech
+    "AAPL": "Apple",
+    "MSFT": "Microsoft",
+    "GOOGL": "Alphabet",
+    "AMZN": "Amazon",
+    "META": "Meta",
+    "NVDA": "Nvidia",
+    "TSLA": "Tesla",
+    # Semiconductors
+    "AMD": "AMD",
+    "AVGO": "Broadcom",
+    "QCOM": "Qualcomm",
+    "MU": "Micron Technology",
+    "INTC": "Intel",
+    "TSM": "TSMC",
+    "AMAT": "Applied Materials",
+    # Software & growth tech
+    "NFLX": "Netflix",
+    "CRM": "Salesforce",
+    "ADBE": "Adobe",
+    "UBER": "Uber",
+    "SHOP": "Shopify",
+    "SNOW": "Snowflake",
+    "PLTR": "Palantir",
+    "RKLB": "Rocket Lab",
+    "ENPH": "Enphase Energy",
+    "FSLR": "First Solar",
+    # Fintech
+    "PYPL": "PayPal",
+    "XYZ": "Block Inc",
+    "V": "Visa",
+    "MA": "Mastercard",
+    # Financials
+    "JPM": "JPMorgan Chase",
+    "BAC": "Bank of America",
+    "GS": "Goldman Sachs",
+    "MS": "Morgan Stanley",
+    # Healthcare & pharma
+    "LLY": "Eli Lilly",
+    "UNH": "UnitedHealth",
+    "JNJ": "Johnson & Johnson",
+    "ABBV": "AbbVie",
+    "MRK": "Merck",
+    # Energy
+    "XOM": "ExxonMobil",
+    "CVX": "Chevron",
+    "OXY": "Occidental Petroleum",
+    # Consumer
+    "COST": "Costco",
+    "WMT": "Walmart",
+    "HD": "Home Depot",
+    "MCD": "McDonald's",
+    "NKE": "Nike",
+    "SBUX": "Starbucks",
+    # Industrials
+    "CAT": "Caterpillar",
+    "DE": "John Deere",
+    "GE": "GE Aerospace",
+    # ETFs
+    "SPY": "S&P 500 ETF",
+    "QQQ": "Nasdaq 100 ETF",
+    "IWM": "Russell 2000 ETF",
+    "XLK": "Tech Sector ETF",
+    "XLE": "Energy Sector ETF",
+    "XLF": "Financials Sector ETF",
 }
 
 _GLOSSARY = [
@@ -144,7 +217,7 @@ def _humanise_detail(detail: str) -> str:
             result.append("Simulated")
         elif part:
             result.append(part)
-    return " &nbsp;·&nbsp; ".join(result)
+    return " · ".join(result)
 
 
 def _build_trade_cards(record: dict) -> str:
@@ -154,6 +227,7 @@ def _build_trade_cards(record: dict) -> str:
         all_trades.append(
             {
                 "symbol": sl["symbol"],
+                "company": _TICKER_NAMES.get(sl["symbol"], ""),
                 "action": "STOP LOSS",
                 "detail": _humanise_detail(f"Closed at {sl['pl_pct']:.1f}%"),
                 "reasoning": "Position hit the trailing stop and was automatically closed to protect capital.",
@@ -170,6 +244,11 @@ def _build_trade_cards(record: dict) -> str:
             if b["symbol"] == t["symbol"]:
                 reasoning = b.get("summary") or b.get("reasoning", "")
                 break
+        if not reasoning:
+            for d in record.get("decisions", []):
+                if d["symbol"] == t["symbol"] and d.get("decision_type", "").upper() == "BUY":
+                    reasoning = d.get("summary") or d.get("reasoning", "")
+                    break
         for d in record.get("position_decisions", []):
             if d["symbol"] == t["symbol"] and action == "SELL":
                 reasoning = d.get("summary") or d.get("reasoning", "")
@@ -180,11 +259,20 @@ def _build_trade_cards(record: dict) -> str:
         else:
             bg, badge_bg, reasoning_bg = "#fff5f5", "#c62828", "#fffafa"
 
+        detail_str = _humanise_detail(t.get("detail", ""))
+        raw_signal = next(
+            (p.strip() for p in t.get("detail", "").split("|") if p.strip() in _SIGNAL_LABELS),
+            None,
+        )
+        if not reasoning and raw_signal:
+            reasoning = _SIGNAL_LABELS[raw_signal]
+
         all_trades.append(
             {
                 "symbol": t["symbol"],
+                "company": _TICKER_NAMES.get(t["symbol"], ""),
                 "action": action,
-                "detail": _humanise_detail(t.get("detail", "")),
+                "detail": detail_str,
                 "reasoning": reasoning,
                 "bg": bg,
                 "badge_bg": badge_bg,
@@ -203,11 +291,11 @@ def _build_trade_cards(record: dict) -> str:
     for t in all_trades:
         detail_row = ""
         if t["detail"]:
-            safe_detail = escape(t["detail"])
+            # detail comes from _humanise_detail which produces trusted HTML — do not re-escape
             detail_row = f"""
   <tr>
     <td style="padding:6px 16px 14px;background:{t["bg"]};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#777;line-height:1.5">
-      {safe_detail}
+      {t["detail"]}
     </td>
   </tr>"""
 
@@ -218,16 +306,23 @@ def _build_trade_cards(record: dict) -> str:
   <tr>
     <td style="padding:12px 16px 14px;background:{t["reasoning_bg"]};border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">
       <p style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin:0 0 4px 0">Why</p>
-      <p style="font-size:13px;color:#666;line-height:1.6;margin:0">{safe_reasoning}</p>
+      <p style="font-size:13px;color:#444;line-height:1.6;margin:0">{safe_reasoning}</p>
     </td>
   </tr>"""
 
         safe_symbol = escape(t["symbol"])
         safe_action = escape(t["action"])
+        company = t.get("company", "")
+        company_html = (
+            f'<span style="margin-left:8px;font-size:14px;font-weight:normal;color:#555;font-family:Arial,Helvetica,sans-serif">{escape(company)}</span>'
+            if company
+            else ""
+        )
         cards += f"""<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
   <tr>
     <td style="background:{t["bg"]};padding:14px 16px 0">
       <span style="font-size:18px;font-weight:bold;color:#111;font-family:Arial,Helvetica,sans-serif">{safe_symbol}</span>
+      {company_html}
       <span style="margin-left:8px;background:{t["badge_bg"]};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{safe_action}</span>
     </td>
   </tr>

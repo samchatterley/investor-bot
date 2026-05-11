@@ -295,6 +295,7 @@ def get_day_summary(today: str) -> dict | None:
     all_stops = [s for r in today_records for s in r.get("stop_losses_triggered", [])]
     buy_candidates = [b for r in today_records for b in r.get("buy_candidates", [])]
     position_decisions = [d for r in today_records for d in r.get("position_decisions", [])]
+    decisions = [d for r in today_records for d in r.get("decisions", [])]
 
     # Use the open run's market summary — it has the full AI analysis
     market_summary = next(
@@ -310,6 +311,7 @@ def get_day_summary(today: str) -> dict | None:
         "account_before": account_before,
         "account_after": account_after,
         "market_summary": market_summary,
+        "decisions": decisions,
         "buy_candidates": buy_candidates,
         "position_decisions": position_decisions,
         "trades_executed": all_trades,
