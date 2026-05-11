@@ -450,6 +450,112 @@ def _compute_regimes(
     return regimes
 
 
+def _binomial_p_value(wins: int, n: int, p0: float = 0.5) -> float:
+    """One-sided p-value: P(X >= wins) under H0: win_rate = p0 (Binomial exact test).
+
+    Uses the regularised incomplete beta function via the relation
+    P(X >= k | n, p) = I_p(k, n-k+1), computed with the log-beta recurrence.
+    Returns 1.0 for degenerate inputs (n=0 or wins=0).
+    """
+    if n <= 0 or wins <= 0:
+        return 1.0
+    if wins > n:
+        return 0.0
+
+    # P(X >= wins) = sum_{k=wins}^{n} C(n,k) * p0^k * (1-p0)^(n-k)
+    # Compute in log-space to avoid overflow, then sum probabilities.
+    log_p0 = math.log(p0)
+    log_q0 = math.log(1 - p0)
+    total = 0.0
+    for k in range(wins, n + 1):
+        lc = math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+        total += math.exp(lc + k * log_p0 + (n - k) * log_q0)
+    return min(1.0, total)
+
+
+def _holm_bonferroni(
+    p_values: dict[tuple, float],
+    alpha: float = 0.05,
+) -> set[tuple]:
+    """Holm-Bonferroni correction across a family of hypothesis tests.
+
+    Parameters
+    ----------
+    p_values : dict[tuple, float]
+        {cell_key: p_value} for every regime×signal cell tested.
+    alpha : float
+        Family-wise error rate (default 0.05).
+
+    Returns
+    -------
+    set[tuple]
+        Cell keys that FAIL to reject H0 after correction — i.e. cells whose
+        win rate is NOT significantly above chance.  Callers use this to build
+        the blocked-signal set.
+    """
+    if not p_values:
+        return set()
+    m = len(p_values)
+    sorted_cells = sorted(p_values.items(), key=lambda x: x[1])
+    failed: set[tuple] = set()
+    for i, (_cell, p) in enumerate(sorted_cells):
+        threshold = alpha / (m - i)
+        if p > threshold:
+            # Once a test fails, all remaining (larger p-values) also fail
+            failed.update(c for c, _ in sorted_cells[i:])
+            break
+    return failed
+
+
+def compute_regime_blocked(
+    regime_stats: dict[str, dict[str, dict]],
+    min_trades: int = 20,
+    alpha: float = 0.05,
+    null_win_rate: float = 0.5,
+) -> dict[str, set[str]]:
+    """Derive data-driven signal-blocking rules from regime_stats.
+
+    For each regime×signal cell with >= min_trades, run a one-sided binomial
+    test (H0: win_rate <= null_win_rate).  Apply Holm-Bonferroni correction
+    across all cells.  Cells that fail to reject H0 (win rate not
+    significantly above chance) are candidates for blocking.
+
+    Parameters
+    ----------
+    regime_stats : dict
+        Output of run_signal_analysis()["regime_stats"]:
+        {signal: {regime: {wins, losses, total_return}}}.
+    min_trades : int
+        Minimum trades in a cell to include in the test (default 20).
+    alpha : float
+        Family-wise error rate (default 0.05).
+    null_win_rate : float
+        Null hypothesis win rate (default 0.5 = coin flip).
+
+    Returns
+    -------
+    dict[str, set[str]]
+        {regime: {signals_to_block}} — signals whose win rate in that regime
+        is NOT statistically distinguishable from chance after correction.
+        Only includes cells that had enough trades to test.
+    """
+    p_values: dict[tuple, float] = {}
+    for sig, reg_dict in regime_stats.items():
+        for reg, cell in reg_dict.items():
+            n = cell["wins"] + cell["losses"]
+            if n < min_trades:
+                continue
+            p = _binomial_p_value(cell["wins"], n, p0=null_win_rate)
+            p_values[(sig, reg)] = p
+
+    failed_cells = _holm_bonferroni(p_values, alpha=alpha)
+
+    blocked: dict[str, set[str]] = {}
+    for sig, reg in failed_cells:
+        blocked.setdefault(reg, set()).add(sig)
+    return blocked
+
+
 def _bootstrap_cell_ci(
     outcomes: list[float],
     n_boot: int = 2000,
@@ -1845,9 +1951,17 @@ def run_signal_analysis(
         else:
             decay_stats[sig][dh]["losses"] += 1
 
-    out = {"baseline": results, "regime_stats": regime_stats, "decay_stats": decay_stats}
+    regime_blocked = compute_regime_blocked(regime_stats)
+
+    out = {
+        "baseline": results,
+        "regime_stats": regime_stats,
+        "decay_stats": decay_stats,
+        "regime_blocked": {reg: sorted(sigs) for reg, sigs in regime_blocked.items()},
+    }
     _print_regime_table(out, start_date, end_date)
     _print_hold_period_table(out, start_date, end_date)
+    _print_regime_blocked(regime_blocked, start_date, end_date)
     return out
 
 
@@ -1924,6 +2038,26 @@ def _print_hold_period_table(r: dict, start_date: str, end_date: str) -> None:
             avg = dh["total_return"] / n if n else 0
             flag = "  ← decays" if avg < -0.1 else ""
             print(f"    Day {d}:  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{flag}")
+    print("\n" + "=" * 68 + "\n")
+
+
+def _print_regime_blocked(
+    regime_blocked: dict[str, set[str]], start_date: str, end_date: str
+) -> None:
+    """Print data-driven signal-blocking recommendations after Holm-Bonferroni correction."""
+    print("\n" + "=" * 68)
+    print(f"  DATA-DRIVEN REGIME BLOCKS  {start_date} → {end_date}")
+    print("=" * 68)
+    print("  Signals whose win rate is indistinguishable from chance (p > 0.05,")
+    print("  Holm-Bonferroni corrected, n >= 20 trades).  Treat as hypotheses.")
+    if not regime_blocked:
+        print("\n  No cells failed the win-rate test — no automatic blocks recommended.")
+    else:
+        for reg in sorted(regime_blocked):
+            sigs = sorted(regime_blocked[reg])
+            print(f"\n  {reg}:")
+            for sig in sigs:
+                print(f"    - {sig}")
     print("\n" + "=" * 68 + "\n")
 
 

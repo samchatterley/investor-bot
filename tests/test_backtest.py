@@ -17,19 +17,23 @@ from backtest.engine import (
     _DEFAULT_PARAMS,
     _SIGNAL_PRIORITY,
     _assert_pre_holdout,
+    _binomial_p_value,
     _bootstrap_cell_ci,
     _compute_indicators,
     _compute_intraday_day,
     _entry_signal,
+    _holm_bonferroni,
     _liquidity_spread_bps,
     _market_impact_bps,
     _print_ablation_results,
     _print_backward_elimination_results,
     _print_hold_period_table,
+    _print_regime_blocked,
     _print_regime_table,
     _print_results,
     _run_simulation,
     _save_results,
+    compute_regime_blocked,
     run_ablation,
     run_backtest,
     run_backward_elimination,
@@ -2735,3 +2739,150 @@ class TestBacktestDefaultStart(unittest.TestCase):
             for reg, cell in reg_dict.items():
                 self.assertIn("win_rate_ci_low", cell, f"Missing CI in {sig}/{reg}")
                 self.assertIn("win_rate_ci_high", cell)
+
+
+class TestBinomialPValue(unittest.TestCase):
+    """_binomial_p_value: exact one-sided binomial test."""
+
+    def test_all_wins_small_p(self):
+        p = _binomial_p_value(10, 10, p0=0.5)
+        self.assertAlmostEqual(p, 1 / 1024, places=8)
+
+    def test_half_wins_near_one(self):
+        p = _binomial_p_value(5, 10, p0=0.5)
+        self.assertGreater(p, 0.5)
+        self.assertLessEqual(p, 1.0)
+
+    def test_zero_wins_returns_one(self):
+        self.assertEqual(_binomial_p_value(0, 10), 1.0)
+
+    def test_zero_n_returns_one(self):
+        self.assertEqual(_binomial_p_value(5, 0), 1.0)
+
+    def test_p_bounded(self):
+        for wins, n in [(1, 1), (3, 5), (18, 20), (100, 100)]:
+            p = _binomial_p_value(wins, n)
+            self.assertGreaterEqual(p, 0.0)
+            self.assertLessEqual(p, 1.0)
+
+
+class TestHolmBonferroni(unittest.TestCase):
+    """_holm_bonferroni: family-wise error control."""
+
+    def test_empty_input(self):
+        self.assertEqual(_holm_bonferroni({}), set())
+
+    def test_all_significant(self):
+        # p=0.001 for each of 3 cells → all reject H0 → none in failed set
+        p_vals = {("s1", "bull"): 0.001, ("s2", "bear"): 0.001, ("s3", "bull"): 0.001}
+        failed = _holm_bonferroni(p_vals, alpha=0.05)
+        self.assertEqual(failed, set())
+
+    def test_none_significant(self):
+        # All p=0.9 → all fail to reject → all in failed set
+        p_vals = {("s1", "bull"): 0.9, ("s2", "bear"): 0.9}
+        failed = _holm_bonferroni(p_vals, alpha=0.05)
+        self.assertEqual(failed, {("s1", "bull"), ("s2", "bear")})
+
+    def test_partial_significance(self):
+        # First cell p=0.001 passes; second p=0.9 fails
+        p_vals = {("s1", "bull"): 0.001, ("s2", "bear"): 0.9}
+        failed = _holm_bonferroni(p_vals, alpha=0.05)
+        self.assertIn(("s2", "bear"), failed)
+        self.assertNotIn(("s1", "bull"), failed)
+
+    def test_returns_set_of_tuples(self):
+        p_vals = {("mean_reversion", "bear"): 0.8}
+        result = _holm_bonferroni(p_vals)
+        self.assertIsInstance(result, set)
+        for item in result:
+            self.assertIsInstance(item, tuple)
+
+
+class TestComputeRegimeBlocked(unittest.TestCase):
+    """compute_regime_blocked: data-driven blocking from regime_stats."""
+
+    def _make_stats(self, sig: str, reg: str, wins: int, losses: int) -> dict:
+        return {sig: {reg: {"wins": wins, "losses": losses, "total_return": 0.0}}}
+
+    def test_empty_stats_returns_empty(self):
+        self.assertEqual(compute_regime_blocked({}), {})
+
+    def test_low_n_cell_excluded(self):
+        # n=5 < min_trades=20 → not tested → not blocked
+        stats = self._make_stats("momentum", "bull", wins=3, losses=2)
+        result = compute_regime_blocked(stats, min_trades=20)
+        self.assertEqual(result, {})
+
+    def test_high_win_rate_not_blocked(self):
+        # 19/20 wins → p very small → not in failed set
+        stats = self._make_stats("momentum", "bull", wins=19, losses=1)
+        result = compute_regime_blocked(stats, min_trades=20)
+        self.assertNotIn("bull", result)
+
+    def test_coin_flip_blocked(self):
+        # 10/20 wins → indistinguishable from chance → blocked
+        stats = self._make_stats("momentum", "bear", wins=10, losses=10)
+        result = compute_regime_blocked(stats, min_trades=20)
+        self.assertIn("bear", result)
+        self.assertIn("momentum", result["bear"])
+
+    def test_output_is_dict_of_sets(self):
+        stats = self._make_stats("mean_reversion", "sideways", wins=10, losses=10)
+        result = compute_regime_blocked(stats, min_trades=20)
+        for _reg, sigs in result.items():
+            self.assertIsInstance(sigs, set)
+
+    def test_regime_blocked_key_in_run_signal_analysis(self):
+        """run_signal_analysis output includes regime_blocked key."""
+        with (
+            patch("backtest.engine.yf.download") as mock_dl,
+            patch("backtest.engine._fetch_intraday_bars", return_value={}),
+        ):
+            raw = _make_raw(300, symbols=("AAPL",))
+            mock_dl.return_value = raw
+            result = run_signal_analysis(
+                ["AAPL"],
+                start_date="2025-01-01",
+                end_date="2025-06-30",
+                initial_capital=50_000,
+                max_positions=3,
+            )
+        self.assertIn("regime_blocked", result)
+        rb = result["regime_blocked"]
+        self.assertIsInstance(rb, dict)
+        for _reg, sigs in rb.items():
+            self.assertIsInstance(sigs, list)
+
+
+class TestPrintRegimeBlocked(unittest.TestCase):
+    """_print_regime_blocked: smoke test — must not raise."""
+
+    def test_empty_blocked(self):
+        import io
+        import sys
+
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_regime_blocked({}, "2025-01-01", "2025-12-31")
+        finally:
+            sys.stdout = old
+        self.assertIn("No cells failed", buf.getvalue())
+
+    def test_with_blocked_signals(self):
+        import io
+        import sys
+
+        blocked = {"bear": {"momentum", "macd_crossover"}, "sideways": {"gap_and_go"}}
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_regime_blocked(blocked, "2025-01-01", "2025-12-31")
+        finally:
+            sys.stdout = old
+        output = buf.getvalue()
+        self.assertIn("bear", output)
+        self.assertIn("momentum", output)
