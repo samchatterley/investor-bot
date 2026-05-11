@@ -498,6 +498,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         snap = self._make_snap("AAPL")
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
             patch("data.market_data.summarise_for_ai", return_value=snap),
             patch("data.market_data.get_spy_5d_return", return_value=1.0),
@@ -511,6 +512,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
         from data.market_data import get_market_snapshots
 
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=None),
             patch("data.market_data.get_spy_5d_return", return_value=None),
             patch("data.market_data.get_spy_10d_return", return_value=None),
@@ -523,6 +525,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         snap = self._make_snap("AAPL")
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
             patch("data.market_data.summarise_for_ai", return_value=snap),
             patch("data.market_data.get_spy_5d_return", return_value=1.5),
@@ -537,6 +540,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         snap = self._make_snap("AAPL")
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
             patch("data.market_data.summarise_for_ai", return_value=snap),
             patch("data.market_data.get_spy_5d_return", return_value=None),
@@ -550,6 +554,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         snap = self._make_snap("AAPL")
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
             patch("data.market_data.summarise_for_ai", return_value=snap),
             patch("data.market_data.get_spy_5d_return", return_value=1.0),
@@ -564,6 +569,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         snap = self._make_snap("AAPL")
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
             patch("data.market_data.summarise_for_ai", return_value=snap),
             patch("data.market_data.get_spy_5d_return", return_value=None),
@@ -576,11 +582,67 @@ class TestGetMarketSnapshots(unittest.TestCase):
         from data.market_data import get_market_snapshots
 
         with (
+            patch("data.market_data._bulk_download", return_value={}),
             patch("data.market_data.get_spy_5d_return", return_value=None),
             patch("data.market_data.get_spy_10d_return", return_value=None),
         ):
             result = get_market_snapshots([])
         self.assertEqual(result, [])
+
+
+class TestBulkDownload(unittest.TestCase):
+    """_bulk_download: single API call returns per-symbol DataFrames."""
+
+    def _make_multi_df(self, symbols: list[str], periods: int = 10) -> pd.DataFrame:
+        idx = pd.bdate_range("2025-01-01", periods=periods)
+        data = {
+            (field, sym): [float(i) for i in range(periods)]
+            for field in ("Open", "Close", "Volume")
+            for sym in symbols
+        }
+        return pd.DataFrame(data, index=idx)
+
+    def test_returns_empty_on_download_exception(self):
+        from data.market_data import _bulk_download
+
+        with patch("data.market_data.yf.download", side_effect=Exception("network error")):
+            result = _bulk_download(["AAPL"], 200)
+        self.assertEqual(result, {})
+
+    def test_returns_empty_on_empty_raw(self):
+        from data.market_data import _bulk_download
+
+        with patch("data.market_data.yf.download", return_value=pd.DataFrame()):
+            result = _bulk_download(["AAPL"], 200)
+        self.assertEqual(result, {})
+
+    def test_multi_symbol_splits_by_ticker(self):
+        from data.market_data import _bulk_download
+
+        raw = self._make_multi_df(["AAPL", "NVDA"])
+        with patch("data.market_data.yf.download", return_value=raw):
+            result = _bulk_download(["AAPL", "NVDA"], 200)
+        self.assertIn("AAPL", result)
+        self.assertIn("NVDA", result)
+        self.assertIsInstance(result["AAPL"], pd.DataFrame)
+
+    def test_single_symbol_flat_columns(self):
+        from data.market_data import _bulk_download
+
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        raw = pd.DataFrame({"Open": [1.0] * 5, "Close": [2.0] * 5}, index=idx)
+        with patch("data.market_data.yf.download", return_value=raw):
+            result = _bulk_download(["AAPL"], 200)
+        self.assertIn("AAPL", result)
+
+    def test_missing_symbol_excluded(self):
+        from data.market_data import _bulk_download
+
+        raw = self._make_multi_df(["AAPL"])
+        with patch("data.market_data.yf.download", return_value=raw):
+            result = _bulk_download(["AAPL", "MISSING"], 200)
+        self.assertIn("AAPL", result)
+        self.assertNotIn("MISSING", result)
 
 
 class TestSpyReturnFromPreloadedException(unittest.TestCase):

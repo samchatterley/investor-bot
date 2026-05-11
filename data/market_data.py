@@ -254,6 +254,45 @@ def _spy_return_from_preloaded(preloaded: dict, as_of: str, lookback: int) -> fl
         return None
 
 
+def _bulk_download(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFrame]:
+    """Download OHLCV for all symbols in a single yf.download() call.
+
+    Using one session for all symbols avoids the per-symbol crumb/session churn
+    that triggers Yahoo Finance 401 errors under concurrent load.
+    """
+    end = datetime.now()
+    start = (end - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+    try:
+        raw = yf.download(
+            tickers=symbols,
+            start=start,
+            end=end_str,
+            auto_adjust=True,
+            threads=False,
+            progress=False,
+        )
+    except Exception as e:
+        logger.warning(f"Bulk yfinance download failed, falling back to per-symbol: {e}")
+        return {}
+    if raw is None or raw.empty:
+        return {}
+    result: dict[str, pd.DataFrame] = {}
+    if isinstance(raw.columns, pd.MultiIndex):
+        available = raw.columns.get_level_values(1).unique()
+        for sym in symbols:
+            if sym in available:
+                try:
+                    sym_df = raw.xs(sym, level=1, axis=1).dropna(how="all").copy()
+                    if not sym_df.empty:
+                        result[sym] = sym_df
+                except KeyError:
+                    pass
+    elif len(symbols) == 1:
+        result[symbols[0]] = raw.dropna(how="all").copy()
+    return result
+
+
 def get_market_snapshots(
     symbols: list[str],
     days: int = 30,
@@ -261,18 +300,30 @@ def get_market_snapshots(
     as_of: str | None = None,
 ) -> list[dict]:
     """Fetch and summarise data for all symbols in parallel."""
+    live_bulk: dict[str, pd.DataFrame] | None = None
     if preloaded is not None and as_of is not None:
         spy_5d = _spy_return_from_preloaded(preloaded, as_of, 5)
         spy_10d = _spy_return_from_preloaded(preloaded, as_of, 10)
     else:
         spy_5d = get_spy_5d_return()
         spy_10d = get_spy_10d_return()
+        # Single bulk download replaces 75+ parallel Ticker.history() calls
+        fetch_days = max(days + 150, 200)
+        live_bulk = _bulk_download(symbols, fetch_days)
+        if live_bulk:
+            logger.info(f"Bulk download: {len(live_bulk)}/{len(symbols)} symbols fetched")
+        else:
+            logger.warning("Bulk download returned no data — per-symbol fallback active")
 
     def _fetch_one(sym: str):
-        df = fetch_stock_data(sym, days, preloaded=preloaded, as_of=as_of)
+        # Backtest replay uses preloaded; live runs use bulk cache (fallback: per-symbol fetch)
+        data_src = preloaded if preloaded is not None else live_bulk
+        df = fetch_stock_data(sym, days, preloaded=data_src, as_of=as_of)
         if df is None:
             return None
-        snap = summarise_for_ai(sym, df, is_preloaded=(preloaded is not None))
+        # is_preloaded=True only for backtest replay (preloaded + as_of both provided)
+        is_hist = preloaded is not None and as_of is not None
+        snap = summarise_for_ai(sym, df, is_preloaded=is_hist)
         if spy_5d is not None:
             snap["rel_strength_5d"] = round(snap["ret_5d_pct"] - spy_5d, 2)
         if spy_10d is not None:
@@ -289,7 +340,7 @@ def get_market_snapshots(
         return snap
 
     snapshots = []
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         for snap in executor.map(_fetch_one, symbols):
             if snap is not None:
                 snapshots.append(snap)

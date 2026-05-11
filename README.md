@@ -803,6 +803,15 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.36 — May 2026 — bulk yfinance download to eliminate 401 errors
+
+- **`_bulk_download()` in `data/market_data.py`.** Replaces 75+ parallel `Ticker.history()` calls with a single `yf.download(threads=False)` call. One session → one crumb handshake → Yahoo never sees the burst that triggers "Invalid Crumb" / 401 responses. Per-symbol indicator computation (RSI, MACD, EMAs, ADX, etc.) remains unchanged; the function just changes how raw OHLCV is acquired.
+- **`get_market_snapshots` live path updated.** Calls `_bulk_download` first; passes the resulting per-symbol DataFrames through the existing `preloaded` path so no indicator logic changes. Any symbol absent from the bulk result falls through to an individual `Ticker.history()` fetch as a safety net. `is_preloaded` flag preserved: only `True` for backtest replay (when both `preloaded` and `as_of` are supplied), so `data_source` reports `"live"` for live runs.
+- **`ThreadPoolExecutor` workers reduced 12 → 8** for the `.info` fundamentals phase (the remaining per-symbol calls).
+- **5 new tests** (`TestBulkDownload`): exception fallback, empty result, multi-symbol MultiIndex split, single-symbol flat-column case, missing symbol excluded; 1818 passing.
+
+---
+
 ### 1.35 — May 2026 — unified decision→execution audit trail + urllib3 CVE fix
 
 - **Enriched `trades_executed` entries.** Every BUY/SELL/WOULD_BUY/WOULD_SELL entry in `trades_executed` now carries `decision_type`, `confidence`, `key_signal`, and `reasoning` pulled from the corresponding AI decision. Rule-based exits (earnings, stale, partial) carry `decision_type: "rule_based"` with no confidence fields. Previously `trades_executed` only had `{symbol, action, detail}`, making it impossible to trace back to the AI decision without joining two separate lists.
