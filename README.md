@@ -803,6 +803,16 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.37 — May 2026 — FMP fundamentals and analyst consensus
+
+- **`data/fundamentals.py` (new).** Fetches financial ratios (ROE, profit margin, D/E, current ratio) via FMP `/v3/ratios-ttm/{symbol}` and analyst consensus (bullish %, bearish %, analyst count, price target) via `/v3/analyst-stock-recommendations/` + `/v3/price-target-consensus/`. Both use a 24-hour JSON cache so the initial fill costs ~150 FMP calls and subsequent runs cost nothing. Falls back to empty gracefully when `FMP_API_KEY` is unset.
+- **`data/sentiment.py` restored.** Now delegates to `get_analyst_consensus()` from `data/fundamentals.py` — same interface as before, real data again.
+- **`data/market_data.py` updated.** `get_market_snapshots` calls `get_fundamentals(symbols)` once before the executor and merges the result into each snapshot via `snap.update()`. Backtest replay (preloaded+as_of) skips the FMP call as before.
+- **`FMP_API_KEY` added to `config.py` and `.env.example`** — free tier (250 req/day) is sufficient; sign up at financialmodelingprep.com.
+- **34 new tests** (`TestFetchRatios` ×5, `TestFetchAnalyst` ×9, `TestGetFundamentals` ×6, `TestGetAnalystConsensus` ×5, `TestGetSentimentDelegates` ×2, `TestGetSentiment` updated ×3, `TestSentimentAnalystConversion` updated ×2); **1842 passing**, 94% coverage.
+
+---
+
 ### 1.36 — May 2026 — bulk yfinance download to eliminate 401 errors
 
 - **`_bulk_download()` in `data/market_data.py`.** Replaces 75+ parallel `Ticker.history()` calls with a single `yf.download(threads=False)` call. One session → one crumb handshake → Yahoo never sees the burst that triggers "Invalid Crumb" / 401 responses. Per-symbol indicator computation (RSI, MACD, EMAs, ADX, etc.) remains unchanged; the function just changes how raw OHLCV is acquired. OHLCV now succeeds 73/73 symbols.

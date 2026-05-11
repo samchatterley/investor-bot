@@ -132,22 +132,26 @@ class TestFetchNews(unittest.TestCase):
 
 
 class TestGetSentiment(unittest.TestCase):
-    """get_sentiment is a stub — Yahoo Finance quoteSummary is now restricted.
-    All calls return {} immediately without making any HTTP requests."""
+    """get_sentiment delegates to get_analyst_consensus (FMP-backed)."""
 
-    def test_returns_empty_dict_for_any_symbols(self):
+    def test_returns_fmp_analyst_data(self):
         from data.sentiment import get_sentiment
 
-        result = get_sentiment(["AAPL", "NVDA", "MSFT"])
+        expected = {"AAPL": {"bullish_pct": 70, "bearish_pct": 10, "analyst_count": 20}}
+        with patch("data.sentiment.get_analyst_consensus", return_value=expected):
+            result = get_sentiment(["AAPL"])
+        self.assertEqual(result, expected)
+
+    def test_returns_empty_when_no_key(self):
+        from data.sentiment import get_sentiment
+
+        with patch("data.sentiment.get_analyst_consensus", return_value={}):
+            result = get_sentiment(["AAPL"])
         self.assertEqual(result, {})
 
-    def test_returns_empty_dict_for_no_symbols(self):
+    def test_passes_symbols_through(self):
         from data.sentiment import get_sentiment
 
-        result = get_sentiment([])
-        self.assertEqual(result, {})
-
-    def test_returns_dict_type(self):
-        from data.sentiment import get_sentiment
-
-        self.assertIsInstance(get_sentiment(["AAPL"]), dict)
+        with patch("data.sentiment.get_analyst_consensus", return_value={}) as mock:
+            get_sentiment(["AAPL", "NVDA"])
+        mock.assert_called_once_with(["AAPL", "NVDA"])

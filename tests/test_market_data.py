@@ -499,6 +499,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
         snap = self._make_snap("AAPL")
         with (
             patch("data.market_data._bulk_download", return_value={}),
+            patch("data.market_data.get_fundamentals", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
             patch("data.market_data.summarise_for_ai", return_value=snap),
             patch("data.market_data.get_spy_5d_return", return_value=1.0),
@@ -513,6 +514,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         with (
             patch("data.market_data._bulk_download", return_value={}),
+            patch("data.market_data.get_fundamentals", return_value={}),
             patch("data.market_data.fetch_stock_data", return_value=None),
             patch("data.market_data.get_spy_5d_return", return_value=None),
             patch("data.market_data.get_spy_10d_return", return_value=None),
@@ -583,6 +585,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
 
         with (
             patch("data.market_data._bulk_download", return_value={}),
+            patch("data.market_data.get_fundamentals", return_value={}),
             patch("data.market_data.get_spy_5d_return", return_value=None),
             patch("data.market_data.get_spy_10d_return", return_value=None),
         ):

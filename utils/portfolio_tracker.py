@@ -188,6 +188,8 @@ _NON_RUN_FILES = {
     "daily_baseline.json",
     "backtest_results.json",
     "runtime_config.json",
+    "fmp_fundamentals_cache.json",
+    "fmp_analyst_cache.json",
 }
 
 

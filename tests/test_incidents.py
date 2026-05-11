@@ -115,18 +115,21 @@ class TestNewsFetcherTitleFallback(unittest.TestCase):
 
 
 class TestSentimentAnalystConversion(unittest.TestCase):
-    """get_sentiment is a stub while Yahoo Finance quoteSummary is restricted."""
+    """get_sentiment delegates to FMP analyst consensus."""
 
-    def test_get_sentiment_returns_empty(self):
+    def test_get_sentiment_delegates_to_fmp(self):
         from data.sentiment import get_sentiment
 
-        result = get_sentiment(["AAPL", "NVDA"])
-        self.assertEqual(result, {})
+        expected = {"AAPL": {"bullish_pct": 75, "bearish_pct": 5, "analyst_count": 30}}
+        with patch("data.sentiment.get_analyst_consensus", return_value=expected):
+            result = get_sentiment(["AAPL"])
+        self.assertEqual(result, expected)
 
     def test_get_sentiment_empty_symbols(self):
         from data.sentiment import get_sentiment
 
-        result = get_sentiment([])
+        with patch("data.sentiment.get_analyst_consensus", return_value={}):
+            result = get_sentiment([])
         self.assertEqual(result, {})
 
 

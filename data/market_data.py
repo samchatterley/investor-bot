@@ -13,6 +13,7 @@ from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+from data.fundamentals import get_fundamentals
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,7 @@ def get_market_snapshots(
 ) -> list[dict]:
     """Fetch and summarise data for all symbols in parallel."""
     live_bulk: dict[str, pd.DataFrame] | None = None
+    fundamentals: dict[str, dict] = {}
     if preloaded is not None and as_of is not None:
         spy_5d = _spy_return_from_preloaded(preloaded, as_of, 5)
         spy_10d = _spy_return_from_preloaded(preloaded, as_of, 10)
@@ -314,6 +316,8 @@ def get_market_snapshots(
             logger.info(f"Bulk download: {len(live_bulk)}/{len(symbols)} symbols fetched")
         else:
             logger.warning("Bulk download returned no data — per-symbol fallback active")
+        # Fundamentals from FMP — cached 24h, negligible cost after first fill
+        fundamentals = get_fundamentals(symbols)
 
     def _fetch_one(sym: str):
         # Backtest replay uses preloaded; live runs use bulk cache (fallback: per-symbol fetch)
@@ -328,6 +332,8 @@ def get_market_snapshots(
             snap["rel_strength_5d"] = round(snap["ret_5d_pct"] - spy_5d, 2)
         if spy_10d is not None:
             snap["rel_strength_10d"] = round(snap["ret_10d_pct"] - spy_10d, 2)
+        if sym in fundamentals:
+            snap.update(fundamentals[sym])
         return snap
 
     snapshots = []
