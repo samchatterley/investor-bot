@@ -17,6 +17,7 @@ from backtest.engine import (
     _DEFAULT_PARAMS,
     _SIGNAL_PRIORITY,
     _assert_pre_holdout,
+    _bootstrap_cell_ci,
     _compute_indicators,
     _compute_intraday_day,
     _entry_signal,
@@ -36,7 +37,7 @@ from backtest.engine import (
     run_signal_analysis,
     run_walk_forward_optimized,
 )
-from config import HOLDOUT_START_DATE
+from config import BACKTEST_DEFAULT_START, HOLDOUT_START_DATE
 
 _ET = ZoneInfo("America/New_York")
 _Bar = namedtuple("_Bar", ["open", "high", "low", "close", "volume"])
@@ -2662,3 +2663,75 @@ class TestGapThroughStop(unittest.TestCase):
             manual.loc[last_idx].reset_index(drop=True),
             check_names=False,
         )
+
+
+class TestBootstrapCellCi(unittest.TestCase):
+    """_bootstrap_cell_ci: block-bootstrap 95% CI on win rate."""
+
+    def test_too_few_samples_returns_nan(self):
+        import math
+
+        ci = _bootstrap_cell_ci([1.0] * 5)
+        self.assertTrue(all(math.isnan(v) for v in ci))
+
+    def test_exactly_ten_samples_returns_tuple(self):
+        import math
+
+        ci = _bootstrap_cell_ci([1.0, 0.0] * 5)
+        self.assertEqual(len(ci), 2)
+        self.assertFalse(any(math.isnan(v) for v in ci))
+
+    def test_all_wins_ci_near_one(self):
+        ci = _bootstrap_cell_ci([1.0] * 50)
+        self.assertGreater(ci[0], 0.9)
+        self.assertAlmostEqual(ci[1], 1.0, places=3)
+
+    def test_all_losses_ci_near_zero(self):
+        ci = _bootstrap_cell_ci([0.0] * 50)
+        self.assertLess(ci[1], 0.1)
+        self.assertAlmostEqual(ci[0], 0.0, places=3)
+
+    def test_fifty_fifty_ci_straddles_half(self):
+        ci = _bootstrap_cell_ci([1.0, 0.0] * 50)
+        self.assertLess(ci[0], 0.5)
+        self.assertGreater(ci[1], 0.5)
+
+    def test_ci_low_le_ci_high(self):
+        outcomes = [1.0, 0.0, 1.0, 1.0, 0.0] * 20
+        ci = _bootstrap_cell_ci(outcomes)
+        self.assertLessEqual(ci[0], ci[1])
+
+    def test_deterministic_with_same_seed(self):
+        outcomes = [float(i % 3 != 0) for i in range(60)]
+        ci1 = _bootstrap_cell_ci(outcomes, n_boot=500)
+        ci2 = _bootstrap_cell_ci(outcomes, n_boot=500)
+        self.assertEqual(ci1, ci2)
+
+
+class TestBacktestDefaultStart(unittest.TestCase):
+    """BACKTEST_DEFAULT_START constant and regime_stats CI keys."""
+
+    def test_default_start_is_2015(self):
+        self.assertEqual(BACKTEST_DEFAULT_START, "2015-01-01")
+
+    def test_regime_stats_include_ci_keys(self):
+        """run_signal_analysis attaches win_rate_ci_low/high to each cell."""
+        with (
+            patch("backtest.engine.yf.download") as mock_dl,
+            patch("backtest.engine._fetch_intraday_bars", return_value={}),
+        ):
+            raw = _make_raw(300, symbols=("AAPL",))
+            mock_dl.return_value = raw
+            result = run_signal_analysis(
+                ["AAPL"],
+                start_date="2025-01-01",
+                end_date="2025-06-30",
+                initial_capital=50_000,
+                max_positions=3,
+            )
+        if not result or not result.get("regime_stats"):
+            self.skipTest("No regime stats generated (no signals fired)")
+        for sig, reg_dict in result["regime_stats"].items():
+            for reg, cell in reg_dict.items():
+                self.assertIn("win_rate_ci_low", cell, f"Missing CI in {sig}/{reg}")
+                self.assertIn("win_rate_ci_high", cell)

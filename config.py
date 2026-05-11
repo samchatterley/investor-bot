@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 # Call run_holdout_evaluation() only once per strategy version to preserve validity.
 HOLDOUT_START_DATE: date = date(2024, 1, 1)
 
+# Canonical start for full-history backtest runs (2015 includes two full market cycles:
+# 2018 Q4 drawdown, 2020 COVID crash, 2022 bear market).
+BACKTEST_DEFAULT_START: str = "2015-01-01"
+
 load_dotenv()
 
 

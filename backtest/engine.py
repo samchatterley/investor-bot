@@ -42,6 +42,7 @@ from backtest.historical_fundamentals import (
     prefetch_insider_history,
 )
 from config import (
+    BACKTEST_DEFAULT_START,
     HOLDOUT_START_DATE,
     LOG_DIR,
     SLIPPAGE_BPS,
@@ -446,6 +447,44 @@ def _compute_regimes(
         else:
             regimes[date_str] = "CHOPPY"
     return regimes
+
+
+def _bootstrap_cell_ci(
+    outcomes: list[float],
+    n_boot: int = 2000,
+    block_len: int = 5,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Block-bootstrap 95% CI on win rate for a regime×signal cell.
+
+    Preserves serial autocorrelation (momentum, mean-reversion streaks) by
+    resampling non-overlapping blocks of `block_len` trades rather than i.i.d.
+    Returns (ci_low, ci_high) as fractions; returns (nan, nan) if n < 10.
+    """
+    n = len(outcomes)
+    if n < 10:
+        return (float("nan"), float("nan"))
+    rng = None
+    try:
+        import random
+
+        rng = random.Random(42)
+    except Exception:
+        pass
+    arr = list(outcomes)
+    blocks = [arr[i : i + block_len] for i in range(0, n, block_len)]
+    boot_stats: list[float] = []
+    for _ in range(n_boot):
+        if rng is not None:
+            sample_blocks = rng.choices(blocks, k=len(blocks))
+        else:
+            sample_blocks = blocks
+        flat = [x for blk in sample_blocks for x in blk][:n]
+        boot_stats.append(sum(flat) / len(flat))
+    boot_stats.sort()
+    lo_idx = int((alpha / 2) * n_boot)
+    hi_idx = int((1 - alpha / 2) * n_boot) - 1
+    return (round(boot_stats[lo_idx], 4), round(boot_stats[hi_idx], 4))
 
 
 def _liquidity_spread_bps(adv_usd: float) -> float:
@@ -1754,21 +1793,37 @@ def run_signal_analysis(
         and t.get("days_held") is not None
     ]
 
+    # Sort closed trades by date so block-bootstrap preserves temporal order
+    closed_sorted = sorted(closed, key=lambda t: t.get("date", ""))
+
+    # Accumulate per-cell outcomes (1.0=win, 0.0=loss) in date order for bootstrap
+    regime_outcomes: dict[str, dict[str, list[float]]] = {}
     regime_stats: dict[str, dict[str, dict]] = {}
-    for t in closed:
+    for t in closed_sorted:
         sig = t.get("signal", "unknown")
         reg = t["entry_regime"]
         regime_stats.setdefault(sig, {}).setdefault(
             reg, {"wins": 0, "losses": 0, "total_return": 0.0}
         )
+        regime_outcomes.setdefault(sig, {}).setdefault(reg, [])
         regime_stats[sig][reg]["total_return"] += t["pnl_pct"]
         if t["pnl_pct"] > 0:
             regime_stats[sig][reg]["wins"] += 1
+            regime_outcomes[sig][reg].append(1.0)
         else:
             regime_stats[sig][reg]["losses"] += 1
+            regime_outcomes[sig][reg].append(0.0)
+
+    # Attach block-bootstrap 95% CIs to each regime cell
+    for sig, reg_dict in regime_stats.items():
+        for reg, cell in reg_dict.items():
+            outcomes = regime_outcomes.get(sig, {}).get(reg, [])
+            ci_lo, ci_hi = _bootstrap_cell_ci(outcomes)
+            cell["win_rate_ci_low"] = ci_lo
+            cell["win_rate_ci_high"] = ci_hi
 
     decay_stats: dict[str, dict[int, dict]] = {}
-    for t in closed:
+    for t in closed_sorted:
         sig = t.get("signal", "unknown")
         dh = int(t["days_held"])
         decay_stats.setdefault(sig, {}).setdefault(
@@ -1817,8 +1872,15 @@ def _print_regime_table(r: dict, start_date: str, end_date: str) -> None:
             low_n_flag = " *" if n < _LOW_CONFIDENCE_N else ""
             if n < _LOW_CONFIDENCE_N:
                 low_n_found = True
+            ci_lo = d.get("win_rate_ci_low")
+            ci_hi = d.get("win_rate_ci_high")
+            if ci_lo is not None and not math.isnan(ci_lo):
+                assert ci_hi is not None
+                ci_str = f"  CI [{ci_lo * 100:.0f}–{ci_hi * 100:.0f}%]"
+            else:
+                ci_str = ""
             print(
-                f"    {reg:<15}  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{drag_flag}{low_n_flag}"
+                f"    {reg:<15}  WR {wr:>3.0f}%{ci_str}  avg {avg:>+5.1f}%  {n:>3} trades{drag_flag}{low_n_flag}"
             )
     print()
     if low_n_found:
@@ -2026,7 +2088,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     _yesterday = datetime.today() - timedelta(days=1)
     _last_bday = pd.bdate_range(end=_yesterday, periods=1)[0].strftime("%Y-%m-%d")
-    parser.add_argument("--start", default="2025-01-01")
+    parser.add_argument("--start", default=BACKTEST_DEFAULT_START)
     parser.add_argument("--end", default=_last_bday)
     parser.add_argument("--capital", type=float, default=25000.0)
     parser.add_argument(
