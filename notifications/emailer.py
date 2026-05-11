@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import logging
+import os
+import re
 import smtplib
-from datetime import date
+from datetime import UTC, date, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from html import escape
@@ -333,6 +337,121 @@ def _build_trade_cards(record: dict) -> str:
     return cards
 
 
+def _parse_unrealized_pct(reasoning: str) -> float | None:
+    for pattern in [
+        r"([+-]?[\d.]+)%\s+unreali[sz]ed",  # "+4.49% unrealized/unrealised"
+        r"([+-]?[\d.]+)%\s+from entry",  # "+4.5% from entry"
+        r"from entry.*?\(([+-]?[\d.]+)%\)",  # "from entry (-0.097%)"
+        r"up\s+\+?([\d.]+)%",  # "up 4.5%"
+    ]:
+        m = re.search(pattern, reasoning)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+    return None
+
+
+def _build_positions_section(record: dict) -> str:
+    from config import LOG_DIR
+
+    # Use position_decisions from the record; deduplicate by symbol (last close run wins)
+    seen: set[str] = set()
+    held: list[dict] = []
+    for d in reversed(record.get("position_decisions", [])):
+        sym = d.get("symbol", "")
+        if sym and sym not in seen and d.get("action", "").upper() == "HOLD":
+            seen.add(sym)
+            held.append(d)
+    held.reverse()
+
+    if not held:
+        return ""
+
+    meta: dict = {}
+    try:
+        import json
+
+        with open(os.path.join(LOG_DIR, "positions_meta.json")) as f:
+            meta = json.load(f)
+    except (FileNotFoundError, Exception):
+        pass
+
+    rows = ""
+    for d in held:
+        sym = d["symbol"]
+        company = _TICKER_NAMES.get(sym, "")
+        pct = _parse_unrealized_pct(d.get("reasoning", ""))
+        summary = escape(d.get("summary") or "")
+
+        pos_meta = meta.get(sym, {})
+        signal_key = pos_meta.get("signal", "")
+        if not signal_key:
+            # Fall back to buy decision from today's record
+            for dec in record.get("decisions", []):
+                if (
+                    dec.get("symbol") == sym
+                    and dec.get("decision_type") == "buy"
+                    and dec.get("key_signal")
+                ):
+                    signal_key = dec["key_signal"]
+                    break
+        signal_label = (
+            _SIGNAL_LABELS.get(signal_key, signal_key.replace("_", " ").title())
+            if signal_key
+            else ""
+        )
+        entry_date_str = pos_meta.get("entry_date", "")
+        days_held = ""
+        if entry_date_str:
+            try:
+                delta = (datetime.now(UTC).date() - date.fromisoformat(entry_date_str)).days
+                days_held = f"{delta}d"
+            except ValueError:
+                pass
+
+        pct_html = ""
+        if pct is not None:
+            colour = "#2e7d32" if pct >= 0 else "#c62828"
+            sign = "+" if pct >= 0 else ""
+            pct_html = f'<span style="font-weight:bold;color:{colour}">{sign}{pct:.2f}%</span>'
+
+        meta_parts = [x for x in [signal_label, days_held] if x]
+        meta_str = " · ".join(meta_parts)
+
+        safe_sym = escape(sym)
+        safe_company = escape(company)
+        company_html = (
+            f'<span style="font-size:13px;font-weight:normal;color:#555;margin-left:6px">{safe_company}</span>'
+            if company
+            else ""
+        )
+        summary_html = (
+            f'<p style="font-size:12px;color:#666;line-height:1.5;margin:4px 0 0 0">{summary}</p>'
+            if summary
+            else ""
+        )
+
+        rows += f"""<tr style="border-bottom:1px solid #f0f0f0">
+  <td style="padding:12px 16px;font-family:Arial,Helvetica,sans-serif;vertical-align:top">
+    <span style="font-size:15px;font-weight:bold;color:#111">{safe_sym}</span>{company_html}
+    <br>
+    <span style="font-size:11px;color:#aaa">{escape(meta_str)}</span>
+    {summary_html}
+  </td>
+  <td style="padding:12px 16px;font-family:Arial,Helvetica,sans-serif;text-align:right;vertical-align:top;white-space:nowrap">
+    {pct_html}
+  </td>
+</tr>
+"""
+
+    return f"""<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:24px 0 14px 0">Open positions ({len(held)})</p>
+<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:8px">
+{rows}</table>
+"""
+
+
 def _build_html(record: dict, name: str = "there") -> str:
     pnl = record["daily_pnl"]
     pnl_colour = "#2e7d32" if pnl >= 0 else "#c62828"
@@ -359,6 +478,7 @@ def _build_html(record: dict, name: str = "there") -> str:
     mode_colour = "#999999" if IS_PAPER else "#e65100"
 
     trade_cards = _build_trade_cards(record)
+    positions_section = _build_positions_section(record)
 
     glossary_rows = "".join(
         f"<tr>"
@@ -435,6 +555,8 @@ def _build_html(record: dict, name: str = "there") -> str:
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:0 0 14px 0">{trade_line}</p>
 
           {trade_cards}
+
+          {positions_section}
 
           <!-- Glossary -->
           <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:32px;border-top:1px solid #eeeeee">
