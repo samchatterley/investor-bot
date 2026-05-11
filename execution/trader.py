@@ -406,7 +406,7 @@ def close_position(client: TradingClient, symbol: str) -> OrderResult:
         order = client.close_position(symbol)
         order_id = str(order.id)
         logger.info(f"Close submitted: {symbol} | order_id={order_id}")
-        fill_result = wait_for_fill(client, order_id)
+        fill_result = wait_for_fill(client, order_id, max_wait=60)
         if fill_result is not None:
             filled_qty, _ = fill_result
             return OrderResult(
