@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import smtplib
 from datetime import UTC, date, datetime
@@ -80,6 +79,8 @@ _SIGNAL_LABELS = {
     "orb_breakout_down": "Opening range breakdown",
     "breakout_52w": "52-week high breakout",
     "inside_day_breakout": "Inside day breakout",
+    "rs_leader": "Relative strength leader",
+    "intraday_momentum": "Intraday momentum",
     "unknown": "Mixed signals",
 }
 
@@ -354,8 +355,6 @@ def _parse_unrealized_pct(reasoning: str) -> float | None:
 
 
 def _build_positions_section(record: dict) -> str:
-    from config import LOG_DIR
-
     # Use position_decisions from the record; deduplicate by symbol (last close run wins)
     seen: set[str] = set()
     held: list[dict] = []
@@ -371,11 +370,10 @@ def _build_positions_section(record: dict) -> str:
 
     meta: dict = {}
     try:
-        import json
+        from execution.trader import _load_all_positions
 
-        with open(os.path.join(LOG_DIR, "positions_meta.json")) as f:
-            meta = json.load(f)
-    except (FileNotFoundError, Exception):
+        meta = _load_all_positions()
+    except Exception:
         pass
 
     rows = ""
@@ -399,7 +397,7 @@ def _build_positions_section(record: dict) -> str:
                     break
         signal_label = (
             _SIGNAL_LABELS.get(signal_key, signal_key.replace("_", " ").title())
-            if signal_key
+            if signal_key and signal_key != "unknown"
             else ""
         )
         entry_date_str = pos_meta.get("entry_date", "")
