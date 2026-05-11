@@ -199,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1761 tests, 94% coverage)
+├── tests/             Unit test suite (1784 tests, 94% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -802,6 +802,26 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.34 — May 2026 — intraday session-replay engine
+
+- **`backtest/intraday_engine.py` (new).** Rigorous intraday backtester that replays Alpaca 1-min bars bar-by-bar within each session. Strictly more valid than the daily engine's `--use-intraday` overlay: entry fills at the *open of the bar following* the signal bar (no lookahead); VWAP and ORB ranges are computed from bars already seen; stop/target checked bar-by-bar with gap-through handling; hard EOD close at 15:55 ET; same liquidity-scaled spread + market-impact cost model as the daily engine. `run_intraday_backtest()` returns a dict matching the daily `run_backtest()` schema for easy comparison.
+- **`data/intraday_fetcher.py` (new).** Standalone Alpaca 1-min bar fetcher with disk-level pickle cache per (symbol, start, end). Returns `{symbol: {date_str: [(datetime_et, bar)]}}` — raw bars sorted ascending, ready for the session-replay engine. Pass `cache_dir=""` to disable caching in tests.
+- **`backtest/intraday_engine.py` signals:** `orb_breakout` (break of 09:30–10:00 ORB high with volume), `vwap_reclaim` (price reclaims VWAP after touching below it), `intraday_momentum` (>2% from open, above VWAP, RSI < 75). All other signals blocked via `frozenset` passed to canonical `evaluate_signals()`.
+- **29 new tests** (`TestSpreadAndImpact`, `TestRunningVwap`, `TestReplayDay`, `TestRunIntradayBacktest`, `TestIntradayFetcherCacheLogic`); 1784 passing.
+
+---
+
+### 1.33 — May 2026 — multiple testing correction (Holm-Bonferroni)
+
+- **`_binomial_p_value(wins, n, p0=0.5)`.** Exact one-sided binomial test computed in log-space from `stdlib math` only (no scipy dependency). Returns P(X ≥ wins | n, p0).
+- **`_holm_bonferroni(p_values, alpha=0.05)`.** Step-down Holm-Bonferroni correction across all regime×signal cells. Returns the set of cells that fail to reject H0 — i.e. signals whose win rate in that regime is indistinguishable from chance after family-wise correction.
+- **`compute_regime_blocked(regime_stats, min_trades=20)`.** Data-driven `{regime: {signals_to_block}}` derived from regime stats. Cells with n ≥ 20 are binomial-tested; Holm-Bonferroni applied across the full family; cells failing to reject H0 are candidates for blocking. Replaces hard-coded hypothesis blocks.
+- **`_print_regime_blocked`.** Prints blocking recommendations after each `run_signal_analysis` call. Clearly labelled as hypotheses requiring paper-trade confirmation.
+- **`run_signal_analysis` now returns `regime_blocked` key.** `{regime: [sorted_signals_to_block]}`.
+- **28 new tests** (total 1755 before v1.34): `TestBinomialPValue` (5), `TestHolmBonferroni` (5), `TestComputeRegimeBlocked` (6), `TestPrintRegimeBlocked` (2).
+
+---
 
 ### 1.28 — May 2026 — backtest validity warnings + beat-baseline metric + test reliability
 
