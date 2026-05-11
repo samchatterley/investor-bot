@@ -131,149 +131,23 @@ class TestFetchNews(unittest.TestCase):
         self.assertEqual(len(result), 3)
 
 
-class TestFetchAnalystSentiment(unittest.TestCase):
-    def _info(self, mean=2.0, key="buy", analysts=15, target=200.0, current=180.0):
-        return {
-            "recommendationMean": mean,
-            "recommendationKey": key,
-            "numberOfAnalystOpinions": analysts,
-            "targetMeanPrice": target,
-            "currentPrice": current,
-        }
-
-    def test_returns_symbol_and_data(self):
-        from data.sentiment import _fetch_analyst
-
-        with patch("data.sentiment.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = self._info()
-            sym, data = _fetch_analyst("AAPL")
-        self.assertEqual(sym, "AAPL")
-        self.assertIn("bullish_pct", data)
-
-    def test_bullish_pct_range(self):
-        from data.sentiment import _fetch_analyst
-
-        with patch("data.sentiment.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = self._info(mean=1.0)
-            _, data = _fetch_analyst("AAPL")
-        self.assertEqual(data["bullish_pct"] + data["bearish_pct"], 100)
-        self.assertGreaterEqual(data["bullish_pct"], 0)
-        self.assertLessEqual(data["bullish_pct"], 100)
-
-    def test_upside_pct_included_when_target_and_current(self):
-        from data.sentiment import _fetch_analyst
-
-        with patch("data.sentiment.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = self._info(target=200.0, current=180.0)
-            _, data = _fetch_analyst("AAPL")
-        self.assertIn("upside_pct", data)
-        self.assertAlmostEqual(data["upside_pct"], round((200 / 180 - 1) * 100, 1), places=1)
-
-    def test_upside_pct_excluded_when_no_target(self):
-        from data.sentiment import _fetch_analyst
-
-        with patch("data.sentiment.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = self._info(target=None, current=180.0)
-            _, data = _fetch_analyst("AAPL")
-        self.assertNotIn("upside_pct", data)
-
-    def test_returns_empty_when_no_mean(self):
-        from data.sentiment import _fetch_analyst
-
-        info = self._info()
-        info["recommendationMean"] = None
-        with patch("data.sentiment.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = info
-            _, data = _fetch_analyst("AAPL")
-        self.assertEqual(data, {})
-
-    def test_returns_empty_when_no_analysts(self):
-        from data.sentiment import _fetch_analyst
-
-        info = self._info()
-        info["numberOfAnalystOpinions"] = 0
-        with patch("data.sentiment.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = info
-            _, data = _fetch_analyst("AAPL")
-        self.assertEqual(data, {})
-
-    def test_returns_empty_on_exception(self):
-        from data.sentiment import _fetch_analyst
-
-        with patch("data.sentiment.yf.Ticker", side_effect=Exception("network")):
-            sym, data = _fetch_analyst("AAPL")
-        self.assertEqual(sym, "AAPL")
-        self.assertEqual(data, {})
-
-
 class TestGetSentiment(unittest.TestCase):
-    def test_returns_dict(self):
+    """get_sentiment is a stub — Yahoo Finance quoteSummary is now restricted.
+    All calls return {} immediately without making any HTTP requests."""
+
+    def test_returns_empty_dict_for_any_symbols(self):
         from data.sentiment import get_sentiment
 
-        with patch(
-            "data.sentiment._fetch_analyst",
-            return_value=("AAPL", {"bullish_pct": 75, "bearish_pct": 25}),
-        ):
-            result = get_sentiment(["AAPL"])
-        self.assertIsInstance(result, dict)
-
-    def test_symbols_with_data_included(self):
-        from data.sentiment import get_sentiment
-
-        def fake_fetch(sym):
-            return (
-                sym,
-                {
-                    "bullish_pct": 60,
-                    "bearish_pct": 40,
-                    "analyst_count": 10,
-                    "recommendation": "buy",
-                },
-            )
-
-        with patch("data.sentiment._fetch_analyst", side_effect=fake_fetch):
-            result = get_sentiment(["AAPL"])
-        self.assertIn("AAPL", result)
-
-    def test_symbols_with_no_data_excluded(self):
-        from data.sentiment import get_sentiment
-
-        def fake_fetch(sym):
-            return (sym, {})
-
-        with patch("data.sentiment._fetch_analyst", side_effect=fake_fetch):
-            result = get_sentiment(["AAPL", "MSFT"])
+        result = get_sentiment(["AAPL", "NVDA", "MSFT"])
         self.assertEqual(result, {})
 
-    def test_empty_symbols_returns_empty_dict(self):
+    def test_returns_empty_dict_for_no_symbols(self):
         from data.sentiment import get_sentiment
 
         result = get_sentiment([])
         self.assertEqual(result, {})
 
-    def test_partial_data_only_returns_populated(self):
+    def test_returns_dict_type(self):
         from data.sentiment import get_sentiment
 
-        def fake_fetch(sym):
-            if sym == "AAPL":
-                return ("AAPL", {"bullish_pct": 70, "bearish_pct": 30})
-            return (sym, {})
-
-        with patch("data.sentiment._fetch_analyst", side_effect=fake_fetch):
-            result = get_sentiment(["AAPL", "MSFT"])
-        self.assertIn("AAPL", result)
-        self.assertNotIn("MSFT", result)
-
-    def test_future_exception_does_not_block_other_symbols(self):
-        # Lines 59-60: future raises in the futures loop → pass, other symbols succeed
-        from data.sentiment import get_sentiment
-
-        def selective_fetch(sym):
-            if sym == "FAIL":
-                raise RuntimeError("forced failure")
-            return (sym, {"bullish_pct": 60, "bearish_pct": 40})
-
-        with patch("data.sentiment._fetch_analyst", side_effect=selective_fetch):
-            result = get_sentiment(["FAIL", "AAPL"])
-        self.assertNotIn("FAIL", result)
-        self.assertIn("AAPL", result)
+        self.assertIsInstance(get_sentiment(["AAPL"]), dict)

@@ -805,10 +805,11 @@ Additional live-mode safety gates active in all modes:
 
 ### 1.36 — May 2026 — bulk yfinance download to eliminate 401 errors
 
-- **`_bulk_download()` in `data/market_data.py`.** Replaces 75+ parallel `Ticker.history()` calls with a single `yf.download(threads=False)` call. One session → one crumb handshake → Yahoo never sees the burst that triggers "Invalid Crumb" / 401 responses. Per-symbol indicator computation (RSI, MACD, EMAs, ADX, etc.) remains unchanged; the function just changes how raw OHLCV is acquired.
-- **`get_market_snapshots` live path updated.** Calls `_bulk_download` first; passes the resulting per-symbol DataFrames through the existing `preloaded` path so no indicator logic changes. Any symbol absent from the bulk result falls through to an individual `Ticker.history()` fetch as a safety net. `is_preloaded` flag preserved: only `True` for backtest replay (when both `preloaded` and `as_of` are supplied), so `data_source` reports `"live"` for live runs.
-- **`ThreadPoolExecutor` workers reduced 12 → 8** for the `.info` fundamentals phase (the remaining per-symbol calls).
-- **5 new tests** (`TestBulkDownload`): exception fallback, empty result, multi-symbol MultiIndex split, single-symbol flat-column case, missing symbol excluded; 1818 passing.
+- **`_bulk_download()` in `data/market_data.py`.** Replaces 75+ parallel `Ticker.history()` calls with a single `yf.download(threads=False)` call. One session → one crumb handshake → Yahoo never sees the burst that triggers "Invalid Crumb" / 401 responses. Per-symbol indicator computation (RSI, MACD, EMAs, ADX, etc.) remains unchanged; the function just changes how raw OHLCV is acquired. OHLCV now succeeds 73/73 symbols.
+- **Yahoo Finance `quoteSummary` endpoint removed.** The `Ticker.info` property (used for ROE/margins/debt-to-equity and analyst sentiment) now returns 401 "User is unable to access this feature" across all calls — Yahoo Finance has restricted this API to paid subscribers. Removed the parallel `.info` blocks from `market_data.py` and replaced `data/sentiment.py` with a no-op stub, eliminating ~150 non-blocking errors per run.
+- **`dashboard.py` open-runs filter hardened.** Changed `not date.endswith(("-midday", "-close"))` to `len(date)==10 and date.count("-")==2` so non-standard suffixes like `open_sells` no longer crash `pd.to_datetime` when the dashboard imports.
+- **`ThreadPoolExecutor` workers reduced 12 → 8** in `get_market_snapshots`.
+- **Tests updated:** 5 new `TestBulkDownload` tests; `TestFetchAnalystSentiment` / `TestSentimentAnalystConversion` replaced with stubs matching new behaviour. Net: **1808 passing**, 94% coverage.
 
 ---
 

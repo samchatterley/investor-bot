@@ -115,84 +115,18 @@ class TestNewsFetcherTitleFallback(unittest.TestCase):
 
 
 class TestSentimentAnalystConversion(unittest.TestCase):
-    """
-    recommendationMean is a 1–5 scale (1=strong buy, 5=strong sell).
-    Verify the conversion to bullish_pct/bearish_pct is correct and that
-    missing data is handled gracefully.
-    """
+    """get_sentiment is a stub while Yahoo Finance quoteSummary is restricted."""
 
-    def _fetch(self, info_dict):
-        from data.sentiment import _fetch_analyst
+    def test_get_sentiment_returns_empty(self):
+        from data.sentiment import get_sentiment
 
-        ticker_mock = MagicMock()
-        ticker_mock.info = info_dict
-        with patch("data.sentiment.yf.Ticker", return_value=ticker_mock):
-            _, result = _fetch_analyst("AAPL")
-        return result
-
-    def test_strong_buy_mean_gives_high_bullish(self):
-        result = self._fetch({"recommendationMean": 1.0, "numberOfAnalystOpinions": 30})
-        self.assertEqual(result["bullish_pct"], 100)
-        self.assertEqual(result["bearish_pct"], 0)
-
-    def test_strong_sell_mean_gives_low_bullish(self):
-        result = self._fetch({"recommendationMean": 5.0, "numberOfAnalystOpinions": 30})
-        self.assertEqual(result["bullish_pct"], 0)
-        self.assertEqual(result["bearish_pct"], 100)
-
-    def test_neutral_mean_gives_fifty_fifty(self):
-        result = self._fetch({"recommendationMean": 3.0, "numberOfAnalystOpinions": 20})
-        self.assertEqual(result["bullish_pct"], 50)
-        self.assertEqual(result["bearish_pct"], 50)
-
-    def test_bullish_and_bearish_always_sum_to_100(self):
-        for mean in [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]:
-            result = self._fetch({"recommendationMean": mean, "numberOfAnalystOpinions": 10})
-            self.assertEqual(result["bullish_pct"] + result["bearish_pct"], 100)
-
-    def test_missing_mean_returns_empty(self):
-        result = self._fetch({"numberOfAnalystOpinions": 20})
+        result = get_sentiment(["AAPL", "NVDA"])
         self.assertEqual(result, {})
 
-    def test_zero_analyst_count_returns_empty(self):
-        result = self._fetch({"recommendationMean": 2.0, "numberOfAnalystOpinions": 0})
-        self.assertEqual(result, {})
+    def test_get_sentiment_empty_symbols(self):
+        from data.sentiment import get_sentiment
 
-    def test_missing_analyst_count_returns_empty(self):
-        result = self._fetch({"recommendationMean": 2.0})
-        self.assertEqual(result, {})
-
-    def test_upside_pct_included_when_target_and_price_available(self):
-        result = self._fetch(
-            {
-                "recommendationMean": 2.0,
-                "numberOfAnalystOpinions": 15,
-                "targetMeanPrice": 220.0,
-                "currentPrice": 200.0,
-            }
-        )
-        self.assertIn("upside_pct", result)
-        self.assertAlmostEqual(result["upside_pct"], 10.0, places=1)
-
-    def test_upside_pct_omitted_when_price_missing(self):
-        result = self._fetch(
-            {
-                "recommendationMean": 2.0,
-                "numberOfAnalystOpinions": 15,
-                "targetMeanPrice": 220.0,
-            }
-        )
-        self.assertNotIn("upside_pct", result)
-
-    def test_analyst_count_included_in_result(self):
-        result = self._fetch({"recommendationMean": 2.0, "numberOfAnalystOpinions": 42})
-        self.assertEqual(result["analyst_count"], 42)
-
-    def test_exception_returns_empty(self):
-        from data.sentiment import _fetch_analyst
-
-        with patch("data.sentiment.yf.Ticker", side_effect=Exception("network error")):
-            _, result = _fetch_analyst("AAPL")
+        result = get_sentiment([])
         self.assertEqual(result, {})
 
 

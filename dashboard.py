@@ -302,7 +302,7 @@ if page == "Overview":
 
     acc, positions, err = _load_account()
     history = load_history()
-    open_runs = [r for r in history if not r["date"].endswith(("-midday", "-close"))]
+    open_runs = [r for r in history if len(r["date"]) == 10 and r["date"].count("-") == 2]
 
     if acc:
         pnl_today = open_runs[-1].get("daily_pnl", 0) if open_runs else 0
@@ -386,7 +386,7 @@ elif page == "Trades":
     st.markdown("## Trade History")
 
     history = load_history()
-    open_runs = [r for r in history if not r["date"].endswith(("-midday", "-close"))]
+    open_runs = [r for r in history if len(r["date"]) == 10 and r["date"].count("-") == 2]
 
     if not open_runs:
         st.info("No trade history yet.")
