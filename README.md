@@ -199,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1691 tests, 96% coverage)
+├── tests/             Unit test suite (1737 tests, 95% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -546,7 +546,8 @@ By signal:
 ### Backtest caveats
 
 - **Rule-based proxy, not live Claude decisions.** The backtester uses hardcoded signal rules (RSI < 35, EMA crossover, etc.) as a proxy for what Claude would recommend. Live Claude decisions will differ — sometimes better, sometimes worse.
-- **Transaction costs modelled.** Fills include 5 bps slippage + 1.5 bps half-spread on each side (`SLIPPAGE_BPS=5`, `SPREAD_BPS=3` in `config.py`). These are conservative estimates; actual costs depend on liquidity.
+- **Transaction costs modelled.** Fills include 5 bps slippage, a liquidity-scaled half-spread (`max(SPREAD_BPS, 50/sqrt(ADV_USD/1e6))`), and a square-root market impact cost (`10 bps × sqrt(participation %)`, capped at 50 bps). Costs widen automatically for illiquid names and large orders relative to ADV.
+- **Gap-through-stop.** If today's open is already at or below the stop price, the fill executes at open (not the stop level), reflecting realistic gap risk.
 - **No lookahead bias.** Signals use T-1 bar indicators; entries fill at T open price. Indicator warmup is buffered by 90 days.
 - **Survivorship bias.** The universe is fixed to the current symbol list, which contains names that have survived and grown. Pre-2025 signals on this list are upward-biased.
 - **Past performance.** 2025 included the DeepSeek shock (January), tariff volatility (April), and a significant drawdown.

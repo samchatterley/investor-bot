@@ -20,6 +20,8 @@ from backtest.engine import (
     _compute_indicators,
     _compute_intraday_day,
     _entry_signal,
+    _liquidity_spread_bps,
+    _market_impact_bps,
     _print_ablation_results,
     _print_backward_elimination_results,
     _print_hold_period_table,
@@ -2512,3 +2514,151 @@ class TestRunHoldoutEvaluation(unittest.TestCase):
             with self.assertLogs("backtest.engine", level="WARNING") as cm:
                 self._run(version="vDUP", tmp_dir=tmp)
             self.assertTrue(any("HOLDOUT INTEGRITY" in m for m in cm.output))
+
+
+class TestLiquiditySpreadBps(unittest.TestCase):
+    """_liquidity_spread_bps: wider spread for illiquid names, floored at SPREAD_BPS."""
+
+    def test_zero_adv_returns_spread_bps_floor(self):
+        from config import SPREAD_BPS
+
+        self.assertEqual(_liquidity_spread_bps(0), float(SPREAD_BPS))
+
+    def test_negative_adv_returns_spread_bps_floor(self):
+        from config import SPREAD_BPS
+
+        self.assertEqual(_liquidity_spread_bps(-1), float(SPREAD_BPS))
+
+    def test_small_adv_returns_wider_spread(self):
+        # $1M ADV → 50 / sqrt(1) = 50 bps, well above any SPREAD_BPS floor
+        result = _liquidity_spread_bps(1_000_000)
+        self.assertGreater(result, 10)
+
+    def test_large_adv_returns_floor(self):
+        from config import SPREAD_BPS
+
+        # $10B ADV → 50 / sqrt(10000) = 0.5 bps → clamped to SPREAD_BPS
+        result = _liquidity_spread_bps(10_000_000_000)
+        self.assertEqual(result, float(SPREAD_BPS))
+
+    def test_monotone_decreasing_with_adv(self):
+        # Larger ADV should mean tighter spread
+        s1 = _liquidity_spread_bps(10_000_000)
+        s2 = _liquidity_spread_bps(100_000_000)
+        s3 = _liquidity_spread_bps(1_000_000_000)
+        self.assertGreaterEqual(s1, s2)
+        self.assertGreaterEqual(s2, s3)
+
+
+class TestMarketImpactBps(unittest.TestCase):
+    """_market_impact_bps: sqrt-of-participation-rate, capped at 50 bps."""
+
+    def test_zero_adv_returns_zero(self):
+        self.assertEqual(_market_impact_bps(10_000, 0), 0.0)
+
+    def test_zero_notional_returns_zero(self):
+        self.assertEqual(_market_impact_bps(0, 1_000_000), 0.0)
+
+    def test_one_pct_participation_gives_ten_bps(self):
+        # 1% participation: notional = 0.01 * adv_usd
+        adv = 1_000_000
+        notional = adv * 0.01
+        result = _market_impact_bps(notional, adv)
+        self.assertAlmostEqual(result, 10.0, places=5)
+
+    def test_four_pct_participation_gives_twenty_bps(self):
+        adv = 1_000_000
+        notional = adv * 0.04
+        result = _market_impact_bps(notional, adv)
+        self.assertAlmostEqual(result, 20.0, places=5)
+
+    def test_capped_at_fifty_bps(self):
+        # 25% participation → 10 * sqrt(25) = 50 bps exactly
+        adv = 1_000_000
+        notional = adv * 0.25
+        result = _market_impact_bps(notional, adv)
+        self.assertEqual(result, 50.0)
+
+    def test_extreme_participation_capped(self):
+        # 100% of ADV → without cap would be 100 bps; with cap → 50 bps
+        result = _market_impact_bps(1_000_000, 1_000_000)
+        self.assertEqual(result, 50.0)
+
+
+class TestGapThroughStop(unittest.TestCase):
+    """Gap-through-stop: when today's open gaps below stop price, fill at open."""
+
+    def _make_indicators(self, entry_px: float, open_px: float, close_px: float) -> dict:
+        """Single-symbol indicator dict with 2 rows (prev + today)."""
+        idx = pd.bdate_range("2025-01-02", periods=2)
+        df = pd.DataFrame(
+            {
+                "Close": [entry_px, close_px],
+                "Open": [entry_px, open_px],
+                "High": [entry_px * 1.01, max(open_px, close_px) * 1.01],
+                "Low": [entry_px * 0.99, min(open_px, close_px) * 0.99],
+                "Volume": [5_000_000, 4_000_000],
+                "rsi": [45.0, 44.0],
+                "macd_diff": [0.1, 0.1],
+                "ema9": [entry_px, entry_px],
+                "ema21": [entry_px * 0.98, entry_px * 0.98],
+                "bb_pct": [0.5, 0.5],
+                "vol_ratio": [1.1, 1.0],
+                "ret_5d": [1.0, 1.0],
+                "avg_volume_20": [5_000_000, 5_000_000],
+            },
+            index=idx,
+        )
+        return {"SYM": df}
+
+    def test_gap_below_stop_simulation_completes(self):
+        # Smoke test: simulation doesn't crash when a gap-through-stop occurs
+        from config import STOP_LOSS_PCT
+
+        entry_px = 100.0
+        stop_px = entry_px * (1 - STOP_LOSS_PCT)
+        open_px = stop_px * 0.97  # open gaps well below stop
+        close_px = stop_px * 1.01  # close recovers above stop
+
+        indicators = self._make_indicators(entry_px, open_px, close_px)
+        result = _run_simulation(
+            indicators,
+            indicators["SYM"].index,
+            initial_capital=10_000.0,
+        )
+        self.assertIsInstance(result, dict)
+        self.assertIn("total_return_pct", result)
+
+    def test_no_gap_simulation_completes(self):
+        from config import STOP_LOSS_PCT
+
+        entry_px = 100.0
+        stop_px = entry_px * (1 - STOP_LOSS_PCT)
+        open_px = stop_px * 1.05  # open above stop — no gap
+        close_px = stop_px * 0.98  # close triggers stop normally
+
+        indicators = self._make_indicators(entry_px, open_px, close_px)
+        result = _run_simulation(
+            indicators,
+            indicators["SYM"].index,
+            initial_capital=10_000.0,
+        )
+        self.assertIsInstance(result, dict)
+        self.assertIn("total_return_pct", result)
+
+    def test_avg_volume_20_column_present_after_compute_indicators(self):
+        df = _make_ohlcv_full(60)
+        result = _compute_indicators(df)
+        self.assertIn("avg_volume_20", result.columns)
+
+    def test_avg_volume_20_is_rolling_mean_of_volume(self):
+        df = _make_ohlcv_full(60)
+        result = _compute_indicators(df)
+        manual = df["Volume"].rolling(20).mean()
+        # Compare the last 10 rows of the result (all post-warmup)
+        last_idx = result.index[-10:]
+        pd.testing.assert_series_equal(
+            result.loc[last_idx, "avg_volume_20"].reset_index(drop=True),
+            manual.loc[last_idx].reset_index(drop=True),
+            check_names=False,
+        )

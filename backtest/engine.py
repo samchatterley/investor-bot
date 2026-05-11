@@ -22,6 +22,7 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -144,7 +145,9 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema21"] = EMAIndicator(close=close, window=21).ema_indicator()
     bb = BollingerBands(close=close, window=20)
     df["bb_pct"] = bb.bollinger_pband()
-    df["vol_ratio"] = volume / volume.rolling(20).mean()
+    vol_ma20 = volume.rolling(20).mean()
+    df["vol_ratio"] = volume / vol_ma20
+    df["avg_volume_20"] = vol_ma20
     df["ret_5d"] = close.pct_change(5) * 100
 
     # ── Extended indicators for new daily signals ─────────────────────────────
@@ -191,8 +194,6 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Historical volatility percentile: where today's 20-day annualized HV sits in its
     # 252-day range (0 = all-time annual low, 1 = all-time annual high).
     # hv_rank < 0.20 → bottom quintile → IV compression → expansion likely.
-    import math
-
     daily_returns = close.pct_change()
     df["hv_20d"] = daily_returns.rolling(20).std() * math.sqrt(252) * 100
     df["hv_rank"] = df["hv_20d"].rolling(252, min_periods=30).rank(pct=True)
@@ -447,6 +448,29 @@ def _compute_regimes(
     return regimes
 
 
+def _liquidity_spread_bps(adv_usd: float) -> float:
+    """Liquidity-scaled half-spread: wider for illiquid names.
+
+    Formula: max(SPREAD_BPS, 50 / sqrt(ADV_USD / 1e6))
+    Examples: $10M ADV → 15.8 bps; $100M ADV → 5 bps; $1B ADV → SPREAD_BPS floor.
+    """
+    if adv_usd <= 0:
+        return float(SPREAD_BPS)
+    return max(float(SPREAD_BPS), 50.0 / math.sqrt(adv_usd / 1_000_000))
+
+
+def _market_impact_bps(notional: float, adv_usd: float) -> float:
+    """Square-root market impact: 10 bps at 1% of ADV, capped at 50 bps.
+
+    Based on Almgren/Chriss sqrt-of-participation-rate model.
+    Participation rate = notional / adv_usd (as a fraction).
+    """
+    if adv_usd <= 0 or notional <= 0:
+        return 0.0
+    participation_pct = (notional / adv_usd) * 100
+    return min(50.0, 10.0 * math.sqrt(participation_pct))
+
+
 def _run_simulation(
     indicators: dict[str, pd.DataFrame],
     trading_dates: pd.DatetimeIndex,
@@ -468,9 +492,7 @@ def _run_simulation(
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
-    sp_bps = SPREAD_BPS if spread_bps is None else spread_bps
-    buy_factor = 1.0 + (s_bps + sp_bps / 2) / 10_000
-    sell_factor = 1.0 - (s_bps + sp_bps / 2) / 10_000
+    _sp_bps_override = spread_bps  # None → liquidity-scaled per trade
     cash = initial_capital
     positions: dict[str, dict] = {}
     trades: list[dict] = []
@@ -497,22 +519,45 @@ def _run_simulation(
         to_close = []
         for sym, pos in positions.items():
             try:
-                px = float(indicators[sym].loc[today, "Close"])
+                row_today = indicators[sym].loc[today]
+                px = float(row_today["Close"])
             except Exception:
                 continue
-            pnl_pct = px / pos["entry_price"] - 1
             trading_days_held = sum(1 for _ in pd.bdate_range(pos["entry_date"], today)) - 1
 
-            reason = None
-            if pnl_pct <= -STOP_LOSS_PCT:
+            # Gap-through-stop: if today's open is already at or below the stop price,
+            # fill at open (realistic — we can't catch the stop intrabar).
+            stop_price = pos["entry_price"] * (1 - STOP_LOSS_PCT)
+            open_px = float(row_today.get("Open", px))
+            if open_px <= stop_price:
                 reason = "stop_loss"
-            elif pnl_pct >= TAKE_PROFIT_PCT:
-                reason = "take_profit"
-            elif trading_days_held >= max_hold_days:
-                reason = "time_exit"
+                fill_base = open_px
+            else:
+                pnl_pct = px / pos["entry_price"] - 1
+                reason = None
+                if pnl_pct <= -STOP_LOSS_PCT:
+                    reason = "stop_loss"
+                elif pnl_pct >= TAKE_PROFIT_PCT:
+                    reason = "take_profit"
+                elif trading_days_held >= max_hold_days:
+                    reason = "time_exit"
+                fill_base = px
 
             if reason:
-                exit_px = px * sell_factor
+                df_sym = indicators[sym]
+                avg_vol_20 = float(
+                    df_sym.loc[today, "avg_volume_20"] if "avg_volume_20" in df_sym.columns else 0
+                )
+                adv_usd = avg_vol_20 * fill_base
+                sp = (
+                    _sp_bps_override
+                    if _sp_bps_override is not None
+                    else _liquidity_spread_bps(adv_usd)
+                )
+                exit_notional = pos["shares"] * fill_base
+                impact = _market_impact_bps(exit_notional, adv_usd)
+                sell_factor = 1.0 - (s_bps + sp / 2 + impact) / 10_000
+                exit_px = fill_base * sell_factor
                 cash += pos["shares"] * exit_px
                 trades.append(
                     {
@@ -619,8 +664,20 @@ def _run_simulation(
                     entry_px = float(indicators[sym].loc[today, "Open"])
                 except (KeyError, TypeError):
                     entry_px = float(indicators[sym].loc[today, "Close"])
-                fill_px = entry_px * buy_factor
+                df_sym = indicators[sym]
+                avg_vol_20 = float(
+                    df_sym.loc[today, "avg_volume_20"] if "avg_volume_20" in df_sym.columns else 0
+                )
                 notional = (cash / slots) * 0.9
+                adv_usd = avg_vol_20 * entry_px
+                sp = (
+                    _sp_bps_override
+                    if _sp_bps_override is not None
+                    else _liquidity_spread_bps(adv_usd)
+                )
+                impact = _market_impact_bps(notional, adv_usd)
+                buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
+                fill_px = entry_px * buy_factor
                 shares = notional / fill_px
                 cost = shares * fill_px
                 if cost > cash or cost < 0.5:
@@ -649,7 +706,16 @@ def _run_simulation(
     last_date = trading_dates[-1] if len(trading_dates) else None
     for sym, pos in positions.items():
         try:
-            px = float(indicators[sym].iloc[-1]["Close"])
+            last_row = indicators[sym].iloc[-1]
+            px = float(last_row["Close"])
+            avg_vol_20 = float(last_row.get("avg_volume_20", 0))
+            adv_usd = avg_vol_20 * px
+            sp = (
+                _sp_bps_override if _sp_bps_override is not None else _liquidity_spread_bps(adv_usd)
+            )
+            exit_notional = pos["shares"] * px
+            impact = _market_impact_bps(exit_notional, adv_usd)
+            sell_factor = 1.0 - (s_bps + sp / 2 + impact) / 10_000
             exit_px = px * sell_factor
             cash += pos["shares"] * exit_px
             pnl_pct = (exit_px / pos["entry_price"] - 1) * 100
