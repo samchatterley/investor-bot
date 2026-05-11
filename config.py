@@ -1,10 +1,16 @@
 import contextlib
 import json
 import os
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 import pytz
 from dotenv import load_dotenv
+
+# Final holdout period — never used for parameter tuning.
+# Walk-forward and signal analysis must use dates strictly before this.
+# Call run_holdout_evaluation() only once per strategy version to preserve validity.
+HOLDOUT_START_DATE: date = date(2024, 1, 1)
 
 load_dotenv()
 
@@ -361,6 +367,25 @@ def _audit_config_event(event_type: str, payload: dict) -> None:
 
 
 _load_runtime_overrides()
+
+
+@dataclass
+class RiskConfig:
+    """Single source of truth for risk parameters shared between live trading and backtesting.
+
+    Instantiate with RiskConfig() for live defaults, or override specific fields for
+    walk-forward parameter sweeps.  Both main.py and backtest/engine.py should construct
+    this from config constants rather than reading constants independently.
+    """
+
+    stop_loss_pct: float = field(default_factory=lambda: STOP_LOSS_PCT)
+    take_profit_pct: float = field(default_factory=lambda: TAKE_PROFIT_PCT)
+    trailing_stop_pct: float = field(default_factory=lambda: TRAILING_STOP_PCT)
+    max_hold_days: int = field(default_factory=lambda: MAX_HOLD_DAYS)
+    max_positions: int = field(default_factory=lambda: MAX_POSITIONS)
+    slippage_bps: int = field(default_factory=lambda: SLIPPAGE_BPS)
+    spread_bps: int = field(default_factory=lambda: SPREAD_BPS)
+    per_signal_cap: int = 2
 
 
 def validate():

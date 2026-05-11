@@ -24,7 +24,7 @@ import json
 import logging
 import os
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from itertools import product
 from zoneinfo import ZoneInfo
 
@@ -40,7 +40,16 @@ from backtest.historical_fundamentals import (
     prefetch_earnings_history,
     prefetch_insider_history,
 )
-from config import LOG_DIR, SLIPPAGE_BPS, SPREAD_BPS, STOCK_UNIVERSE, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from config import (
+    HOLDOUT_START_DATE,
+    LOG_DIR,
+    SLIPPAGE_BPS,
+    SPREAD_BPS,
+    STOCK_UNIVERSE,
+    STOP_LOSS_PCT,
+    TAKE_PROFIT_PCT,
+)
+from signals.evaluator import DEFAULT_SIGNAL_PARAMS, SIGNAL_PRIORITY, evaluate_signals
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -50,27 +59,8 @@ _ET = ZoneInfo("America/New_York")
 # Core indicator columns that must be non-NaN for a row to be used
 _CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5d"]
 
-# Signal priority for candidate slot allocation (lower number = higher priority).
-# Ordered by observed edge. Intraday signals trail daily.
-_SIGNAL_PRIORITY: dict[str, int] = {
-    "vix_fear_reversion": 0,
-    "insider_buying": 1,
-    "pead": 2,
-    "rs_leader": 3,
-    "breakout_52w": 4,
-    "momentum_12_1": 5,
-    "gap_and_go": 6,
-    "inside_day_breakout": 7,
-    "bb_squeeze": 8,
-    "iv_compression": 9,
-    "momentum": 10,
-    "macd_crossover": 11,
-    "trend_pullback": 12,
-    "mean_reversion": 13,
-    "orb_breakout": 14,
-    "vwap_reclaim": 15,
-    "intraday_momentum": 16,
-}
+# Signal priority — imported from signals.evaluator (canonical source).
+_SIGNAL_PRIORITY = SIGNAL_PRIORITY
 
 # Signals blocked per market regime.
 # mean_reversion and vix_fear_reversion are always permitted (counter-cyclical).
@@ -125,15 +115,8 @@ _REGIME_BLOCKED: dict[str, frozenset[str]] = {
     ),
 }
 
-# Default signal thresholds — match the prefilter rules in stock_scanner.py
-_DEFAULT_PARAMS: dict[str, float] = {
-    "rsi_threshold": 35.0,
-    "bb_threshold": 0.25,
-    "mr_vol_threshold": 1.2,
-    "mom_vol_threshold": 1.3,
-    "mom_ret5d_threshold": 1.0,
-    "mom12_1_threshold": 10.0,
-}
+# Default signal thresholds — imported from signals.evaluator (canonical source).
+_DEFAULT_PARAMS = DEFAULT_SIGNAL_PARAMS
 
 # Search space for walk-forward parameter optimisation
 _DEFAULT_PARAM_GRID: dict[str, list] = {
@@ -218,6 +201,55 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna(subset=_CORE_COLS)
 
 
+def _row_to_snapshot(
+    row: pd.Series,
+    intraday: dict | None = None,
+    spy_ret_5d: float | None = None,
+    spy_ret_10d: float | None = None,
+    fundamentals: dict | None = None,
+) -> dict:
+    """Convert an engine indicator row to the canonical snapshot format used by evaluate_signals."""
+    snap: dict = {
+        "rsi_14": float(row.get("rsi", 50)),
+        "bb_pct": float(row.get("bb_pct", 0.5)),
+        "vol_ratio": float(row.get("vol_ratio", 1.0)),
+        "macd_diff": float(row.get("macd_diff", 0)),
+        "macd_crossed_up": bool(row.get("macd_cross", False)),
+        "ema9_above_ema21": bool(row["ema9"] > row["ema21"])
+        if "ema9" in row.index and "ema21" in row.index
+        else False,
+        "adx": float(row.get("adx", 30)),
+        "ret_5d_pct": float(row.get("ret_5d", 0)),
+        "ret_10d_pct": float(row.get("ret_10d", 0)),
+        "price_vs_ema21_pct": float(row.get("pct_vs_ema21", 0)),
+        "price_vs_52w_high_pct": float(row.get("price_vs_52w_high_pct", -999)),
+        "hv_rank": float(row.get("hv_rank", 1.0)),
+        "bb_squeeze": bool(row.get("bb_squeeze", False)),
+        "is_inside_day": bool(row.get("is_inside_day", False)),
+        "gap_pct": float(row.get("gap_pct", 0)),
+        "close_above_open": bool(row.get("close_above_open", False)),
+        "spy_ret_5d": spy_ret_5d,
+        "spy_ret_10d": spy_ret_10d,
+    }
+    _m121 = row.get("mom_12_1")
+    if _m121 is not None:
+        snap["mom_12_1_pct"] = float(_m121)
+    if fundamentals:
+        snap["insider_cluster"] = bool(fundamentals.get("insider_cluster", False))
+        snap["pead_candidate"] = bool(fundamentals.get("pead_active", False))
+    if intraday:
+        snap.update(
+            {
+                "intraday_change_pct": intraday.get("intraday_change_pct"),
+                "price_above_vwap": intraday.get("price_above_vwap"),
+                "pct_vs_vwap": float(intraday.get("pct_vs_vwap", 0)),
+                "orb_breakout_up": bool(intraday.get("orb_breakout_up", False)),
+                "intraday_rsi": intraday.get("intraday_rsi"),
+            }
+        )
+    return snap
+
+
 def _entry_signal(
     row: pd.Series,
     params: dict | None = None,
@@ -229,163 +261,31 @@ def _entry_signal(
     fundamentals: dict | None = None,
     disabled_signals: frozenset[str] | None = None,
 ) -> str | None:
-    """
-    Returns the first matching signal in priority order, or None.
+    """Return the highest-priority matching signal, or None.
 
-    Priority (within a single symbol):
-      vix_fear_reversion > mean_reversion > macd_crossover > bb_squeeze
-      > inside_day_breakout > breakout_52w > gap_and_go > rs_leader
-      > trend_pullback > momentum > orb_breakout > vwap_reclaim > intraday_momentum
-
-    Regime blocking: BEAR_DAY/HIGH_VOL/CHOPPY suppress trending signals.
-    ADX gate (>= 20): required for all momentum-type signals.
-    mean_reversion and vix_fear_reversion are never regime-blocked.
-    Intraday signals only fire when intraday data is supplied.
+    Delegates signal logic to signals.evaluator.evaluate_signals() — the single
+    canonical implementation shared with the live scanner.
     """
-    p = _DEFAULT_PARAMS if params is None else {**_DEFAULT_PARAMS, **params}
     blocked = _REGIME_BLOCKED.get(regime or "", frozenset())
     if disabled_signals:
         blocked = blocked | disabled_signals
-    # Default adx=30 (assume trending) when High/Low weren't available
-    adx = float(row.get("adx", 30))
 
-    # ── Counter-cyclical — fires during fear spikes, never regime-blocked ──────
-    if vix_spike and row["vol_ratio"] > 1.0:
-        return "vix_fear_reversion"
-
-    # ── Fundamental conviction — bypass regime filter but respect disabled_signals ──
-    if fundamentals:
-        if fundamentals.get("insider_cluster") and "insider_buying" not in blocked:
-            return "insider_buying"
-        if fundamentals.get("pead_active") and row.get("ret_5d", 0) > 0 and "pead" not in blocked:
-            return "pead"
-
-    # ── Daily signals ─────────────────────────────────────────────────────────
-    if (
-        row["rsi"] < p["rsi_threshold"]
-        and row["bb_pct"] < p["bb_threshold"]
-        and row["vol_ratio"] > p["mr_vol_threshold"]
-        and "mean_reversion" not in blocked
-    ):
-        return "mean_reversion"
-
-    if (
-        row.get("macd_cross", False)
-        and row["vol_ratio"] > 1.2
-        and adx >= 20
-        and "macd_crossover" not in blocked
-    ):
-        return "macd_crossover"
-
-    if (
-        row.get("bb_squeeze", False)
-        and row["vol_ratio"] > 1.2
-        and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
-        and adx >= 20
-        and "bb_squeeze" not in blocked
-    ):
-        return "bb_squeeze"
-
-    if (
-        row.get("is_inside_day", False)
-        and row["vol_ratio"] > 1.1
-        and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
-        and adx >= 20
-        and "inside_day_breakout" not in blocked
-    ):
-        return "inside_day_breakout"
-
-    if (
-        row.get("price_vs_52w_high_pct", -999) >= -3.0
-        and row["vol_ratio"] > 1.2
-        and row["ema9"] > row["ema21"]
-        and adx >= 20
-        and "breakout_52w" not in blocked
-    ):
-        return "breakout_52w"
-
-    if (
-        row.get("mom_12_1", -999) > p["mom12_1_threshold"]
-        and row["ema9"] > row["ema21"]
-        and adx >= 20
-        and "momentum_12_1" not in blocked
-    ):
-        return "momentum_12_1"
-
-    if (
-        row.get("gap_pct", 0) > 2.0
-        and row.get("close_above_open", False)
-        and row["vol_ratio"] > 1.5
-        and adx >= 20
-        and "gap_and_go" not in blocked
-    ):
-        return "gap_and_go"
-
-    if spy_ret_5d is not None and spy_ret_10d is not None and "rs_leader" not in blocked:
-        rel_5d = row["ret_5d"] - spy_ret_5d
-        rel_10d = row.get("ret_10d", 0.0) - spy_ret_10d
-        if rel_5d > 2.0 and rel_10d > 3.0 and row["ema9"] > row["ema21"] and adx >= 20:
-            return "rs_leader"
-
-    pct_vs_ema21 = row.get("pct_vs_ema21", 0.0)
-    if (
-        row["ema9"] > row["ema21"]
-        and -3.0 <= pct_vs_ema21 <= -0.5
-        and 40 <= row["rsi"] <= 58
-        and row["vol_ratio"] > 1.0
-        and adx >= 20
-        and "trend_pullback" not in blocked
-    ):
-        return "trend_pullback"
-
-    if (
-        row.get("hv_rank", 1.0) < 0.20
-        and (row["ema9"] > row["ema21"] or row["macd_diff"] > 0)
-        and row["vol_ratio"] > 1.1
-        and "iv_compression" not in blocked
-    ):
-        return "iv_compression"
-
-    if (
-        row["ema9"] > row["ema21"]
-        and row["macd_diff"] > 0
-        and row["ret_5d"] > p["mom_ret5d_threshold"]
-        and row["vol_ratio"] > p["mom_vol_threshold"]
-        and adx >= 20
-        and "momentum" not in blocked
-    ):
-        return "momentum"
-
-    # ── Intraday signals (only when Alpaca data provided) ─────────────────────
-    if intraday:
-        if intraday.get("orb_breakout_up") is True and "orb_breakout" not in blocked:
-            return "orb_breakout"
-
-        id_chg = intraday.get("intraday_change_pct")
-        above_vwap = intraday.get("price_above_vwap")
-        pct_vwap = intraday.get("pct_vs_vwap", 0)
-        if (
-            above_vwap is True
-            and id_chg is not None
-            and id_chg > 1.0
-            and pct_vwap <= 3.0
-            and "vwap_reclaim" not in blocked
-        ):
-            return "vwap_reclaim"
-
-        id_rsi = intraday.get("intraday_rsi")
-        ema_up = row["ema9"] > row["ema21"]
-        if (
-            id_chg is not None
-            and id_chg > 2.0
-            and above_vwap is True
-            and (id_rsi is None or id_rsi < 75)
-            and (ema_up or row["ret_5d"] > 3.0)
-            and "intraday_momentum" not in blocked
-        ):
-            return "intraday_momentum"
-
-    return None
+    snap = _row_to_snapshot(
+        row,
+        intraday=intraday,
+        spy_ret_5d=spy_ret_5d,
+        spy_ret_10d=spy_ret_10d,
+        fundamentals=fundamentals,
+    )
+    signals = evaluate_signals(
+        snap,
+        blocked=blocked,
+        params=params,
+        vix_spike=vix_spike,
+        spy_ret_5d=spy_ret_5d,
+        spy_ret_10d=spy_ret_10d,
+    )
+    return signals[0] if signals else None
 
 
 def _compute_intraday_day(date_str: str, timed_bars: list) -> dict | None:
@@ -921,6 +821,8 @@ def run_backtest(
     use_fundamentals: bool = False,
 ) -> dict:
 
+    _assert_pre_holdout(end_date)
+
     logger.info(
         f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital"
         + (" | intraday=ON" if use_intraday else "")
@@ -1060,6 +962,8 @@ def run_walk_forward_optimized(
       - folds: per-fold OOS results + the params that were selected
       - summary: mean OOS return/win-rate/Sharpe and consistency (% profitable folds)
     """
+    _assert_pre_holdout(end_date)
+
     grid = param_grid or _DEFAULT_PARAM_GRID
     keys = list(grid.keys())
     all_combos = [dict(zip(keys, vals, strict=True)) for vals in product(*[grid[k] for k in keys])]
@@ -1299,6 +1203,8 @@ def run_ablation(
             ],
         }
     """
+    _assert_pre_holdout(end_date)
+
     logger.info(
         f"Ablation: {start_date} → {end_date} | {len(symbols)} symbols | "
         f"{len(_SIGNAL_PRIORITY)} signals"
@@ -1453,6 +1359,8 @@ def run_backward_elimination(
             "signals_removed":   list[str],
         }
     """
+    _assert_pre_holdout(end_date)
+
     use_any_fundamentals = use_fundamentals or use_earnings_only
     logger.info(
         f"Backward elimination: {start_date} → {end_date} | {len(symbols)} symbols"
@@ -1687,6 +1595,8 @@ def run_signal_analysis(
             "decay_stats":  {signal: {days_held: {wins, losses, total_return}}},
         }
     """
+    _assert_pre_holdout(end_date)
+
     logger.info(
         f"Signal analysis: {start_date} → {end_date} | {len(symbols)} symbols"
         + (" | earnings=ON" if use_earnings_only else "")
@@ -1879,6 +1789,131 @@ def _print_hold_period_table(r: dict, start_date: str, end_date: str) -> None:
     print("\n" + "=" * 68 + "\n")
 
 
+_HOLDOUT_LOG = os.path.join(LOG_DIR, "holdout_log.jsonl")
+
+
+def _assert_pre_holdout(end_date_str: str) -> None:
+    """Warn loudly if end_date encroaches on the holdout period.
+
+    Any tuning run that reaches into HOLDOUT_START_DATE contaminates the one
+    honest out-of-sample evaluation we have. This does not raise — it warns —
+    so that exploratory reruns don't hard-fail, but the message is impossible
+    to miss.
+    """
+    try:
+        end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return
+    if end >= HOLDOUT_START_DATE:
+        logger.warning(
+            "=" * 70 + f"\n  HOLDOUT CONTAMINATION WARNING\n"
+            f"  end_date={end_date_str} reaches into or past holdout start "
+            f"({HOLDOUT_START_DATE}). Any parameters tuned on this run have\n"
+            f"  seen holdout data and must not be reported as independent OOS.\n" + "=" * 70
+        )
+
+
+def run_holdout_evaluation(
+    frozen_params: dict,
+    version: str,
+    symbols: list[str] | None = None,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    end_date: str | None = None,
+) -> dict:
+    """Single evaluation on the untouched holdout period with fully frozen parameters.
+
+    This function must be called at most once per strategy version. Every call is
+    recorded to holdout_log.jsonl so repeat invocations are visible. Reading that
+    log and finding more than one entry per version means the holdout is spent.
+
+    Parameters
+    ----------
+    frozen_params : dict
+        Parameter set selected during walk-forward (e.g. rsi_threshold, bb_threshold).
+        Must not be tuned on or after HOLDOUT_START_DATE.
+    version : str
+        Monotonically increasing strategy version string (e.g. "v1.29"). Written
+        to the log so provenance is unambiguous.
+    """
+    _syms = symbols or STOCK_UNIVERSE
+    holdout_start_str = HOLDOUT_START_DATE.strftime("%Y-%m-%d")
+    holdout_end_str = end_date or (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_entry = {
+        "timestamp": datetime.now(_ET).isoformat(),
+        "version": version,
+        "holdout_start": holdout_start_str,
+        "holdout_end": holdout_end_str,
+        "frozen_params": frozen_params,
+    }
+    with open(_HOLDOUT_LOG, "a") as f:
+        f.write(json.dumps(log_entry) + "\n")
+
+    with open(_HOLDOUT_LOG) as _f:
+        prior_calls = sum(1 for line in _f if f'"version": "{version}"' in line)
+    if prior_calls > 1:
+        logger.warning(
+            f"HOLDOUT INTEGRITY: version={version} has been evaluated {prior_calls} times. "
+            "Multiple evaluations on the same version invalidate the holdout result."
+        )
+
+    logger.info(
+        f"Holdout evaluation: version={version} | {holdout_start_str} → {holdout_end_str} "
+        f"| params={frozen_params}"
+    )
+
+    fetch_start = (datetime.strptime(holdout_start_str, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(
+        _syms, start=fetch_start, end=holdout_end_str, auto_adjust=True, progress=False
+    )
+    if raw.empty:
+        logger.error("No data fetched for holdout evaluation")
+        return {}
+
+    indicators = _build_indicators(raw, _syms)
+    trading_dates = pd.bdate_range(start=holdout_start_str, end=holdout_end_str)
+
+    spy_indicators = indicators.get("SPY")
+    vix_spike_by_date: dict[str, bool] = {}
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+
+    results = _run_simulation(
+        indicators,
+        trading_dates,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        max_hold_days=max_hold_days,
+        params=frozen_params,
+        spy_indicators=spy_indicators,
+        regime_by_date=regime_by_date or None,
+        vix_spike_by_date=vix_spike_by_date or None,
+    )
+    results["start"] = holdout_start_str
+    results["end"] = holdout_end_str
+    results["holdout"] = True
+    results["version"] = version
+
+    print("\n" + "=" * 65)
+    print(f"  HOLDOUT EVALUATION  version={version}")
+    print(f"  {holdout_start_str} → {holdout_end_str}  (NEVER USED FOR TUNING)")
+    print("=" * 65)
+    print(f"  Total return:     {results['total_return_pct']:+.1f}%")
+    print(f"  Total trades:     {results['total_trades']}")
+    print(f"  Win rate:         {results['win_rate_pct']:.0f}%")
+    print(f"  Max drawdown:     {results['max_drawdown_pct']:.1f}%")
+    print(f"  Sharpe ratio:     {results['sharpe_ratio']:.3f}")
+    print("=" * 65 + "\n")
+
+    return results
+
+
 def _save_results(r: dict):
     """Persist latest backtest results for the dashboard to read."""
     try:
@@ -1969,6 +2004,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Walk-forward optimised backtest (genuine OOS validation)",
     )
+    parser.add_argument(
+        "--holdout",
+        action="store_true",
+        help="Run once-only holdout evaluation on frozen params (requires --version)",
+    )
+    parser.add_argument(
+        "--version",
+        type=str,
+        default="",
+        help="Strategy version string for holdout log (e.g. v1.29); required with --holdout",
+    )
     parser.add_argument("--train-days", type=int, default=252)
     parser.add_argument("--test-days", type=int, default=126)
     parser.add_argument(
@@ -1978,7 +2024,15 @@ if __name__ == "__main__":
         help="Comma-separated signals to disable globally (e.g. rs_leader,momentum_12_1)",
     )
     args = parser.parse_args()
-    if args.signal_analysis:
+    if args.holdout:
+        if not args.version:
+            parser.error("--holdout requires --version (e.g. --version v1.29)")
+        run_holdout_evaluation(
+            frozen_params={},
+            version=args.version,
+            initial_capital=args.capital,
+        )
+    elif args.signal_analysis:
         run_signal_analysis(
             STOCK_UNIVERSE,
             args.start,

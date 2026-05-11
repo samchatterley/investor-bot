@@ -3,6 +3,7 @@ import logging
 import yfinance as yf
 
 from config import MIN_VOLUME
+from signals.evaluator import evaluate_signals
 
 logger = logging.getLogger(__name__)
 
@@ -224,11 +225,13 @@ _LIVE_REGIME_BLOCKED: dict[str, set[str]] = {
 def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> list[dict]:
     """
     Rule-based screen applied before Claude analysis.
-    A stock must match at least one credible technical pattern.
+    Signal logic delegated to signals.evaluator — single canonical implementation
+    shared with the backtest engine to prevent live/backtest divergence.
     Stocks trading against their weekly trend are blocked unless deeply oversold.
-    This reduces Claude's input size and focuses it on genuine setups.
     """
-    blocked: set[str] = _LIVE_REGIME_BLOCKED.get(regime, set()) if regime else set()
+    _blocked: frozenset[str] = frozenset(
+        _LIVE_REGIME_BLOCKED.get(regime, set()) if regime else set()
+    )
     qualified = []
     for s in snapshots:
         if s.get("avg_volume", 0) < MIN_VOLUME:
@@ -237,116 +240,16 @@ def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> li
         if not _passes_quality_screen(s):
             continue
 
-        rsi = s.get("rsi_14", 50)
-        bb = s.get("bb_pct", 0.5)
-        vol = s.get("vol_ratio", 1.0)
-        ema_up = s.get("ema9_above_ema21", False)
-        macd_diff = s.get("macd_diff", 0)
-        macd_cross = s.get("macd_crossed_up", False)
-        weekly_up = s.get("weekly_trend_up", True)
-        ret_5d = s.get("ret_5d_pct", 0)
-
-        mean_reversion = rsi < 38 and bb < 0.30 and vol > 1.0
-        momentum = ema_up and macd_diff > 0 and ret_5d > 0 and vol > 1.2
-        macd_cross_signal = macd_cross and vol > 1.2
-
-        # ── New signals ───────────────────────────────────────────────────────
-        # Volatility squeeze: bands contracting → expansion imminent
-        bb_squeeze_signal = s.get("bb_squeeze", False) and (ema_up or macd_diff > 0) and vol > 1.2
-        # Near 52-week high with volume: growth / breakout momentum
-        breakout_52w = s.get("price_vs_52w_high_pct", -999) >= -3.0 and vol > 1.2 and weekly_up
-        # Inside day followed by directional confirmation: coiled spring
-        inside_day_breakout = (
-            s.get("is_inside_day", False) and (ema_up or macd_diff > 0) and vol > 1.1
-        )
-        # Gap and go: confirmed gap-up held through the day with strong volume
-        gap_and_go = (
-            s.get("gap_pct", 0) > 2.0 and s.get("close_above_open", False) and vol > 1.5 and ema_up
-        )
-        # Pullback to EMA21 within an established uptrend
-        pct_ema21 = s.get("price_vs_ema21_pct", 0)
-        trend_pullback = ema_up and -3.0 <= pct_ema21 <= -0.5 and 40 <= rsi <= 58 and vol > 1.0
-
-        # ── Intraday signals (only present when Alpaca intraday fetch succeeded) ──
-        # VWAP reclaim: price moved above VWAP with positive intraday momentum —
-        # institutional support level confirmed, high-probability continuation.
-        intraday_chg = s.get("intraday_change_pct")
-        above_vwap = s.get("price_above_vwap")
-        pct_vwap = s.get("pct_vs_vwap", 0)
-        vwap_reclaim = (
-            above_vwap is True
-            and intraday_chg is not None
-            and intraday_chg > 1.0
-            and pct_vwap <= 3.0  # not so extended above VWAP that it's a chase
-        )
-
-        # Opening range breakout: price broke above the first-30-min range with
-        # above-average volume — classic intraday momentum signal.
-        orb_breakout = s.get("orb_breakout_up", False) is True
-
-        # Intraday momentum: stock is up meaningfully from open, above VWAP,
-        # and daily technicals confirm the trend — catch moves that develop during
-        # the session rather than only at the open.
-        id_rsi = s.get("intraday_rsi")
-        intraday_momentum = (
-            intraday_chg is not None
-            and intraday_chg > 2.0
-            and above_vwap is True
-            and (id_rsi is None or id_rsi < 75)  # not overbought on 5-min bars
-            and (ema_up or ret_5d > 3.0)  # daily trend supports the move
-        )
-
-        # Insider cluster buying: ≥2 corporate insiders made open-market purchases
-        # within the last 10 trading days.  The signal is standalone — no technical
-        # confirmation required since the conviction comes from the insider data.
-        insider_buying = s.get("insider_cluster", False) is True
-
-        # Post-earnings drift: stock beat consensus EPS by ≥5% within the last 30 days
-        # and price is still confirming upward drift (positive 5d return).
-        # Standalone signal — earnings conviction overrides the weekly trend filter.
-        pead = s.get("pead_candidate", False) is True and s.get("ret_5d_pct", 0) > 0
-
-        # IV percentile compression: 20-day HV in the bottom 20th percentile of its
-        # 52-week range → coiling for an expansion move.  Requires directional
-        # confirmation (EMA or MACD) and a modest volume pickup.
-        iv_compression = s.get("hv_rank", 1.0) < 0.20 and (ema_up or macd_diff > 0) and vol > 1.1
-
-        matched = []
-        if mean_reversion and "mean_reversion" not in blocked:
-            matched.append("mean_reversion")
-        if momentum:
-            matched.append("momentum")
-        if macd_cross_signal and "macd_crossover" not in blocked:
-            matched.append("macd_crossover")
-        if bb_squeeze_signal:
-            matched.append("bb_squeeze")
-        if breakout_52w:
-            matched.append("breakout_52w")
-        if inside_day_breakout and "inside_day_breakout" not in blocked:
-            matched.append("inside_day_breakout")
-        if gap_and_go:
-            matched.append("gap_and_go")
-        if trend_pullback:
-            matched.append("trend_pullback")
-        if vwap_reclaim:
-            matched.append("vwap_reclaim")
-        if orb_breakout:
-            matched.append("orb_breakout")
-        if intraday_momentum:
-            matched.append("intraday_momentum")
-        if insider_buying:
-            matched.append("insider_buying")
-        if pead:
-            matched.append("pead")
-        if iv_compression and "iv_compression" not in blocked:
-            matched.append("iv_compression")
+        matched = evaluate_signals(s, blocked=_blocked)
 
         if not matched:
             continue
 
-        # Block buys against the weekly trend unless deeply oversold, an insider
-        # cluster is present, or a PEAD signal fired (fundamental conviction overrides
-        # the technical trend filter for both insider and earnings-surprise signals).
+        # Weekly trend filter: block buys counter-trend unless deeply oversold or
+        # fundamental conviction present (insider cluster / post-earnings drift).
+        rsi = s.get("rsi_14", 50)
+        bb = s.get("bb_pct", 0.5)
+        weekly_up = s.get("weekly_trend_up", True)
         if (
             not weekly_up
             and not (rsi < 30 and bb < 0.15)

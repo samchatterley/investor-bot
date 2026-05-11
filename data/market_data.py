@@ -9,7 +9,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, EMAIndicator
+from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
@@ -114,6 +114,14 @@ def fetch_stock_data(
         # 52-week high (rolling 252-day max; min_periods=1 so short histories still work)
         df["high_52w"] = df["High"].rolling(252, min_periods=1).max()
 
+        # ADX (14-period) — trend strength gate used by most momentum signals
+        try:
+            df["adx"] = (
+                ADXIndicator(high=df["High"], low=df["Low"], close=close, window=14).adx().fillna(0)
+            )
+        except Exception:
+            df["adx"] = 30.0  # assume trending if High/Low unavailable
+
         # Inside day: today's entire range is contained within the previous day's range
         df["is_inside_day"] = (df["High"] < df["High"].shift(1)) & (df["Low"] > df["Low"].shift(1))
 
@@ -189,6 +197,9 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "hv_rank": round(float(_hvr), 2)
         if (_hvr := latest.get("hv_rank")) is not None and pd.notna(_hvr)
         else 1.0,
+        "adx": round(float(_adx), 1)
+        if (_adx := latest.get("adx")) is not None and pd.notna(_adx)
+        else 30.0,
     }
 
 

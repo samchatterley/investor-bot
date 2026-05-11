@@ -16,6 +16,7 @@ from backtest.engine import (
     _CORE_COLS,
     _DEFAULT_PARAMS,
     _SIGNAL_PRIORITY,
+    _assert_pre_holdout,
     _compute_indicators,
     _compute_intraday_day,
     _entry_signal,
@@ -29,9 +30,11 @@ from backtest.engine import (
     run_ablation,
     run_backtest,
     run_backward_elimination,
+    run_holdout_evaluation,
     run_signal_analysis,
     run_walk_forward_optimized,
 )
+from config import HOLDOUT_START_DATE
 
 _ET = ZoneInfo("America/New_York")
 _Bar = namedtuple("_Bar", ["open", "high", "low", "close", "volume"])
@@ -2408,3 +2411,104 @@ class TestRunSignalAnalysis(unittest.TestCase):
             _print_hold_period_table(r, "2025-01-01", "2025-06-30")
         except Exception as exc:
             self.fail(f"_print_hold_period_table raised on empty stats: {exc}")
+
+
+class TestAssertPreHoldout(unittest.TestCase):
+    def test_no_warning_before_holdout(self):
+        pre = (HOLDOUT_START_DATE.replace(year=HOLDOUT_START_DATE.year - 1)).strftime("%Y-%m-%d")
+        with self.assertLogs("backtest.engine", level="WARNING") as cm:
+            # Force a log entry so assertLogs doesn't fail on empty capture
+            import logging
+
+            logging.getLogger("backtest.engine").warning("_sentinel")
+            _assert_pre_holdout(pre)
+        # Only the sentinel should be present — no holdout contamination warning
+        self.assertTrue(all("HOLDOUT CONTAMINATION" not in m for m in cm.output))
+
+    def test_warns_on_holdout_date(self):
+        on = HOLDOUT_START_DATE.strftime("%Y-%m-%d")
+        with self.assertLogs("backtest.engine", level="WARNING") as cm:
+            _assert_pre_holdout(on)
+        self.assertTrue(any("HOLDOUT CONTAMINATION" in m for m in cm.output))
+
+    def test_warns_past_holdout(self):
+        past = HOLDOUT_START_DATE.replace(year=HOLDOUT_START_DATE.year + 1).strftime("%Y-%m-%d")
+        with self.assertLogs("backtest.engine", level="WARNING") as cm:
+            _assert_pre_holdout(past)
+        self.assertTrue(any("HOLDOUT CONTAMINATION" in m for m in cm.output))
+
+    def test_invalid_date_string_does_not_raise(self):
+        try:
+            _assert_pre_holdout("not-a-date")
+        except Exception as exc:
+            self.fail(f"_assert_pre_holdout raised on bad input: {exc}")
+
+
+class TestRunHoldoutEvaluation(unittest.TestCase):
+    def _run(self, version: str = "vTEST", tmp_dir: str | None = None):
+        ohlcv = _make_ohlcv_full(300)
+        ind = _compute_indicators(ohlcv)
+        fake_ind = {"AAPL": ind}
+        fake_raw = pd.concat(
+            {"Close": ohlcv[["Close"]], "Open": ohlcv[["Open"]], "Volume": ohlcv[["Volume"]]},
+            axis=1,
+        )
+        # Flatten to match yf.download multi-index output
+        fake_raw.columns = pd.MultiIndex.from_tuples(
+            [("Close", "AAPL"), ("Open", "AAPL"), ("Volume", "AAPL")]
+        )
+        patches: list = [
+            patch("backtest.engine.yf.download", return_value=fake_raw),
+            patch("backtest.engine._build_indicators", return_value=fake_ind),
+        ]
+        if tmp_dir:
+            patches.append(patch("backtest.engine.LOG_DIR", tmp_dir))
+            patches.append(
+                patch("backtest.engine._HOLDOUT_LOG", os.path.join(tmp_dir, "holdout_log.jsonl"))
+            )
+        [p.start() for p in patches]
+        try:
+            result = run_holdout_evaluation(
+                frozen_params={},
+                version=version,
+                symbols=["AAPL"],
+                initial_capital=10_000.0,
+            )
+        finally:
+            for p in patches:
+                p.stop()
+        return result
+
+    def test_returns_dict_with_expected_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(tmp_dir=tmp)
+        for key in ("total_return_pct", "total_trades", "win_rate_pct", "sharpe_ratio"):
+            self.assertIn(key, result)
+
+    def test_holdout_flag_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(tmp_dir=tmp)
+        self.assertTrue(result.get("holdout"))
+
+    def test_version_recorded_in_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(version="vTEST_VER", tmp_dir=tmp)
+        self.assertEqual(result.get("version"), "vTEST_VER")
+
+    def test_log_entry_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp_dir=tmp)
+            log_path = os.path.join(tmp, "holdout_log.jsonl")
+            self.assertTrue(os.path.exists(log_path))
+            with open(log_path) as f:
+                entries = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual(len(entries), 1)
+            self.assertIn("version", entries[0])
+            self.assertIn("frozen_params", entries[0])
+
+    def test_repeated_version_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(version="vDUP", tmp_dir=tmp)
+            with self.assertLogs("backtest.engine", level="WARNING") as cm:
+                self._run(version="vDUP", tmp_dir=tmp)
+            self.assertTrue(any("HOLDOUT INTEGRITY" in m for m in cm.output))
