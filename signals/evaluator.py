@@ -82,22 +82,26 @@ def evaluate_signals(
     """
     p = DEFAULT_SIGNAL_PARAMS if params is None else {**DEFAULT_SIGNAL_PARAMS, **params}
 
-    rsi = float(snapshot.get("rsi_14", 50))
-    bb = float(snapshot.get("bb_pct", 0.5))
-    vol = float(snapshot.get("vol_ratio", 1.0))
-    macd_diff = float(snapshot.get("macd_diff", 0))
+    def _f(key: str, default: float) -> float:
+        v = snapshot.get(key)
+        return float(v) if v is not None else default
+
+    rsi = _f("rsi_14", 50)
+    bb = _f("bb_pct", 0.5)
+    vol = _f("vol_ratio", 1.0)
+    macd_diff = _f("macd_diff", 0)
     macd_up = bool(snapshot.get("macd_crossed_up", False))
     ema_up = bool(snapshot.get("ema9_above_ema21", False))
     # Default adx=30 (assume trending) when High/Low data unavailable — same as engine
-    adx = float(snapshot.get("adx", 30))
-    ret_5d = float(snapshot.get("ret_5d_pct", 0))
-    ret_10d = float(snapshot.get("ret_10d_pct", 0))
-    pct_ema21 = float(snapshot.get("price_vs_ema21_pct", 0))
-    pct_52w = float(snapshot.get("price_vs_52w_high_pct", -999))
-    hv_rank = float(snapshot.get("hv_rank", 1.0))
+    adx = _f("adx", 30)
+    ret_5d = _f("ret_5d_pct", 0)
+    ret_10d = _f("ret_10d_pct", 0)
+    pct_ema21 = _f("price_vs_ema21_pct", 0)
+    pct_52w = _f("price_vs_52w_high_pct", -999)
+    hv_rank = _f("hv_rank", 1.0)
     bb_squeeze = bool(snapshot.get("bb_squeeze", False))
     is_inside_day = bool(snapshot.get("is_inside_day", False))
-    gap_pct = float(snapshot.get("gap_pct", 0))
+    gap_pct = _f("gap_pct", 0)
     close_above_open = bool(snapshot.get("close_above_open", False))
     insider_cluster = bool(snapshot.get("insider_cluster", False))
     pead_candidate = bool(snapshot.get("pead_candidate", False))
@@ -107,7 +111,7 @@ def evaluate_signals(
 
     intraday_chg = snapshot.get("intraday_change_pct")
     above_vwap = snapshot.get("price_above_vwap")
-    pct_vwap = float(snapshot.get("pct_vs_vwap", 0))
+    pct_vwap = _f("pct_vs_vwap", 0)
     orb_up = bool(snapshot.get("orb_breakout_up", False))
     intraday_rsi = snapshot.get("intraday_rsi")
 

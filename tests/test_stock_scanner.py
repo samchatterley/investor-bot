@@ -584,3 +584,54 @@ class TestRegimeBlocking(unittest.TestCase):
         result = prefilter_candidates([snap], regime="BULL_TRENDING")
         self.assertEqual(len(result), 1)
         self.assertIn("mean_reversion", result[0]["matched_signals"])
+
+
+class TestEvaluateSignalsNoneGuard(unittest.TestCase):
+    """evaluate_signals must not crash when snapshot fields are None (market_data gaps)."""
+
+    def test_none_gap_pct_does_not_crash(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(gap_pct=None)
+        result = evaluate_signals(snap)
+        self.assertIsInstance(result, list)
+
+    def test_none_ret_5d_does_not_crash(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(ret_5d_pct=None)
+        result = evaluate_signals(snap)
+        self.assertIsInstance(result, list)
+
+    def test_none_rsi_does_not_crash(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(rsi_14=None)
+        result = evaluate_signals(snap)
+        self.assertIsInstance(result, list)
+
+    def test_none_vol_ratio_does_not_crash(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(vol_ratio=None)
+        result = evaluate_signals(snap)
+        self.assertIsInstance(result, list)
+
+    def test_all_numeric_fields_none_does_not_crash(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(
+            rsi_14=None,
+            bb_pct=None,
+            vol_ratio=None,
+            macd_diff=None,
+            gap_pct=None,
+            ret_5d_pct=None,
+            ret_10d_pct=None,
+            price_vs_ema21_pct=None,
+            price_vs_52w_high_pct=None,
+            hv_rank=None,
+            pct_vs_vwap=None,
+        )
+        result = evaluate_signals(snap)
+        self.assertIsInstance(result, list)
