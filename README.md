@@ -199,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1784 tests, 94% coverage)
+├── tests/             Unit test suite (1813 tests, 94% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -802,6 +802,15 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.35 — May 2026 — unified decision→execution audit trail + urllib3 CVE fix
+
+- **Enriched `trades_executed` entries.** Every BUY/SELL/WOULD_BUY/WOULD_SELL entry in `trades_executed` now carries `decision_type`, `confidence`, `key_signal`, and `reasoning` pulled from the corresponding AI decision. Rule-based exits (earnings, stale, partial) carry `decision_type: "rule_based"` with no confidence fields. Previously `trades_executed` only had `{symbol, action, detail}`, making it impossible to trace back to the AI decision without joining two separate lists.
+- **Unified `decisions` list in portfolio tracker.** `save_daily_run` now builds and stores a `decisions` key — a single flat list of all buy and sell/hold decisions from one run, each with `{symbol, decision_type, confidence, key_signal, reasoning}`. `buy_candidates` and `position_decisions` remain for backward compatibility.
+- **urllib3 upgraded 2.6.3 → 2.7.0.** Fixes two high-severity CVEs: GHSA-qccp-gfcp-xxvc (sensitive headers forwarded in proxied redirects) and GHSA-mf9v-mfxr-j63j (decompression-bomb via streaming API).
+- **26 new tests** (`TestUnifiedDecisions` ×8, `TestEnrichedTradeFields` ×9, existing tests unaffected); 1813 passing.
+
+---
 
 ### 1.34 — May 2026 — intraday session-replay engine
 

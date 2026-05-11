@@ -46,6 +46,27 @@ def save_daily_run(
     stop_losses_triggered: list[dict],
     run_id: str | None = None,
 ):
+    # Unified decisions list — single audit trail across buy and sell decisions.
+    # buy_candidates and position_decisions kept for backward compatibility.
+    _decisions: list[dict] = [
+        {
+            "symbol": c.get("symbol", ""),
+            "decision_type": "buy",
+            "confidence": c.get("confidence"),
+            "key_signal": c.get("key_signal"),
+            "reasoning": c.get("reasoning", ""),
+        }
+        for c in ai_decisions.get("buy_candidates", [])
+    ] + [
+        {
+            "symbol": d.get("symbol", ""),
+            "decision_type": d.get("action", "SELL").lower(),
+            "confidence": d.get("confidence"),
+            "key_signal": None,
+            "reasoning": d.get("reasoning", ""),
+        }
+        for d in ai_decisions.get("position_decisions", [])
+    ]
     record = {
         "date": date,
         "run_id": run_id,
@@ -53,6 +74,7 @@ def save_daily_run(
         "account_before": account_before,
         "account_after": account_after,
         "market_summary": ai_decisions.get("market_summary", ""),
+        "decisions": _decisions,
         "position_decisions": ai_decisions.get("position_decisions", []),
         "buy_candidates": ai_decisions.get("buy_candidates", []),
         "trades_executed": trades_executed,

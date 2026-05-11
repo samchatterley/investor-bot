@@ -439,11 +439,19 @@ def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
                             "symbol": symbol,
                             "action": "PARTIAL SELL",
                             "detail": f"50% at +{pos['unrealized_plpc']:.1f}%",
+                            "decision_type": "rule_based",
                         }
                     )
             else:
                 logger.info(f"  [DRY RUN] Would partial-sell {symbol}")
-                executed.append({"symbol": symbol, "action": "PARTIAL SELL", "detail": "dry run"})
+                executed.append(
+                    {
+                        "symbol": symbol,
+                        "action": "PARTIAL SELL",
+                        "detail": "dry run",
+                        "decision_type": "rule_based",
+                    }
+                )
     return executed
 
 
@@ -755,7 +763,12 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         )
                     trader.record_sell(symbol)
                     all_trades.append(
-                        {"symbol": symbol, "action": "SELL", "detail": "earnings exit"}
+                        {
+                            "symbol": symbol,
+                            "action": "SELL",
+                            "detail": "earnings exit",
+                            "decision_type": "rule_based",
+                        }
                     )
                 else:
                     logger.error(
@@ -1015,7 +1028,16 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                     audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
                 trader.record_sell(symbol)
                 executed_symbols.add(symbol)
-                all_trades.append({"symbol": symbol, "action": "SELL", "detail": reason})
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "detail": reason,
+                        "decision_type": "sell" if decision else "rule_based",
+                        "confidence": decision.get("confidence") if decision else None,
+                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                    }
+                )
             else:
                 fail_detail = result.rejection_reason or "close failed after retries"
                 logger.error(f"  SELL FAILED {symbol} — {fail_detail}. Manual review required.")
@@ -1023,9 +1045,27 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         else:
             if _live_shadow:
                 audit_log.log_event("WOULD_SELL", {"symbol": symbol, "reason": reason[:80]})
-                all_trades.append({"symbol": symbol, "action": "WOULD_SELL", "detail": reason})
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "WOULD_SELL",
+                        "detail": reason,
+                        "decision_type": "sell" if decision else "rule_based",
+                        "confidence": decision.get("confidence") if decision else None,
+                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                    }
+                )
             else:
-                all_trades.append({"symbol": symbol, "action": "SELL", "detail": "dry run"})
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "detail": "dry run",
+                        "decision_type": "sell" if decision else "rule_based",
+                        "confidence": decision.get("confidence") if decision else None,
+                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                    }
+                )
             executed_symbols.add(symbol)
 
     # ── Execute buys (open + midday modes; close/open_sells are exits only) ────
@@ -1319,7 +1359,17 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                     continue
                             executed_symbols.add(symbol)
                             detail = f"${notional:.2f} | {candidate.get('key_signal')} | confidence={confidence}"
-                            all_trades.append({"symbol": symbol, "action": "BUY", "detail": detail})
+                            all_trades.append(
+                                {
+                                    "symbol": symbol,
+                                    "action": "BUY",
+                                    "detail": detail,
+                                    "decision_type": "buy",
+                                    "confidence": confidence,
+                                    "key_signal": candidate.get("key_signal"),
+                                    "reasoning": candidate.get("reasoning", ""),
+                                }
+                            )
                         elif buy_result and buy_result.status in (
                             OrderStatus.PARTIAL,
                             OrderStatus.TIMEOUT,
@@ -1369,6 +1419,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                     "symbol": symbol,
                                     "action": "WOULD_BUY",
                                     "detail": f"shadow ${notional:.2f} | {candidate.get('key_signal')} | conf={confidence}",
+                                    "decision_type": "buy",
+                                    "confidence": confidence,
+                                    "key_signal": candidate.get("key_signal"),
+                                    "reasoning": candidate.get("reasoning", ""),
                                 }
                             )
                         else:
@@ -1377,6 +1431,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                     "symbol": symbol,
                                     "action": "BUY",
                                     "detail": f"dry run ${notional:.2f}",
+                                    "decision_type": "buy",
+                                    "confidence": confidence,
+                                    "key_signal": candidate.get("key_signal"),
+                                    "reasoning": candidate.get("reasoning", ""),
                                 }
                             )
                         orders_placed += 1

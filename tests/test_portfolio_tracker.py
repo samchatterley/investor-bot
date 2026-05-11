@@ -415,3 +415,77 @@ class TestExperimentBaseline(PortfolioTrackerBase):
         with patch("utils.portfolio_tracker._EXPERIMENT_BASELINE_PATH", path):
             result = load_experiment_baseline()
         self.assertIsNone(result)
+
+
+class TestUnifiedDecisions(PortfolioTrackerBase):
+    """save_daily_run builds a unified decisions list from buy_candidates + position_decisions."""
+
+    def _ai_with_decisions(self):
+        return {
+            "market_summary": "flat",
+            "buy_candidates": [
+                {
+                    "symbol": "AAPL",
+                    "confidence": 8,
+                    "key_signal": "momentum",
+                    "reasoning": "strong trend",
+                },
+            ],
+            "position_decisions": [
+                {"symbol": "MSFT", "action": "SELL", "confidence": 7, "reasoning": "stale"},
+                {"symbol": "TSLA", "action": "HOLD", "confidence": 5, "reasoning": "wait"},
+            ],
+        }
+
+    def _record(self):
+        save_daily_run(
+            "2026-01-15", _account(100_000), _account(101_000), self._ai_with_decisions(), [], []
+        )
+        records = load_history()
+        return records[0]
+
+    def test_decisions_key_present(self):
+        record = self._record()
+        self.assertIn("decisions", record)
+
+    def test_decisions_count(self):
+        record = self._record()
+        self.assertEqual(len(record["decisions"]), 3)
+
+    def test_buy_decision_type(self):
+        record = self._record()
+        aapl = next(d for d in record["decisions"] if d["symbol"] == "AAPL")
+        self.assertEqual(aapl["decision_type"], "buy")
+        self.assertEqual(aapl["confidence"], 8)
+        self.assertEqual(aapl["key_signal"], "momentum")
+        self.assertEqual(aapl["reasoning"], "strong trend")
+
+    def test_sell_decision_type(self):
+        record = self._record()
+        msft = next(d for d in record["decisions"] if d["symbol"] == "MSFT")
+        self.assertEqual(msft["decision_type"], "sell")
+        self.assertEqual(msft["confidence"], 7)
+        self.assertIsNone(msft["key_signal"])
+
+    def test_hold_decision_type(self):
+        record = self._record()
+        tsla = next(d for d in record["decisions"] if d["symbol"] == "TSLA")
+        self.assertEqual(tsla["decision_type"], "hold")
+
+    def test_buy_candidates_still_present(self):
+        """Backward compat: buy_candidates key still exists alongside decisions."""
+        record = self._record()
+        self.assertIn("buy_candidates", record)
+        self.assertEqual(len(record["buy_candidates"]), 1)
+
+    def test_position_decisions_still_present(self):
+        """Backward compat: position_decisions key still exists alongside decisions."""
+        record = self._record()
+        self.assertIn("position_decisions", record)
+        self.assertEqual(len(record["position_decisions"]), 2)
+
+    def test_empty_ai_response_empty_decisions(self):
+        save_daily_run("2026-01-16", _account(100_000), _account(100_000), _ai(), [], [])
+        records = load_history()
+        empty_record = next(r for r in records if r["date"] == "2026-01-16")
+        self.assertEqual(empty_record["decisions"], [])

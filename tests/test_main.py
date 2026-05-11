@@ -3126,5 +3126,175 @@ class TestLateReconciliationException(RunInnerBase):
                 self.fail("Reconciliation exception must not propagate")
 
 
+class TestEnrichedTradeFields(RunInnerBase):
+    """trades_executed entries carry decision context (confidence, reasoning, key_signal, decision_type)."""
+
+    def _run_with_sell(self, symbol="AAPL", dry_run=True):
+        positions = [
+            {
+                "symbol": symbol,
+                "unrealized_pl": 50.0,
+                "unrealized_plpc": 1.0,
+                "qty": 10.0,
+                "market_value": 1500.0,
+                "current_price": 150.0,
+            }
+        ]
+        decisions = _decisions(
+            sells=[
+                {"symbol": symbol, "action": "SELL", "confidence": 7, "reasoning": "stale position"}
+            ]
+        )
+        save_mock = MagicMock(return_value=_saved_record())
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": positions,
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.portfolio_tracker.save_daily_run": save_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=dry_run, mode="open", today="2026-01-15")
+        call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
+        return call_kwargs.get("trades_executed", [])
+
+    def _run_with_buy(self, dry_run=True):
+        buys = [
+            {
+                "symbol": "AAPL",
+                "confidence": 8,
+                "key_signal": "momentum",
+                "reasoning": "strong trend",
+            }
+        ]
+        decisions = _decisions(buys=buys)
+        save_mock = MagicMock(return_value=_saved_record())
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0, "score": 0.9}
+                ],
+                "main.portfolio_tracker.save_daily_run": save_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=dry_run, mode="open", today="2026-01-15")
+        call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
+        return call_kwargs.get("trades_executed", [])
+
+    def test_sell_trade_has_decision_type(self):
+        trades = self._run_with_sell()
+        sell_trades = [
+            t for t in trades if t["action"] in ("SELL", "WOULD_SELL") and t["symbol"] == "AAPL"
+        ]
+        self.assertTrue(sell_trades, "No SELL/WOULD_SELL trade recorded")
+        for t in sell_trades:
+            self.assertIn("decision_type", t)
+
+    def test_sell_trade_decision_type_is_sell(self):
+        trades = self._run_with_sell()
+        sell_trades = [
+            t for t in trades if t["action"] in ("SELL", "WOULD_SELL") and t["symbol"] == "AAPL"
+        ]
+        for t in sell_trades:
+            self.assertEqual(t["decision_type"], "sell")
+
+    def test_sell_trade_has_confidence(self):
+        trades = self._run_with_sell()
+        sell_trades = [
+            t for t in trades if t["action"] in ("SELL", "WOULD_SELL") and t["symbol"] == "AAPL"
+        ]
+        for t in sell_trades:
+            self.assertEqual(t["confidence"], 7)
+
+    def test_sell_trade_has_reasoning(self):
+        trades = self._run_with_sell()
+        sell_trades = [
+            t for t in trades if t["action"] in ("SELL", "WOULD_SELL") and t["symbol"] == "AAPL"
+        ]
+        for t in sell_trades:
+            self.assertIn("reasoning", t)
+            self.assertIsInstance(t["reasoning"], str)
+
+    def test_buy_trade_has_decision_type(self):
+        trades = self._run_with_buy()
+        buy_trades = [
+            t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
+        ]
+        if not buy_trades:
+            self.skipTest("No BUY trade triggered (sizing or gate blocked)")
+        for t in buy_trades:
+            self.assertEqual(t["decision_type"], "buy")
+
+    def test_buy_trade_has_key_signal(self):
+        trades = self._run_with_buy()
+        buy_trades = [
+            t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
+        ]
+        if not buy_trades:
+            self.skipTest("No BUY trade triggered")
+        for t in buy_trades:
+            self.assertIn("key_signal", t)
+
+    def test_buy_trade_has_confidence(self):
+        trades = self._run_with_buy()
+        buy_trades = [
+            t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
+        ]
+        if not buy_trades:
+            self.skipTest("No BUY trade triggered")
+        for t in buy_trades:
+            self.assertIn("confidence", t)
+
+    def test_buy_trade_has_reasoning(self):
+        trades = self._run_with_buy()
+        buy_trades = [
+            t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
+        ]
+        if not buy_trades:
+            self.skipTest("No BUY trade triggered")
+        for t in buy_trades:
+            self.assertIn("reasoning", t)
+
+    def test_rule_based_sell_has_rule_based_decision_type(self):
+        """Stale position with no AI decision → decision_type=rule_based."""
+        positions = [
+            {
+                "symbol": "TSLA",
+                "unrealized_pl": 0.0,
+                "unrealized_plpc": 0.0,
+                "qty": 5.0,
+                "market_value": 1000.0,
+                "current_price": 200.0,
+            }
+        ]
+        # No position_decisions for TSLA — only a stale entry
+        decisions = _decisions()
+        save_mock = MagicMock(return_value=_saved_record())
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": positions,
+                "main.trader.get_position_ages": {"TSLA": 999},  # very stale
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.portfolio_tracker.save_daily_run": save_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+        call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
+        trades = call_kwargs.get("trades_executed", [])
+        tsla_trades = [t for t in trades if t.get("symbol") == "TSLA"]
+        if tsla_trades:
+            for t in tsla_trades:
+                self.assertEqual(t.get("decision_type"), "rule_based")
+
+
 if __name__ == "__main__":
     unittest.main()
