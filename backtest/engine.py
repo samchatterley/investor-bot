@@ -51,6 +51,7 @@ from config import (
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
 )
+from data.universe_history import get_universe_for_date
 from signals.evaluator import DEFAULT_SIGNAL_PARAMS, SIGNAL_PRIORITY, evaluate_signals
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
@@ -1150,13 +1151,22 @@ def run_walk_forward_optimized(
         train_dates = trading_dates[fold["train_slice"]]
         test_dates = trading_dates[fold["test_slice"]]
 
+        # Point-in-time universe: exclude symbols that weren't yet public on
+        # the train window's start date (prevents lookahead from future IPOs).
+        fold_start_date = train_dates[0].date() if len(train_dates) else date.today()
+        pit_syms = get_universe_for_date(fold_start_date, list(indicators.keys()))
+        pit_indicators = {s: indicators[s] for s in pit_syms if s in indicators}
+        if len(pit_indicators) < len(indicators):
+            excluded = set(indicators.keys()) - set(pit_indicators.keys())
+            logger.debug(f"Fold {fold['train_start']}: excluded {excluded} (not yet public)")
+
         best_params = all_combos[0]
         best_score = -float("inf")
         best_train_trades = 0
 
         for combo in all_combos:
             r = _run_simulation(
-                indicators,
+                pit_indicators,
                 train_dates,
                 initial_capital,
                 max_positions,
@@ -1178,7 +1188,7 @@ def run_walk_forward_optimized(
                 best_train_trades = r["total_trades"]
 
         oos = _run_simulation(
-            indicators,
+            pit_indicators,
             test_dates,
             initial_capital,
             max_positions,
@@ -1194,7 +1204,7 @@ def run_walk_forward_optimized(
         )
 
         baseline_rets = []
-        for _sym, df in indicators.items():
+        for _sym, df in pit_indicators.items():
             try:
                 start_px = float(df.loc[df.index >= test_dates[0]].iloc[0]["Close"])
                 end_px = float(df.loc[df.index <= test_dates[-1]].iloc[-1]["Close"])
