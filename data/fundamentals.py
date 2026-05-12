@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
 from datetime import UTC, datetime
 
-import yfinance as yf
+import requests
 
-from config import LOG_DIR
+from config import FINNHUB_API_KEY, LOG_DIR
 
 logger = logging.getLogger(__name__)
 
+_BASE = "https://finnhub.io/api/v1"
 _FUND_CACHE = os.path.join(LOG_DIR, "fmp_fundamentals_cache.json")
 _ANALYST_CACHE = os.path.join(LOG_DIR, "fmp_analyst_cache.json")
 _CACHE_TTL_HOURS = 24
@@ -39,76 +39,70 @@ def _is_stale(entry: dict) -> bool:
         return True
 
 
-def _fetch_ratios(sym: str) -> tuple[str, dict]:
+def _get(path: str, params: dict | None = None) -> dict | list | None:
+    if not FINNHUB_API_KEY:
+        return None
     try:
-        info = yf.Ticker(sym).info
-        if not info:
-            return sym, {}
-        data = {
-            "roe": info.get("returnOnEquity"),
-            "profit_margin": info.get("profitMargins"),
-            "debt_to_equity": info.get("debtToEquity"),
-            "current_ratio": info.get("currentRatio"),
-        }
-        if all(v is None for v in data.values()):
-            return sym, {}
-        return sym, data
+        resp = requests.get(
+            f"{_BASE}{path}",
+            params={"token": FINNHUB_API_KEY, **(params or {})},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        logger.debug(f"yfinance ratios {sym}: {e}")
+        logger.debug(f"Finnhub {path}: {e}")
+        return None
+
+
+def _fetch_ratios(sym: str) -> tuple[str, dict]:
+    raw = _get("/stock/metric", {"symbol": sym, "metric": "all"})
+    if not raw:
         return sym, {}
-
-
-# yfinance recommendationKey → (bullish_pct, bearish_pct) approximations.
-# yfinance doesn't expose per-category analyst counts, so these are directionally
-# correct estimates derived from the consensus label.
-_REC_SENTIMENT: dict[str, tuple[int, int]] = {
-    "strong_buy": (90, 2),
-    "buy": (72, 8),
-    "hold": (38, 28),
-    "underperform": (18, 52),
-    "sell": (8, 72),
-    "strong_sell": (4, 88),
-}
+    m = raw.get("metric") or {}
+    # Finnhub reports ROE and margins as percentages — convert to decimal ratios
+    roe = m.get("roeTTM")
+    margin = m.get("netProfitMarginTTM")
+    data = {
+        "roe": round(roe / 100, 6) if roe is not None else None,
+        "profit_margin": round(margin / 100, 6) if margin is not None else None,
+        "debt_to_equity": m.get("totalDebt/totalEquityAnnual"),
+        "current_ratio": m.get("currentRatioAnnual"),
+    }
+    if all(v is None for v in data.values()):
+        return sym, {}
+    return sym, data
 
 
 def _fetch_analyst(sym: str) -> tuple[str, dict]:
-    try:
-        info = yf.Ticker(sym).info
-        if not info:
-            return sym, {}
-
-        data: dict = {}
-
-        rec_key = (info.get("recommendationKey") or "").lower()
-        n_analysts = info.get("numberOfAnalystOpinions")
-
-        if rec_key in _REC_SENTIMENT:
-            bullish, bearish = _REC_SENTIMENT[rec_key]
-            data["bullish_pct"] = bullish
-            data["bearish_pct"] = bearish
-
-        if n_analysts:
-            data["analyst_count"] = int(n_analysts)
-
-        target = info.get("targetMeanPrice")
-        if target:
-            with contextlib.suppress(ValueError, TypeError):
-                data["target_price"] = round(float(target), 2)
-
-        return sym, data
-    except Exception as e:
-        logger.debug(f"yfinance analyst {sym}: {e}")
+    raw = _get("/stock/recommendation", {"symbol": sym})
+    if not raw or not isinstance(raw, list) or not raw:
         return sym, {}
+    # Take the most recent period (first element)
+    r = raw[0]
+    strong_buy = int(r.get("strongBuy") or 0)
+    buy = int(r.get("buy") or 0)
+    hold = int(r.get("hold") or 0)
+    sell = int(r.get("sell") or 0)
+    strong_sell = int(r.get("strongSell") or 0)
+    total = strong_buy + buy + hold + sell + strong_sell
+    if not total:
+        return sym, {}
+    return sym, {
+        "bullish_pct": round((strong_buy + buy) / total * 100),
+        "bearish_pct": round((sell + strong_sell) / total * 100),
+        "analyst_count": total,
+    }
 
 
 def get_fundamentals(symbols: list[str]) -> dict[str, dict]:
-    """Fetch key financial ratios from yfinance with 24-hour cache.
+    """Fetch key financial ratios from Finnhub with 24-hour cache.
 
     Returns {symbol: {roe, profit_margin, debt_to_equity, current_ratio}}.
-    Individual fields are None when yfinance doesn't report them. Symbols
-    with no data are omitted.
+    Individual fields are None when Finnhub doesn't report them. Symbols
+    with no data are omitted. Returns {} immediately when FINNHUB_API_KEY is unset.
     """
-    if not symbols:
+    if not FINNHUB_API_KEY or not symbols:
         return {}
 
     cache = _load_cache(_FUND_CACHE)
@@ -140,13 +134,13 @@ def get_fundamentals(symbols: list[str]) -> dict[str, dict]:
 
 
 def get_analyst_consensus(symbols: list[str]) -> dict[str, dict]:
-    """Fetch analyst ratings and price targets from yfinance with 24-hour cache.
+    """Fetch analyst ratings from Finnhub with 24-hour cache.
 
-    Returns {symbol: {bullish_pct, bearish_pct, analyst_count, target_price}}.
-    bullish_pct/bearish_pct are derived from yfinance's recommendationKey label.
-    target_price is optional and may be absent.
+    Returns {symbol: {bullish_pct, bearish_pct, analyst_count}}.
+    bullish_pct/bearish_pct are computed from exact strongBuy/buy/sell/strongSell counts.
+    Returns {} immediately when FINNHUB_API_KEY is unset.
     """
-    if not symbols:
+    if not FINNHUB_API_KEY or not symbols:
         return {}
 
     cache = _load_cache(_ANALYST_CACHE)

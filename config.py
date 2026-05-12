@@ -32,6 +32,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
 # Explicit trading mode — set TRADING_MODE=live to enable live trading.
 # If TRADING_MODE is set, the URL is validated against the expected Alpaca endpoint.
