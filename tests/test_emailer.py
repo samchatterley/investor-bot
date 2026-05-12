@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from notifications.emailer import (
     _all_recipients,
+    _build_closed_section,
     _build_diagnostics_section,
     _build_html,
     _build_trade_cards,
@@ -72,6 +73,13 @@ class TestHumaniseDetail(unittest.TestCase):
 
 
 class TestBuildHtml(unittest.TestCase):
+    def setUp(self):
+        self._patcher = patch("notifications.emailer._get_live_positions", return_value={})
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
     def test_returns_string(self):
         html = _build_html(_record())
         self.assertIsInstance(html, str)
@@ -93,9 +101,10 @@ class TestBuildHtml(unittest.TestCase):
         html = _build_html(_record(trades=trades))
         self.assertIn("NVDA", html)
 
-    def test_no_trades_message_shown(self):
+    def test_no_trades_stat_shows_zero(self):
         html = _build_html(_record(trades=[]))
-        self.assertIn("No trades", html)
+        # Trades stat in the P&L hero shows 0 when there are no trades
+        self.assertIn(">0<", html)
 
     def test_paper_trading_label(self):
         html = _build_html(_record())
@@ -341,7 +350,7 @@ class TestNamedRecipients(unittest.TestCase):
 
 
 class TestBuildTradeCards(unittest.TestCase):
-    def test_no_trades_returns_no_trades_message(self):
+    def test_no_buys_returns_empty(self):
         record = {
             "trades_executed": [],
             "stop_losses_triggered": [],
@@ -349,7 +358,7 @@ class TestBuildTradeCards(unittest.TestCase):
             "position_decisions": [],
         }
         html = _build_trade_cards(record)
-        self.assertIn("No trades", html)
+        self.assertEqual(html, "")
 
     def test_buy_card_shown(self):
         record = {
@@ -362,7 +371,8 @@ class TestBuildTradeCards(unittest.TestCase):
         self.assertIn("AAPL", html)
         self.assertIn("BUY", html)
 
-    def test_sell_card_shown(self):
+    def test_sell_not_in_trade_cards(self):
+        # SELLs belong in _build_closed_section, not _build_trade_cards
         record = {
             "trades_executed": [{"symbol": "MSFT", "action": "SELL", "detail": "partial exit"}],
             "stop_losses_triggered": [],
@@ -370,6 +380,29 @@ class TestBuildTradeCards(unittest.TestCase):
             "position_decisions": [{"symbol": "MSFT", "action": "SELL", "reasoning": "target hit"}],
         }
         html = _build_trade_cards(record)
+        self.assertEqual(html, "")
+
+    def test_stop_loss_not_in_trade_cards(self):
+        # Stop losses belong in _build_closed_section, not _build_trade_cards
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [{"symbol": "NVDA", "pl_pct": -4.2}],
+            "buy_candidates": [],
+            "position_decisions": [],
+        }
+        html = _build_trade_cards(record)
+        self.assertEqual(html, "")
+
+
+class TestBuildClosedSection(unittest.TestCase):
+    def test_sell_card_shown(self):
+        record = {
+            "trades_executed": [{"symbol": "MSFT", "action": "SELL", "detail": "partial exit"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [{"symbol": "MSFT", "action": "SELL", "reasoning": "target hit"}],
+        }
+        html = _build_closed_section(record)
         self.assertIn("MSFT", html)
         self.assertIn("SELL", html)
 
@@ -380,9 +413,51 @@ class TestBuildTradeCards(unittest.TestCase):
             "buy_candidates": [],
             "position_decisions": [],
         }
-        html = _build_trade_cards(record)
+        html = _build_closed_section(record)
         self.assertIn("NVDA", html)
         self.assertIn("STOP LOSS", html)
+
+    def test_empty_when_nothing_closed(self):
+        record = {
+            "trades_executed": [{"symbol": "AAPL", "action": "BUY", "detail": "$5000"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [],
+        }
+        html = _build_closed_section(record)
+        self.assertEqual(html, "")
+
+    def test_stop_loss_pl_shown(self):
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [{"symbol": "TSLA", "pl_pct": -6.5}],
+            "buy_candidates": [],
+            "position_decisions": [],
+        }
+        html = _build_closed_section(record)
+        self.assertIn("-6.5%", html)
+
+    def test_sell_reasoning_shown(self):
+        record = {
+            "trades_executed": [{"symbol": "AMZN", "action": "SELL", "detail": "exit"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {"symbol": "AMZN", "action": "SELL", "reasoning": "hit profit target"}
+            ],
+        }
+        html = _build_closed_section(record)
+        self.assertIn("hit profit target", html)
+
+    def test_header_shows_count(self):
+        record = {
+            "trades_executed": [{"symbol": "AAPL", "action": "SELL", "detail": "exit"}],
+            "stop_losses_triggered": [{"symbol": "NVDA", "pl_pct": -3.0}],
+            "buy_candidates": [],
+            "position_decisions": [],
+        }
+        html = _build_closed_section(record)
+        self.assertIn("Closed today (2)", html)
 
     def test_reasoning_appears_in_buy_card(self):
         record = {

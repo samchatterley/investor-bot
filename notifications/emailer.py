@@ -225,17 +225,107 @@ def _humanise_detail(detail: str) -> str:
     return " · ".join(result)
 
 
+def _trade_card(t: dict) -> str:
+    detail_row = ""
+    if t.get("detail"):
+        detail_row = f"""
+  <tr>
+    <td style="padding:6px 16px 14px;background:{t["bg"]};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#777;line-height:1.5">
+      {t["detail"]}
+    </td>
+  </tr>"""
+    reasoning_row = ""
+    if t.get("reasoning"):
+        reasoning_row = f"""
+  <tr>
+    <td style="padding:12px 16px 14px;background:{t["reasoning_bg"]};border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">
+      <p style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin:0 0 4px 0">Why</p>
+      <p style="font-size:13px;color:#444;line-height:1.6;margin:0">{escape(t["reasoning"])}</p>
+    </td>
+  </tr>"""
+    company_html = (
+        f'<span style="margin-left:8px;font-size:14px;font-weight:normal;color:#555;font-family:Arial,Helvetica,sans-serif">{escape(t["company"])}</span>'
+        if t.get("company")
+        else ""
+    )
+    return f"""<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
+  <tr>
+    <td style="background:{t["bg"]};padding:14px 16px 0">
+      <span style="font-size:18px;font-weight:bold;color:#111;font-family:Arial,Helvetica,sans-serif">{escape(t["symbol"])}</span>
+      {company_html}
+      <span style="margin-left:8px;background:{t["badge_bg"]};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{escape(t["action"])}</span>
+    </td>
+  </tr>
+  {detail_row}
+  {reasoning_row}
+</table>
+"""
+
+
 def _build_trade_cards(record: dict) -> str:
-    all_trades = []
+    """BUY trades only — opened today."""
+    buy_reasons: dict[str, str] = {}
+    for b in record.get("buy_candidates", []):
+        buy_reasons[b["symbol"]] = b.get("summary") or b.get("reasoning", "")
+    for d in record.get("decisions", []):
+        if d.get("decision_type", "").upper() == "BUY" and d["symbol"] not in buy_reasons:
+            buy_reasons[d["symbol"]] = d.get("summary") or d.get("reasoning", "")
+
+    buys = [t for t in record.get("trades_executed", []) if t.get("action") == "BUY"]
+    if not buys:
+        return ""
+
+    header = f'<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:24px 0 14px 0">Opened today ({len(buys)})</p>'
+    cards = header
+    for t in buys:
+        sym = t["symbol"]
+        reasoning = buy_reasons.get(sym, "")
+        detail_str = _humanise_detail(t.get("detail", ""))
+        if not reasoning:
+            raw_signal = next(
+                (p.strip() for p in t.get("detail", "").split("|") if p.strip() in _SIGNAL_LABELS),
+                None,
+            )
+            if raw_signal:
+                reasoning = _SIGNAL_LABELS[raw_signal]
+        cards += _trade_card(
+            {
+                "symbol": sym,
+                "company": _TICKER_NAMES.get(sym, ""),
+                "action": "BUY",
+                "detail": detail_str,
+                "reasoning": reasoning,
+                "bg": "#f1f8f1",
+                "badge_bg": "#2e7d32",
+                "reasoning_bg": "#f7fbf7",
+            }
+        )
+    return cards
+
+
+def _build_closed_section(record: dict) -> str:
+    """SELL trades and stop losses — closed today."""
+    sell_reasons: dict[str, str] = {
+        d["symbol"]: d.get("summary") or d.get("reasoning", "")
+        for d in record.get("position_decisions", [])
+        if d.get("action", "").upper() in ("SELL", "STOP_LOSS")
+    }
+
+    closed = []
 
     for sl in record.get("stop_losses_triggered", []):
-        all_trades.append(
+        pct = sl.get("pl_pct", 0.0)
+        sign = "+" if pct >= 0 else ""
+        closed.append(
             {
                 "symbol": sl["symbol"],
                 "company": _TICKER_NAMES.get(sl["symbol"], ""),
                 "action": "STOP LOSS",
-                "detail": _humanise_detail(f"Closed at {sl['pl_pct']:.1f}%"),
-                "reasoning": "Position hit the trailing stop and was automatically closed to protect capital.",
+                "detail": f"{sign}{pct:.1f}% — trailing stop triggered",
+                "reasoning": sell_reasons.get(
+                    sl["symbol"],
+                    "Position hit the trailing stop and was automatically closed to protect capital.",
+                ),
                 "bg": "#fff3e0",
                 "badge_bg": "#e65100",
                 "reasoning_bg": "#fff8f3",
@@ -243,99 +333,29 @@ def _build_trade_cards(record: dict) -> str:
         )
 
     for t in record.get("trades_executed", []):
-        action = t.get("action", "?")
-        reasoning = ""
-        for b in record.get("buy_candidates", []):
-            if b["symbol"] == t["symbol"]:
-                reasoning = b.get("summary") or b.get("reasoning", "")
-                break
-        if not reasoning:
-            for d in record.get("decisions", []):
-                if d["symbol"] == t["symbol"] and d.get("decision_type", "").upper() == "BUY":
-                    reasoning = d.get("summary") or d.get("reasoning", "")
-                    break
-        for d in record.get("position_decisions", []):
-            if d["symbol"] == t["symbol"] and action == "SELL":
-                reasoning = d.get("summary") or d.get("reasoning", "")
-                break
-
-        if action == "BUY":
-            bg, badge_bg, reasoning_bg = "#f1f8f1", "#2e7d32", "#f7fbf7"
-        else:
-            bg, badge_bg, reasoning_bg = "#fff5f5", "#c62828", "#fffafa"
-
+        if t.get("action") != "SELL":
+            continue
+        sym = t["symbol"]
+        reasoning = sell_reasons.get(sym, "")
         detail_str = _humanise_detail(t.get("detail", ""))
-        raw_signal = next(
-            (p.strip() for p in t.get("detail", "").split("|") if p.strip() in _SIGNAL_LABELS),
-            None,
-        )
-        if not reasoning and raw_signal:
-            reasoning = _SIGNAL_LABELS[raw_signal]
-
-        all_trades.append(
+        closed.append(
             {
-                "symbol": t["symbol"],
-                "company": _TICKER_NAMES.get(t["symbol"], ""),
-                "action": action,
+                "symbol": sym,
+                "company": _TICKER_NAMES.get(sym, ""),
+                "action": "SELL",
                 "detail": detail_str,
                 "reasoning": reasoning,
-                "bg": bg,
-                "badge_bg": badge_bg,
-                "reasoning_bg": reasoning_bg,
+                "bg": "#fff5f5",
+                "badge_bg": "#c62828",
+                "reasoning_bg": "#fffafa",
             }
         )
 
-    if not all_trades:
-        return """<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px">
-  <tr><td style="padding:20px;background:#f9f9f9;border-radius:8px;text-align:center;color:#888;font-family:Arial,Helvetica,sans-serif;font-size:14px">
-    No trades today &#8212; holding existing positions.
-  </td></tr>
-</table>"""
+    if not closed:
+        return ""
 
-    cards = ""
-    for t in all_trades:
-        detail_row = ""
-        if t["detail"]:
-            # detail comes from _humanise_detail which produces trusted HTML — do not re-escape
-            detail_row = f"""
-  <tr>
-    <td style="padding:6px 16px 14px;background:{t["bg"]};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#777;line-height:1.5">
-      {t["detail"]}
-    </td>
-  </tr>"""
-
-        reasoning_row = ""
-        if t.get("reasoning"):
-            safe_reasoning = escape(t["reasoning"])
-            reasoning_row = f"""
-  <tr>
-    <td style="padding:12px 16px 14px;background:{t["reasoning_bg"]};border-top:1px solid #e8e8e8;font-family:Arial,Helvetica,sans-serif">
-      <p style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;margin:0 0 4px 0">Why</p>
-      <p style="font-size:13px;color:#444;line-height:1.6;margin:0">{safe_reasoning}</p>
-    </td>
-  </tr>"""
-
-        safe_symbol = escape(t["symbol"])
-        safe_action = escape(t["action"])
-        company = t.get("company", "")
-        company_html = (
-            f'<span style="margin-left:8px;font-size:14px;font-weight:normal;color:#555;font-family:Arial,Helvetica,sans-serif">{escape(company)}</span>'
-            if company
-            else ""
-        )
-        cards += f"""<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
-  <tr>
-    <td style="background:{t["bg"]};padding:14px 16px 0">
-      <span style="font-size:18px;font-weight:bold;color:#111;font-family:Arial,Helvetica,sans-serif">{safe_symbol}</span>
-      {company_html}
-      <span style="margin-left:8px;background:{t["badge_bg"]};color:#ffffff;font-size:11px;font-weight:bold;padding:3px 8px;border-radius:4px;text-transform:uppercase;font-family:Arial,Helvetica,sans-serif">{safe_action}</span>
-    </td>
-  </tr>
-  {detail_row}
-  {reasoning_row}
-</table>
-"""
-    return cards
+    header = f'<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:24px 0 14px 0">Closed today ({len(closed)})</p>'
+    return header + "".join(_trade_card(c) for c in closed)
 
 
 def _parse_unrealized_pct(reasoning: str) -> float | None:
@@ -354,39 +374,64 @@ def _parse_unrealized_pct(reasoning: str) -> float | None:
     return None
 
 
-def _build_positions_section(record: dict) -> str:
-    # Use position_decisions from the record; deduplicate by symbol (last close run wins)
-    seen: set[str] = set()
-    held: list[dict] = []
-    for d in reversed(record.get("position_decisions", [])):
-        sym = d.get("symbol", "")
-        if sym and sym not in seen and d.get("action", "").upper() == "HOLD":
-            seen.add(sym)
-            held.append(d)
-    held.reverse()
-
-    if not held:
-        return ""
-
-    meta: dict = {}
+def _get_live_positions() -> dict:
     try:
         from execution.trader import _load_all_positions
 
-        meta = _load_all_positions()
+        return _load_all_positions()
     except Exception:
-        pass
+        return {}
+
+
+def _build_positions_section(record: dict) -> str:
+    """All currently open positions from live Alpaca data."""
+    all_positions = _get_live_positions()
+
+    # Build index of today's HOLD decisions (for P&L and hold summaries)
+    hold_decisions: dict[str, dict] = {}
+    for d in record.get("position_decisions", []):
+        sym = d.get("symbol", "")
+        if sym and d.get("action", "").upper() == "HOLD":
+            hold_decisions.setdefault(sym, d)
+
+    # Determine symbol list — live positions first, fall back to HOLD decisions
+    if all_positions:
+        symbols = sorted(all_positions.keys())
+    else:
+        seen: set[str] = set()
+        symbols = []
+        for d in reversed(record.get("position_decisions", [])):
+            sym = d.get("symbol", "")
+            if sym and sym not in seen and d.get("action", "").upper() == "HOLD":
+                seen.add(sym)
+                symbols.append(sym)
+        symbols.reverse()
+
+    if not symbols:
+        return ""
+
+    # "Why opened" — buy_candidates > decisions (for positions opened today)
+    buy_reasons: dict[str, str] = {}
+    for b in record.get("buy_candidates", []):
+        sym = b.get("symbol", "")
+        if sym:
+            buy_reasons[sym] = b.get("summary") or b.get("reasoning", "")
+    for d in record.get("decisions", []):
+        sym = d.get("symbol", "")
+        if sym and d.get("decision_type", "").upper() == "BUY" and sym not in buy_reasons:
+            buy_reasons[sym] = d.get("summary") or d.get("reasoning", "")
 
     rows = ""
-    for d in held:
-        sym = d["symbol"]
+    for sym in symbols:
+        pos_meta = all_positions.get(sym, {})
         company = _TICKER_NAMES.get(sym, "")
-        pct = _parse_unrealized_pct(d.get("reasoning", ""))
-        summary = escape(d.get("summary") or "")
+        hold = hold_decisions.get(sym, {})
 
-        pos_meta = meta.get(sym, {})
+        pct = _parse_unrealized_pct(hold.get("reasoning", ""))
+        summary = escape(hold.get("summary") or buy_reasons.get(sym, ""))
+
         signal_key = pos_meta.get("signal", "")
         if not signal_key:
-            # Fall back to buy decision from today's record
             for dec in record.get("decisions", []):
                 if (
                     dec.get("symbol") == sym
@@ -400,6 +445,7 @@ def _build_positions_section(record: dict) -> str:
             if signal_key and signal_key != "unknown"
             else ""
         )
+
         entry_date_str = pos_meta.get("entry_date", "")
         days_held = ""
         if entry_date_str:
@@ -444,7 +490,7 @@ def _build_positions_section(record: dict) -> str:
 </tr>
 """
 
-    return f"""<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:24px 0 14px 0">Open positions ({len(held)})</p>
+    return f"""<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:24px 0 14px 0">Open positions ({len(symbols)})</p>
 <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:8px">
 {rows}</table>
 """
@@ -464,19 +510,15 @@ def _build_html(record: dict, name: str = "there") -> str:
     trade_count = len(record.get("trades_executed", [])) + len(
         record.get("stop_losses_triggered", [])
     )
-    trade_line = (
-        f"{trade_count} trade{'s' if trade_count != 1 else ''} today"
-        if trade_count
-        else "No trades today"
-    )
 
     from config import IS_PAPER
 
     mode_label = "Paper trading" if IS_PAPER else "Live trading"
     mode_colour = "#999999" if IS_PAPER else "#e65100"
 
-    trade_cards = _build_trade_cards(record)
     positions_section = _build_positions_section(record)
+    trade_cards = _build_trade_cards(record)
+    closed_section = _build_closed_section(record)
 
     glossary_rows = "".join(
         f"<tr>"
@@ -549,12 +591,11 @@ def _build_html(record: dict, name: str = "there") -> str:
             </tr>
           </table>
 
-          <!-- Trades section -->
-          <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:0 0 14px 0">{trade_line}</p>
+          {positions_section}
 
           {trade_cards}
 
-          {positions_section}
+          {closed_section}
 
           <!-- Glossary -->
           <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:32px;border-top:1px solid #eeeeee">
