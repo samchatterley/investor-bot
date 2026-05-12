@@ -255,5 +255,94 @@ class TestStopQtyTruncation(unittest.TestCase):
         self.assertLessEqual(float(submitted.qty), raw_qty)
 
 
+# ---------------------------------------------------------------------------
+# Incident 6 — ensure_stops_attached: pending SELL orders not counted as coverage
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureStopsPendingSellCoverage(unittest.TestCase):
+    """
+    Incident 6 (2026-05-12): ensure_stops_attached tried to place a stop on AMZN
+    while a stale pending SELL order held the shares, triggering Alpaca error 40310000.
+    Any open SELL order (MARKET or LIMIT) must be counted as coverage.
+    """
+
+    def _make_position(self, symbol, qty, price=100.0):
+        pos = MagicMock()
+        pos.symbol = symbol
+        pos.qty = str(qty)
+        pos.current_price = str(price)
+        return pos
+
+    def _make_order(self, symbol, qty, order_type_str, side_str="sell"):
+        from alpaca.trading.enums import OrderSide, OrderType
+
+        o = MagicMock()
+        o.symbol = symbol
+        o.qty = str(qty)
+        o.side = OrderSide.SELL if side_str == "sell" else OrderSide.BUY
+        type_map = {
+            "market": OrderType.MARKET,
+            "limit": OrderType.LIMIT,
+            "trailing_stop": OrderType.TRAILING_STOP,
+            "stop": OrderType.STOP,
+            "stop_limit": OrderType.STOP_LIMIT,
+        }
+        o.order_type = type_map[order_type_str]
+        return o
+
+    def _call(self, positions, open_orders):
+        from execution.trader import ensure_stops_attached
+
+        client = MagicMock()
+        client.get_all_positions.return_value = positions
+        client.get_orders.return_value = open_orders
+        return ensure_stops_attached(client), client
+
+    def test_pending_market_sell_counts_as_coverage(self):
+        """A pending MARKET sell should prevent stop attachment — no submit_order call."""
+        pos = self._make_position("AMZN", 10, price=200.0)
+        sell_order = self._make_order("AMZN", 10, "market")
+        result, client = self._call([pos], [sell_order])
+        client.submit_order.assert_not_called()
+        self.assertTrue(result)
+
+    def test_pending_limit_sell_counts_as_coverage(self):
+        """A pending LIMIT sell should prevent stop attachment."""
+        pos = self._make_position("AMD", 5, price=150.0)
+        sell_order = self._make_order("AMD", 5, "limit")
+        result, client = self._call([pos], [sell_order])
+        client.submit_order.assert_not_called()
+        self.assertTrue(result)
+
+    def test_trailing_stop_still_counts_as_coverage(self):
+        """Existing stop-type orders must still count (regression guard)."""
+        pos = self._make_position("NVDA", 8, price=900.0)
+        stop_order = self._make_order("NVDA", 8, "trailing_stop")
+        result, client = self._call([pos], [stop_order])
+        client.submit_order.assert_not_called()
+        self.assertTrue(result)
+
+    def test_uncovered_position_still_gets_stop(self):
+        """Position with no sell order should still have a stop placed."""
+        pos = self._make_position("TSM", 10, price=180.0)
+        order = MagicMock()
+        order.id = "new-stop"
+        order.is_success = True
+
+        client = MagicMock()
+        client.get_all_positions.return_value = [pos]
+        client.get_orders.return_value = []
+
+        from execution.trader import ensure_stops_attached
+
+        with patch("execution.trader.place_trailing_stop") as mock_stop:
+            mock_result = MagicMock()
+            mock_result.is_success = True
+            mock_stop.return_value = mock_result
+            ensure_stops_attached(client)
+        mock_stop.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

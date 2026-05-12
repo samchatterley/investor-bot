@@ -5,7 +5,7 @@ from datetime import date
 
 import pandas as pd
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
+from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import (
     MarketOrderRequest,
     StopOrderRequest,
@@ -615,13 +615,13 @@ def ensure_stops_attached(client: TradingClient) -> bool:
             return True
         open_orders = client.get_orders()
 
-        # Sum protected qty per symbol across all active sell stop orders
+        # Sum covered qty per symbol: stop orders AND any pending SELL (market/limit)
+        # A pending sell order commits those shares in Alpaca — placing a stop on top
+        # triggers error 40310000 "insufficient qty available". Treat any open SELL
+        # order as equivalent coverage so we don't attempt a redundant stop.
         stop_qty: dict[str, float] = {}
         for o in open_orders:
-            if (
-                o.order_type in {OrderType.TRAILING_STOP, OrderType.STOP, OrderType.STOP_LIMIT}
-                and o.side == OrderSide.SELL
-            ):
+            if o.side == OrderSide.SELL:
                 stop_qty[o.symbol] = stop_qty.get(o.symbol, 0.0) + float(o.qty or 0)
 
         all_protected = True
