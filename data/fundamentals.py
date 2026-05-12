@@ -4,7 +4,6 @@ import contextlib
 import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 
 import yfinance as yf
@@ -16,7 +15,6 @@ logger = logging.getLogger(__name__)
 _FUND_CACHE = os.path.join(LOG_DIR, "fmp_fundamentals_cache.json")
 _ANALYST_CACHE = os.path.join(LOG_DIR, "fmp_analyst_cache.json")
 _CACHE_TTL_HOURS = 24
-_MAX_WORKERS = 5
 
 
 def _load_cache(path: str) -> dict:
@@ -126,16 +124,14 @@ def get_fundamentals(symbols: list[str]) -> dict[str, dict]:
             to_fetch.append(sym)
 
     if to_fetch:
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-            futures = {executor.submit(_fetch_ratios, sym): sym for sym in to_fetch}
-            for fut in as_completed(futures):
-                try:
-                    sym, data = fut.result()
-                    cache[sym] = {"fetched_at": now_iso, "data": data}
-                    if data:
-                        result[sym] = data
-                except Exception as e:
-                    logger.debug(f"Fundamentals fetch error: {e}")
+        for sym in to_fetch:
+            try:
+                sym, data = _fetch_ratios(sym)
+                cache[sym] = {"fetched_at": now_iso, "data": data}
+                if data:
+                    result[sym] = data
+            except Exception as e:
+                logger.debug(f"Fundamentals fetch error: {e}")
         _save_cache(_FUND_CACHE, cache)
         logger.info(f"Fundamentals fetched for {len(to_fetch)} symbol(s)")
 
@@ -166,16 +162,14 @@ def get_analyst_consensus(symbols: list[str]) -> dict[str, dict]:
             to_fetch.append(sym)
 
     if to_fetch:
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-            futures = {executor.submit(_fetch_analyst, sym): sym for sym in to_fetch}
-            for fut in as_completed(futures):
-                try:
-                    sym, data = fut.result()
-                    cache[sym] = {"fetched_at": now_iso, "data": data}
-                    if data:
-                        result[sym] = data
-                except Exception as e:
-                    logger.debug(f"Analyst fetch error: {e}")
+        for sym in to_fetch:
+            try:
+                sym, data = _fetch_analyst(sym)
+                cache[sym] = {"fetched_at": now_iso, "data": data}
+                if data:
+                    result[sym] = data
+            except Exception as e:
+                logger.debug(f"Analyst fetch error: {e}")
         _save_cache(_ANALYST_CACHE, cache)
         logger.info(f"Analyst consensus fetched for {len(to_fetch)} symbol(s)")
 
