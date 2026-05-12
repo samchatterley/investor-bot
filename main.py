@@ -1109,7 +1109,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             regime_name = regime.get("regime", "UNKNOWN")
             # Mechanical regime gates — tighter than verbal prompt advice alone
             if regime_name == "CHOPPY":
-                regime_max_orders = 1
+                regime_max_orders = config.MAX_ORDERS_PER_RUN
                 regime_conf_bump = 1
             elif regime_name == "HIGH_VOL":
                 regime_max_orders = 2

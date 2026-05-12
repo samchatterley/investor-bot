@@ -1,8 +1,8 @@
-"""Tests for data/fundamentals.py — FMP fundamentals and analyst consensus."""
+"""Tests for data/fundamentals.py — yfinance fundamentals and analyst consensus."""
 
 import unittest
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def _now_iso() -> str:
@@ -13,57 +13,60 @@ def _stale_iso() -> str:
     return (datetime.now(UTC) - timedelta(hours=25)).isoformat()
 
 
+def _ticker_mock(info: dict) -> MagicMock:
+    m = MagicMock()
+    m.info = info
+    return m
+
+
 # ---------------------------------------------------------------------------
 # _fetch_ratios
 # ---------------------------------------------------------------------------
 
 
 class TestFetchRatios(unittest.TestCase):
-    def _call(self, raw):
+    def _call(self, info: dict):
         from data.fundamentals import _fetch_ratios
 
-        with patch("data.fundamentals._get", return_value=raw):
+        with patch("data.fundamentals.yf.Ticker", return_value=_ticker_mock(info)):
             return _fetch_ratios("AAPL")
 
-    def test_extracts_fields_from_list_response(self):
-        raw = [
+    def test_extracts_all_fields(self):
+        sym, data = self._call(
             {
-                "returnOnEquityTTM": 0.5,
-                "netProfitMarginTTM": 0.25,
-                "debtEquityRatioTTM": 1.2,
-                "currentRatioTTM": 1.8,
+                "returnOnEquity": 0.5,
+                "profitMargins": 0.25,
+                "debtToEquity": 79.5,
+                "currentRatio": 1.8,
             }
-        ]
-        sym, data = self._call(raw)
+        )
         self.assertEqual(sym, "AAPL")
         self.assertAlmostEqual(data["roe"], 0.5)
         self.assertAlmostEqual(data["profit_margin"], 0.25)
-        self.assertAlmostEqual(data["debt_to_equity"], 1.2)
+        self.assertAlmostEqual(data["debt_to_equity"], 79.5)
         self.assertAlmostEqual(data["current_ratio"], 1.8)
 
-    def test_extracts_fields_from_dict_response(self):
-        raw = {
-            "returnOnEquityTTM": 0.3,
-            "netProfitMarginTTM": 0.1,
-            "debtEquityRatioTTM": 0.8,
-            "currentRatioTTM": 2.0,
-        }
-        sym, data = self._call(raw)
+    def test_partial_info_returns_none_for_missing_fields(self):
+        _, data = self._call({"returnOnEquity": 0.3})
         self.assertAlmostEqual(data["roe"], 0.3)
-
-    def test_returns_none_for_missing_fields(self):
-        raw = [{}]
-        _, data = self._call(raw)
-        self.assertIsNone(data["roe"])
         self.assertIsNone(data["profit_margin"])
+        self.assertIsNone(data["debt_to_equity"])
 
-    def test_returns_empty_dict_on_api_failure(self):
-        sym, data = self._call(None)
+    def test_returns_empty_dict_when_all_fields_none(self):
+        sym, data = self._call({})
         self.assertEqual(sym, "AAPL")
         self.assertEqual(data, {})
 
-    def test_returns_empty_dict_on_empty_list(self):
-        sym, data = self._call([])
+    def test_returns_empty_dict_when_info_is_empty_dict(self):
+        _, data = self._call({})
+        self.assertEqual(data, {})
+
+    def test_exception_returns_empty_dict(self):
+        from data.fundamentals import _fetch_ratios
+
+        with patch("data.fundamentals.yf.Ticker", side_effect=Exception("network error")):
+            sym, data = _fetch_ratios("AAPL")
+        self.assertEqual(sym, "AAPL")
         self.assertEqual(data, {})
 
 
@@ -73,72 +76,67 @@ class TestFetchRatios(unittest.TestCase):
 
 
 class TestFetchAnalyst(unittest.TestCase):
-    def _recs(self, strong_buy=10, buy=5, hold=8, sell=2, strong_sell=1):
-        return [
-            {
-                "analystRatingsStrongBuy": strong_buy,
-                "analystRatingsbuy": buy,
-                "analystRatingsHold": hold,
-                "analystRatingsSell": sell,
-                "analystRatingsStrongSell": strong_sell,
-            }
-        ]
-
-    def _call(self, recs=None, targets=None):
+    def _call(self, info: dict):
         from data.fundamentals import _fetch_analyst
 
-        def fake_get(path, params=None):
-            if "analyst-stock-recommendations" in path:
-                return recs
-            if "price-target-consensus" in path:
-                return targets
-            return None
-
-        with patch("data.fundamentals._get", side_effect=fake_get):
+        with patch("data.fundamentals.yf.Ticker", return_value=_ticker_mock(info)):
             return _fetch_analyst("AAPL")
 
-    def test_computes_bullish_pct(self):
-        # strong_buy=10, buy=5 → bullish=15; sell=2, strong_sell=1 → bearish=3; total=26
-        _, data = self._call(recs=self._recs())
+    def test_buy_recommendation_gives_high_bullish_pct(self):
+        _, data = self._call(
+            {"recommendationKey": "buy", "numberOfAnalystOpinions": 30, "targetMeanPrice": 200.0}
+        )
         self.assertIn("bullish_pct", data)
         self.assertIn("bearish_pct", data)
-        expected_bullish = round(15 / 26 * 100)
-        self.assertEqual(data["bullish_pct"], expected_bullish)
+        self.assertGreater(data["bullish_pct"], 50)
+
+    def test_sell_recommendation_gives_high_bearish_pct(self):
+        _, data = self._call({"recommendationKey": "sell", "numberOfAnalystOpinions": 20})
+        self.assertGreater(data["bearish_pct"], 50)
+
+    def test_strong_buy_gives_highest_bullish_pct(self):
+        _, buy = self._call({"recommendationKey": "buy", "numberOfAnalystOpinions": 10})
+        _, strong_buy = self._call(
+            {"recommendationKey": "strong_buy", "numberOfAnalystOpinions": 10}
+        )
+        self.assertGreater(strong_buy["bullish_pct"], buy["bullish_pct"])
 
     def test_bullish_and_bearish_within_100(self):
-        _, data = self._call(recs=self._recs())
-        self.assertLessEqual(data["bullish_pct"] + data["bearish_pct"], 100)
+        for key in ("strong_buy", "buy", "hold", "underperform", "sell", "strong_sell"):
+            _, data = self._call({"recommendationKey": key, "numberOfAnalystOpinions": 25})
+            self.assertLessEqual(
+                data["bullish_pct"] + data["bearish_pct"],
+                100,
+                f"bullish+bearish > 100 for {key}",
+            )
 
     def test_includes_analyst_count(self):
-        _, data = self._call(recs=self._recs(strong_buy=10, buy=5, hold=8, sell=2, strong_sell=1))
-        self.assertEqual(data["analyst_count"], 26)
+        _, data = self._call({"recommendationKey": "buy", "numberOfAnalystOpinions": 42})
+        self.assertEqual(data["analyst_count"], 42)
 
-    def test_returns_empty_when_total_is_zero(self):
-        _, data = self._call(recs=self._recs(0, 0, 0, 0, 0))
+    def test_unknown_recommendation_key_omits_pct(self):
+        _, data = self._call({"recommendationKey": "neutral", "numberOfAnalystOpinions": 10})
         self.assertNotIn("bullish_pct", data)
 
-    def test_returns_empty_when_no_recs(self):
-        _, data = self._call(recs=None)
+    def test_no_recommendation_key_returns_empty(self):
+        _, data = self._call({})
         self.assertEqual(data, {})
 
-    def test_includes_target_price_from_dict(self):
-        targets = {"targetConsensus": 200.0, "targetMedian": 190.0}
-        _, data = self._call(recs=self._recs(), targets=targets)
-        self.assertEqual(data["target_price"], 200.0)
+    def test_includes_target_price(self):
+        _, data = self._call({"recommendationKey": "buy", "targetMeanPrice": 305.5})
+        self.assertEqual(data["target_price"], 305.5)
 
-    def test_includes_target_price_from_list(self):
-        targets = [{"targetConsensus": 195.0}]
-        _, data = self._call(recs=self._recs(), targets=targets)
-        self.assertEqual(data["target_price"], 195.0)
-
-    def test_falls_back_to_median_when_no_consensus(self):
-        targets = {"targetMedian": 185.0}
-        _, data = self._call(recs=self._recs(), targets=targets)
-        self.assertEqual(data["target_price"], 185.0)
-
-    def test_no_target_price_when_targets_none(self):
-        _, data = self._call(recs=self._recs(), targets=None)
+    def test_no_target_price_when_absent(self):
+        _, data = self._call({"recommendationKey": "buy", "numberOfAnalystOpinions": 10})
         self.assertNotIn("target_price", data)
+
+    def test_exception_returns_empty_dict(self):
+        from data.fundamentals import _fetch_analyst
+
+        with patch("data.fundamentals.yf.Ticker", side_effect=Exception("timeout")):
+            sym, data = _fetch_analyst("AAPL")
+        self.assertEqual(sym, "AAPL")
+        self.assertEqual(data, {})
 
 
 # ---------------------------------------------------------------------------
@@ -147,21 +145,13 @@ class TestFetchAnalyst(unittest.TestCase):
 
 
 class TestGetFundamentals(unittest.TestCase):
-    def test_returns_empty_when_no_api_key(self):
-        from data.fundamentals import get_fundamentals
-
-        with patch("data.fundamentals.FMP_API_KEY", ""):
-            result = get_fundamentals(["AAPL"])
-        self.assertEqual(result, {})
-
     def test_returns_empty_when_no_symbols(self):
         from data.fundamentals import get_fundamentals
 
-        with patch("data.fundamentals.FMP_API_KEY", "testkey"):
-            result = get_fundamentals([])
+        result = get_fundamentals([])
         self.assertEqual(result, {})
 
-    def test_cache_hit_skips_api(self):
+    def test_cache_hit_skips_fetch(self):
         from data.fundamentals import get_fundamentals
 
         cached_data = {
@@ -172,7 +162,6 @@ class TestGetFundamentals(unittest.TestCase):
         }
         cache = {"AAPL": {"fetched_at": _now_iso(), "data": cached_data}}
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value=cache),
             patch("data.fundamentals._fetch_ratios") as mock_fetch,
         ):
@@ -180,13 +169,12 @@ class TestGetFundamentals(unittest.TestCase):
         mock_fetch.assert_not_called()
         self.assertEqual(result["AAPL"]["roe"], 0.4)
 
-    def test_stale_cache_triggers_api_call(self):
+    def test_stale_cache_triggers_fetch(self):
         from data.fundamentals import get_fundamentals
 
         stale_cache = {"AAPL": {"fetched_at": _stale_iso(), "data": {"roe": 0.1}}}
         fresh_data = {"roe": 0.5, "profit_margin": 0.2, "debt_to_equity": 0.8, "current_ratio": 2.0}
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value=stale_cache),
             patch("data.fundamentals._save_cache"),
             patch("data.fundamentals._fetch_ratios", return_value=("AAPL", fresh_data)),
@@ -204,7 +192,6 @@ class TestGetFundamentals(unittest.TestCase):
             "current_ratio": 1.9,
         }
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value={}),
             patch("data.fundamentals._save_cache") as mock_save,
             patch("data.fundamentals._fetch_ratios", return_value=("AAPL", fresh_data)),
@@ -212,11 +199,10 @@ class TestGetFundamentals(unittest.TestCase):
             get_fundamentals(["AAPL"])
         mock_save.assert_called_once()
 
-    def test_api_failure_excluded_from_result(self):
+    def test_empty_fetch_excluded_from_result(self):
         from data.fundamentals import get_fundamentals
 
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value={}),
             patch("data.fundamentals._save_cache"),
             patch("data.fundamentals._fetch_ratios", return_value=("AAPL", {})),
@@ -236,7 +222,6 @@ class TestGetFundamentals(unittest.TestCase):
             return (sym, {})
 
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value={}),
             patch("data.fundamentals._save_cache"),
             patch("data.fundamentals._fetch_ratios", side_effect=fake_fetch),
@@ -252,18 +237,10 @@ class TestGetFundamentals(unittest.TestCase):
 
 
 class TestGetAnalystConsensus(unittest.TestCase):
-    def test_returns_empty_when_no_api_key(self):
-        from data.fundamentals import get_analyst_consensus
-
-        with patch("data.fundamentals.FMP_API_KEY", ""):
-            result = get_analyst_consensus(["AAPL"])
-        self.assertEqual(result, {})
-
     def test_returns_empty_when_no_symbols(self):
         from data.fundamentals import get_analyst_consensus
 
-        with patch("data.fundamentals.FMP_API_KEY", "testkey"):
-            result = get_analyst_consensus([])
+        result = get_analyst_consensus([])
         self.assertEqual(result, {})
 
     def test_cache_hit_returns_cached_data(self):
@@ -272,7 +249,6 @@ class TestGetAnalystConsensus(unittest.TestCase):
         cached = {"bullish_pct": 70, "bearish_pct": 10, "analyst_count": 20}
         cache = {"AAPL": {"fetched_at": _now_iso(), "data": cached}}
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value=cache),
             patch("data.fundamentals._fetch_analyst") as mock_fetch,
         ):
@@ -285,7 +261,6 @@ class TestGetAnalystConsensus(unittest.TestCase):
 
         analyst_data = {"bullish_pct": 65, "bearish_pct": 15, "analyst_count": 25}
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value={}),
             patch("data.fundamentals._save_cache"),
             patch("data.fundamentals._fetch_analyst", return_value=("AAPL", analyst_data)),
@@ -297,7 +272,6 @@ class TestGetAnalystConsensus(unittest.TestCase):
         from data.fundamentals import get_analyst_consensus
 
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value={}),
             patch("data.fundamentals._save_cache"),
             patch("data.fundamentals._fetch_analyst", return_value=("AAPL", {})),
@@ -310,7 +284,6 @@ class TestGetAnalystConsensus(unittest.TestCase):
 
         analyst_data = {"bullish_pct": 60, "bearish_pct": 20, "analyst_count": 15}
         with (
-            patch("data.fundamentals.FMP_API_KEY", "testkey"),
             patch("data.fundamentals._load_cache", return_value={}),
             patch("data.fundamentals._save_cache") as mock_save,
             patch("data.fundamentals._fetch_analyst", return_value=("AAPL", analyst_data)),
