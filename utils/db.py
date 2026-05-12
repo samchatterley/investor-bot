@@ -221,7 +221,12 @@ def _run_migrations():
                 if version in applied:
                     continue
                 try:
-                    conn.execute(sql)
+                    # Multi-statement DDL (contains more than one ";") requires executescript.
+                    # executescript issues an implicit COMMIT first, which is fine for DDL.
+                    if sql.count(";") > 1:
+                        conn.executescript(sql)
+                    else:
+                        conn.execute(sql)
                     conn.execute(
                         "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                         (version, datetime.now(UTC).isoformat()),
@@ -252,6 +257,7 @@ def _migrate_positions():
     try:
         with open(meta_path) as f:
             meta = json.load(f)
+        inserted = 0
         with get_db() as conn:
             existing = {row[0] for row in conn.execute("SELECT symbol FROM positions")}
             for sym, data in meta.items():
@@ -269,7 +275,11 @@ def _migrate_positions():
                             data.get("confidence", 0),
                         ),
                     )
-        logger.info(f"Migrated {len(meta)} position(s) from positions_meta.json")
+                    inserted += 1
+        if inserted:
+            logger.info(f"Migrated {inserted} position(s) from positions_meta.json")
+        # Rename so this one-time migration never re-runs
+        os.rename(meta_path, meta_path + ".migrated")
     except Exception as e:
         logger.warning(f"Position migration skipped: {e}")
 
