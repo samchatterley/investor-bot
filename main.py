@@ -544,6 +544,13 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             logger.critical(f"Account safety check failed: {e}")
             sys.exit(1)
 
+    # ── Reconcile position metadata ───────────────────────────────────────────
+    # Runs before the market-closed check so the DB always reflects broker state
+    # regardless of market hours — stale entries from JSON migration are pruned here.
+    # reconcile_positions returns symbols that exist at the broker but had no
+    # local record — unexpected positions detected BEFORE they are normalised.
+    unexpected_positions = trader.reconcile_positions(client)
+
     if not trader.is_market_open(client):
         logger.info("Market is closed. Nothing to do.")
         return
@@ -564,11 +571,6 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # Never overwritten — used to enforce MAX_EXPERIMENT_DRAWDOWN_USD for the lifetime of the run.
     if not config.IS_PAPER and not dry_run and mode == "open":
         save_experiment_baseline(account_before["portfolio_value"])
-
-    # ── Reconcile position metadata ───────────────────────────────────────────
-    # reconcile_positions returns symbols that exist at the broker but had no
-    # local record — unexpected positions detected BEFORE they are normalised.
-    unexpected_positions = trader.reconcile_positions(client)
     if unexpected_positions and not config.IS_PAPER and should_run_live_gates:
         msg = (
             f"Unexpected broker position(s) with no local record: {sorted(unexpected_positions)}. "
