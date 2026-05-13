@@ -550,12 +550,17 @@ class TestRegimeBlocking(unittest.TestCase):
         result = prefilter_candidates([snap], regime="CHOPPY")
         self.assertEqual(result, [])
 
-    def test_choppy_does_not_block_momentum(self):
-        # ret_5d > 1.0 and vol > 1.3 (canonical thresholds — strict greater-than)
+    def test_choppy_blocks_momentum(self):
         snap = _snap(ema9_above_ema21=True, macd_diff=0.5, ret_5d_pct=1.5, vol_ratio=1.4)
         result = prefilter_candidates([snap], regime="CHOPPY")
+        self.assertEqual(result, [])
+
+    def test_choppy_permits_mean_reversion(self):
+        # mean_reversion excluded from CHOPPY blocks (live data: +0.28% avg, 100% win rate, n=2)
+        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        result = prefilter_candidates([snap], regime="CHOPPY")
         self.assertEqual(len(result), 1)
-        self.assertIn("momentum", result[0]["matched_signals"])
+        self.assertIn("mean_reversion", result[0]["matched_signals"])
 
     # ── BEAR_DAY blocks ──────────────────────────────────────────────────────
 

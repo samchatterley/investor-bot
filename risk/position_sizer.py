@@ -12,6 +12,7 @@ from config import (
     TAKE_PROFIT_PCT,
     TRAILING_STOP_PCT,
 )
+from risk.risk_config import RiskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,12 @@ def _empirical_win_rate(signal: str, regime: str) -> float | None:
     return None
 
 
-def kelly_fraction(confidence: int, signal: str = "unknown", regime: str = "UNKNOWN") -> float:
+def kelly_fraction(
+    confidence: int,
+    signal: str = "unknown",
+    regime: str = "UNKNOWN",
+    risk_config: RiskConfig | None = None,
+) -> float:
     """
     Half-Kelly position sizing.
 
@@ -65,8 +71,10 @@ def kelly_fraction(confidence: int, signal: str = "unknown", regime: str = "UNKN
             f"kelly_fraction: no empirical data for {signal}/{regime} — using LLM confidence p={p:.2f}"
         )
 
+    tp = risk_config.take_profit_pct if risk_config is not None else TAKE_PROFIT_PCT
+    sl = risk_config.stop_loss_pct if risk_config is not None else STOP_LOSS_PCT
     q = 1.0 - p
-    b = TAKE_PROFIT_PCT / max(STOP_LOSS_PCT, 1e-6)
+    b = tp / max(sl, 1e-6)
     raw_kelly = (p * b - q) / b
     fraction = max(0.0, raw_kelly * KELLY_MULTIPLIER)
     return min(fraction, MAX_POSITION_PCT)
@@ -77,6 +85,7 @@ def risk_budget_size(
     confidence: int,
     signal: str = "unknown",
     regime: str = "UNKNOWN",
+    risk_config: RiskConfig | None = None,
 ) -> float:
     """
     Risk-budget position sizing, scaled by conviction.
@@ -89,8 +98,9 @@ def risk_budget_size(
     if equity <= 0:
         return 0.0
 
+    tsp = risk_config.trailing_stop_pct if risk_config is not None else TRAILING_STOP_PCT
     risk_usd = equity * RISK_PER_TRADE_PCT
-    stop_pct = TRAILING_STOP_PCT / 100.0
+    stop_pct = tsp / 100.0
     base_notional = risk_usd / max(stop_pct, 1e-6)
     base_notional = min(base_notional, equity * MAX_POSITION_WEIGHT)
 
@@ -103,7 +113,7 @@ def risk_budget_size(
         conviction_scale = 0.75
 
     try:
-        kelly = kelly_fraction(confidence, signal, regime)
+        kelly = kelly_fraction(confidence, signal, regime, risk_config=risk_config)
         logger.debug(
             f"risk_budget_size: base={base_notional:.2f} kelly_telemetry={kelly:.3f} "
             f"conviction_scale={conviction_scale:.2f} conf={confidence} {signal}/{regime}"

@@ -3,7 +3,7 @@ import logging
 import yfinance as yf
 
 from config import MIN_VOLUME
-from signals.evaluator import evaluate_signals
+from signals.evaluator import REGIME_BLOCKED, evaluate_signals
 
 logger = logging.getLogger(__name__)
 
@@ -211,17 +211,6 @@ def _passes_quality_screen(snapshot: dict) -> bool:
     return not (debt_to_equity is not None and debt_to_equity > 300)
 
 
-# Working hypotheses ported from backtest walk-forward analysis (2021–2026).
-# Treat as signal-suppression candidates to validate in live paper trading,
-# not as proven improvements.  Universe survivorship risk, low trade counts
-# in some cells, and iterative WF analysis mean these are empirically
-# suggestive but not independently validated.
-_LIVE_REGIME_BLOCKED: dict[str, set[str]] = {
-    "CHOPPY": {"mean_reversion", "macd_crossover", "inside_day_breakout"},
-    "BEAR_DAY": {"iv_compression"},
-}
-
-
 def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> list[dict]:
     """
     Rule-based screen applied before Claude analysis.
@@ -229,8 +218,8 @@ def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> li
     shared with the backtest engine to prevent live/backtest divergence.
     Stocks trading against their weekly trend are blocked unless deeply oversold.
     """
-    _blocked: frozenset[str] = frozenset(
-        _LIVE_REGIME_BLOCKED.get(regime, set()) if regime else set()
+    _blocked: frozenset[str] = (
+        REGIME_BLOCKED.get(regime or "", frozenset()) if regime else frozenset()
     )
     qualified = []
     for s in snapshots:

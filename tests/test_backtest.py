@@ -511,9 +511,11 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
         self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
 
-    def test_choppy_blocks_mean_reversion(self):
+    def test_choppy_permits_mean_reversion(self):
+        # mean_reversion intentionally excluded from CHOPPY blocks:
+        # live paper data shows +0.28% avg (100% win rate, n=2); reassess after ≥5 trades.
         row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
-        self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
+        self.assertEqual(_entry_signal(row, regime="CHOPPY"), "mean_reversion")
 
     def test_none_regime_blocks_nothing(self):
         row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)

@@ -157,7 +157,7 @@ if __name__ == "__main__":
         getattr(schedule.every(), _day).at("12:00", _ET).do(_midday)
         getattr(schedule.every(), _day).at("15:30", _ET).do(_close)
 
-    schedule.every().sunday.at("15:00", _ET).do(_weekly_review)
+    schedule.every().sunday.at("15:30", _ET).do(_weekly_review)
 
     logger.info(
         "Scheduler running — Mon–Fri at 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)"

@@ -48,11 +48,15 @@ from config import (
     SLIPPAGE_BPS,
     SPREAD_BPS,
     STOCK_UNIVERSE,
-    STOP_LOSS_PCT,
-    TAKE_PROFIT_PCT,
 )
 from data.universe_history import get_universe_for_date
-from signals.evaluator import DEFAULT_SIGNAL_PARAMS, SIGNAL_PRIORITY, evaluate_signals
+from risk.risk_config import RiskConfig
+from signals.evaluator import (
+    DEFAULT_SIGNAL_PARAMS,
+    REGIME_BLOCKED,
+    SIGNAL_PRIORITY,
+    evaluate_signals,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -64,59 +68,6 @@ _CORE_COLS = ["rsi", "macd_diff", "ema9", "ema21", "bb_pct", "vol_ratio", "ret_5
 
 # Signal priority — imported from signals.evaluator (canonical source).
 _SIGNAL_PRIORITY = SIGNAL_PRIORITY
-
-# Signals blocked per market regime.
-# mean_reversion and vix_fear_reversion are always permitted (counter-cyclical).
-# Signals blocked per regime.
-#
-# WORKING HYPOTHESES — pending paper-trading validation.
-# Blocks are economically plausible and empirically suggestive from the 2021–2026
-# walk-forward analysis, but are NOT proven improvements:
-#   - universe is constructed from current tradable listings (survivorship risk)
-#   - some cells have low trade counts (see n= annotations below)
-#   - signal blocks were derived from the same data used to validate them
-#
-# Treat every entry here as a hypothesis to confirm in live paper trading,
-# not as a settled fact.
-_REGIME_BLOCKED: dict[str, frozenset[str]] = {
-    "BEAR_DAY": frozenset(
-        {
-            "rs_leader",
-            "breakout_52w",
-            "momentum_12_1",
-            "momentum",
-            "macd_crossover",
-            "bb_squeeze",
-            "trend_pullback",
-            "inside_day_breakout",
-            "gap_and_go",
-            "orb_breakout",
-            "intraday_momentum",
-            "iv_compression",  # -1.3% avg in BEAR_DAY — n=24 (low confidence)
-        }
-    ),
-    "HIGH_VOL": frozenset(
-        {
-            "rs_leader",
-            "breakout_52w",
-            "momentum",
-            "gap_and_go",
-            "orb_breakout",
-        }
-    ),
-    "CHOPPY": frozenset(
-        {
-            "rs_leader",
-            "breakout_52w",
-            "momentum_12_1",
-            "momentum",
-            "gap_and_go",
-            "mean_reversion",  # -0.5% avg in CHOPPY — n=108
-            "macd_crossover",  # -2.0% avg in CHOPPY — n=33 (low confidence)
-            "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
-        }
-    ),
-}
 
 # Default signal thresholds — imported from signals.evaluator (canonical source).
 _DEFAULT_PARAMS = DEFAULT_SIGNAL_PARAMS
@@ -269,7 +220,7 @@ def _entry_signal(
     Delegates signal logic to signals.evaluator.evaluate_signals() — the single
     canonical implementation shared with the live scanner.
     """
-    blocked = _REGIME_BLOCKED.get(regime or "", frozenset())
+    blocked = REGIME_BLOCKED.get(regime or "", frozenset())
     if disabled_signals:
         blocked = blocked | disabled_signals
 
@@ -634,9 +585,11 @@ def _run_simulation(
     earnings_history: dict[str, list[dict]] | None = None,
     insider_history: dict[str, list[dict]] | None = None,
     disabled_signals: frozenset[str] | None = None,
+    risk_config: RiskConfig | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
+    rc = risk_config or RiskConfig.from_config()
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
     _sp_bps_override = spread_bps  # None → liquidity-scaled per trade
     cash = initial_capital
@@ -673,7 +626,7 @@ def _run_simulation(
 
             # Gap-through-stop: if today's open is already at or below the stop price,
             # fill at open (realistic — we can't catch the stop intrabar).
-            stop_price = pos["entry_price"] * (1 - STOP_LOSS_PCT)
+            stop_price = pos["entry_price"] * (1 - rc.stop_loss_pct)
             open_px = float(row_today.get("Open", px))
             if open_px <= stop_price:
                 reason = "stop_loss"
@@ -681,9 +634,9 @@ def _run_simulation(
             else:
                 pnl_pct = px / pos["entry_price"] - 1
                 reason = None
-                if pnl_pct <= -STOP_LOSS_PCT:
+                if pnl_pct <= -rc.stop_loss_pct:
                     reason = "stop_loss"
-                elif pnl_pct >= TAKE_PROFIT_PCT:
+                elif pnl_pct >= rc.take_profit_pct:
                     reason = "take_profit"
                 elif trading_days_held >= max_hold_days:
                     reason = "time_exit"

@@ -44,6 +44,55 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "mom12_1_threshold": 10.0,
 }
 
+# Canonical regime-blocked signal set — imported by both the backtest engine and
+# live scanner so the two systems always suppress the same signals in the same regimes.
+#
+# These are working hypotheses derived from backtest analysis (2021–2026 walk-forward)
+# and live paper-trading validation.  Treat every entry as a lean, not a hard rule:
+# low trade counts and survivorship risk mean individual cells are suggestive, not proven.
+#
+# mean_reversion is intentionally absent from CHOPPY: live paper data shows +0.28% avg
+# (100% win rate, n=2 — small sample).  Reassess after ≥5 live trades in CHOPPY.
+REGIME_BLOCKED: dict[str, frozenset[str]] = {
+    "BEAR_DAY": frozenset(
+        {
+            "rs_leader",
+            "breakout_52w",
+            "momentum_12_1",
+            "momentum",
+            "macd_crossover",
+            "bb_squeeze",
+            "trend_pullback",
+            "inside_day_breakout",
+            "gap_and_go",
+            "orb_breakout",
+            "intraday_momentum",
+            "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
+        }
+    ),
+    "HIGH_VOL": frozenset(
+        {
+            "rs_leader",
+            "breakout_52w",
+            "momentum",
+            "gap_and_go",
+            "orb_breakout",
+        }
+    ),
+    "CHOPPY": frozenset(
+        {
+            # Trend-following signals underperform without clear directional bias.
+            "rs_leader",
+            "breakout_52w",
+            "momentum_12_1",
+            "momentum",
+            "gap_and_go",
+            "macd_crossover",  # -2.0% avg in CHOPPY — n=33
+            "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
+        }
+    ),
+}
+
 
 def evaluate_signals(
     snapshot: dict,
