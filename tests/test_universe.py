@@ -8,6 +8,8 @@ import unittest
 from datetime import datetime, timedelta  # noqa: F401 (timedelta used in tests)
 from unittest.mock import MagicMock, patch
 
+import pandas as _real_pandas
+
 # ---------------------------------------------------------------------------
 # Stub out heavy / credential-requiring imports before the module is loaded
 # ---------------------------------------------------------------------------
@@ -22,6 +24,8 @@ def _make_stubs():
     config_stub.STOCK_UNIVERSE = ["AAPL", "MSFT", "GOOGL"]
     return {
         "config": config_stub,
+        # Pass real pandas through to avoid numpy double-import error in isolated modules
+        "pandas": _real_pandas,
         "alpaca.data.historical": MagicMock(),
         "alpaca.data.requests": MagicMock(),
         "alpaca.trading.client": MagicMock(),
@@ -49,6 +53,7 @@ def _load_universe_module():
         spec.loader.exec_module(mod)
         # Patch module-level constants to use test values
         mod._CACHE_PATH = "/tmp/test_universe_cache.json"
+        mod._SP500_CACHE_PATH = "/tmp/test_sp500_cache.json"
         mod.LOG_DIR = "/tmp/test_universe_logs"
         mod.MIN_VOLUME = 500_000
         mod.STOCK_UNIVERSE = ["AAPL", "MSFT", "GOOGL"]
@@ -66,12 +71,19 @@ def _make_asset(symbol: str, tradable=True, fractionable=True, exchange="NYSE"):
     return a
 
 
-def _make_snap(close: float, volume: float):
+def _make_snap(
+    close: float, volume: float, prev_close: float | None = None, prev_volume: float | None = None
+):
+    """Create a mock snapshot with both daily_bar and previous_daily_bar."""
     bar = MagicMock()
     bar.close = close
     bar.volume = volume
+    prev_bar = MagicMock()
+    prev_bar.close = prev_close if prev_close is not None else close
+    prev_bar.volume = prev_volume if prev_volume is not None else volume
     snap = MagicMock()
     snap.daily_bar = bar
+    snap.previous_daily_bar = prev_bar
     return snap
 
 
@@ -205,34 +217,54 @@ class TestApplySnapshotFilter(unittest.TestCase):
         return mock_dc
 
     def test_passes_price_and_volume_threshold(self):
-        snaps = {
-            "AAPL": _make_snap(close=150.0, volume=1_000_000),
-        }
+        snaps = {"AAPL": _make_snap(close=150.0, volume=1_000_000)}
         mock_cls = MagicMock(return_value=self._mock_data_client(snaps))
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["AAPL"])
         self.assertIn("AAPL", result)
 
     def test_filters_below_min_price(self):
-        snaps = {
-            "PENNY": _make_snap(close=1.0, volume=5_000_000),
-        }
+        snaps = {"PENNY": _make_snap(close=1.0, volume=5_000_000)}
         mock_cls = MagicMock(return_value=self._mock_data_client(snaps))
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["PENNY"])
         self.assertNotIn("PENNY", result)
 
     def test_filters_below_min_volume(self):
-        snaps = {
-            "ILLIQ": _make_snap(close=50.0, volume=100),
-        }
+        snaps = {"ILLIQ": _make_snap(close=50.0, volume=100)}
         mock_cls = MagicMock(return_value=self._mock_data_client(snaps))
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["ILLIQ"])
         self.assertNotIn("ILLIQ", result)
 
-    def test_skips_symbol_with_none_daily_bar(self):
+    def test_uses_previous_daily_bar_volume(self):
+        """previous_daily_bar is used for volume; daily_bar volume (intraday) is ignored."""
+        # previous_daily_bar passes, but daily_bar would fail the volume threshold
+        snaps = {
+            "SBUX": _make_snap(close=105.0, volume=100, prev_close=105.0, prev_volume=1_500_000)
+        }
+        mock_cls = MagicMock(return_value=self._mock_data_client(snaps))
+        with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
+            result = self.mod._apply_snapshot_filter(["SBUX"])
+        self.assertIn("SBUX", result)
+
+    def test_falls_back_to_daily_bar_when_no_previous(self):
+        """Falls back to daily_bar when previous_daily_bar is None."""
         snap = MagicMock()
+        snap.previous_daily_bar = None
+        bar = MagicMock()
+        bar.close = 50.0
+        bar.volume = 1_000_000
+        snap.daily_bar = bar
+        snaps = {"FALLBACK": snap}
+        mock_cls = MagicMock(return_value=self._mock_data_client(snaps))
+        with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
+            result = self.mod._apply_snapshot_filter(["FALLBACK"])
+        self.assertIn("FALLBACK", result)
+
+    def test_skips_symbol_with_no_bar_at_all(self):
+        snap = MagicMock()
+        snap.previous_daily_bar = None
         snap.daily_bar = None
         snaps = {"NOBAR": snap}
         mock_cls = MagicMock(return_value=self._mock_data_client(snaps))
@@ -246,7 +278,6 @@ class TestApplySnapshotFilter(unittest.TestCase):
         mock_cls = MagicMock(return_value=mock_dc)
         with patch.object(self.mod, "StockHistoricalDataClient", mock_cls):
             result = self.mod._apply_snapshot_filter(["AAPL", "MSFT"])
-        # Fail-closed: on error the chunk is dropped, not passed through
         self.assertNotIn("AAPL", result)
         self.assertNotIn("MSFT", result)
         self.assertEqual(result, [])
@@ -271,6 +302,76 @@ class TestApplySnapshotFilter(unittest.TestCase):
         self.assertEqual(sorted(result), ["A", "B", "C", "D", "E"])
 
 
+class TestFetchSp500Symbols(unittest.TestCase):
+    def setUp(self):
+        self.mod = _load_universe_module()
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self.mod._SP500_CACHE_PATH)
+
+    def tearDown(self):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self.mod._SP500_CACHE_PATH)
+
+    def _make_sp500_df(self, symbols: list[str]):
+        return [_real_pandas.DataFrame({"Symbol": symbols, "Security": symbols})]
+
+    def test_returns_eligible_symbols(self):
+        eligible = {"AAPL", "MSFT", "GOOGL", "JPM", "XOM"}
+        with patch(
+            "pandas.read_html",
+            return_value=self._make_sp500_df(["AAPL", "MSFT", "GOOGL", "JPM", "XOM"]),
+        ):
+            result = self.mod._fetch_sp500_symbols(eligible)
+        self.assertEqual(sorted(result), ["AAPL", "GOOGL", "JPM", "MSFT", "XOM"])
+
+    def test_excludes_non_eligible_symbols(self):
+        eligible = {"AAPL"}
+        with patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL", "NVDA"])):
+            result = self.mod._fetch_sp500_symbols(eligible)
+        self.assertIn("AAPL", result)
+        self.assertNotIn("NVDA", result)
+
+    def test_normalises_dot_tickers(self):
+        """BRK.B from Wikipedia → BRK-B if BRK-B is in eligible_set."""
+        eligible = {"BRK-B"}
+        with patch("pandas.read_html", return_value=self._make_sp500_df(["BRK.B"])):
+            result = self.mod._fetch_sp500_symbols(eligible)
+        self.assertIn("BRK-B", result)
+        self.assertNotIn("BRK.B", result)
+
+    def test_accepts_dot_form_in_eligible(self):
+        """If Alpaca uses the dot form (e.g. BRK.B), accept it too."""
+        eligible = {"BRK.B"}
+        with patch("pandas.read_html", return_value=self._make_sp500_df(["BRK.B"])):
+            result = self.mod._fetch_sp500_symbols(eligible)
+        self.assertIn("BRK-B", result)
+
+    def test_cache_hit_skips_http(self):
+        symbols = ["AAPL", "MSFT"]
+        data = {"saved_at": datetime.now().isoformat(), "symbols": symbols}
+        with open(self.mod._SP500_CACHE_PATH, "w") as f:
+            json.dump(data, f)
+        with patch("pandas.read_html") as mock_http:
+            result = self.mod._fetch_sp500_symbols({"AAPL", "MSFT"})
+        mock_http.assert_not_called()
+        self.assertEqual(result, symbols)
+
+    def test_stale_cache_refetches(self):
+        stale = {"saved_at": (datetime.now() - timedelta(days=8)).isoformat(), "symbols": ["OLD"]}
+        with open(self.mod._SP500_CACHE_PATH, "w") as f:
+            json.dump(stale, f)
+        eligible = {"AAPL"}
+        with patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL"])):
+            result = self.mod._fetch_sp500_symbols(eligible)
+        self.assertNotIn("OLD", result)
+        self.assertIn("AAPL", result)
+
+    def test_network_failure_returns_empty(self):
+        with patch("pandas.read_html", side_effect=Exception("network down")):
+            result = self.mod._fetch_sp500_symbols({"AAPL"})
+        self.assertEqual(result, [])
+
+
 class TestBuildScanUniverse(unittest.TestCase):
     def setUp(self):
         self.mod = _load_universe_module()
@@ -282,6 +383,10 @@ class TestBuildScanUniverse(unittest.TestCase):
     def tearDown(self):
         with contextlib.suppress(FileNotFoundError):
             os.remove(self.mod._CACHE_PATH)
+
+    def _patch_sp500(self, symbols=None):
+        """Return a context manager that stubs _fetch_sp500_symbols."""
+        return patch.object(self.mod, "_fetch_sp500_symbols", return_value=symbols or [])
 
     def test_cache_hit_skips_api_calls(self):
         symbols = ["AAPL", "MSFT", "AMZN"]
@@ -313,15 +418,35 @@ class TestBuildScanUniverse(unittest.TestCase):
         with (
             patch.object(self.mod, "StockHistoricalDataClient", mock_cls),
             patch.object(self.mod, "_save_cache"),
+            self._patch_sp500(),
         ):
             result = self.mod.build_scan_universe(client)
 
-        # Core symbols always present
         for sym in self.mod.STOCK_UNIVERSE:
             self.assertIn(sym, result)
-        # Dynamic additions present
         self.assertIn("AMZN", result)
         self.assertIn("NVDA", result)
+
+    def test_sp500_symbols_included_in_result(self):
+        """S&P 500 symbols returned by _fetch_sp500_symbols appear in the universe."""
+        client = MagicMock()
+        client.get_all_assets.return_value = []
+        self.mod._MAJOR_EXCHANGES = {"NYSE"}
+
+        mock_dc = MagicMock()
+        mock_dc.get_stock_snapshot.return_value = {}
+        mock_cls = MagicMock(return_value=mock_dc)
+
+        with (
+            patch.object(self.mod, "StockHistoricalDataClient", mock_cls),
+            patch.object(self.mod, "_save_cache"),
+            self._patch_sp500(["JPM", "XOM", "JNJ"]),
+        ):
+            result = self.mod.build_scan_universe(client)
+
+        self.assertIn("JPM", result)
+        self.assertIn("XOM", result)
+        self.assertIn("JNJ", result)
 
     def test_core_symbols_always_included(self):
         """Core STOCK_UNIVERSE symbols are present even when Alpaca returns nothing."""
@@ -336,6 +461,7 @@ class TestBuildScanUniverse(unittest.TestCase):
         with (
             patch.object(self.mod, "StockHistoricalDataClient", mock_cls),
             patch.object(self.mod, "_save_cache"),
+            self._patch_sp500(),
         ):
             result = self.mod.build_scan_universe(client)
 
@@ -345,7 +471,6 @@ class TestBuildScanUniverse(unittest.TestCase):
     def test_max_universe_size_respected(self):
         """Total symbols must not exceed _MAX_UNIVERSE_SIZE."""
         self.mod._MAX_UNIVERSE_SIZE = 5
-        # Return 10 dynamic symbols
         assets = [
             _make_asset(f"SYM{i}", tradable=True, fractionable=True, exchange="NYSE")
             for i in range(10)
@@ -362,6 +487,7 @@ class TestBuildScanUniverse(unittest.TestCase):
         with (
             patch.object(self.mod, "StockHistoricalDataClient", mock_cls),
             patch.object(self.mod, "_save_cache"),
+            self._patch_sp500(),
         ):
             result = self.mod.build_scan_universe(client)
 
@@ -407,9 +533,11 @@ class TestBuildScanUniverse(unittest.TestCase):
         mock_dc.get_stock_snapshot.return_value = snaps
         mock_cls = MagicMock(return_value=mock_dc)
 
+        # AAPL is in both STOCK_UNIVERSE and sp500 — must not appear twice
         with (
             patch.object(self.mod, "StockHistoricalDataClient", mock_cls),
             patch.object(self.mod, "_save_cache"),
+            self._patch_sp500(["AAPL", "AMZN"]),
         ):
             result = self.mod.build_scan_universe(client)
 
@@ -430,6 +558,7 @@ class TestBuildScanUniverse(unittest.TestCase):
         with (
             patch.object(self.mod, "StockHistoricalDataClient", mock_cls),
             patch.object(self.mod, "_save_cache", mock_save),
+            self._patch_sp500(),
         ):
             self.mod.build_scan_universe(client)
 
