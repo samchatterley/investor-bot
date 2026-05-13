@@ -219,6 +219,54 @@ STOCK_UNIVERSE = [
     "XLF",
 ]
 
+# ETFs that have no individual earnings — skip earnings lookups for these symbols.
+# Crypto ETFs (BITO, GBTC) and international ETFs (KWEB, EEM) may appear as top movers;
+# keeping this set broad avoids false "symbol may be delisted" errors from yfinance.
+ETF_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "SPY",
+        "QQQ",
+        "IWM",
+        "XLK",
+        "XLE",
+        "XLF",
+        "XLV",
+        "XLI",
+        "XLY",
+        "XLP",
+        "XLU",
+        "XLB",
+        "XLRE",
+        "DIA",
+        "VTI",
+        "VTV",
+        "VUG",
+        "VOO",
+        "VXX",
+        "GLD",
+        "SLV",
+        "GDX",
+        "USO",
+        "TLT",
+        "HYG",
+        "LQD",
+        "BITO",
+        "GBTC",
+        "IBIT",
+        "FBTC",
+        "KWEB",
+        "EEM",
+        "EFA",
+        "FXI",
+        "MCHI",
+        "SQQQ",
+        "TQQQ",
+        "SPXU",
+        "SPXL",
+        "UVXY",
+    }
+)
+
 # Email notifications
 EMAIL_FROM = os.getenv("EMAIL_FROM")  # Your Gmail address
 EMAIL_TO = os.getenv("EMAIL_TO")  # Owner address — emergency alerts only

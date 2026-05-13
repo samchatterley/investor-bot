@@ -20,7 +20,11 @@ from datetime import UTC, datetime, timedelta
 import pandas as pd
 import yfinance as yf
 
+from config import ETF_SYMBOLS
+
 logger = logging.getLogger(__name__)
+# yfinance logs at ERROR when no earnings exist (normal for ETFs) — suppress that noise
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 _MIN_SURPRISE_PCT = 5.0  # EPS beat threshold (%)
 _PEAD_WINDOW_DAYS = 30  # only consider surprises within this many days
@@ -50,6 +54,8 @@ def get_earnings_surprise(
     result: dict[str, dict] = {}
 
     for sym in symbols:
+        if sym in ETF_SYMBOLS:
+            continue
         try:
             time.sleep(_REQ_DELAY)
             df: pd.DataFrame | None = yf.Ticker(sym).earnings_dates
