@@ -162,7 +162,7 @@ _DECISION_TOOL = {
 
 _REGIME_ADVICE = {
     "BULL_TRENDING": "Market is trending upward — favour momentum and trend-continuation setups.",
-    "CHOPPY": "Market is choppy with no clear direction — favour mean-reversion (oversold bounces). Avoid chasing moves.",
+    "CHOPPY": "Market is choppy with no clear direction — mean-reversion setups are preferred. Other signals (momentum, breakout) need strong conviction to justify entry; the confidence threshold is already raised mechanically, so trust your score if it genuinely reaches it.",
     "HIGH_VOL": "High volatility with a weakening market — only the highest-conviction setups. Be conservative with confidence scores.",
     "BEAR_DAY": "BEAR DAY — SPY down sharply. NO new BUYs.",
     "UNKNOWN": "",
