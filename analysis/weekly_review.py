@@ -222,8 +222,13 @@ CURRENT TUNABLE PARAMETERS (you may propose changes to any of these):
 
 INSTRUCTIONS:
 1. Analyse what drove this week's results.
-2. Write "lessons" as direct instructions to the AI trader — they will be injected into
-   every daily trading prompt next week, so be specific and actionable.
+2. Write "lessons" as probabilistic tendencies to guide the AI trader — they will be injected
+   into every daily trading prompt next week. Lessons must express a lean or preference, never
+   a hard ban. The confidence score is the sole mechanical gate; lessons must not override it.
+   FORBIDDEN phrases: "never", "only", "always", "reject all", "regardless of confidence",
+   "mechanically rejected", "disqualified". Use instead: "prefer", "favour", "be cautious with",
+   "requires stronger evidence", "historically underperforms in".
+   Base lessons only on patterns with at least 5 trades — smaller samples are noise.
 3. In "config_changes", only propose a change if you have clear evidence from the data.
    Use an empty array if no changes are warranted. Each change must name one of the
    parameters listed above and give a concrete proposed_value within its allowed range.
@@ -235,7 +240,7 @@ Respond with ONLY this JSON:
   "what_didnt": ["specific observation backed by the data"],
   "lessons": [
     {{
-      "lesson": "Specific actionable instruction (e.g. 'Avoid mean_reversion in CHOPPY regime — 33% win rate this week. Only take momentum setups with vol_ratio > 1.5.')",
+      "lesson": "Specific tendency backed by data (e.g. 'Mean-reversion in CHOPPY outperformed momentum this week — favour it when regime is choppy but do not exclude other signals with strong confidence.')",
       "applies_when": "BULL_TRENDING | CHOPPY | HIGH_VOL | BEAR_DAY | ANY",
       "expiry": "YYYY-MM-DD (one week from today — lessons expire unless renewed)"
     }}
