@@ -823,6 +823,18 @@ Additional live-mode safety gates active in all modes:
 
 ---
 
+### 1.36 — May 2026 — signal & risk parity: canonical REGIME_BLOCKED + RiskConfig
+
+- **`signals/evaluator.py` now exports `REGIME_BLOCKED`** — the single source of truth for regime-based signal suppression. Eliminates the longstanding divergence between `backtest/engine.py`'s `_REGIME_BLOCKED` and `execution/stock_scanner.py`'s `_LIVE_REGIME_BLOCKED` (which had a looser CHOPPY set and missed 9 signals blocked in the engine). Both modules now import the canonical dict.
+- **`mean_reversion` intentionally excluded from CHOPPY blocks.** Live paper trading shows +0.28% avg (100% win rate, n=2); backtest shows -0.5% avg (n=108) driven by survivorship. Will reassess after ≥5 live trades in CHOPPY.
+- **`risk/risk_config.py` (new).** `RiskConfig` frozen dataclass bundles 5 exit-risk parameters (`stop_loss_pct`, `take_profit_pct`, `trailing_stop_pct`, `partial_profit_pct`, `max_hold_days`) with a `from_config()` classmethod. Lets the backtest engine and walk-forward search use alternative risk params without touching global config.
+- **`backtest/engine.py` uses `RiskConfig`.** `_run_simulation` accepts optional `risk_config: RiskConfig | None` param; stop/take-profit checks use `rc.stop_loss_pct` / `rc.take_profit_pct` instead of bare config constants.
+- **`risk/position_sizer.py` uses `RiskConfig`.** `kelly_fraction` and `risk_budget_size` accept optional `risk_config` override; fall back to config defaults when `None`.
+- **`tests/test_risk_config.py` (new).** 13 tests covering `RiskConfig` construction, immutability, `from_config()` patching, `kelly_fraction` and `risk_budget_size` with custom `RiskConfig`, and canonical `REGIME_BLOCKED` structure — including AST-level checks that neither engine nor scanner defines a local blocking dict.
+- **Test suite:** scanner regime-blocking tests updated to reflect canonical rules (momentum now blocked in CHOPPY; mean_reversion permitted). **1826 tests passing, 93% coverage.**
+
+---
+
 ### 1.35 — May 2026 — unified decision→execution audit trail + urllib3 CVE fix
 
 - **Enriched `trades_executed` entries.** Every BUY/SELL/WOULD_BUY/WOULD_SELL entry in `trades_executed` now carries `decision_type`, `confidence`, `key_signal`, and `reasoning` pulled from the corresponding AI decision. Rule-based exits (earnings, stale, partial) carry `decision_type: "rule_based"` with no confidence fields. Previously `trades_executed` only had `{symbol, action, detail}`, making it impossible to trace back to the AI decision without joining two separate lists.
