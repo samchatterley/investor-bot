@@ -489,6 +489,9 @@ class TestRunClearHalt(unittest.TestCase):
 
 
 class TestHandlePartialExits(unittest.TestCase):
+    # Partial-exit threshold returned by the mocked compute_exit_levels
+    _PARTIAL_PCT = config.PARTIAL_PROFIT_PCT
+
     def _pos(self, symbol, plpc, qty=10.0, market_value=1000.0, current_price=100.0):
         return {
             "symbol": symbol,
@@ -498,11 +501,25 @@ class TestHandlePartialExits(unittest.TestCase):
             "current_price": current_price,
         }
 
+    def _exit_levels(self):
+        return {
+            "partial_pct": self._PARTIAL_PCT,
+            "full_target_pct": 20.0,
+            "stop_pct": -7.0,
+            "timedecay_stop_pct": 0.0,
+            "apply_timedecay": False,
+        }
+
     def test_no_exits_below_threshold(self):
         from main import _handle_partial_exits
 
-        positions = [self._pos("AAPL", plpc=config.PARTIAL_PROFIT_PCT - 1)]
-        result = _handle_partial_exits(MagicMock(), positions, dry_run=False)
+        positions = [self._pos("AAPL", plpc=self._PARTIAL_PCT - 1)]
+        with (
+            patch("main.trader.get_position_meta", return_value={}),
+            patch("main.RiskConfig.from_config", return_value=MagicMock()),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=self._exit_levels()),
+        ):
+            result = _handle_partial_exits(MagicMock(), positions, {}, dry_run=False)
         self.assertEqual(result, [])
 
     def test_partial_exit_triggered_at_threshold(self):
@@ -511,6 +528,8 @@ class TestHandlePartialExits(unittest.TestCase):
         with (
             patch("main.trader.cancel_open_orders"),
             patch("main.trader.get_position_meta", return_value={}),
+            patch("main.RiskConfig.from_config", return_value=MagicMock()),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=self._exit_levels()),
             patch(
                 "main.trader.place_partial_sell",
                 return_value=OrderResult(
@@ -524,7 +543,8 @@ class TestHandlePartialExits(unittest.TestCase):
         ):
             result = _handle_partial_exits(
                 MagicMock(),
-                [self._pos("AAPL", plpc=config.PARTIAL_PROFIT_PCT + 1)],
+                [self._pos("AAPL", plpc=self._PARTIAL_PCT + 1)],
+                {},
                 dry_run=False,
             )
         self.assertEqual(len(result), 1)
@@ -534,10 +554,16 @@ class TestHandlePartialExits(unittest.TestCase):
     def test_dry_run_returns_trade_without_placing_order(self):
         from main import _handle_partial_exits
 
-        with patch("main.trader.cancel_open_orders") as cancel_mock:
+        with (
+            patch("main.trader.get_position_meta", return_value={}),
+            patch("main.RiskConfig.from_config", return_value=MagicMock()),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=self._exit_levels()),
+            patch("main.trader.cancel_open_orders") as cancel_mock,
+        ):
             result = _handle_partial_exits(
                 MagicMock(),
-                [self._pos("AAPL", plpc=config.PARTIAL_PROFIT_PCT + 5)],
+                [self._pos("AAPL", plpc=self._PARTIAL_PCT + 5)],
+                {},
                 dry_run=True,
             )
         self.assertEqual(len(result), 1)
@@ -547,19 +573,21 @@ class TestHandlePartialExits(unittest.TestCase):
     def test_empty_positions_returns_empty(self):
         from main import _handle_partial_exits
 
-        result = _handle_partial_exits(MagicMock(), [], dry_run=False)
+        result = _handle_partial_exits(MagicMock(), [], {}, dry_run=False)
         self.assertEqual(result, [])
 
     def test_multiple_positions_only_exits_above_threshold(self):
         from main import _handle_partial_exits
 
         positions = [
-            self._pos("AAPL", plpc=config.PARTIAL_PROFIT_PCT + 5),
-            self._pos("NVDA", plpc=config.PARTIAL_PROFIT_PCT - 1),
+            self._pos("AAPL", plpc=self._PARTIAL_PCT + 5),
+            self._pos("NVDA", plpc=self._PARTIAL_PCT - 1),
         ]
         with (
             patch("main.trader.cancel_open_orders"),
             patch("main.trader.get_position_meta", return_value={}),
+            patch("main.RiskConfig.from_config", return_value=MagicMock()),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=self._exit_levels()),
             patch(
                 "main.trader.place_partial_sell",
                 return_value=OrderResult(
@@ -571,7 +599,7 @@ class TestHandlePartialExits(unittest.TestCase):
             patch("main.audit_log.log_order_placed"),
             patch("main.audit_log.log_order_filled"),
         ):
-            result = _handle_partial_exits(MagicMock(), positions, dry_run=False)
+            result = _handle_partial_exits(MagicMock(), positions, {}, dry_run=False)
         symbols = [r["symbol"] for r in result]
         self.assertIn("AAPL", symbols)
         self.assertNotIn("NVDA", symbols)
@@ -777,6 +805,8 @@ class RunInnerBase(unittest.TestCase):
             "main.sector_data.get_leading_sectors": [],
             "main.get_latest_review": "",
             "main.earnings_calendar.get_earnings_risk_positions": {},
+            "main._fetch_atr_for_held": {},
+            "main._check_rule_based_stops": set(),
             "main._handle_partial_exits": [],
             "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
             "main.options_scanner.get_options_signals": {},
@@ -1336,17 +1366,27 @@ class TestHandlePartialExitsAlreadyTaken(unittest.TestCase):
         from main import _handle_partial_exits
 
         sell_mock = unittest.mock.MagicMock()
+        exit_levels = {
+            "partial_pct": config.PARTIAL_PROFIT_PCT,
+            "full_target_pct": 20.0,
+            "stop_pct": -7.0,
+            "timedecay_stop_pct": 0.0,
+            "apply_timedecay": False,
+        }
         # meta includes partial_exit_taken_at — should trigger the skip branch
         with (
             patch(
                 "main.trader.get_position_meta",
                 return_value={"partial_exit_taken_at": "2026-01-15T10:00:00+00:00"},
             ),
+            patch("main.RiskConfig.from_config", return_value=MagicMock()),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=exit_levels),
             patch("main.trader.place_partial_sell", sell_mock),
         ):
             result = _handle_partial_exits(
                 MagicMock(),
                 [self._pos("AAPL", plpc=config.PARTIAL_PROFIT_PCT + 5)],
+                {},
                 dry_run=False,
             )
         # No trade should be executed — the position was already partially exited

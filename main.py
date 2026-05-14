@@ -41,7 +41,8 @@ from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
 from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult, OrderStatus
 from notifications import alerts, emailer
-from risk import earnings_calendar, macro_calendar, position_sizer, risk_manager
+from risk import earnings_calendar, exit_optimiser, macro_calendar, position_sizer, risk_manager
+from risk.risk_config import RiskConfig
 from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
 from utils.health import HealthStatus, run_startup_health_check
@@ -403,13 +404,65 @@ def _handle_stop_failure(client, symbol: str, dry_run: bool) -> None:
 # ── Partial exits ─────────────────────────────────────────────────────────────
 
 
-def _handle_partial_exits(client, positions: list, dry_run: bool) -> list:
-    """Sell half of any position up more than PARTIAL_PROFIT_PCT (once per position)."""
+def _fetch_atr_for_held(held_symbols: set) -> dict:
+    """Return {symbol: atr_pct_or_None} for every currently held symbol."""
+    return {sym: exit_optimiser.compute_atr_pct(sym) for sym in held_symbols}
+
+
+def _check_rule_based_stops(
+    positions: list,
+    position_ages: dict,
+    atr_by_symbol: dict,
+) -> set:
+    """Return symbols that breach the hard stop or time-decay stop right now."""
+    rc = RiskConfig.from_config()
+    symbols_to_exit: set = set()
+    for pos in positions:
+        symbol = pos["symbol"]
+        meta = trader.get_position_meta(symbol)
+        signal = meta.get("signal", "unknown")
+        max_hold = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
+        days_held = position_ages.get(symbol, 1)
+        levels = exit_optimiser.compute_exit_levels(
+            rc.stop_loss_pct,
+            rc.take_profit_pct,
+            atr_by_symbol.get(symbol),
+            days_held,
+            max_hold,
+        )
+        plpc = pos["unrealized_plpc"]
+        if plpc <= levels["stop_pct"]:
+            logger.info(
+                f"Rule-based hard stop hit: {symbol} {plpc:.2f}% <= {levels['stop_pct']:.2f}%"
+            )
+            symbols_to_exit.add(symbol)
+        elif levels["apply_timedecay"] and plpc <= levels["timedecay_stop_pct"]:
+            logger.info(
+                f"Time-decay stop hit: {symbol} {plpc:.2f}% <= {levels['timedecay_stop_pct']:.2f}% "
+                f"(day {days_held}/{max_hold})"
+            )
+            symbols_to_exit.add(symbol)
+    return symbols_to_exit
+
+
+def _handle_partial_exits(client, positions: list, atr_by_symbol: dict, dry_run: bool) -> list:
+    """Sell half of any position that has reached the dynamic partial-exit threshold."""
+    rc = RiskConfig.from_config()
     executed = []
     for pos in positions:
-        if pos["unrealized_plpc"] >= config.PARTIAL_PROFIT_PCT:
-            symbol = pos["symbol"]
-            meta = trader.get_position_meta(symbol)
+        symbol = pos["symbol"]
+        meta = trader.get_position_meta(symbol)
+        signal = meta.get("signal", "unknown")
+        max_hold = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
+        days_held = 0  # partial exits evaluated before position_ages computed
+        levels = exit_optimiser.compute_exit_levels(
+            rc.stop_loss_pct,
+            rc.take_profit_pct,
+            atr_by_symbol.get(symbol),
+            days_held,
+            max_hold,
+        )
+        if pos["unrealized_plpc"] >= levels["partial_pct"]:
             if meta.get("partial_exit_taken_at"):
                 logger.info(f"Partial exit already taken for {symbol} — skipping")
                 continue
@@ -734,8 +787,11 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         list(held_symbols), config.EARNINGS_WARNING_DAYS
     )
 
+    # ── ATR for held positions (used by partial exits + rule-based stops) ────
+    atr_by_symbol = _fetch_atr_for_held(held_symbols)
+
     # ── Partial exits (all modes) ─────────────────────────────────────────────
-    partials = _handle_partial_exits(client, open_positions, dry_run)
+    partials = _handle_partial_exits(client, open_positions, atr_by_symbol, dry_run)
     all_trades.extend(partials)
 
     open_positions = trader.get_open_positions(client)
@@ -1006,6 +1062,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
     }
     symbols_to_sell |= {sym for sym in stale if sym in held_symbols}
+    symbols_to_sell |= _check_rule_based_stops(open_positions, position_ages, atr_by_symbol)
 
     for symbol in symbols_to_sell:
         decision = next(
