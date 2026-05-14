@@ -45,20 +45,42 @@ def _update_bucket(bucket: dict, return_pct: float):
         bucket["losses"] += 1
 
 
+def _hold_bucket(hold_days: int) -> str:
+    if hold_days <= 1:
+        return "1d"
+    if hold_days == 2:
+        return "2d"
+    if hold_days == 3:
+        return "3d"
+    return "4d+"
+
+
 def record_trade_outcome(
-    signal: str, return_pct: float, regime: str = "UNKNOWN", confidence: int = 0
+    signal: str,
+    return_pct: float,
+    regime: str = "UNKNOWN",
+    confidence: int = 0,
+    sector: str = "Unknown",
+    hold_days: int = 0,
 ):
-    """
-    Record the outcome of a closed trade against its entry signal, regime, and confidence.
-    Called when a position is closed (sell, stop loss, stale exit).
+    """Record the outcome of a closed trade tagged by signal, regime, confidence, sector, and hold duration.
+
+    Called whenever a position closes (sell, stop loss, stale/earnings exit).
+    Accumulates into signal_stats.json for position sizing and attribution reporting.
     """
     stats = _load_stats()
     if signal not in stats:
-        stats[signal] = {**_empty_bucket(), "by_regime": {}, "by_confidence": {}}
+        stats[signal] = {
+            **_empty_bucket(),
+            "by_regime": {},
+            "by_confidence": {},
+            "by_sector": {},
+            "by_hold_days": {},
+        }
 
     entry = stats[signal]
-    entry.setdefault("by_regime", {})
-    entry.setdefault("by_confidence", {})
+    for key in ("by_regime", "by_confidence", "by_sector", "by_hold_days"):
+        entry.setdefault(key, {})
 
     _update_bucket(entry, return_pct)
 
@@ -69,9 +91,16 @@ def record_trade_outcome(
     entry["by_confidence"].setdefault(conf_key, _empty_bucket())
     _update_bucket(entry["by_confidence"][conf_key], return_pct)
 
+    entry["by_sector"].setdefault(sector, _empty_bucket())
+    _update_bucket(entry["by_sector"][sector], return_pct)
+
+    hb = _hold_bucket(hold_days) if hold_days > 0 else "unknown"
+    entry["by_hold_days"].setdefault(hb, _empty_bucket())
+    _update_bucket(entry["by_hold_days"][hb], return_pct)
+
     _save_stats(stats)
     logger.info(
-        f"Signal stats updated: {signal} [regime={regime} conf={confidence}] → {return_pct:+.2f}%"
+        f"Signal stats updated: {signal} [{regime} | {sector} | {hb} | conf={confidence}] → {return_pct:+.2f}%"
     )
 
 
@@ -87,7 +116,7 @@ def _bucket_summary(bucket: dict) -> dict:
 
 
 def get_win_rates() -> dict[str, dict]:
-    """Return win rates and average return by signal type, with regime and confidence breakdowns."""
+    """Return win rates and average return by signal type, with all dimension breakdowns."""
     stats = _load_stats()
     result = {}
     for signal, data in stats.items():
@@ -105,8 +134,84 @@ def get_win_rates() -> dict[str, dict]:
                 for conf, b in data.get("by_confidence", {}).items()
                 if b.get("trades", 0) > 0
             },
+            "by_sector": {
+                sector: _bucket_summary(b)
+                for sector, b in data.get("by_sector", {}).items()
+                if b.get("trades", 0) > 0
+            },
+            "by_hold_days": {
+                hb: _bucket_summary(b)
+                for hb, b in data.get("by_hold_days", {}).items()
+                if b.get("trades", 0) > 0
+            },
         }
     return result
+
+
+def _aggregate_dimension(stats: dict, dim_key: str) -> dict[str, dict]:
+    """Aggregate a sub-dimension (e.g. by_sector) across all signals into one flat dict."""
+    agg: dict[str, dict] = {}
+    for data in stats.values():
+        for label, bucket in data.get(dim_key, {}).items():
+            if bucket.get("trades", 0) == 0:
+                continue
+            if label not in agg:
+                agg[label] = _empty_bucket()
+            agg[label]["trades"] += bucket["trades"]
+            agg[label]["wins"] += bucket["wins"]
+            agg[label]["losses"] += bucket["losses"]
+            agg[label]["total_return_pct"] = round(
+                agg[label]["total_return_pct"] + bucket["total_return_pct"], 4
+            )
+    return {label: _bucket_summary(b) for label, b in agg.items() if b["trades"] > 0}
+
+
+def get_attribution_summary() -> dict:
+    """Return cross-dimensional P&L attribution across signals, sectors, regimes, and hold duration.
+
+    Returns a dict with four ranked tables plus headline winners/losers:
+    {
+        "by_signal":    {signal:   {trades, win_rate, avg_return_pct}},
+        "by_sector":    {sector:   {trades, win_rate, avg_return_pct}},
+        "by_regime":    {regime:   {trades, win_rate, avg_return_pct}},
+        "by_hold_days": {bucket:   {trades, win_rate, avg_return_pct}},
+        "best_signal":   str | None,
+        "worst_signal":  str | None,
+        "best_sector":   str | None,
+        "optimal_hold":  str | None,
+    }
+    Each table is sorted best avg_return_pct first.
+    """
+    stats = _load_stats()
+    if not stats:
+        return {}
+
+    def _ranked(d: dict) -> dict:
+        return dict(sorted(d.items(), key=lambda x: x[1].get("avg_return_pct", 0), reverse=True))
+
+    by_signal = _ranked(
+        {sig: _bucket_summary(data) for sig, data in stats.items() if data.get("trades", 0) > 0}
+    )
+    by_sector = _ranked(_aggregate_dimension(stats, "by_sector"))
+    by_regime = _ranked(_aggregate_dimension(stats, "by_regime"))
+    by_hold = _ranked(_aggregate_dimension(stats, "by_hold_days"))
+
+    def _best(d: dict) -> str | None:
+        return next(iter(d), None) if d else None
+
+    def _worst(d: dict) -> str | None:
+        return next(iter(reversed(list(d.keys()))), None) if d else None
+
+    return {
+        "by_signal": by_signal,
+        "by_sector": by_sector,
+        "by_regime": by_regime,
+        "by_hold_days": by_hold,
+        "best_signal": _best(by_signal),
+        "worst_signal": _worst(by_signal),
+        "best_sector": _best(by_sector),
+        "optimal_hold": _best(by_hold),
+    }
 
 
 def get_actionable_feedback() -> str:
@@ -150,6 +255,30 @@ def get_actionable_feedback() -> str:
 
     if not lines:
         return ""
+
+    # Hold-duration insight
+    attribution = get_attribution_summary()
+    hold_lines = []
+    for bucket, bdata in attribution.get("by_hold_days", {}).items():
+        if bdata["trades"] >= 3:
+            hold_lines.append(
+                f"  {bucket}: {bdata['win_rate']:.0f}% win rate, avg {bdata['avg_return_pct']:+.2f}%"
+                f" ({bdata['trades']} trades)"
+            )
+    if hold_lines:
+        lines.append("Hold duration breakdown:")
+        lines.extend(hold_lines)
+
+    # Sector insight — surface any sector with ≥3 trades and a clear edge or drag
+    for sector, sdata in attribution.get("by_sector", {}).items():
+        if sdata["trades"] >= 3:
+            avg = sdata["avg_return_pct"]
+            if avg >= 1.5:
+                lines.append(f"  {sector}: strong edge (avg {avg:+.2f}%, {sdata['trades']} trades)")
+            elif avg <= -1.0:
+                lines.append(
+                    f"  {sector}: drag (avg {avg:+.2f}%, {sdata['trades']} trades) — reduce exposure"
+                )
 
     return (
         "PERFORMANCE FEEDBACK — adjust confidence scoring based on what has actually worked:\n"

@@ -742,6 +742,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     held_symbols = {p["symbol"] for p in open_positions}
 
     # ── Full cycle (all modes) ────────────────────────────────────────────────
+    position_ages = trader.get_position_ages()
 
     # Exit earnings-risk positions
     for symbol, ed in earnings_risk.items():
@@ -759,6 +760,8 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             pos["unrealized_plpc"],
                             regime=meta["regime"],
                             confidence=meta["confidence"],
+                            sector=sector_data.get_sector(symbol),
+                            hold_days=position_ages.get(symbol, 1),
                         )
                         audit_log.log_position_closed(
                             symbol, "earnings_exit", pos["unrealized_plpc"]
@@ -1026,6 +1029,8 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         pos["unrealized_plpc"],
                         regime=meta["regime"],
                         confidence=meta["confidence"],
+                        sector=sector_data.get_sector(symbol),
+                        hold_days=position_ages.get(symbol, 1),
                     )
                     audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
                 trader.record_sell(symbol)

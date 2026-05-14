@@ -7,10 +7,12 @@ from unittest.mock import patch
 from analysis.performance import (
     _bucket_summary,
     _empty_bucket,
+    _hold_bucket,
     _update_bucket,
     compute_metrics,
     generate_dashboard,
     get_actionable_feedback,
+    get_attribution_summary,
     get_win_rates,
     record_trade_outcome,
 )
@@ -274,3 +276,122 @@ class TestGenerateDashboard(unittest.TestCase):
         with open(os.path.join(self.tmpdir, "dashboard.html")) as f:
             html = f.read()
         self.assertIn("AAPL", html)
+
+
+class TestHoldBucket(unittest.TestCase):
+    def test_1d(self):
+        self.assertEqual(_hold_bucket(1), "1d")
+
+    def test_0_days_maps_to_1d(self):
+        self.assertEqual(_hold_bucket(0), "1d")
+
+    def test_2d(self):
+        self.assertEqual(_hold_bucket(2), "2d")
+
+    def test_3d(self):
+        self.assertEqual(_hold_bucket(3), "3d")
+
+    def test_4d_plus(self):
+        self.assertEqual(_hold_bucket(4), "4d+")
+        self.assertEqual(_hold_bucket(10), "4d+")
+
+
+class TestAttributionDimensions(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patcher = patch(
+            "analysis.performance._STATS_PATH",
+            os.path.join(self.tmpdir, "signal_stats.json"),
+        )
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_sector_breakdown_populated(self):
+        record_trade_outcome("momentum", 3.0, sector="Technology")
+        rates = get_win_rates()
+        self.assertIn("Technology", rates["momentum"]["by_sector"])
+
+    def test_hold_days_breakdown_populated(self):
+        record_trade_outcome("momentum", 3.0, hold_days=2)
+        rates = get_win_rates()
+        self.assertIn("2d", rates["momentum"]["by_hold_days"])
+
+    def test_hold_days_zero_maps_to_unknown(self):
+        record_trade_outcome("momentum", 3.0, hold_days=0)
+        rates = get_win_rates()
+        self.assertIn("unknown", rates["momentum"]["by_hold_days"])
+
+    def test_multiple_dimensions_recorded_together(self):
+        record_trade_outcome(
+            "mean_reversion",
+            2.5,
+            regime="CHOPPY",
+            confidence=7,
+            sector="Financials",
+            hold_days=3,
+        )
+        rates = get_win_rates()
+        entry = rates["mean_reversion"]
+        self.assertIn("CHOPPY", entry["by_regime"])
+        self.assertIn("Financials", entry["by_sector"])
+        self.assertIn("3d", entry["by_hold_days"])
+
+    def test_attribution_summary_empty_stats(self):
+        result = get_attribution_summary()
+        self.assertEqual(result, {})
+
+    def test_attribution_summary_by_signal_ranked_by_avg_return(self):
+        record_trade_outcome("momentum", 5.0)
+        record_trade_outcome("momentum", 3.0)
+        record_trade_outcome("mean_reversion", -1.0)
+        result = get_attribution_summary()
+        signals = list(result["by_signal"].keys())
+        self.assertEqual(signals[0], "momentum")
+        self.assertEqual(signals[-1], "mean_reversion")
+
+    def test_attribution_summary_by_sector_aggregated_across_signals(self):
+        record_trade_outcome("momentum", 4.0, sector="Technology")
+        record_trade_outcome("mean_reversion", 2.0, sector="Technology")
+        result = get_attribution_summary()
+        self.assertIn("Technology", result["by_sector"])
+        self.assertEqual(result["by_sector"]["Technology"]["trades"], 2)
+
+    def test_attribution_summary_by_hold_days_populated(self):
+        record_trade_outcome("momentum", 3.0, hold_days=1)
+        record_trade_outcome("momentum", 5.0, hold_days=3)
+        result = get_attribution_summary()
+        self.assertIn("1d", result["by_hold_days"])
+        self.assertIn("3d", result["by_hold_days"])
+
+    def test_attribution_summary_best_signal_is_highest_avg_return(self):
+        record_trade_outcome("momentum", 5.0)
+        record_trade_outcome("mean_reversion", 1.0)
+        result = get_attribution_summary()
+        self.assertEqual(result["best_signal"], "momentum")
+
+    def test_attribution_summary_worst_signal_is_lowest_avg_return(self):
+        record_trade_outcome("momentum", 5.0)
+        record_trade_outcome("mean_reversion", -2.0)
+        result = get_attribution_summary()
+        self.assertEqual(result["worst_signal"], "mean_reversion")
+
+    def test_attribution_summary_optimal_hold_is_best_bucket(self):
+        record_trade_outcome("momentum", 5.0, hold_days=2)
+        record_trade_outcome("momentum", 1.0, hold_days=4)
+        result = get_attribution_summary()
+        self.assertEqual(result["optimal_hold"], "2d")
+
+    def test_actionable_feedback_includes_hold_duration(self):
+        for _ in range(4):
+            record_trade_outcome("momentum", 5.0, hold_days=2)
+        result = get_actionable_feedback()
+        self.assertIn("2d", result)
+
+    def test_actionable_feedback_sector_strong_edge(self):
+        for _ in range(4):
+            record_trade_outcome("momentum", 4.0, sector="Technology")
+        result = get_actionable_feedback()
+        self.assertIn("Technology", result)
