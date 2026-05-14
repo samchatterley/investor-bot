@@ -231,7 +231,7 @@ _TERMINAL_FAIL_STATUSES = frozenset({"rejected", "cancelled", "expired", "done_f
 
 
 def wait_for_fill(
-    client: TradingClient, order_id: str, max_wait: int = 30
+    client: TradingClient, order_id: str, max_wait: int = 60
 ) -> tuple[float, float] | None:
     """Poll until a market order reaches 'filled'. Returns (filled_qty, filled_avg_price) on success, None otherwise.
 
@@ -379,7 +379,19 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
             )
         try:
             final = client.get_order_by_id(order_id)
-            if str(final.status) == "partially_filled" and final.filled_qty:
+            final_status = str(final.status)
+            if final_status == "filled" and final.filled_qty:
+                late_qty = float(final.filled_qty)
+                logger.info(
+                    f"SELL for {symbol} filled on final check: {late_qty} @ {float(final.filled_avg_price or 0):.4f}"
+                )
+                return OrderResult(
+                    status=OrderStatus.FILLED,
+                    symbol=symbol,
+                    broker_order_id=order_id,
+                    filled_qty=late_qty,
+                )
+            if final_status == "partially_filled" and final.filled_qty:
                 partial_qty = float(final.filled_qty)
                 logger.warning(f"SELL for {symbol} partially filled {partial_qty} of {qty}")
                 return OrderResult(
@@ -770,7 +782,17 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderR
             )
         try:
             final = client.get_order_by_id(order_id)
-            if str(final.status) == "partially_filled" and final.filled_qty:
+            final_status = str(final.status)
+            if final_status == "filled" and final.filled_qty:
+                late_qty = float(final.filled_qty)
+                logger.info(f"Partial sell for {symbol} filled on final check: {late_qty}")
+                return OrderResult(
+                    status=OrderStatus.FILLED,
+                    symbol=symbol,
+                    broker_order_id=order_id,
+                    filled_qty=late_qty,
+                )
+            if final_status == "partially_filled" and final.filled_qty:
                 partial_qty = float(final.filled_qty)
                 logger.warning(
                     f"Partial sell for {symbol} itself partially filled: {partial_qty} of {qty}"
