@@ -360,6 +360,57 @@ class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
         self.assertTrue(os.path.isdir(result))
 
 
+class TestLoadDailyBaseline(PortfolioTrackerBase):
+    """Lines 260-268: load_daily_baseline reads persisted open-of-day equity."""
+
+    def _baseline_path(self):
+        return os.path.join(self.tmpdir, "daily_baseline.json")
+
+    def test_returns_value_when_date_matches_today(self):
+        import json as _json
+        from datetime import UTC, datetime
+
+        from utils.portfolio_tracker import load_daily_baseline
+
+        today = datetime.now(UTC).date().isoformat()
+        path = self._baseline_path()
+        with open(path, "w") as f:
+            _json.dump({"date": today, "portfolio_value": 98_000.0}, f)
+        with patch("utils.portfolio_tracker._BASELINE_PATH", path):
+            result = load_daily_baseline()
+        self.assertAlmostEqual(result, 98_000.0)
+
+    def test_returns_none_when_date_is_stale(self):
+        import json as _json
+
+        from utils.portfolio_tracker import load_daily_baseline
+
+        path = self._baseline_path()
+        with open(path, "w") as f:
+            _json.dump({"date": "2000-01-01", "portfolio_value": 50_000.0}, f)
+        with patch("utils.portfolio_tracker._BASELINE_PATH", path):
+            result = load_daily_baseline()
+        self.assertIsNone(result)
+
+    def test_returns_none_when_file_missing(self):
+        from utils.portfolio_tracker import load_daily_baseline
+
+        path = self._baseline_path()  # does not exist
+        with patch("utils.portfolio_tracker._BASELINE_PATH", path):
+            result = load_daily_baseline()
+        self.assertIsNone(result)
+
+    def test_returns_none_on_corrupt_json(self):
+        from utils.portfolio_tracker import load_daily_baseline
+
+        path = self._baseline_path()
+        with open(path, "w") as f:
+            f.write("{bad json")
+        with patch("utils.portfolio_tracker._BASELINE_PATH", path):
+            result = load_daily_baseline()
+        self.assertIsNone(result)
+
+
 class TestExperimentBaseline(PortfolioTrackerBase):
     """Lines 209-220, 225-230: save/load_experiment_baseline."""
 
@@ -489,3 +540,192 @@ class TestUnifiedDecisions(PortfolioTrackerBase):
         records = load_history()
         empty_record = next(r for r in records if r["date"] == "2026-01-16")
         self.assertEqual(empty_record["decisions"], [])
+
+
+class TestPrintSummaryDailyAggregation(PortfolioTrackerBase):
+    """print_summary aggregates trades from all run files for the calendar day."""
+
+    def _capture(self, record: dict) -> str:
+        import io
+        import sys
+
+        from utils.portfolio_tracker import print_summary
+
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            print_summary(record)
+        finally:
+            sys.stdout = sys.__stdout__
+        return buf.getvalue()
+
+    def test_shows_trades_from_earlier_run(self):
+        """Midday record has no trades; open run has AAPL buy → AAPL should appear."""
+        trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
+        save_daily_run("2026-01-20", _account(100_000), _account(100_500), _ai(), [trade], [])
+        midday_record = {
+            "date": "2026-01-20-midday",
+            "market_summary": "Quiet",
+            "account_after": {"portfolio_value": 100_600, "cash": 20_000},
+            "daily_pnl": 100.0,
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+        }
+        output = self._capture(midday_record)
+        self.assertIn("AAPL", output)
+        self.assertNotIn("No trades", output)
+
+    def test_shows_stop_losses_from_earlier_run(self):
+        """Midday record has no stops; open run has NVDA stop loss → NVDA should appear."""
+        stop = {"symbol": "NVDA", "pl_pct": -5.2}
+        save_daily_run("2026-01-21", _account(100_000), _account(95_000), _ai(), [], [stop])
+        midday_record = {
+            "date": "2026-01-21-midday",
+            "market_summary": "Volatile",
+            "account_after": {"portfolio_value": 95_100, "cash": 20_000},
+            "daily_pnl": 100.0,
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+        }
+        output = self._capture(midday_record)
+        self.assertIn("NVDA", output)
+
+    def test_deduplicates_same_order_id_across_runs(self):
+        """Same order_id in both open run file and midday record → appears only once."""
+        trade = {"symbol": "MSFT", "action": "BUY", "detail": "$3000", "order_id": "dup1"}
+        save_daily_run("2026-01-22", _account(100_000), _account(100_300), _ai(), [trade], [])
+        midday_record = {
+            "date": "2026-01-22-midday",
+            "market_summary": "Flat",
+            "account_after": {"portfolio_value": 100_400, "cash": 20_000},
+            "daily_pnl": 400.0,
+            "trades_executed": [trade],
+            "stop_losses_triggered": [],
+        }
+        output = self._capture(midday_record)
+        self.assertEqual(output.count("MSFT"), 1)
+
+    def test_deduplicates_stop_losses_by_symbol(self):
+        """Same symbol stop loss in both open file and current record → appears once."""
+        stop = {"symbol": "TSLA", "pl_pct": -3.5}
+        save_daily_run("2026-01-23", _account(100_000), _account(96_000), _ai(), [], [stop])
+        midday_record = {
+            "date": "2026-01-23-midday",
+            "market_summary": "Down",
+            "account_after": {"portfolio_value": 96_100, "cash": 20_000},
+            "daily_pnl": 100.0,
+            "trades_executed": [],
+            "stop_losses_triggered": [stop],
+        }
+        output = self._capture(midday_record)
+        self.assertEqual(output.count("TSLA"), 1)
+
+    def test_corrupt_sibling_file_is_skipped(self):
+        """Corrupt JSON in week dir is skipped; current record's trades still shown."""
+        import glob
+
+        trade = {"symbol": "KO", "action": "BUY", "detail": "$2000", "order_id": "c1"}
+        save_daily_run("2026-01-24", _account(100_000), _account(100_200), _ai(), [trade], [])
+        # Find and corrupt the saved file
+        files = glob.glob(os.path.join(self.tmpdir, "**", "2026-01-24.json"), recursive=True)
+        self.assertEqual(len(files), 1)
+        with open(files[0], "w") as f:
+            f.write("{corrupt}")
+        midday_record = {
+            "date": "2026-01-24-midday",
+            "market_summary": "Steady",
+            "account_after": {"portfolio_value": 100_300, "cash": 20_000},
+            "daily_pnl": 300.0,
+            "trades_executed": [
+                {"symbol": "XOM", "action": "BUY", "detail": "$1000", "order_id": "c2"}
+            ],
+            "stop_losses_triggered": [],
+        }
+        try:
+            output = self._capture(midday_record)
+        except Exception as exc:
+            self.fail(f"print_summary raised on corrupt sibling file: {exc}")
+        self.assertIn("XOM", output)
+
+    def test_file_with_different_date_prefix_skipped(self):
+        """Line 200: fname in week dir that does not start with base_date → skipped."""
+        import glob
+        import json as _json
+
+        trade_same = {"symbol": "GS", "action": "BUY", "detail": "$2000", "order_id": "s1"}
+        save_daily_run("2026-01-26", _account(100_000), _account(100_200), _ai(), [trade_same], [])
+        # Find the week dir and drop a file with a different date
+        run_files = glob.glob(os.path.join(self.tmpdir, "**", "2026-01-26.json"), recursive=True)
+        week_dir = os.path.dirname(run_files[0])
+        trade_other = {"symbol": "DECOY", "action": "BUY", "detail": "$999", "order_id": "d1"}
+        with open(os.path.join(week_dir, "2026-01-27.json"), "w") as f:
+            _json.dump(
+                {
+                    "date": "2026-01-27",
+                    "account_after": {"portfolio_value": 100_000, "cash": 20_000},
+                    "trades_executed": [trade_other],
+                    "stop_losses_triggered": [],
+                },
+                f,
+            )
+        record = {
+            "date": "2026-01-26",
+            "market_summary": "OK",
+            "account_after": {"portfolio_value": 100_200, "cash": 20_000},
+            "daily_pnl": 200.0,
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+        }
+        output = self._capture(record)
+        self.assertNotIn("DECOY", output)
+        self.assertIn("GS", output)
+
+    def test_os_listdir_raises_does_not_crash(self):
+        """Lines 211-212: OSError from os.listdir → except OSError: pass, current record shown."""
+        trade = {"symbol": "BA", "action": "BUY", "detail": "$1000", "order_id": "e1"}
+        record = {
+            "date": "2026-01-28",
+            "market_summary": "Normal",
+            "account_after": {"portfolio_value": 100_100, "cash": 20_000},
+            "daily_pnl": 100.0,
+            "trades_executed": [trade],
+            "stop_losses_triggered": [],
+        }
+        with patch("utils.portfolio_tracker.os.listdir", side_effect=OSError("permission denied")):
+            try:
+                output = self._capture(record)
+            except Exception as exc:
+                self.fail(f"print_summary raised on os.listdir failure: {exc}")
+        self.assertIn("BA", output)
+
+    def test_non_run_files_in_week_dir_are_ignored(self):
+        """Files in _NON_RUN_FILES are not parsed even if they match the date prefix."""
+        import json as _json
+
+        trade = {"symbol": "CVS", "action": "SELL", "detail": "$4000", "order_id": "n1"}
+        save_daily_run("2026-01-25", _account(100_000), _account(99_000), _ai(), [trade], [])
+        # Find the actual week directory
+        import glob
+
+        run_files = glob.glob(os.path.join(self.tmpdir, "**", "2026-01-25.json"), recursive=True)
+        week_dir = os.path.dirname(run_files[0])
+        # Write a signal_stats.json to the week dir (it's in _NON_RUN_FILES)
+        with open(os.path.join(week_dir, "signal_stats.json"), "w") as f:
+            _json.dump(
+                {
+                    "trades_executed": [
+                        {"symbol": "FAKE", "action": "BUY", "detail": "", "order_id": "fake1"}
+                    ]
+                },
+                f,
+            )
+        record = {
+            "date": "2026-01-25",
+            "market_summary": "OK",
+            "account_after": {"portfolio_value": 99_000, "cash": 20_000},
+            "daily_pnl": -1_000.0,
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+        }
+        output = self._capture(record)
+        self.assertNotIn("FAKE", output)

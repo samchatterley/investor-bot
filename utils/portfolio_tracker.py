@@ -167,14 +167,58 @@ def print_summary(record: dict):
     print(f"  Daily P&L:       {pnl_sign}${pnl:.2f}")
     print()
 
-    if record["stop_losses_triggered"]:
+    # Aggregate trades and stop losses across all runs for this calendar day.
+    # The current record is ingested first, then sibling files for the same base date.
+    base_date = record.get("date", "")[:10]
+    seen_trade_keys: set[str] = set()
+    seen_stop_syms: set[str] = set()
+    all_trades: list[dict] = []
+    all_stops: list[dict] = []
+
+    def _ingest(trades: list, stops: list) -> None:
+        for t in trades:
+            oid = t.get("order_id")
+            key = oid if oid else f"{t.get('symbol')}|{t.get('action')}|{t.get('detail', '')}"
+            if key not in seen_trade_keys:
+                seen_trade_keys.add(key)
+                all_trades.append(t)
+        for s in stops:
+            sym = s.get("symbol", "")
+            if sym not in seen_stop_syms:
+                seen_stop_syms.add(sym)
+                all_stops.append(s)
+
+    _ingest(record.get("trades_executed", []), record.get("stop_losses_triggered", []))
+
+    if base_date:
+        try:
+            week_dir = _weekly_log_dir(base_date)
+            for fname in sorted(os.listdir(week_dir)):
+                if not fname.endswith(".json") or fname in _NON_RUN_FILES:
+                    continue
+                if not fname.startswith(base_date):
+                    continue
+                fpath = os.path.join(week_dir, fname)
+                try:
+                    with open(fpath) as f:
+                        sibling = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    continue
+                _ingest(
+                    sibling.get("trades_executed", []),
+                    sibling.get("stop_losses_triggered", []),
+                )
+        except OSError:
+            pass
+
+    if all_stops:
         print("  STOP LOSSES TRIGGERED:")
-        for sl in record["stop_losses_triggered"]:
+        for sl in all_stops:
             print(f"    {sl['symbol']}  {sl['pl_pct']:.1f}%  (stop loss)")
 
-    if record["trades_executed"]:
+    if all_trades:
         print("  TRADES EXECUTED:")
-        for t in record["trades_executed"]:
+        for t in all_trades:
             print(f"    {t.get('action', '?')} {t['symbol']}  {t.get('detail', '')}")
     else:
         print("  No trades executed today.")
