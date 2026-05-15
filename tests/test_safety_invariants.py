@@ -219,6 +219,7 @@ class TestCheckPreTradeCannotBeBypassedInBuyPath(unittest.TestCase):
         place_buy_mock = MagicMock()
         _patches = [
             patch("main.config.IS_PAPER", True),
+            patch("main.trader.get_client", return_value=MagicMock()),
             patch("main.trader.is_market_open", return_value=True),
             patch(
                 "main.trader.get_account_info",
