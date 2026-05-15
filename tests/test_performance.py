@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from analysis.performance import (
+    _aggregate_dimension,
     _bucket_summary,
     _empty_bucket,
     _hold_bucket,
@@ -395,3 +396,29 @@ class TestAttributionDimensions(unittest.TestCase):
             record_trade_outcome("momentum", 4.0, sector="Technology")
         result = get_actionable_feedback()
         self.assertIn("Technology", result)
+
+
+class TestAggregateDimension(unittest.TestCase):
+    def test_skips_bucket_with_zero_trades(self):
+        # Line 157: `continue` when bucket.get("trades", 0) == 0
+        stats = {
+            "momentum": {
+                "by_sector": {
+                    "Technology": {
+                        "trades": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "total_return_pct": 0.0,
+                    },
+                    "Financials": {
+                        "trades": 2,
+                        "wins": 1,
+                        "losses": 1,
+                        "total_return_pct": 3.0,
+                    },
+                }
+            }
+        }
+        result = _aggregate_dimension(stats, "by_sector")
+        self.assertNotIn("Technology", result)
+        self.assertIn("Financials", result)

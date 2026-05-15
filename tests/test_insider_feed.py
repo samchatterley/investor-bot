@@ -335,3 +335,58 @@ class TestGetInsiderActivity(unittest.TestCase):
         ):
             result = get_insider_activity(["AAPL"])
         self.assertNotIn("AAPL", result)
+
+
+class TestRecentForm4FilingsDateParseError(unittest.TestCase):
+    def test_skips_filing_with_invalid_date(self):
+        # Lines 70-71: `except ValueError: continue` when filing_date is not valid ISO
+        bad_dates_submissions = {
+            "filings": {
+                "recent": {
+                    "form": ["4", "4"],
+                    "filingDate": ["not-a-date", "2026-05-08"],
+                    "accessionNumber": [
+                        "0000320193-26-000099",
+                        "0000320193-26-000001",
+                    ],
+                    "primaryDocument": ["form4.xml", "form4.xml"],
+                }
+            }
+        }
+        with (
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.time.sleep"),
+        ):
+            mock_get.return_value = _mock_response(json_data=bad_dates_submissions)
+            result = _recent_form4_filings("0000320193", lookback_days=30)
+        # The bad-date entry is skipped; only the valid one is included
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["accession"], "000032019326000001")
+
+
+class TestParseForm4InvalidPrice(unittest.TestCase):
+    def test_skips_transaction_with_non_numeric_price(self):
+        # Lines 112-113: `except (ValueError, TypeError): continue` when price is not numeric
+        xml_bad_price = b"""<?xml version="1.0"?>
+<ownershipDocument>
+  <reportingOwner><reportingOwnerName>Tim Cook</reportingOwnerName></reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-08</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>5000</value></transactionShares>
+        <transactionPricePerShare><value>not-a-number</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>"""
+        with (
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.time.sleep"),
+        ):
+            mock_get.return_value = _mock_response(content=xml_bad_price)
+            txns = _parse_form4("320193", "000032019326000001", "form4.xml")
+        # Transaction skipped due to ValueError on float("not-a-number")
+        self.assertEqual(txns, [])

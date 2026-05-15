@@ -1,8 +1,11 @@
 """Tests for data/fundamentals.py — Finnhub fundamentals and analyst consensus."""
 
+import json
+import os
+import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def _now_iso() -> str:
@@ -11,6 +14,117 @@ def _now_iso() -> str:
 
 def _stale_iso() -> str:
     return (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# _load_cache
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCache(unittest.TestCase):
+    def test_returns_empty_dict_on_corrupt_json(self):
+        """json.JSONDecodeError (e.g. truncated file) → returns {}."""
+        from data.fundamentals import _load_cache
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write("{ corrupt json !!!")
+            path = f.name
+        try:
+            result = _load_cache(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(result, {})
+
+    def test_returns_empty_dict_on_missing_file(self):
+        from data.fundamentals import _load_cache
+
+        result = _load_cache("/tmp/does_not_exist_fund_test.json")
+        self.assertEqual(result, {})
+
+
+# ---------------------------------------------------------------------------
+# _save_cache
+# ---------------------------------------------------------------------------
+
+
+class TestSaveCache(unittest.TestCase):
+    def test_writes_json_to_disk(self):
+        from data.fundamentals import _save_cache
+
+        data = {"AAPL": {"fetched_at": _now_iso(), "data": {"roe": 0.5}}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "cache.json")
+            with patch("data.fundamentals.LOG_DIR", tmpdir):
+                _save_cache(path, data)
+            with open(path) as f:
+                loaded = json.load(f)
+        self.assertEqual(loaded["AAPL"]["data"]["roe"], 0.5)
+
+
+# ---------------------------------------------------------------------------
+# _is_stale
+# ---------------------------------------------------------------------------
+
+
+class TestIsStale(unittest.TestCase):
+    def test_returns_true_when_fetched_at_missing(self):
+        from data.fundamentals import _is_stale
+
+        self.assertTrue(_is_stale({}))
+
+    def test_returns_true_when_fetched_at_invalid(self):
+        from data.fundamentals import _is_stale
+
+        self.assertTrue(_is_stale({"fetched_at": "not-a-date"}))
+
+
+# ---------------------------------------------------------------------------
+# _get
+# ---------------------------------------------------------------------------
+
+
+class TestGet(unittest.TestCase):
+    def test_returns_none_when_no_api_key(self):
+        from data.fundamentals import _get
+
+        with patch("data.fundamentals.FINNHUB_API_KEY", ""):
+            result = _get("/stock/metric", {"symbol": "AAPL"})
+        self.assertIsNone(result)
+
+    def test_returns_none_on_request_exception(self):
+        from data.fundamentals import _get
+
+        with (
+            patch("data.fundamentals.FINNHUB_API_KEY", "testkey"),
+            patch("data.fundamentals.requests.get", side_effect=Exception("timeout")),
+        ):
+            result = _get("/stock/metric", {"symbol": "AAPL"})
+        self.assertIsNone(result)
+
+    def test_returns_none_on_http_error(self):
+        from data.fundamentals import _get
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = Exception("403 Forbidden")
+        with (
+            patch("data.fundamentals.FINNHUB_API_KEY", "testkey"),
+            patch("data.fundamentals.requests.get", return_value=mock_resp),
+        ):
+            result = _get("/stock/metric", {"symbol": "AAPL"})
+        self.assertIsNone(result)
+
+    def test_returns_json_on_success(self):
+        from data.fundamentals import _get
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {"metric": {"roeTTM": 50.0}}
+        with (
+            patch("data.fundamentals.FINNHUB_API_KEY", "testkey"),
+            patch("data.fundamentals.requests.get", return_value=mock_resp),
+        ):
+            result = _get("/stock/metric", {"symbol": "AAPL"})
+        self.assertEqual(result, {"metric": {"roeTTM": 50.0}})
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +360,19 @@ class TestGetFundamentals(unittest.TestCase):
         self.assertIn("AAPL", result)
         self.assertNotIn("FAIL", result)
 
+    def test_fetch_exception_is_caught_and_does_not_propagate(self):
+        """Exception raised by _fetch_ratios is caught (lines 127-128) → symbol excluded."""
+        from data.fundamentals import get_fundamentals
+
+        with (
+            patch("data.fundamentals.FINNHUB_API_KEY", "testkey"),
+            patch("data.fundamentals._load_cache", return_value={}),
+            patch("data.fundamentals._save_cache"),
+            patch("data.fundamentals._fetch_ratios", side_effect=RuntimeError("network error")),
+        ):
+            result = get_fundamentals(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
 
 # ---------------------------------------------------------------------------
 # get_analyst_consensus
@@ -318,6 +445,19 @@ class TestGetAnalystConsensus(unittest.TestCase):
         ):
             get_analyst_consensus(["AAPL"])
         mock_save.assert_called_once()
+
+    def test_fetch_exception_is_caught_and_does_not_propagate(self):
+        """Exception raised by _fetch_analyst is caught (lines 165-166) → symbol excluded."""
+        from data.fundamentals import get_analyst_consensus
+
+        with (
+            patch("data.fundamentals.FINNHUB_API_KEY", "testkey"),
+            patch("data.fundamentals._load_cache", return_value={}),
+            patch("data.fundamentals._save_cache"),
+            patch("data.fundamentals._fetch_analyst", side_effect=RuntimeError("api error")),
+        ):
+            result = get_analyst_consensus(["AAPL"])
+        self.assertNotIn("AAPL", result)
 
 
 # ---------------------------------------------------------------------------

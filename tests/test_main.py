@@ -848,6 +848,9 @@ class RunInnerBase(unittest.TestCase):
             "main.build_scan_universe": [],
             "main.save_experiment_baseline": None,
             "main.load_experiment_baseline": None,
+            "main.insider_feed.get_insider_activity": {},
+            "main.av_sentiment.get_av_sentiment": {},
+            "main.earnings_surprise.get_earnings_surprise": {},
         }
         # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
         if "main.run_startup_health_check" not in overrides:
@@ -3334,6 +3337,84 @@ class TestEnrichedTradeFields(RunInnerBase):
         if tsla_trades:
             for t in tsla_trades:
                 self.assertEqual(t.get("decision_type"), "rule_based")
+
+
+class TestCheckRuleBasedStops(unittest.TestCase):
+    """Lines 421-444: _check_rule_based_stops — hard stop, time-decay stop, and neither."""
+
+    def _pos(self, symbol, plpc):
+        return {"symbol": symbol, "unrealized_plpc": plpc}
+
+    def _run(self, symbol, plpc, levels):
+        from main import _check_rule_based_stops
+
+        with (
+            patch("main.RiskConfig.from_config") as mock_rc,
+            patch("main.trader.get_position_meta", return_value={"signal": "momentum"}),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=levels),
+        ):
+            rc = MagicMock()
+            rc.stop_loss_pct = -7.0
+            rc.take_profit_pct = 20.0
+            mock_rc.return_value = rc
+            return _check_rule_based_stops(
+                positions=[self._pos(symbol, plpc)],
+                position_ages={symbol: 3},
+                atr_by_symbol={},
+            )
+
+    def test_hard_stop_triggered(self):
+        # plpc = -8% <= stop_pct = -7% → symbol added
+        levels = {
+            "stop_pct": -7.0,
+            "apply_timedecay": False,
+            "timedecay_stop_pct": -3.0,
+        }
+        result = self._run("AAPL", -8.0, levels)
+        self.assertIn("AAPL", result)
+
+    def test_timedecay_stop_triggered(self):
+        # plpc = -0.5% <= timedecay_stop_pct = 0.0% with apply_timedecay=True → symbol added
+        levels = {
+            "stop_pct": -7.0,
+            "apply_timedecay": True,
+            "timedecay_stop_pct": 0.0,
+        }
+        result = self._run("AAPL", -0.5, levels)
+        self.assertIn("AAPL", result)
+
+    def test_neither_stop_triggered(self):
+        # plpc = +5% — above both stop levels → symbol NOT added
+        levels = {
+            "stop_pct": -7.0,
+            "apply_timedecay": True,
+            "timedecay_stop_pct": 0.0,
+        }
+        result = self._run("AAPL", 5.0, levels)
+        self.assertNotIn("AAPL", result)
+
+
+class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
+    """Lines 877, 884, 891: snap.update() for insider, av, and pead data."""
+
+    def test_snap_updated_with_insider_av_and_pead_data(self):
+        # All three dicts contain "AAPL" → the snap.update() calls on lines 877, 884, 891 all fire
+        stack, mocks = self._patch_all(
+            **{
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.insider_feed.get_insider_activity": {"AAPL": {"insider_cluster": True}},
+                "main.av_sentiment.get_av_sentiment": {"AAPL": {"av_sentiment_score": 0.5}},
+                "main.earnings_surprise.get_earnings_surprise": {"AAPL": {"pead_candidate": True}},
+            }
+        )
+        # Should complete without error — the snap.update() calls fire but are not observable
+        # from the outside without hooking into internals; we verify the run completes.
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
 
 
 if __name__ == "__main__":

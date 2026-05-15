@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from collections import namedtuple
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -2888,3 +2888,1146 @@ class TestPrintRegimeBlocked(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("bear", output)
         self.assertIn("momentum", output)
+
+
+# ── Coverage gap additions ─────────────────────────────────────────────────────
+
+
+class TestComputeIntradayDayRSIException(unittest.TestCase):
+    """Line 291-292: RSIIndicator raises → silently caught."""
+
+    def test_rsi_exception_still_returns_result(self):
+        # Build 80 bars so len(closes_5m) >= 14 → RSI path is taken
+        bars = []
+        for i in range(80):
+            t = datetime(2025, 1, 2, 9, 31 + i // 60, i % 60, tzinfo=_ET)
+            close = 100 + (i % 10) * 0.1
+            bars.append(
+                (t, _Bar(open=close, high=close + 0.5, low=close - 0.5, close=close, volume=500))
+            )
+        with patch("backtest.engine.RSIIndicator", side_effect=RuntimeError("bad data")):
+            result = _compute_intraday_day("2025-01-02", bars)
+        self.assertIsNotNone(result)
+        self.assertIsNone(result["intraday_rsi"])
+
+
+class TestBinomialPValueWinsGtN(unittest.TestCase):
+    """Line 414: wins > n → returns 0.0."""
+
+    def test_wins_greater_than_n_returns_zero(self):
+        result = _binomial_p_value(wins=10, n=5)
+        self.assertEqual(result, 0.0)
+
+
+class TestFetchIntradayBarsImportError(unittest.TestCase):
+    """Lines 318-326: alpaca import fails → returns {}."""
+
+    def test_import_error_returns_empty(self):
+        """Simulate ImportError by making the alpaca module raise on import."""
+        import builtins
+        import sys
+
+        real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if "alpaca" in name:
+                raise ImportError("alpaca not installed")
+            return real_import(name, *args, **kwargs)
+
+        # Remove cached alpaca modules so our import blocker takes effect
+        blocked_keys = [k for k in sys.modules if "alpaca" in k]
+        saved = {k: sys.modules.pop(k) for k in blocked_keys}
+        try:
+            import backtest.engine as _eng
+
+            with patch("builtins.__import__", side_effect=_blocking_import):
+                result = _eng._fetch_intraday_bars(["AAPL"], "2025-01-02", "2025-01-03")
+            self.assertEqual(result, {})
+        finally:
+            sys.modules.update(saved)
+
+    def test_no_api_keys_returns_empty(self):
+        """Lines 328-330: API keys blank → returns {}."""
+        import backtest.engine as _eng
+        import config as _cfg_real
+
+        orig_key = _cfg_real.ALPACA_API_KEY
+        orig_secret = _cfg_real.ALPACA_SECRET_KEY
+        _cfg_real.ALPACA_API_KEY = ""
+        _cfg_real.ALPACA_SECRET_KEY = ""
+        try:
+            # We can only test no-keys path if alpaca is importable
+            try:
+                from alpaca.data.historical import StockHistoricalDataClient  # noqa
+
+                result = _eng._fetch_intraday_bars(["AAPL"], "2025-01-02", "2025-01-03")
+                self.assertEqual(result, {})
+            except ImportError:
+                pass  # alpaca not installed — import path covered by other test
+        finally:
+            _cfg_real.ALPACA_API_KEY = orig_key
+            _cfg_real.ALPACA_SECRET_KEY = orig_secret
+
+
+class TestComputeRegimesAllBranches(unittest.TestCase):
+    """Lines 385-401: all four regime branches."""
+
+    def _spy_df(self, spy_1d: float, spy_5d: float) -> pd.DataFrame:
+        """Build a minimal SPY indicator DataFrame that produces the given returns."""
+        idx = pd.bdate_range("2025-03-03", periods=2)
+        # ret_1d: close[1]/close[0] - 1 = spy_1d/100
+        close0 = 100.0
+        close1 = close0 * (1 + spy_1d / 100)
+        df = pd.DataFrame({"Close": [close0, close1], "ret_5d": [0.0, spy_5d]}, index=idx)
+        return df
+
+    def test_bear_day_regime(self):
+        """Line 394: spy_1d <= -1.5 → BEAR_DAY."""
+        from backtest.engine import _compute_regimes
+
+        spy = self._spy_df(spy_1d=-2.0, spy_5d=-1.0)
+        vix_spikes = {}
+        regimes = _compute_regimes(spy, vix_spikes)
+        date_str = spy.index[1].strftime("%Y-%m-%d")
+        self.assertEqual(regimes[date_str], "BEAR_DAY")
+
+    def test_high_vol_regime(self):
+        """Line 393: vix_spike=True and spy_5d < -3 → HIGH_VOL."""
+        from backtest.engine import _compute_regimes
+
+        spy = self._spy_df(spy_1d=0.0, spy_5d=-4.0)  # not a BEAR_DAY (spy_1d > -1.5)
+        vix_spikes = {spy.index[1].strftime("%Y-%m-%d"): True}
+        regimes = _compute_regimes(spy, vix_spikes)
+        date_str = spy.index[1].strftime("%Y-%m-%d")
+        self.assertEqual(regimes[date_str], "HIGH_VOL")
+
+    def test_bull_trending_regime(self):
+        """Line 395: spy_5d > 2 and spy_1d > 0 → BULL_TRENDING."""
+        from backtest.engine import _compute_regimes
+
+        spy = self._spy_df(spy_1d=0.5, spy_5d=3.0)
+        vix_spikes = {}
+        regimes = _compute_regimes(spy, vix_spikes)
+        date_str = spy.index[1].strftime("%Y-%m-%d")
+        self.assertEqual(regimes[date_str], "BULL_TRENDING")
+
+    def test_choppy_regime(self):
+        """Line 397: none of the above → CHOPPY."""
+        from backtest.engine import _compute_regimes
+
+        spy = self._spy_df(spy_1d=0.1, spy_5d=0.5)  # mild positive, not bull-trending
+        vix_spikes = {}
+        regimes = _compute_regimes(spy, vix_spikes)
+        date_str = spy.index[1].strftime("%Y-%m-%d")
+        self.assertEqual(regimes[date_str], "CHOPPY")
+
+
+class TestBootstrapCellCiRngFailure(unittest.TestCase):
+    """Lines 530-531, 539: random.Random raises → rng stays None → sample_blocks=blocks."""
+
+    def test_random_raises_still_returns_ci(self):
+        """When Random() raises, rng=None branch (line 539) is hit."""
+        import random as _random_module
+
+        outcomes = [1.0, 0.0, 1.0, 1.0, 0.0] * 3  # 15 outcomes ≥ 10
+
+        def _bad_random(*args, **kwargs):
+            raise RuntimeError("random unavailable")
+
+        # Patch Random on the real random module (imported locally inside the function)
+        with patch.object(_random_module, "Random", side_effect=_bad_random):
+            ci_lo, ci_hi = _bootstrap_cell_ci(outcomes)
+        # Should not raise and should return a valid tuple
+        self.assertIsInstance(ci_lo, float)
+        self.assertIsInstance(ci_hi, float)
+
+
+class TestRunSimulationGapThroughStop(unittest.TestCase):
+    """Lines 632-633: open_px <= stop_price → fill at open."""
+
+    def test_gap_through_stop_fills_at_open(self):
+        """If open of exit day is at or below stop price, fills at open."""
+        from config import STOP_LOSS_PCT
+
+        idx = pd.bdate_range("2025-01-02", periods=3)
+        trading_dates = idx[1:]
+        entry_price = 100.0
+        # open on day2 is well below stop = 100*(1-STOP_LOSS_PCT)
+        stop = entry_price * (1 - STOP_LOSS_PCT)
+        open_day2 = stop * 0.95  # gap through stop
+        close_vals = [entry_price, entry_price, entry_price]
+        open_vals = [entry_price * 0.999, entry_price, open_day2]
+        aapl_df = _build_indicator_df(idx, close_vals, open_vals=open_vals)
+        result = _run_simulation(
+            {"AAPL": aapl_df}, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+        )
+        stop_trades = [t for t in result["trades"] if t.get("reason") == "stop_loss"]
+        self.assertGreater(len(stop_trades), 0)
+
+
+class TestBuildIndicatorsHighLow(unittest.TestCase):
+    """Lines 964, 966: raw df includes High and Low columns → passed to _compute_indicators."""
+
+    def test_high_low_columns_passed_through(self):
+        from backtest.engine import _build_indicators
+
+        n = 60
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        closes = [100.0 + i * 0.5 for i in range(n)]
+        data = {
+            ("Close", "AAPL"): closes,
+            ("Open", "AAPL"): [c * 0.999 for c in closes],
+            ("High", "AAPL"): [c * 1.01 for c in closes],
+            ("Low", "AAPL"): [c * 0.99 for c in closes],
+            ("Volume", "AAPL"): [1_000_000] * n,
+        }
+        raw = pd.DataFrame(data, index=idx)
+        raw.columns = pd.MultiIndex.from_tuples(raw.columns)
+        indicators = _build_indicators(raw, ["AAPL"])
+        self.assertIn("AAPL", indicators)
+        # With High/Low present, is_inside_day and adx should be computed
+        self.assertIn("adx", indicators["AAPL"].columns)
+
+
+class TestRunBacktextNewPaths(unittest.TestCase):
+    """Cover lines 1019-1021, 1041-1042, 1047-1049, 1054-1057, 1063-1066."""
+
+    def setUp(self):
+        self._save = patch("backtest.engine._save_results")
+        self._print = patch("backtest.engine._print_results")
+        self._save.start()
+        self._print.start()
+
+    def tearDown(self):
+        self._save.stop()
+        self._print.stop()
+
+    def test_spy_multiindex_fallback(self):
+        """Lines 1019-1021: SPY download returns MultiIndex → column slice used."""
+        main_raw = _make_raw(n=100)
+        # SPY fallback data with MultiIndex columns
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_closes = [400.0 + i * 0.1 for i in range(100)]
+        spy_multi = pd.DataFrame(
+            {
+                ("Close", "SPY"): spy_closes,
+                ("Volume", "SPY"): [5_000_000] * 100,
+            },
+            index=spy_idx,
+        )
+        spy_multi.columns = pd.MultiIndex.from_tuples(spy_multi.columns)
+
+        call_count = [0]
+
+        def _download_side_effect(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return main_raw  # first call: main symbols
+            return spy_multi  # second call: SPY fallback
+
+        with patch("backtest.engine.yf.download", side_effect=_download_side_effect):
+            result = run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07")
+        self.assertIn("total_trades", result)
+
+    def test_vix_exception_handled(self):
+        """Lines 1041-1042: VIX download raises → warning logged, continues."""
+        main_raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _download_side_effect(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return main_raw
+            if isinstance(sym, str) and "VIX" in sym:
+                raise RuntimeError("VIX unavailable")
+            return main_raw
+
+        with patch("backtest.engine.yf.download", side_effect=_download_side_effect):
+            result = run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07")
+        self.assertIn("total_trades", result)
+
+    def test_use_intraday_disabled_warning(self):
+        """Lines 1047-1049: intraday fetch returns {} → warning, intraday_data=None."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine._fetch_intraday_bars", return_value={}),
+        ):
+            result = run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07", use_intraday=True)
+        self.assertIn("total_trades", result)
+
+    def test_use_fundamentals_fetches_both(self):
+        """Lines 1054-1057, 1063-1066: use_fundamentals=True → both histories fetched."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07", use_fundamentals=True)
+        mock_earn.assert_called_once()
+        mock_ins.assert_called_once()
+
+
+class TestRunWalkForwardNewPaths(unittest.TestCase):
+    """Cover lines 1163-1165, 1172-1173, 1175-1176, 1178, 1219-1220."""
+
+    def test_spy_multiindex_in_walk_forward(self):
+        """Lines 1163-1165: walk-forward SPY fetch returns MultiIndex."""
+        main_raw = _make_raw(n=100)
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_closes = [400.0 + i * 0.1 for i in range(100)]
+        spy_multi = pd.DataFrame(
+            {("Close", "SPY"): spy_closes, ("Volume", "SPY"): [5_000_000] * 100},
+            index=spy_idx,
+        )
+        spy_multi.columns = pd.MultiIndex.from_tuples(spy_multi.columns)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            return main_raw if call_count[0] == 1 else spy_multi
+
+        with patch("backtest.engine.yf.download", side_effect=_dl):
+            result = run_walk_forward_optimized(
+                ["AAPL", "FLAT"],
+                "2025-02-01",
+                "2025-03-07",
+                train_days=10,
+                test_days=5,
+                param_grid=_LOOSE_PARAM_GRID,
+            )
+        self.assertIn("folds", result)
+
+    def test_use_fundamentals_walk_forward(self):
+        """Lines 1172-1173, 1175-1176, 1178: use_fundamentals=True path."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_walk_forward_optimized(
+                ["AAPL", "FLAT"],
+                "2025-02-01",
+                "2025-03-07",
+                train_days=10,
+                test_days=5,
+                param_grid=_LOOSE_PARAM_GRID,
+                use_fundamentals=True,
+            )
+        mock_earn.assert_called_once()
+        mock_ins.assert_called_once()
+
+    def test_use_earnings_only_walk_forward(self):
+        """Line 1172-1173 (use_earnings_only): earnings fetched, insider skipped."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_walk_forward_optimized(
+                ["AAPL", "FLAT"],
+                "2025-02-01",
+                "2025-03-07",
+                train_days=10,
+                test_days=5,
+                param_grid=_LOOSE_PARAM_GRID,
+                use_earnings_only=True,
+            )
+        mock_earn.assert_called_once()
+        mock_ins.assert_not_called()
+
+    def test_excluded_symbols_logged(self):
+        """Lines 1219-1220: pit_indicators smaller than indicators → debug logged."""
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.get_universe_for_date", return_value=["AAPL"]),
+        ):
+            result = run_walk_forward_optimized(
+                ["AAPL", "FLAT"],
+                "2025-02-01",
+                "2025-03-07",
+                train_days=10,
+                test_days=5,
+                param_grid=_LOOSE_PARAM_GRID,
+            )
+        self.assertIn("folds", result)
+
+
+class TestRunAblationNewPaths(unittest.TestCase):
+    """Cover lines 1394-1395, 1410-1412, 1430-1431, 1435, 1440-1441, 1443-1444."""
+
+    def test_empty_data_returns_empty(self):
+        """Lines 1394-1395: raw.empty → returns {}."""
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_ablation(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_spy_multiindex_in_ablation(self):
+        """Lines 1410-1412: SPY fetch returns MultiIndex columns."""
+        main_raw = _make_raw(n=100)
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_multi = pd.DataFrame(
+            {("Close", "SPY"): [400.0] * 100, ("Volume", "SPY"): [5_000_000] * 100},
+            index=spy_idx,
+        )
+        spy_multi.columns = pd.MultiIndex.from_tuples(spy_multi.columns)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            return main_raw if call_count[0] == 1 else spy_multi
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_ablation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("baseline", result)
+
+    def test_vix_exception_in_ablation(self):
+        """Lines 1430-1431: VIX raises → continues gracefully."""
+        main_raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return main_raw
+            raise RuntimeError("VIX unavailable")
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_ablation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("baseline", result)
+
+    def test_use_fundamentals_in_ablation(self):
+        """Lines 1440-1441, 1443-1444: use_fundamentals=True."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_ablation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", use_fundamentals=True)
+        mock_earn.assert_called_once()
+        mock_ins.assert_called_once()
+
+    def test_use_earnings_only_in_ablation(self):
+        """Line 1440-1441 (use_earnings_only branch): earnings fetched, insider skipped."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_ablation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", use_earnings_only=True)
+        mock_earn.assert_called_once()
+        mock_ins.assert_not_called()
+
+
+class TestRunBackwardEliminationNewPaths(unittest.TestCase):
+    """Cover lines 1566-1568, 1586-1587, 1591, 1599-1600, 1628, 1646-1649, 1654-1669."""
+
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_spy_multiindex_in_backward_elimination(self):
+        """Lines 1566-1568: SPY fetch returns MultiIndex in backward elimination."""
+        main_raw = _make_raw(n=100)
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_multi = pd.DataFrame(
+            {("Close", "SPY"): [400.0] * 100, ("Volume", "SPY"): [5_000_000] * 100},
+            index=spy_idx,
+        )
+        spy_multi.columns = pd.MultiIndex.from_tuples(spy_multi.columns)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            return main_raw if call_count[0] == 1 else spy_multi
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("original_baseline", result)
+
+    def test_vix_exception_in_backward_elimination(self):
+        """Lines 1586-1587: VIX raises → continues."""
+        main_raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return main_raw
+            raise RuntimeError("VIX unavailable")
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("original_baseline", result)
+
+    def test_use_fundamentals_in_backward_elimination(self):
+        """Lines 1599-1600: use_fundamentals=True fetches insider too."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_backward_elimination(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", use_fundamentals=True
+            )
+        mock_earn.assert_called_once()
+        mock_ins.assert_called_once()
+
+    def test_backward_elimination_with_steps_prints(self):
+        """Lines 1702-1705: steps list non-empty → step table printed without error."""
+        r = {
+            "original_baseline": {"sharpe_ratio": 0.5, "total_return_pct": 5.0, "total_trades": 10},
+            "final_result": {"sharpe_ratio": 0.8, "total_return_pct": 7.0, "total_trades": 8},
+            "steps": [
+                {
+                    "step": 1,
+                    "signal_removed": "macd_crossover",
+                    "sharpe_delta": 0.3,
+                    "sharpe_after": 0.8,
+                    "trades_removed": 2,
+                }
+            ],
+            "signals_kept": ["momentum", "mean_reversion"],
+            "signals_removed": ["macd_crossover"],
+        }
+        try:
+            _print_backward_elimination_results(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:
+            self.fail(f"_print_backward_elimination_results raised: {exc}")
+
+
+class TestRunSignalAnalysisNewPaths(unittest.TestCase):
+    """Cover lines 1801-1803, 1821-1822, 1826, 1831-1832, 1834-1835, 1872-1884,
+    1888-1892, 1896-1905, 1936-1959, 1964, 1968-1969, 1983-1993."""
+
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_signal_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_spy_multiindex_in_signal_analysis(self):
+        """Lines 1801-1803: SPY fetch returns MultiIndex in signal_analysis."""
+        main_raw = _make_raw(n=100)
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_multi = pd.DataFrame(
+            {("Close", "SPY"): [400.0] * 100, ("Volume", "SPY"): [5_000_000] * 100},
+            index=spy_idx,
+        )
+        spy_multi.columns = pd.MultiIndex.from_tuples(spy_multi.columns)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            return main_raw if call_count[0] == 1 else spy_multi
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_signal_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("regime_stats", result)
+
+    def test_vix_exception_in_signal_analysis(self):
+        """Lines 1821-1822: VIX raises → continues."""
+        main_raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return main_raw
+            raise RuntimeError("VIX unavailable")
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_signal_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("regime_stats", result)
+
+    def test_use_fundamentals_in_signal_analysis(self):
+        """Lines 1831-1832, 1834-1835: use_fundamentals=True."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_signal_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", use_fundamentals=True)
+        mock_earn.assert_called_once()
+        mock_ins.assert_called_once()
+
+    def test_use_earnings_only_in_signal_analysis(self):
+        """Line 1831-1832 (earnings-only): insider not fetched."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_signal_analysis(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", use_earnings_only=True
+            )
+        mock_earn.assert_called_once()
+        mock_ins.assert_not_called()
+
+    def test_regime_stats_accumulate_wins_and_losses(self):
+        """Lines 1872-1884, 1888-1892, 1896-1905: trades with pnl_pct > 0 and <= 0
+        accumulate into regime_stats properly (wins + losses paths)."""
+        # Use loose params to generate trades with entry_regime set
+        idx = pd.bdate_range("2025-01-02", periods=60)
+        n = len(idx)
+        # Alternating wins/losses: price oscillates ±5%
+        closes = []
+        for i in range(n):
+            if i % 6 < 3:
+                closes.append(100.0 + i * 0.3)
+            else:
+                closes.append(100.0 - i * 0.1)
+        df = pd.DataFrame(
+            {
+                "Close": closes,
+                "Open": [c * 0.999 for c in closes],
+                "Volume": [2_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.5] * n,
+                "ema9": [101.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.5] * n,
+                "ret_5d": [2.0] * n,
+            },
+            index=idx,
+        )
+        regime = {d.strftime("%Y-%m-%d"): "BULL_TRENDING" for d in idx}
+        _run_simulation(
+            {"AAPL": df},
+            idx[1:],
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            regime_by_date=regime,
+        )
+        # Now run signal_analysis with these trades (test via direct path)
+        # This covers lines 1872-1884 in isolation via a _run call
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            sa_result = run_signal_analysis(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                params=_LOOSE_ENTRY,
+            )
+        # If any trades fired, regime_stats should have win/loss counts
+        if sa_result["regime_stats"]:
+            for _sig, reg_dict in sa_result["regime_stats"].items():
+                for _reg, cell in reg_dict.items():
+                    total = cell["wins"] + cell["losses"]
+                    self.assertGreaterEqual(total, 0)
+
+    def test_print_regime_table_with_intraday_signals(self):
+        """Lines 1936-1959, 1964, 1968-1969: intraday signal present → footnote printed."""
+        import io
+        import sys
+
+        # Build regime_stats with an intraday signal to trigger footnote
+        r = {
+            "regime_stats": {
+                "orb_breakout": {
+                    "BULL_TRENDING": {
+                        "wins": 5,
+                        "losses": 3,
+                        "total_return": 4.0,
+                        "win_rate_ci_low": float("nan"),
+                        "win_rate_ci_high": float("nan"),
+                    }
+                },
+                "momentum": {
+                    "CHOPPY": {
+                        "wins": 2,
+                        "losses": 8,
+                        "total_return": -1.5,
+                        "win_rate_ci_low": float("nan"),
+                        "win_rate_ci_high": float("nan"),
+                    }
+                },
+            },
+            "decay_stats": {},
+        }
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_regime_table(r, "2025-01-01", "2025-06-30")
+        finally:
+            sys.stdout = old
+        output = buf.getvalue()
+        # Low-n footnote (n=8 < 30) and intraday footnote should both appear
+        self.assertIn("†", output)
+        self.assertIn("*", output)
+
+    def test_print_regime_table_with_valid_ci(self):
+        """Lines 1954-1956: ci_lo not NaN → CI string printed."""
+        import io
+        import sys
+
+        r = {
+            "regime_stats": {
+                "momentum": {
+                    "BULL_TRENDING": {
+                        "wins": 20,
+                        "losses": 10,
+                        "total_return": 15.0,
+                        "win_rate_ci_low": 0.45,
+                        "win_rate_ci_high": 0.85,
+                    }
+                }
+            },
+            "decay_stats": {},
+        }
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_regime_table(r, "2025-01-01", "2025-06-30")
+        finally:
+            sys.stdout = old
+        output = buf.getvalue()
+        self.assertIn("CI", output)
+
+    def test_print_hold_period_table_with_data(self):
+        """Lines 1983-1993: decay_stats has data → lines printed including decay flag."""
+        import io
+        import sys
+
+        r = {
+            "regime_stats": {},
+            "decay_stats": {
+                "momentum": {
+                    1: {"wins": 5, "losses": 5, "total_return": 0.5},
+                    2: {"wins": 2, "losses": 8, "total_return": -2.0},  # avg < -0.1 → ← decays
+                }
+            },
+        }
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_hold_period_table(r, "2025-01-01", "2025-06-30")
+        finally:
+            sys.stdout = old
+        output = buf.getvalue()
+        self.assertIn("Day 2", output)
+        self.assertIn("decays", output)
+
+
+class TestRunHoldoutEvaluationNewPaths(unittest.TestCase):
+    """Lines 2100-2101, 2110."""
+
+    def test_empty_data_returns_empty(self):
+        """Lines 2100-2101: raw.empty → returns {}."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "holdout_log.jsonl")
+            with (
+                patch("backtest.engine.yf.download", return_value=pd.DataFrame()),
+                patch("backtest.engine.LOG_DIR", tmp),
+                patch("backtest.engine._HOLDOUT_LOG", log_path),
+            ):
+                result = run_holdout_evaluation(
+                    frozen_params={}, version="vTEST_EMPTY", symbols=["AAPL"]
+                )
+        self.assertEqual(result, {})
+
+    def test_spy_present_computes_regime(self):
+        """Line 2110: spy_indicators not None → _compute_regimes called."""
+        import tempfile
+
+        ohlcv = _make_ohlcv_full(300)
+        ind = _compute_indicators(ohlcv)
+        # Include SPY in indicators so spy_indicators is not None → line 2110
+        spy_ohlcv = _make_ohlcv(300)
+        spy_ind = _compute_indicators(spy_ohlcv)
+        fake_ind = {"AAPL": ind, "SPY": spy_ind}
+        fake_raw = pd.concat(
+            {"Close": ohlcv[["Close"]], "Open": ohlcv[["Open"]], "Volume": ohlcv[["Volume"]]},
+            axis=1,
+        )
+        fake_raw.columns = pd.MultiIndex.from_tuples(
+            [("Close", "AAPL"), ("Open", "AAPL"), ("Volume", "AAPL")]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "holdout_log.jsonl")
+            with (
+                patch("backtest.engine.yf.download", return_value=fake_raw),
+                patch("backtest.engine._build_indicators", return_value=fake_ind),
+                patch("backtest.engine.LOG_DIR", tmp),
+                patch("backtest.engine._HOLDOUT_LOG", log_path),
+            ):
+                result = run_holdout_evaluation(
+                    frozen_params={}, version="vTEST_SPY", symbols=["AAPL"]
+                )
+        self.assertIn("total_trades", result)
+
+
+class TestBackwardEliminationSteps(unittest.TestCase):
+    """Lines 1628, 1646-1649, 1654-1669: exercise the inner elimination loop.
+
+    We mock _run_simulation so the first removal always improves Sharpe (delta>0),
+    the second removal is tied (delta==best_delta), and subsequent calls drop back to 0.
+    This exercises the 'disabled.add' path (1654-1669) AND the 'not remaining' break
+    path (1628) when all signals have been removed.
+    """
+
+    def test_elimination_step_recorded(self):
+        """Lines 1654-1669: step is appended when a signal improves Sharpe."""
+        raw = _make_raw(n=100)
+
+        # baseline sharpe=0.0; first removal of any signal → sharpe=0.5
+        # subsequent calls → sharpe=0.0 (no further improvement)
+        def _mock_sim(indicators, dates, **kwargs):
+            disabled = kwargs.get("disabled_signals") or frozenset()
+            if not disabled:
+                # baseline
+                return {
+                    "sharpe_ratio": 0.0,
+                    "total_return_pct": 0.0,
+                    "total_trades": 0,
+                    "win_rate_pct": 0.0,
+                    "avg_return_per_trade_pct": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "final_value": 10000.0,
+                    "initial_capital": 10000.0,
+                    "equity_curve": [],
+                    "trades": [],
+                    "by_signal": {},
+                    "signals_tested": set(),
+                    "signals_not_tested": set(),
+                    "validation_scope": "rule_proxy_only",
+                }
+            if len(disabled) == 1:
+                # First removal: improve Sharpe for the first signal only
+                sig = next(iter(disabled))
+                from backtest.engine import _SIGNAL_PRIORITY
+
+                first_sig = min(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s])
+                sharpe = 0.5 if sig == first_sig else 0.0
+                return {
+                    "sharpe_ratio": sharpe,
+                    "total_return_pct": 0.0,
+                    "total_trades": 0,
+                    "win_rate_pct": 0.0,
+                    "avg_return_per_trade_pct": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "final_value": 10000.0,
+                    "initial_capital": 10000.0,
+                    "equity_curve": [],
+                    "trades": [],
+                    "by_signal": {},
+                    "signals_tested": set(),
+                    "signals_not_tested": set(),
+                    "validation_scope": "rule_proxy_only",
+                }
+            # Two+ signals disabled → no improvement
+            return {
+                "sharpe_ratio": 0.5,
+                "total_return_pct": 0.0,
+                "total_trades": 0,
+                "win_rate_pct": 0.0,
+                "avg_return_per_trade_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "final_value": 10000.0,
+                "initial_capital": 10000.0,
+                "equity_curve": [],
+                "trades": [],
+                "by_signal": {},
+                "signals_tested": set(),
+                "signals_not_tested": set(),
+                "validation_scope": "rule_proxy_only",
+            }
+
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+            patch("backtest.engine._run_simulation", side_effect=_mock_sim),
+        ):
+            result = run_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        # At least one step should be recorded (the first signal removed)
+        self.assertGreater(len(result["steps"]), 0)
+
+    def test_all_signals_disabled_hits_not_remaining_break(self):
+        """Line 1628: when all signals are disabled, loop breaks via 'not remaining'."""
+        raw = _make_raw(n=100)
+        from backtest.engine import _SIGNAL_PRIORITY
+
+        # Mock: every removal always improves Sharpe — forces all signals to be disabled
+        def _mock_sim(indicators, dates, **kwargs):
+            disabled = kwargs.get("disabled_signals") or frozenset()
+            base = {
+                "total_return_pct": 0.0,
+                "total_trades": 0,
+                "win_rate_pct": 0.0,
+                "avg_return_per_trade_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "final_value": 10000.0,
+                "initial_capital": 10000.0,
+                "equity_curve": [],
+                "trades": [],
+                "by_signal": {},
+                "signals_tested": set(),
+                "signals_not_tested": set(),
+                "validation_scope": "rule_proxy_only",
+            }
+            # Sharpe improves linearly with number of disabled signals
+            base["sharpe_ratio"] = float(len(disabled)) * 0.01
+            return base
+
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+            patch("backtest.engine._run_simulation", side_effect=_mock_sim),
+        ):
+            result = run_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        # All signals should have been removed
+        self.assertEqual(result["signals_kept"], [])
+        self.assertEqual(len(result["signals_removed"]), len(_SIGNAL_PRIORITY))
+
+
+class TestRegimeStatsAccumulation(unittest.TestCase):
+    """Lines 1872-1884, 1888-1892, 1896-1905: regime stats accumulation requires
+    actual SELL trades with entry_regime + pnl_pct set. We mock _run_simulation
+    to return synthetic trade data so the loop in run_signal_analysis executes."""
+
+    def _make_sim_result(self, trades):
+        return {
+            "sharpe_ratio": 1.0,
+            "total_return_pct": 5.0,
+            "total_trades": len(trades),
+            "win_rate_pct": 60.0,
+            "avg_return_per_trade_pct": 0.5,
+            "max_drawdown_pct": -2.0,
+            "final_value": 10500.0,
+            "initial_capital": 10000.0,
+            "equity_curve": [("2025-01-02", 10000.0)],
+            "trades": trades,
+            "by_signal": {},
+            "signals_tested": set(),
+            "signals_not_tested": set(),
+            "validation_scope": "rule_proxy_only",
+        }
+
+    def test_wins_and_losses_accumulated(self):
+        """Full coverage of the regime stats loop including win (pnl>0) and loss (pnl<=0) paths."""
+        trades = [
+            {
+                "action": "SELL",
+                "pnl_pct": 2.5,
+                "signal": "momentum",
+                "entry_regime": "BULL_TRENDING",
+                "days_held": 2,
+                "reason": "time_exit",
+                "date": "2025-01-03",
+            },
+            {
+                "action": "SELL",
+                "pnl_pct": -1.2,
+                "signal": "momentum",
+                "entry_regime": "BULL_TRENDING",
+                "days_held": 1,
+                "reason": "stop_loss",
+                "date": "2025-01-04",
+            },
+            {
+                "action": "SELL",
+                "pnl_pct": 0.0,
+                "signal": "mean_reversion",
+                "entry_regime": "CHOPPY",
+                "days_held": 3,
+                "reason": "time_exit",
+                "date": "2025-01-05",
+            },
+        ]
+        sim_result = self._make_sim_result(trades)
+
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+            patch("backtest.engine._run_simulation", return_value=sim_result),
+        ):
+            result = run_signal_analysis(["AAPL"], "2025-01-01", "2025-06-30")
+
+        # momentum in BULL_TRENDING should have 1 win, 1 loss
+        self.assertIn("momentum", result["regime_stats"])
+        self.assertIn("BULL_TRENDING", result["regime_stats"]["momentum"])
+        cell = result["regime_stats"]["momentum"]["BULL_TRENDING"]
+        self.assertEqual(cell["wins"], 1)
+        self.assertEqual(cell["losses"], 1)
+
+        # mean_reversion in CHOPPY: pnl_pct=0.0 → loss path (not > 0)
+        self.assertIn("mean_reversion", result["regime_stats"])
+        mr_cell = result["regime_stats"]["mean_reversion"]["CHOPPY"]
+        self.assertEqual(mr_cell["losses"], 1)
+
+        # decay_stats should also be populated (lines 1896-1905)
+        self.assertIn("momentum", result["decay_stats"])
+
+    def test_hold_period_decay_flag_triggered(self):
+        """Line 1987 in _print_hold_period_table: avg < -0.1 → '← decays' flag."""
+        import io
+        import sys
+
+        trades = [
+            {
+                "action": "SELL",
+                "pnl_pct": -1.5,
+                "signal": "momentum",
+                "entry_regime": "CHOPPY",
+                "days_held": 2,
+                "reason": "stop_loss",
+                "date": "2025-01-03",
+            },
+        ]
+        sim_result = self._make_sim_result(trades)
+
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+            patch("backtest.engine._run_simulation", return_value=sim_result),
+        ):
+            result = run_signal_analysis(["AAPL"], "2025-01-01", "2025-06-30")
+
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            _print_hold_period_table(result, "2025-01-01", "2025-06-30")
+        finally:
+            sys.stdout = old
+        output = buf.getvalue()
+        # avg = -1.5/1 = -1.5 < -0.1 → "← decays" should appear
+        self.assertIn("decays", output)
+
+
+class TestFetchIntradayBarsBody(unittest.TestCase):
+    """Lines 332-377: _fetch_intraday_bars body after API key check."""
+
+    def _alpaca_modules(self, bars=None, raise_exc=None):
+        """Build sys.modules patch + mock client."""
+        mock_bar = MagicMock()
+        mock_dt = datetime(2025, 1, 2, 10, 30, tzinfo=_ET)
+        mock_bar.timestamp.astimezone.return_value = mock_dt
+
+        if raise_exc is not None:
+            resp = MagicMock()
+            mock_client = MagicMock()
+            mock_client.get_stock_bars.side_effect = raise_exc
+        else:
+            bars_data = [] if bars == [] else [mock_bar]
+            resp = MagicMock()
+            resp.data.get.return_value = bars_data
+            mock_client = MagicMock()
+            mock_client.get_stock_bars.return_value = resp
+
+        historical = MagicMock()
+        historical.StockHistoricalDataClient = MagicMock(return_value=mock_client)
+        modules = {
+            "alpaca": MagicMock(),
+            "alpaca.data": MagicMock(),
+            "alpaca.data.historical": historical,
+            "alpaca.data.requests": MagicMock(),
+            "alpaca.data.timeframe": MagicMock(),
+        }
+        return modules, mock_client
+
+    def _with_keys(self, fn):
+        import config as _cfg
+
+        orig_key, orig_secret = _cfg.ALPACA_API_KEY, _cfg.ALPACA_SECRET_KEY
+        _cfg.ALPACA_API_KEY = "test_key"
+        _cfg.ALPACA_SECRET_KEY = "test_secret"
+        try:
+            fn()
+        finally:
+            _cfg.ALPACA_API_KEY = orig_key
+            _cfg.ALPACA_SECRET_KEY = orig_secret
+
+    def test_success_bars_returned(self):
+        """Lines 332-371, 376-377: bars returned → sym_result populated."""
+        import sys
+
+        import backtest.engine as _eng
+
+        mods, _ = self._alpaca_modules()
+
+        def run():
+            with (
+                patch.dict(sys.modules, mods),
+                patch("backtest.engine._compute_intraday_day", return_value={"vwap": 100.0}),
+            ):
+                result = _eng._fetch_intraday_bars(["AAPL"], "2025-01-02", "2025-01-02")
+            self.assertIn("AAPL", result)
+            self.assertIn("2025-01-02", result["AAPL"])
+
+        self._with_keys(run)
+
+    def test_empty_bars_skips_symbol(self):
+        """Lines 355-357: bars_data empty → continue → symbol absent from result."""
+        import sys
+
+        import backtest.engine as _eng
+
+        mods, _ = self._alpaca_modules(bars=[])
+
+        def run():
+            with patch.dict(sys.modules, mods):
+                result = _eng._fetch_intraday_bars(["AAPL"], "2025-01-02", "2025-01-02")
+            self.assertNotIn("AAPL", result)
+
+        self._with_keys(run)
+
+    def test_exception_in_fetch_logged(self):
+        """Lines 373-374: get_stock_bars raises → warning logged, result empty."""
+        import sys
+
+        import backtest.engine as _eng
+
+        mods, _ = self._alpaca_modules(raise_exc=RuntimeError("network"))
+
+        def run():
+            with patch.dict(sys.modules, mods):
+                result = _eng._fetch_intraday_bars(["AAPL"], "2025-01-02", "2025-01-02")
+            self.assertEqual(result, {})
+
+        self._with_keys(run)

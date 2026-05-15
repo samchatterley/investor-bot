@@ -197,3 +197,29 @@ class TestGetEarningsSurprise(unittest.TestCase):
             result_included = get_earnings_surprise(["AAPL"], min_surprise=3.0)
         self.assertNotIn("AAPL", result_excluded)
         self.assertIn("AAPL", result_included)
+
+    def test_skips_etf_symbol(self):
+        # Line 58: `continue` when sym in ETF_SYMBOLS — SPY is an ETF, skipped immediately
+        with patch("data.earnings_surprise.time.sleep"):
+            result = get_earnings_surprise(["SPY"])
+        self.assertEqual(result, {})
+
+    def test_skips_when_all_rows_have_null_reported_eps(self):
+        # Line 73: `continue` when df.empty after dropna on Reported EPS / Surprise(%)
+        df = _make_earnings_df(
+            [
+                {
+                    "date": _recent_date(5),
+                    "estimate": 1.50,
+                    "reported": None,
+                    "surprise": None,
+                }
+            ]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_surprise(["AAPL"])
+        self.assertNotIn("AAPL", result)

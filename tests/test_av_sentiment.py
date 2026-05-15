@@ -172,3 +172,116 @@ class TestGetAvSentiment(unittest.TestCase):
             mock_get.return_value = _make_response(neutral_feed)
             result = get_av_sentiment(["AAPL"])
         self.assertEqual(result["AAPL"]["av_sentiment_label"], "Neutral")
+
+    def test_sleep_before_continue_on_exception_with_more_batches(self):
+        # Line 77: time.sleep called before `continue` when exception raised AND more batches remain
+        # Pass 11 symbols → 2 batches; first raises, second succeeds with empty feed
+        symbols = [f"SYM{i}" for i in range(11)]
+        sleep_mock = MagicMock()
+        with (
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch(
+                "data.av_sentiment.requests.get",
+                side_effect=[Exception("timeout"), _make_response({"feed": []})],
+            ),
+            patch("data.av_sentiment.time.sleep", sleep_mock),
+        ):
+            get_av_sentiment(symbols)
+        # sleep must be called at least once (for the exception path between batches)
+        sleep_mock.assert_called()
+
+    def test_sleep_before_continue_on_no_feed_with_more_batches(self):
+        # Line 85: time.sleep called before `continue` when "feed" not in data AND more batches remain
+        symbols = [f"SYM{i}" for i in range(11)]
+        sleep_mock = MagicMock()
+        rate_limit = {"Information": "rate limited"}
+        with (
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch(
+                "data.av_sentiment.requests.get",
+                side_effect=[_make_response(rate_limit), _make_response({"feed": []})],
+            ),
+            patch("data.av_sentiment.time.sleep", sleep_mock),
+        ):
+            get_av_sentiment(symbols)
+        sleep_mock.assert_called()
+
+    def test_skips_article_with_invalid_time_published(self):
+        # Lines 95-96: `continue` in except (ValueError, TypeError) for bad time_published
+        bad_time_feed = {
+            "feed": [
+                {
+                    "title": "Bad timestamp article",
+                    "time_published": "not-a-timestamp",
+                    "ticker_sentiment": [
+                        {
+                            "ticker": "AAPL",
+                            "ticker_sentiment_score": "0.5",
+                            "relevance_score": "0.8",
+                        },
+                    ],
+                }
+            ]
+        }
+        with (
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+        ):
+            mock_get.return_value = _make_response(bad_time_feed)
+            result = get_av_sentiment(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_skips_article_published_before_cutoff(self):
+        # Line 98: `continue` when pub_time < cutoff (article older than lookback_hours)
+        # Default lookback is 24h; publish 48h ago → before cutoff
+        old_time = (datetime.now(UTC) - timedelta(hours=48)).strftime("%Y%m%dT%H%M%S")
+        old_feed = {
+            "feed": [
+                {
+                    "title": "Old article",
+                    "time_published": old_time,
+                    "ticker_sentiment": [
+                        {
+                            "ticker": "AAPL",
+                            "ticker_sentiment_score": "0.5",
+                            "relevance_score": "0.8",
+                        },
+                    ],
+                }
+            ]
+        }
+        with (
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+        ):
+            mock_get.return_value = _make_response(old_feed)
+            result = get_av_sentiment(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_skips_ticker_sentiment_with_invalid_score(self):
+        # Lines 107-108: `continue` in except (ValueError, KeyError, TypeError) for bad score
+        bad_score_feed = {
+            "feed": [
+                {
+                    "title": "Article with bad score",
+                    "time_published": _ts(1),
+                    "ticker_sentiment": [
+                        {
+                            "ticker": "AAPL",
+                            "ticker_sentiment_score": "not-a-float",
+                            "relevance_score": "0.8",
+                        },
+                    ],
+                }
+            ]
+        }
+        with (
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+        ):
+            mock_get.return_value = _make_response(bad_score_feed)
+            result = get_av_sentiment(["AAPL"])
+        self.assertNotIn("AAPL", result)

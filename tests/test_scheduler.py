@@ -375,5 +375,105 @@ class TestWrapperFunctions(unittest.TestCase):
         mock_bot.run.assert_called_once_with(mode="close")
 
 
+class TestCheckSingleton(unittest.TestCase):
+    """Tests for _check_singleton in run_scheduler.py."""
+
+    def test_exits_when_existing_process_is_alive(self):
+        """PID file exists and os.kill(old_pid, 0) does NOT raise → sys.exit(1)."""
+        mod = _load_scheduler_module()
+        # Simulate PID file containing a live PID
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open(read_data="99999")),
+            patch("os.kill"),
+            patch("os.makedirs"),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            mod._check_singleton()
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_continues_when_pid_file_has_stale_pid(self):
+        """PID file exists but os.kill raises ProcessLookupError → stale lock, continues."""
+        import io
+
+        mod = _load_scheduler_module()
+        written = []
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if mode == "r" or mode == "":
+                return io.StringIO("12345")
+            buf = io.StringIO()
+            buf.write = lambda s: written.append(s) or len(s)
+            buf.__enter__ = lambda self: self
+            buf.__exit__ = lambda self, *a: None
+            return buf
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", side_effect=fake_open),
+            patch("os.kill", side_effect=ProcessLookupError),
+            patch("os.makedirs"),
+        ):
+            # Should not raise
+            try:
+                mod._check_singleton()
+            except SystemExit:
+                self.fail("_check_singleton should not exit for stale PID")
+
+    def test_continues_when_pid_file_has_invalid_content(self):
+        """PID file exists but content is not an int → ValueError → stale, continues."""
+        import io
+
+        mod = _load_scheduler_module()
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            if mode == "r" or mode == "":
+                return io.StringIO("not-a-pid")
+            return unittest.mock.mock_open()(path, mode)
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", side_effect=fake_open),
+            patch("os.makedirs"),
+            patch("os.getpid", return_value=42),
+        ):
+            try:
+                mod._check_singleton()
+            except SystemExit:
+                self.fail("_check_singleton should not exit for invalid PID content")
+
+
+class TestRemovePidFile(unittest.TestCase):
+    """Tests for _remove_pid_file in run_scheduler.py."""
+
+    def test_removes_pid_file_when_it_exists(self):
+        mod = _load_scheduler_module()
+        with patch("os.remove") as mock_remove:
+            mod._remove_pid_file()
+        mock_remove.assert_called_once_with(mod._PID_FILE)
+
+    def test_silently_ignores_missing_pid_file(self):
+        mod = _load_scheduler_module()
+        with patch("os.remove", side_effect=FileNotFoundError):
+            try:
+                mod._remove_pid_file()
+            except FileNotFoundError:
+                self.fail("_remove_pid_file should suppress FileNotFoundError")
+
+
+class TestSigtermHandler(unittest.TestCase):
+    """Tests for _sigterm_handler in run_scheduler.py."""
+
+    def test_sigterm_removes_pid_file_and_exits(self):
+        mod = _load_scheduler_module()
+        with (
+            patch.object(mod, "_remove_pid_file") as mock_remove,
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            mod._sigterm_handler(15, None)
+        mock_remove.assert_called_once()
+        self.assertEqual(ctx.exception.code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

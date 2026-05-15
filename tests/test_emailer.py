@@ -11,10 +11,13 @@ from notifications.emailer import (
     _build_closed_section,
     _build_diagnostics_section,
     _build_html,
+    _build_positions_section,
     _build_trade_cards,
     _build_weekly_html,
+    _get_live_positions,
     _humanise_detail,
     _named_recipients,
+    _parse_unrealized_pct,
 )
 
 
@@ -615,3 +618,307 @@ class TestSendWeeklyReview(unittest.TestCase):
 
             send_weekly_review(self._review(), test_report={"status": "PASS"})
         self.assertIn("PASS", subjects[0])
+
+
+# ── Coverage gap additions ─────────────────────────────────────────────────────
+
+
+class TestBuildTradeCardsDecisionPath(unittest.TestCase):
+    """Lines 271-272: BUY from decisions when symbol not already in buy_reasons."""
+
+    def test_decision_buy_adds_reasoning_when_not_in_candidates(self):
+        """Line 271-272: symbol in decisions but NOT in buy_candidates → adds buy_reason."""
+        record = {
+            "trades_executed": [{"symbol": "TSLA", "action": "BUY", "detail": "$3000"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],  # TSLA not here
+            "position_decisions": [],
+            "decisions": [
+                {
+                    "symbol": "TSLA",
+                    "decision_type": "BUY",
+                    "reasoning": "Breakout from consolidation",
+                }
+            ],
+        }
+        html = _build_trade_cards(record)
+        self.assertIn("TSLA", html)
+        self.assertIn("Breakout from consolidation", html)
+
+    def test_signal_label_used_when_reasoning_absent(self):
+        """Line 290: detail contains a signal name in _SIGNAL_LABELS → uses label as reasoning."""
+        record = {
+            "trades_executed": [{"symbol": "NVDA", "action": "BUY", "detail": "momentum"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],  # no reasoning from candidates
+            "position_decisions": [],
+            "decisions": [],
+        }
+        html = _build_trade_cards(record)
+        self.assertIn("NVDA", html)
+        # momentum is in _SIGNAL_LABELS → its label "Upward momentum" should appear
+        self.assertIn("Upward momentum", html)
+
+
+class TestParseUnrealizedPct(unittest.TestCase):
+    """Lines 362-374: test all four regex patterns and the None fallback."""
+
+    def test_unrealized_pattern(self):
+        """Pattern 1: '+4.49% unrealized'."""
+        result = _parse_unrealized_pct("+4.49% unrealized")
+        self.assertAlmostEqual(result, 4.49)
+
+    def test_unrealised_variant(self):
+        """Pattern 1: 'unrealised' spelling variant."""
+        result = _parse_unrealized_pct("-1.2% unrealised")
+        self.assertAlmostEqual(result, -1.2)
+
+    def test_from_entry_pattern(self):
+        """Pattern 2: '+4.5% from entry'."""
+        result = _parse_unrealized_pct("+4.5% from entry")
+        self.assertAlmostEqual(result, 4.5)
+
+    def test_from_entry_paren_pattern(self):
+        """Pattern 3: 'from entry (-0.097%)'."""
+        result = _parse_unrealized_pct("Holding position from entry (-0.097%)")
+        self.assertAlmostEqual(result, -0.097)
+
+    def test_up_pattern(self):
+        """Pattern 4: 'up 4.5%'."""
+        result = _parse_unrealized_pct("Position is up 4.5%")
+        self.assertAlmostEqual(result, 4.5)
+
+    def test_no_match_returns_none(self):
+        """Returns None when no pattern matches."""
+        result = _parse_unrealized_pct("No percentage info here")
+        self.assertIsNone(result)
+
+    def test_float_conversion_error_continues_to_none(self):
+        """Lines 372-373: regex matches but float(group(1)) raises ValueError → pass → None."""
+        mock_match = MagicMock()
+        mock_match.group.return_value = "not_a_float"
+        with patch("notifications.emailer.re.search", side_effect=[mock_match, None, None, None]):
+            result = _parse_unrealized_pct("whatever string")
+        self.assertIsNone(result)
+
+
+class TestGetLivePositions(unittest.TestCase):
+    """Lines 378-383: _get_live_positions success and exception paths."""
+
+    def test_returns_positions_dict_on_success(self):
+        """Happy path: _load_all_positions returns a dict."""
+        fake_positions = {"AAPL": {"shares": 10, "entry_price": 150.0}}
+        with patch("execution.trader._load_all_positions", return_value=fake_positions):
+            result = _get_live_positions()
+        self.assertEqual(result, fake_positions)
+
+    def test_returns_empty_dict_on_exception(self):
+        """Exception path: import or call raises → returns {}."""
+        with patch(
+            "execution.trader._load_all_positions", side_effect=Exception("trader unavailable")
+        ):
+            result = _get_live_positions()
+        self.assertEqual(result, {})
+
+    def test_returns_empty_dict_when_import_fails(self):
+        """ImportError (e.g. trader not available) → returns {}."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if "execution.trader" in name or name == "execution.trader":
+                raise ImportError("execution module not available")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_blocking_import):
+            result = _get_live_positions()
+        self.assertEqual(result, {})
+
+
+class TestBuildPositionsSection(unittest.TestCase):
+    """Lines 393-493: _build_positions_section with live positions and HOLD-only fallback."""
+
+    def _record_with_hold(self, symbols=None):
+        """Build a record with HOLD decisions for the given symbols."""
+        syms = symbols or ["AAPL"]
+        position_decisions = [
+            {
+                "symbol": sym,
+                "action": "HOLD",
+                "reasoning": f"+2.5% unrealized (holding {sym})",
+                "summary": f"Holding {sym}",
+            }
+            for sym in syms
+        ]
+        return {
+            "date": "2026-04-26",
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": position_decisions,
+            "decisions": [],
+        }
+
+    def test_live_positions_path_sorted_keys(self):
+        """Line 399: all_positions non-empty → symbols = sorted(all_positions.keys())."""
+        live = {"NVDA": {"signal": "momentum", "entry_date": "2026-04-20"}}
+        record = self._record_with_hold(["NVDA"])
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("NVDA", html)
+        self.assertIn("Open positions", html)
+
+    def test_fallback_to_hold_decisions_when_no_live_positions(self):
+        """Lines 404-407: all_positions empty → fall back to HOLD decisions."""
+        record = self._record_with_hold(["MSFT"])
+        with patch("notifications.emailer._get_live_positions", return_value={}):
+            html = _build_positions_section(record)
+        self.assertIn("MSFT", html)
+        self.assertIn("Open positions", html)
+
+    def test_returns_empty_string_when_no_symbols(self):
+        """Returns '' when no live positions and no HOLD decisions."""
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value={}):
+            html = _build_positions_section(record)
+        self.assertEqual(html, "")
+
+    def test_pnl_pct_shown_in_green_when_positive(self):
+        """Lines 459-462: pct >= 0 → green color in html."""
+        live = {"AAPL": {"signal": "", "entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {
+                    "symbol": "AAPL",
+                    "action": "HOLD",
+                    "reasoning": "+3.1% unrealized",
+                    "summary": "",
+                }
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        # green color for positive pct
+        self.assertIn("#2e7d32", html)
+        self.assertIn("+3.10%", html)
+
+    def test_pnl_pct_shown_in_red_when_negative(self):
+        """Lines 460-461: pct < 0 → red color."""
+        live = {"AAPL": {"signal": "", "entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {
+                    "symbol": "AAPL",
+                    "action": "HOLD",
+                    "reasoning": "-1.5% unrealized",
+                    "summary": "",
+                }
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("#c62828", html)
+
+    def test_days_held_computed_from_entry_date(self):
+        """Lines 451-456: entry_date set → days_held computed."""
+        live = {"AAPL": {"signal": "momentum", "entry_date": "2026-04-01"}}
+        record = self._record_with_hold(["AAPL"])
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        # Should contain a "d" suffix for days held
+        self.assertRegex(html, r"\d+d")
+
+    def test_signal_label_from_pos_meta(self):
+        """Lines 433-447: signal_key from pos_meta → label looked up."""
+        live = {"AAPL": {"signal": "mean_reversion", "entry_date": ""}}
+        record = self._record_with_hold(["AAPL"])
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        # mean_reversion maps to "Oversold bounce" in _SIGNAL_LABELS
+        self.assertIn("Oversold bounce", html)
+
+    def test_signal_from_decisions_when_not_in_pos_meta(self):
+        """Lines 435-441: signal_key absent in pos_meta → look in decisions list."""
+        live = {"AAPL": {"entry_date": ""}}  # no 'signal' key
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {"symbol": "AAPL", "action": "HOLD", "reasoning": "", "summary": ""}
+            ],
+            "decisions": [
+                {
+                    "symbol": "AAPL",
+                    "decision_type": "buy",
+                    "key_signal": "momentum",
+                }
+            ],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("AAPL", html)
+
+    def test_buy_reasons_from_decisions_added(self):
+        """Lines 419-422: BUY decision for symbol not in buy_candidates → buy_reasons."""
+        live = {"TSLA": {"entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {"symbol": "TSLA", "action": "HOLD", "reasoning": "", "summary": ""}
+            ],
+            "decisions": [
+                {
+                    "symbol": "TSLA",
+                    "decision_type": "BUY",
+                    "reasoning": "Strong breakout setup",
+                }
+            ],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("TSLA", html)
+        self.assertIn("Strong breakout setup", html)
+
+    def test_buy_reasons_from_buy_candidates(self):
+        """Lines 416-418: buy_candidates with symbol → added to buy_reasons."""
+        live = {"GOOG": {"entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [{"symbol": "GOOG", "reasoning": "Strong momentum setup"}],
+            "position_decisions": [
+                {"symbol": "GOOG", "action": "HOLD", "reasoning": "", "summary": ""}
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("GOOG", html)
+        self.assertIn("Strong momentum setup", html)
+
+    def test_invalid_entry_date_gracefully_handled(self):
+        """Lines 455-456: entry_date_str can't be parsed → ValueError caught, days_held=''."""
+        live = {"AAPL": {"signal": "", "entry_date": "not-a-date"}}
+        record = self._record_with_hold(["AAPL"])
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            # Should not raise even with an invalid entry_date
+            html = _build_positions_section(record)
+        self.assertIn("AAPL", html)

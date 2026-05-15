@@ -456,6 +456,23 @@ class TestPlaceSellOrder(unittest.TestCase):
         self.assertEqual(result.status, OrderStatus.REJECTED)
         self.assertIn("position not found", result.rejection_reason)
 
+    def test_sell_filled_detected_on_final_check(self):
+        """wait_for_fill times out but get_order_by_id shows 'filled' → FILLED result."""
+        from execution.trader import place_sell_order
+
+        client = MagicMock()
+        client.submit_order.return_value = _mock_order("sell-late")
+        final_order = MagicMock()
+        final_order.status = "filled"
+        final_order.filled_qty = "12.5"
+        final_order.filled_avg_price = "150.0"
+        client.get_order_by_id.return_value = final_order
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_sell_order(client, "AAPL", 12.5)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 12.5)
+        self.assertEqual(result.broker_order_id, "sell-late")
+
 
 class TestClosePosition(unittest.TestCase):
     def test_closes_successfully(self):
@@ -783,6 +800,23 @@ class TestPlacePartialSell(unittest.TestCase):
         result = place_partial_sell(client, "AAPL", 5.0)
         self.assertEqual(result.status, OrderStatus.REJECTED)
         self.assertFalse(result.is_success)
+
+    def test_partial_sell_filled_detected_on_final_check(self):
+        """wait_for_fill times out but get_order_by_id shows 'filled' → FILLED result."""
+        from execution.trader import place_partial_sell
+
+        client = MagicMock()
+        client.submit_order.return_value = MagicMock(id="partial-late")
+        final_order = MagicMock()
+        final_order.status = "filled"
+        final_order.filled_qty = "3.0"
+        final_order.filled_avg_price = "200.0"
+        client.get_order_by_id.return_value = final_order
+        with patch("execution.trader.wait_for_fill", return_value=None):
+            result = place_partial_sell(client, "TSLA", 3.0)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 3.0)
+        self.assertEqual(result.broker_order_id, "partial-late")
 
 
 # ── Shared terminal-state invariant: only FILLED → is_success ────────────────

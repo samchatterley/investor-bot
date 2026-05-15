@@ -57,6 +57,11 @@ class TestGetNextEarningsDate(unittest.TestCase):
             result = get_next_earnings_date("AAPL")
         self.assertIsNone(result)
 
+    def test_returns_none_for_etf_symbol(self):
+        # ETF symbols skip the yfinance call and return None immediately (line 17)
+        result = get_next_earnings_date("SPY")
+        self.assertIsNone(result)
+
 
 class TestDaysUntilEarnings(unittest.TestCase):
     def test_future_earnings_returns_positive(self):

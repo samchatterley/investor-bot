@@ -115,6 +115,66 @@ class TestPrefetchEarningsHistory(unittest.TestCase):
         self.assertIn("AAPL", result)
         self.assertIn("MSFT", result)
 
+    def test_symbol_absent_when_all_rows_nan_after_dropna(self):
+        """df.dropna removes all rows (all NaN in Reported EPS / Surprise(%)) → continue."""
+        df = _make_earnings_df(
+            [
+                {"date": "2025-01-15", "estimate": 1.0, "reported": None, "surprise": None},
+                {"date": "2025-04-15", "estimate": 1.5, "reported": None, "surprise": None},
+            ]
+        )
+        with patch(
+            "backtest.historical_fundamentals.yf.Ticker", return_value=self._mock_ticker(df)
+        ):
+            result = prefetch_earnings_history(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_row_with_non_numeric_surprise_is_skipped(self):
+        """float(row['Surprise(%)']) raises TypeError/ValueError → continue (row skipped)."""
+        import pandas as pd
+
+        index = pd.DatetimeIndex(
+            [pd.Timestamp("2025-01-15"), pd.Timestamp("2025-04-15")], name="Earnings Date"
+        )
+        df = pd.DataFrame(
+            {
+                "EPS Estimate": [1.0, 1.0],
+                "Reported EPS": [1.1, 1.1],
+                "Surprise(%)": ["N/A", 5.0],  # first row raises ValueError in float()
+            },
+            index=index,
+        )
+        m = MagicMock()
+        m.earnings_dates = df
+        with patch("backtest.historical_fundamentals.yf.Ticker", return_value=m):
+            result = prefetch_earnings_history(["AAPL"])
+        # Second row (5.0) is valid; first is skipped
+        self.assertIn("AAPL", result)
+        self.assertEqual(len(result["AAPL"]), 1)
+        self.assertAlmostEqual(result["AAPL"][0]["surprise_pct"], 5.0)
+
+    def test_logs_progress_every_10_symbols(self):
+        """(i+1) % 10 == 0 branch is hit when ≥10 symbols are processed.
+
+        The log line is only reached when a symbol's df makes it past the empty/dropna
+        checks, so we supply a minimal valid earnings df for every symbol.
+        """
+        df = _make_earnings_df(
+            [{"date": "2025-01-15", "estimate": 1.0, "reported": 1.1, "surprise": 5.0}]
+        )
+        symbols = [f"SYM{i}" for i in range(10)]
+        with (
+            patch(
+                "backtest.historical_fundamentals.yf.Ticker",
+                return_value=self._mock_ticker(df),
+            ),
+            patch("backtest.historical_fundamentals.logger") as mock_logger,
+        ):
+            prefetch_earnings_history(symbols)
+        # logger.info must have been called with the progress message at index 9
+        progress_calls = [c for c in mock_logger.info.call_args_list if "symbols fetched" in str(c)]
+        self.assertTrue(len(progress_calls) >= 1)
+
 
 # ── pead_active_on_date ───────────────────────────────────────────────────────
 
@@ -291,6 +351,21 @@ class TestPrefetchInsiderHistory(unittest.TestCase):
         ):
             result = prefetch_insider_history(["AAPL"])
         self.assertNotIn("AAPL", result)
+
+    def test_logs_progress_every_10_symbols(self):
+        """(i+1) % 10 == 0 branch hit when ≥10 symbols are processed."""
+        symbols = [f"SYM{i}" for i in range(10)]
+        cik_map = {sym: f"000{i:07d}" for i, sym in enumerate(symbols)}
+        with (
+            patch("backtest.historical_fundamentals._get_cik_map", return_value=cik_map),
+            patch("backtest.historical_fundamentals._recent_form4_filings", return_value=[]),
+            patch("backtest.historical_fundamentals.logger") as mock_logger,
+        ):
+            prefetch_insider_history(symbols)
+        progress_calls = [
+            call for call in mock_logger.info.call_args_list if "symbols fetched" in str(call)
+        ]
+        self.assertTrue(len(progress_calls) >= 1)
 
 
 # ── insider_state_on_date ─────────────────────────────────────────────────────

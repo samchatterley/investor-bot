@@ -1,6 +1,7 @@
 """Tests for data/market_data.py — summarise_for_ai and yfinance helpers."""
 
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -659,3 +660,170 @@ class TestSpyReturnFromPreloadedException(unittest.TestCase):
         # "not-a-date" causes pd.Timestamp to raise ValueError → except branch fires
         result = _spy_return_from_preloaded({"SPY": spy_df}, "not-a-date", 5)
         self.assertIsNone(result)
+
+
+class TestBulkDownloadKeyError(unittest.TestCase):
+    """Lines 290-291: KeyError in xs() is swallowed silently."""
+
+    def test_xs_keyerror_is_ignored(self):
+        from data.market_data import _bulk_download
+
+        # Build a MultiIndex DataFrame that lists AAPL in the level-1 index but
+        # whose xs() raises KeyError (we simulate this by patching xs on the
+        # returned raw object).
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        # Create real MultiIndex columns so isinstance(raw.columns, pd.MultiIndex)
+        # is True and "AAPL" appears in available.
+        cols = pd.MultiIndex.from_tuples([("Open", "AAPL"), ("Close", "AAPL")], names=[None, None])
+        raw = pd.DataFrame(
+            [[1.0, 2.0]] * 5,
+            index=idx,
+            columns=cols,
+        )
+
+        original_xs = raw.xs
+
+        def _xs_raises(key, **kwargs):
+            if key == "AAPL":
+                raise KeyError("AAPL")
+            return original_xs(key, **kwargs)
+
+        raw.xs = _xs_raises  # type: ignore[method-assign]
+
+        with patch("data.market_data.yf.download", return_value=raw):
+            result = _bulk_download(["AAPL"], 200)
+
+        # AAPL should be absent (KeyError silently skipped), not raise
+        self.assertNotIn("AAPL", result)
+
+
+class TestGetIntradayData(unittest.TestCase):
+    """get_intraday_data coverage gaps."""
+
+    def test_empty_symbols_returns_empty(self):
+        """Line 365: empty symbol list → immediate {}."""
+        from data.market_data import get_intraday_data
+
+        result = get_intraday_data([])
+        self.assertEqual(result, {})
+
+    def test_before_market_open_returns_empty(self):
+        """Line 374: current time before 09:30 ET → {}."""
+
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        # 08:00 ET is before market open
+        fake_now = datetime(2025, 6, 10, 8, 0, 0, tzinfo=_ET)
+
+        with patch("data.market_data.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            # Pass through other datetime usages
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertEqual(result, {})
+
+    def _make_alpaca_bar(self, ts_et, open_=100.0, high=101.0, low=99.0, close=100.5, vol=50_000):
+        """Build a minimal mock Alpaca bar object."""
+        bar = MagicMock()
+        bar.timestamp = ts_et
+        bar.open = open_
+        bar.high = high
+        bar.low = low
+        bar.close = close
+        bar.volume = vol
+        return bar
+
+    def _patch_alpaca(self, bars_by_sym: dict):
+        """Return a context manager that patches StockHistoricalDataClient."""
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = bars_by_sym
+        mock_client.get_stock_bars.return_value = mock_resp
+
+        return patch("data.market_data.StockHistoricalDataClient", return_value=mock_client)
+
+    def _fake_now_et(self, hour=10, minute=0):
+        """A datetime that is after market open (09:30 ET)."""
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        return datetime(2025, 6, 10, hour, minute, 0, tzinfo=_ET)
+
+    def test_df_empty_after_sort_skips_symbol(self):
+        """Line 420: df is empty after sort_values/reset_index → continue.
+
+        Provide a valid bar so the DataFrame is constructed successfully, then
+        patch ``sort_values`` to return an empty DataFrame so ``df.empty``
+        is True and the continue on line 420 is executed.
+        """
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=10)
+        bar_ts = datetime(2025, 6, 10, 9, 35, 0, tzinfo=_ET)
+        bar = self._make_alpaca_bar(bar_ts)
+
+        original_sort = pd.DataFrame.sort_values
+        call_count = [0]
+
+        def _patched_sort(self_df, *args, **kwargs):
+            call_count[0] += 1
+            # First call is inside the per-symbol intraday loop
+            if call_count[0] == 1:
+                return pd.DataFrame(columns=self_df.columns)
+            return original_sort(self_df, *args, **kwargs)
+
+        with (
+            self._patch_alpaca({"AAPL": [bar]}),
+            patch("data.market_data.datetime") as mock_dt,
+            patch.object(pd.DataFrame, "sort_values", _patched_sort),
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertNotIn("AAPL", result)
+
+    def test_all_bars_before_market_open_skips_symbol(self):
+        """Line 427: today_bars is empty (all timestamps < market_open) → continue."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=10)
+        # A bar at 09:15 ET — before 09:30 open, so today_bars will be empty
+        pre_open_ts = datetime(2025, 6, 10, 9, 15, 0, tzinfo=_ET)
+        bar = self._make_alpaca_bar(pre_open_ts)
+
+        with (
+            self._patch_alpaca({"AAPL": [bar]}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertNotIn("AAPL", result)
+
+    def test_metrics_exception_is_swallowed(self):
+        """Lines 499-501: exception during metrics calculation → continue, symbol absent.
+
+        Supply a bar with open=0 so intraday_change_pct = (close/0 - 1)*100
+        raises ZeroDivisionError inside the per-symbol try block.
+        """
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=10, minute=30)
+        # Bar at 09:35 ET (after market open) with open=0 to trigger ZeroDivisionError
+        bar_ts = datetime(2025, 6, 10, 9, 35, 0, tzinfo=_ET)
+        bar = self._make_alpaca_bar(bar_ts, open_=0.0, high=1.0, low=0.0, close=1.0, vol=50_000)
+
+        with (
+            self._patch_alpaca({"AAPL": [bar]}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertNotIn("AAPL", result)

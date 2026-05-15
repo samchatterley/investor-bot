@@ -371,6 +371,25 @@ class TestFetchSp500Symbols(unittest.TestCase):
             result = self.mod._fetch_sp500_symbols({"AAPL"})
         self.assertEqual(result, [])
 
+    def test_unexpected_cache_error_logs_warning_and_continues(self):
+        """A non-FileNotFoundError/KeyError/ValueError (e.g. RuntimeError) on cache read
+        is caught by the bare 'except Exception' branch and fetch continues."""
+        import json as _json
+
+        # Write a valid-looking cache file so open() succeeds but json.load raises
+        data = {"saved_at": datetime.now().isoformat(), "symbols": ["AAPL"]}
+        with open(self.mod._SP500_CACHE_PATH, "w") as f:
+            _json.dump(data, f)
+
+        eligible = {"AAPL"}
+        with (
+            patch("json.load", side_effect=RuntimeError("disk error")),
+            patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL"])),
+        ):
+            result = self.mod._fetch_sp500_symbols(eligible)
+        # Falls through to network fetch → still returns AAPL
+        self.assertIn("AAPL", result)
+
 
 class TestBuildScanUniverse(unittest.TestCase):
     def setUp(self):
