@@ -552,5 +552,94 @@ class TestDiagnosticsPage(unittest.TestCase):
         mock_st.button.assert_called()
 
 
+class TestReloadBranches(unittest.TestCase):
+    def test_os_listdir_raises_does_not_crash(self):
+        # Covers line 85: listdir_patch assigned when os_listdir_raises=True
+        _, mock_st = _reload("Diagnostics", os_listdir_raises=True)
+        mock_st.info.assert_called()
+
+    def test_open_raises_does_not_crash(self):
+        # Covers line 92: open_patch assigned when open_raises=True
+        # listdir must return a report file so open is attempted
+        _, mock_st = _reload(
+            "Diagnostics",
+            os_listdir_return=["test_report_2026-05-01.json"],
+            open_raises=True,
+        )
+        mock_st.info.assert_called()
+
+
+class TestOverviewNoAccNoErr(unittest.TestCase):
+    def test_elif_err_false_branch(self):
+        # Covers dashboard.py branch 317->320: elif err: evaluates False
+        # when _load_account returns (None, [], None)
+        with (
+            patch("execution.trader.get_client", return_value=MagicMock()),
+            patch("execution.trader.get_account_info", return_value=None),
+            patch("execution.trader.get_open_positions", return_value=[]),
+        ):
+            _, mock_st = _reload("Overview")
+        mock_st.warning.assert_not_called()
+
+
+class TestAiDecisionsNoBarsNoPie(unittest.TestCase):
+    def test_no_conf_vals_skips_bar_chart(self):
+        # Covers dashboard.py branch 474->490: if conf_vals: is False
+        # Buy entry with no confidence value
+        decisions = [
+            {
+                "date": "2026-01-01",
+                "action": "BUY",
+                "symbol": "AAPL",
+                "confidence": None,
+                "executed": True,
+                "key_signal": None,
+                "reasoning": "test",
+            }
+        ]
+        _, mock_st = _reload("AI Decisions", decisions=decisions)
+        mock_st.columns.assert_called()
+
+    def test_no_sig_vals_skips_pie_chart(self):
+        # Covers dashboard.py branch 493->508: if sig_vals: is False
+        # Buy entry with confidence but no key_signal
+        decisions = [
+            {
+                "date": "2026-01-01",
+                "action": "BUY",
+                "symbol": "AAPL",
+                "confidence": 8,
+                "executed": True,
+                "key_signal": None,
+                "reasoning": "test",
+            }
+        ]
+        _, mock_st = _reload("AI Decisions", decisions=decisions)
+        mock_st.columns.assert_called()
+
+    def test_no_reason_skips_caption(self):
+        # Covers dashboard.py branch 545->547: if reason: is False
+        decisions = [
+            {
+                "date": "2026-01-01",
+                "action": "BUY",
+                "symbol": "AAPL",
+                "confidence": 8,
+                "executed": True,
+                "key_signal": "momentum",
+                "reasoning": "",
+            }
+        ]
+        _, mock_st = _reload("AI Decisions", decisions=decisions)
+        mock_st.columns.assert_called()
+
+
+class TestUnknownPage(unittest.TestCase):
+    def test_unknown_page_exits_all_elif_false(self):
+        # Covers dashboard.py branch 627->exit: elif page == "Diagnostics" is False
+        _, mock_st = _reload("UnknownPage")
+        mock_st.radio.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -223,6 +223,22 @@ class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
         self.assertNotIn("BADROW", symbols)
         self.assertIn("AAPL", symbols)
 
+    def test_no_removed_column_skips_removed_processing(self):
+        """Line 107->96: removed_col is None (no 'removed' column) → if removed_col: is False."""
+        current_df = pd.DataFrame({"Symbol": ["AAPL"]})
+        changes_df = pd.DataFrame(
+            {
+                "Date": ["2020-01-15"],
+                "Added Ticker": ["AAPL"],
+            }
+        )
+        with patch("data.universe_history.pd.read_html", return_value=[current_df, changes_df]):
+            result = _fetch_sp500_changes()
+        symbols = [r["symbol"] for r in result]
+        self.assertIn("AAPL", symbols)
+        all_with_removed = [r for r in result if r.get("removed") is not None]
+        self.assertEqual(all_with_removed, [])
+
 
 class TestBuildSp500Membership(unittest.TestCase):
     def test_single_add_event(self):

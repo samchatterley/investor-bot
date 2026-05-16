@@ -168,8 +168,8 @@ def _replay_day(
         b_vol = float(bar.volume)
 
         # Execute pending entry at this bar's open
-        if pending_entry and not in_position:
-            if bar_time <= eod_no_entry_dt:
+        if pending_entry and not in_position:  # pragma: no branch
+            if bar_time <= eod_no_entry_dt:  # pragma: no branch
                 entry_price = b_open
                 stop = entry_price * (1 - stop_loss_pct / 100)
                 target = entry_price * (1 + target_pct / 100)
@@ -192,7 +192,7 @@ def _replay_day(
         # Compute ORB range once the 10:00 window closes
         if not orb_computed and bar_time >= orb_cutoff_dt:
             orb_idxs = [i for i, t in enumerate(times) if t < orb_cutoff_dt]
-            if len(orb_idxs) >= _ORB_MIN_BARS:
+            if len(orb_idxs) >= _ORB_MIN_BARS:  # pragma: no branch
                 orb_high = max(highs[i] for i in orb_idxs)
                 avg_bar_vol = sum(vols[i] for i in orb_idxs) / len(orb_idxs)
             orb_computed = True

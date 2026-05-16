@@ -169,6 +169,12 @@ class TestValidateBuyCandidates(unittest.TestCase):
         result = validate_buy_candidates(candidates, held, self._sector_map, max_per_sector=2)
         self.assertEqual(result, [])
 
+    def test_held_etf_symbol_does_not_count_toward_sector_cap(self):
+        # Branch 93->91: sector is "ETF" → if condition False → skip sector count increment
+        candidates = [{"symbol": "AAPL", "confidence": 8}]
+        result = validate_buy_candidates(candidates, {"SPY"}, self._sector_map, max_per_sector=1)
+        self.assertEqual(len(result), 1)
+
     def test_sector_map_fn_exception_propagates(self):
         def boom(sym):
             raise RuntimeError(f"sector lookup failed for {sym}")

@@ -71,3 +71,12 @@ class TestWithRetry(unittest.TestCase):
             return a + b
 
         self.assertEqual(fn(3, b=4), 7)
+
+    def test_zero_max_attempts_returns_none(self):
+        # Branch 20->exit: range(1, 0+1) is empty → for loop exits naturally
+        @with_retry(max_attempts=0, delay=0)
+        def fn():
+            return "never called"  # pragma: no cover
+
+        result = fn()
+        self.assertIsNone(result)

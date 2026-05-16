@@ -23,20 +23,6 @@ def _make_bars(date_str: str, prices: list[float], start_hhmm: str = "09:30") ->
     return result
 
 
-def _make_trending_day(date_str: str, n_bars: int = 120) -> list[tuple]:
-    """A day that trends steadily upward — likely to fire intraday_momentum."""
-    from datetime import timedelta
-
-    base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
-    result = []
-    open_px = 100.0
-    for i in range(n_bars):
-        px = open_px * (1 + i * 0.0003)  # +0.03% per minute = +3.6% over 2h
-        bar = _Bar(open=px, high=px * 1.001, low=px * 0.999, close=px, volume=150_000)
-        result.append((base + timedelta(minutes=i), bar))
-    return result
-
-
 def _make_orb_breakout_day(date_str: str) -> list[tuple]:
     """ORB window builds range, then price breaks out above it with volume."""
     from datetime import timedelta
@@ -190,7 +176,7 @@ class TestReplayDay(unittest.TestCase):
             )
 
         trades = _replay_day("AAPL", date_str, bars, 1.0, 2.0, 10_000_000, 20_000)
-        if trades:
+        if trades:  # pragma: no branch
             exit_reasons = [t["exit_reason"] for t in trades]
             # At least one trade should exit at EOD
             self.assertTrue(

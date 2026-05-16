@@ -243,7 +243,7 @@ class TestSaveReport(unittest.TestCase):
         with patch("builtins.open", side_effect=OSError("disk full")), patch("os.makedirs"):
             try:
                 mod._save_report(report)
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 self.fail(f"_save_report raised unexpectedly: {exc}")
 
     def test_handles_makedirs_exception_gracefully(self):
@@ -254,7 +254,7 @@ class TestSaveReport(unittest.TestCase):
         with patch("os.makedirs", side_effect=PermissionError("no permission")):
             try:
                 mod._save_report(report)
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 self.fail(f"_save_report raised unexpectedly: {exc}")
 
     def test_json_dump_called_with_report(self):

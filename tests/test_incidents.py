@@ -25,27 +25,27 @@ class TestPython39Compat(unittest.TestCase):
     def test_emailer_imports_without_error(self):
         try:
             import notifications.emailer  # noqa: F401
-        except TypeError as e:
+        except TypeError as e:  # pragma: no cover
             self.fail(f"emailer.py raised TypeError on import (Python 3.9 compat broken): {e}")
 
     def test_dashboard_imports_without_error(self):
         try:
             import dashboard  # noqa: F401
-        except TypeError as e:
+        except TypeError as e:  # pragma: no cover
             self.fail(f"dashboard.py raised TypeError on import (Python 3.9 compat broken): {e}")
-        except ImportError:
+        except ImportError:  # pragma: no cover
             self.skipTest("Dashboard optional dependencies not installed in this environment")
 
     def test_sentiment_imports_without_error(self):
         try:
             import data.sentiment  # noqa: F401
-        except TypeError as e:
+        except TypeError as e:  # pragma: no cover
             self.fail(f"data/sentiment.py raised TypeError on import: {e}")
 
     def test_trader_imports_without_error(self):
         try:
             import execution.trader  # noqa: F401
-        except TypeError as e:
+        except TypeError as e:  # pragma: no cover
             self.fail(f"execution/trader.py raised TypeError on import: {e}")
 
 

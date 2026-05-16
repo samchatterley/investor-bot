@@ -62,6 +62,15 @@ class TestSaveAndLoad(PortfolioTrackerBase):
         records = load_history()
         self.assertAlmostEqual(records[0]["daily_pnl"], 1_500.0)
 
+    def test_load_ignores_json_missing_required_keys(self):
+        # Branch 316->312: valid JSON but missing "date" or "account_after" → skipped
+        with open(os.path.join(self.tmpdir, "partial.json"), "w") as f:
+            import json
+
+            json.dump({"some_key": "some_value"}, f)
+        records = load_history()
+        self.assertEqual(len(records), 0)
+
 
 class TestGetDaySummary(PortfolioTrackerBase):
     def test_returns_none_when_no_records(self):
@@ -227,6 +236,15 @@ class TestTradeMergeGuard(PortfolioTrackerBase):
 
 
 class TestMergeEdgeCases(PortfolioTrackerBase):
+    def test_existing_file_with_no_trades_skips_merge(self):
+        # Branch 96->118: prior_trades is empty → skip merge block, just overwrite
+        save_daily_run("2026-01-20", _account(100_000), _account(100_200), _ai(), [], [])
+        trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "x1"}
+        save_daily_run("2026-01-20", _account(100_200), _account(100_600), _ai(), [trade], [])
+        records = load_history()
+        run = next(r for r in records if r["date"] == "2026-01-20")
+        self.assertIn("x1", {t.get("order_id") for t in run["trades_executed"]})
+
     def test_merge_logs_info_when_new_trades_added(self):
         # Lines 90-91 (added > 0 path): merging new trades into existing record
         import logging
@@ -255,7 +273,7 @@ class TestMergeEdgeCases(PortfolioTrackerBase):
         with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
             try:
                 save_daily_run("2026-01-17", _account(100_000), _account(101_000), _ai(), [], [])
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("save_daily_run raised on SQLite failure")
 
     def test_corrupt_existing_json_overwritten_silently(self):
@@ -274,7 +292,7 @@ class TestMergeEdgeCases(PortfolioTrackerBase):
         trade = {"symbol": "AAPL", "action": "BUY", "detail": "$5000", "order_id": "o1"}
         try:
             save_daily_run("2026-01-18", _account(100_500), _account(101_000), _ai(), [trade], [])
-        except Exception:
+        except Exception:  # pragma: no cover
             self.fail("save_daily_run raised on corrupt existing file")
 
     def test_midday_run_stored_with_midday_mode(self):
@@ -284,11 +302,34 @@ class TestMergeEdgeCases(PortfolioTrackerBase):
             save_daily_run(
                 "2026-01-19-midday", _account(100_000), _account(100_300), _ai(), [trade], []
             )
-        except Exception:
+        except Exception:  # pragma: no cover
             self.fail("save_daily_run raised for midday date")
 
 
 class TestPrintSummaryStopLosses(PortfolioTrackerBase):
+    def test_print_summary_empty_date_skips_sibling_load(self):
+        # Branch 193->214: base_date is empty string → skip sibling file loading
+        import io
+        import sys
+
+        from utils.portfolio_tracker import print_summary
+
+        record = {
+            "date": "",
+            "market_summary": "No date",
+            "account_after": {"portfolio_value": 100_000, "cash": 30_000},
+            "daily_pnl": 0.0,
+            "trades_executed": [{"symbol": "AAPL", "action": "BUY", "detail": "$5000"}],
+            "stop_losses_triggered": [],
+        }
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            print_summary(record)
+        finally:
+            sys.stdout = sys.__stdout__
+        self.assertIn("AAPL", captured.getvalue())
+
     def test_print_summary_shows_stop_losses(self):
         # Lines 145-147: stop_losses_triggered section in print_summary
         import io
@@ -327,7 +368,7 @@ class TestSaveDailyBaselineFailure(PortfolioTrackerBase):
         ):
             try:
                 save_daily_baseline(100_000.0)
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("save_daily_baseline raised on SQLite failure")
 
 
@@ -643,7 +684,7 @@ class TestPrintSummaryDailyAggregation(PortfolioTrackerBase):
         }
         try:
             output = self._capture(midday_record)
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover
             self.fail(f"print_summary raised on corrupt sibling file: {exc}")
         self.assertIn("XOM", output)
 
@@ -694,7 +735,7 @@ class TestPrintSummaryDailyAggregation(PortfolioTrackerBase):
         with patch("utils.portfolio_tracker.os.listdir", side_effect=OSError("permission denied")):
             try:
                 output = self._capture(record)
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 self.fail(f"print_summary raised on os.listdir failure: {exc}")
         self.assertIn("BA", output)
 

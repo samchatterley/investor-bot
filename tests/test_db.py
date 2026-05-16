@@ -313,7 +313,7 @@ class TestRunMigrationsException(DbTestBase):
                 conn.execute("DELETE FROM schema_migrations")
             try:
                 db_mod._run_migrations()
-            except Exception as e:
+            except Exception as e:  # pragma: no cover
                 self.fail(f"_run_migrations raised on bad migration SQL: {e}")
 
     def test_outer_migration_failure_is_caught(self):
@@ -323,7 +323,7 @@ class TestRunMigrationsException(DbTestBase):
         with patch.object(db_mod, "get_db", side_effect=RuntimeError("db unavailable")):
             try:
                 db_mod._run_migrations()
-            except Exception as e:
+            except Exception as e:  # pragma: no cover
                 self.fail(f"_run_migrations raised on outer failure: {e}")
 
 

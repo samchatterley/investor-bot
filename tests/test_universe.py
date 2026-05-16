@@ -147,7 +147,7 @@ class TestSaveCache(unittest.TestCase):
         ):
             try:
                 self.mod._save_cache(["AAPL"])
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 self.fail(f"_save_cache raised unexpectedly: {exc}")
 
 

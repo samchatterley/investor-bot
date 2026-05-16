@@ -19,50 +19,6 @@ from unittest.mock import MagicMock, patch
 
 from models import OrderResult, OrderStatus
 
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-
-def _account(value=150.0, cash=130.0):
-    return {"portfolio_value": value, "cash": cash, "buying_power": cash, "equity": value}
-
-
-def _pos(symbol="AAPL", qty=1.0, price=50.0, pl=0.0, plpc=0.0, mv=50.0):
-    return {
-        "symbol": symbol,
-        "qty": qty,
-        "avg_entry_price": price,
-        "current_price": price,
-        "unrealized_pl": pl,
-        "unrealized_plpc": plpc,
-        "market_value": mv,
-    }
-
-
-def _regime(bearish=False):
-    return {"regime": "BULL", "is_bearish": bearish}
-
-
-def _macro(high_risk=False):
-    return {"is_high_risk": high_risk, "event": ""}
-
-
-def _decisions(buys=None, sells=None):
-    return {
-        "market_summary": "Small account test summary.",
-        "buy_candidates": buys or [],
-        "position_decisions": sells or [],
-    }
-
-
-def _buy_candidate(symbol="SOFI", confidence=8, signal="momentum"):
-    return {
-        "symbol": symbol,
-        "confidence": confidence,
-        "reasoning": "Strong momentum signal on high volume breakout.",
-        "key_signal": signal,
-    }
-
-
 # ── Capital containment tests ─────────────────────────────────────────────────
 
 
@@ -612,7 +568,7 @@ class TestAssertAccountSafety(unittest.TestCase):
 
             try:
                 _assert_account_safety(MagicMock())
-            except RuntimeError:
+            except RuntimeError:  # pragma: no cover
                 self.fail("_assert_account_safety raised in paper mode")
 
     def test_pdt_flag_raises_in_live_mode(self):
@@ -656,7 +612,7 @@ class TestAssertAccountSafety(unittest.TestCase):
 
             try:
                 _assert_account_safety(client)
-            except RuntimeError:
+            except RuntimeError:  # pragma: no cover
                 self.fail("Should not raise when ALLOW_MARGIN=True")
 
     def test_normal_cash_account_passes(self):
@@ -672,7 +628,7 @@ class TestAssertAccountSafety(unittest.TestCase):
 
             try:
                 _assert_account_safety(client)
-            except RuntimeError:
+            except RuntimeError:  # pragma: no cover
                 self.fail("Normal cash account should pass")
 
     def test_generic_exception_wraps_in_runtime_error(self):

@@ -357,7 +357,7 @@ class TestRecordLlmUsageException(unittest.TestCase):
         with patch("utils.db.get_db", side_effect=Exception("db unavailable")):
             try:
                 _record_llm_usage("run-123", 1000, 500)
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_record_llm_usage raised unexpectedly on DB error")
 
     def test_record_llm_usage_success_path_logs_info(self):
@@ -475,3 +475,85 @@ class TestRecordLlmCallAuditException(unittest.TestCase):
 
         with patch("utils.audit_log.log_event", side_effect=RuntimeError("disk full")):
             _record_llm_call_audit("run-1", "abc123", "raw response text")
+
+
+class TestBuildPromptAdviceBranch(unittest.TestCase):
+    """Line 204->208: regime with no advice entry (e.g. UNKNOWN) skips advice line."""
+
+    def _build(self, **kwargs):
+        from analysis.ai_analyst import build_prompt
+
+        defaults = {
+            "snapshots": [_snapshot()],
+            "current_positions": [],
+            "available_cash": 50_000.0,
+            "portfolio_value": 100_000.0,
+        }
+        defaults.update(kwargs)
+        return build_prompt(**defaults)
+
+    def test_unknown_regime_no_advice_line(self):
+        regime = {"regime": "UNKNOWN", "spy_change_pct": 0.0, "is_bearish": False}
+        result = self._build(market_regime=regime)
+        self.assertIn("UNKNOWN", result)
+        self.assertNotIn("→", result)
+
+
+class TestBuildPromptNewsBranch(unittest.TestCase):
+    """Lines 306->305 and 308->312: news_by_symbol with empty headlines list."""
+
+    def _build(self, **kwargs):
+        from analysis.ai_analyst import build_prompt
+
+        defaults = {
+            "snapshots": [_snapshot()],
+            "current_positions": [],
+            "available_cash": 50_000.0,
+            "portfolio_value": 100_000.0,
+        }
+        defaults.update(kwargs)
+        return build_prompt(**defaults)
+
+    def test_news_block_absent_when_all_headlines_empty(self):
+        news = {"AAPL": [], "NVDA": []}
+        result = self._build(news_by_symbol=news)
+        self.assertNotIn("RECENT NEWS HEADLINES", result)
+
+    def test_news_block_appears_for_symbol_with_headlines_only(self):
+        news = {"AAPL": [], "NVDA": ["NVDA hits record high"]}
+        result = self._build(news_by_symbol=news)
+        self.assertIn("RECENT NEWS HEADLINES", result)
+        self.assertIn("NVDA hits record high", result)
+
+
+class TestGetTradingDecisionsUsageFalsyBranch(unittest.TestCase):
+    """Line 503->509: response.usage is None → _record_llm_usage not called."""
+
+    def _mock_response_no_usage(self, decisions: dict):
+        tool_block = MagicMock()
+        tool_block.input = decisions
+        response = MagicMock()
+        response.content = [tool_block]
+        response.usage = None
+        return response
+
+    def test_no_usage_attribute_does_not_raise(self):
+        from analysis.ai_analyst import get_trading_decisions
+
+        fake_decisions = _decisions_response()
+        mock_response = self._mock_response_no_usage(fake_decisions)
+
+        with (
+            patch("analysis.ai_analyst.client") as mock_client,
+            patch("analysis.ai_analyst.validate_ai_response", return_value=(True, [])),
+            patch("analysis.ai_analyst._record_llm_usage") as mock_record,
+        ):
+            mock_client.messages.create.return_value = mock_response
+            result = get_trading_decisions(
+                snapshots=[_snapshot()],
+                current_positions=[],
+                available_cash=50_000,
+                portfolio_value=100_000,
+            )
+        self.assertIsNotNone(result)
+        mock_record.assert_not_called()

@@ -110,13 +110,13 @@ class TestFetchNews(unittest.TestCase):
             call_count += 1
             if sym == "AAPL":
                 return ("AAPL", ["Apple news"])
-            raise Exception("fail")
+            raise Exception("fail")  # pragma: no cover
 
         with patch("data.news_fetcher._fetch_single", side_effect=fake_fetch):
             # NVDA will raise, AAPL should still appear
             try:
                 result = fetch_news(["AAPL"])
-            except Exception:
+            except Exception:  # pragma: no cover
                 result = {}
         self.assertIn("AAPL", result)
 

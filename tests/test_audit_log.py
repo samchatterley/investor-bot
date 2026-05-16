@@ -25,6 +25,12 @@ class AuditLogBase(unittest.TestCase):
             return [json.loads(line) for line in f if line.strip()]
 
 
+class TestAuditLogBase(AuditLogBase):
+    def test_read_events_returns_empty_when_no_file(self):
+        events = self._read_events()
+        self.assertEqual(events, [])
+
+
 class TestAuditLogWrites(AuditLogBase):
     def test_log_run_start_writes_event(self):
         from utils.audit_log import log_run_start
@@ -188,12 +194,12 @@ class TestAuditWriteFailures(AuditLogBase):
         def failing_open(path, *args, **kwargs):
             if str(path) == audit_log._AUDIT_PATH:
                 raise OSError("disk full")
-            return real_open(path, *args, **kwargs)
+            return real_open(path, *args, **kwargs)  # pragma: no cover
 
         with patch("builtins.open", side_effect=failing_open):
             try:
                 audit_log._write("TEST_EVENT", {"key": "value"})
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_write raised on JSONL write failure")
 
     def test_sqlite_write_failure_does_not_raise(self):
@@ -203,7 +209,7 @@ class TestAuditWriteFailures(AuditLogBase):
         with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
             try:
                 audit_log._write("TEST_EVENT", {"key": "value"})
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_write raised on SQLite failure")
 
 

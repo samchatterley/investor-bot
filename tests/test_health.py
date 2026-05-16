@@ -235,6 +235,23 @@ class TestHealthCheckStaleOrders(HealthBase):
         report = self._run(client)
         self.assertTrue(any("stale open order" in i for i in report.issues))
 
+    def test_order_with_non_matching_status_skipped(self):
+        # Branch 143->142: status not in ("new", "accepted", "pending_new") → skip
+        order = _pending_order("TSLA", age_hours=10, status="filled")
+        client = self._client(orders=[order])
+        report = self._run(client)
+        self.assertFalse(any("stale open order" in i for i in report.issues))
+        self.assertEqual(report.metrics["stale_orders"], 0)
+
+    def test_order_with_no_created_at_skipped(self):
+        # Branch 145->142: created_at is None → skip age check
+        order = _pending_order("TSLA", age_hours=10, status="new")
+        order.created_at = None
+        client = self._client(orders=[order])
+        report = self._run(client)
+        self.assertFalse(any("stale open order" in i for i in report.issues))
+        self.assertEqual(report.metrics["stale_orders"], 0)
+
 
 class TestHealthCheckExposureCap(HealthBase):
     def test_exposure_exceeded_returns_red(self):

@@ -53,7 +53,7 @@ class TestSchedulerImportSafety(unittest.TestCase):
             try:
                 _load_scheduler_module()
                 result["ok"] = True
-            except Exception as e:
+            except Exception as e:  # pragma: no cover
                 result["error"] = str(e)
 
         t = threading.Thread(target=_do_import, daemon=True)
@@ -128,7 +128,7 @@ class TestSchedulerJobRegistration(unittest.TestCase):
                     midday_fn,
                     f"17:00 job on {job.start_day} should call midday_fn",
                 )
-            elif t == "20:30:00":
+            elif t == "20:30:00":  # pragma: no branch
                 self.assertIs(
                     job.job_func.func,
                     close_fn,
@@ -145,12 +145,6 @@ class TestSchedulerJobRegistration(unittest.TestCase):
 
 class TestRunFunction(unittest.TestCase):
     """Tests for _run(mode) in run_scheduler.py."""
-
-    def _make_mod(self, halt_file_exists=False):
-        mod = _load_scheduler_module()
-        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
-        with patch("os.path.exists", return_value=halt_file_exists):
-            return mod
 
     def test_halt_file_exists_skips_run(self):
         """When halt file is present, bot.run must NOT be called."""
@@ -195,7 +189,7 @@ class TestRunFunction(unittest.TestCase):
             # Should not raise
             try:
                 mod._run("open")
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 self.fail(f"_run raised unexpectedly: {exc}")
 
     def test_bot_run_exception_does_not_propagate(self):
@@ -336,7 +330,7 @@ class TestWeeklyReview(unittest.TestCase):
         with patch("os.path.exists", return_value=False):
             try:
                 mod._weekly_review()
-            except Exception as exc:
+            except Exception as exc:  # pragma: no cover
                 self.fail(f"_weekly_review raised unexpectedly: {exc}")
 
 
@@ -378,6 +372,29 @@ class TestWrapperFunctions(unittest.TestCase):
 class TestCheckSingleton(unittest.TestCase):
     """Tests for _check_singleton in run_scheduler.py."""
 
+    def test_no_pid_file_writes_new_pid(self):
+        """Branch 30->45: PID file does not exist → skip if block, write new PID."""
+        mod = _load_scheduler_module()
+        written = []
+
+        def fake_open(path, mode="r", *args, **kwargs):
+            import io
+
+            buf = io.StringIO()
+            buf.write = lambda s: written.append(s) or len(s)
+            buf.__enter__ = lambda self: self
+            buf.__exit__ = lambda self, *a: None
+            return buf
+
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("builtins.open", side_effect=fake_open),
+            patch("os.makedirs"),
+            patch("os.getpid", return_value=99),
+        ):
+            mod._check_singleton()
+        self.assertIn("99", "".join(written))
+
     def test_exits_when_existing_process_is_alive(self):
         """PID file exists and os.kill(old_pid, 0) does NOT raise → sys.exit(1)."""
         mod = _load_scheduler_module()
@@ -417,7 +434,7 @@ class TestCheckSingleton(unittest.TestCase):
             # Should not raise
             try:
                 mod._check_singleton()
-            except SystemExit:
+            except SystemExit:  # pragma: no cover
                 self.fail("_check_singleton should not exit for stale PID")
 
     def test_continues_when_pid_file_has_invalid_content(self):
@@ -439,7 +456,7 @@ class TestCheckSingleton(unittest.TestCase):
         ):
             try:
                 mod._check_singleton()
-            except SystemExit:
+            except SystemExit:  # pragma: no cover
                 self.fail("_check_singleton should not exit for invalid PID content")
 
 
@@ -457,7 +474,7 @@ class TestRemovePidFile(unittest.TestCase):
         with patch("os.remove", side_effect=FileNotFoundError):
             try:
                 mod._remove_pid_file()
-            except FileNotFoundError:
+            except FileNotFoundError:  # pragma: no cover
                 self.fail("_remove_pid_file should suppress FileNotFoundError")
 
 

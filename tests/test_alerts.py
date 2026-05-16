@@ -79,8 +79,13 @@ class TestAlertSend(unittest.TestCase):
 
             try:
                 _send("subject", "body")
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_send raised an exception instead of handling it")
+
+    def test_send_calls_login_and_sendmail(self):
+        mock_smtp_cls, mock_server = self._send_with_creds("Hello", "World")
+        mock_server.login.assert_called_once_with("bot@gmail.com", "secret")
+        mock_server.sendmail.assert_called_once()
 
 
 class TestAlertFunctions(unittest.TestCase):

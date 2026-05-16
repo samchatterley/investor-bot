@@ -73,7 +73,7 @@ class TestFetchIntradayBarsImportError(unittest.TestCase):
         def blocking(name, *a, **kw):
             if "alpaca" in name:
                 raise ImportError("not installed")
-            return real_import(name, *a, **kw)
+            return real_import(name, *a, **kw)  # pragma: no cover
 
         blocked = {k: sys.modules.pop(k) for k in list(sys.modules) if "alpaca" in k}
         try:

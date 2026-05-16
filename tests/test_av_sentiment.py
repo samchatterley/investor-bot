@@ -285,3 +285,15 @@ class TestGetAvSentiment(unittest.TestCase):
             mock_get.return_value = _make_response(bad_score_feed)
             result = get_av_sentiment(["AAPL"])
         self.assertNotIn("AAPL", result)
+
+    def test_no_feed_and_no_info_key_skips_silently(self):
+        """Line 82->84: 'feed' not in data and no 'Information'/'Note' key → silent skip."""
+        no_feed_no_info = {"status": "OK"}
+        with (
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+        ):
+            mock_get.return_value = _make_response(no_feed_no_info)
+            result = get_av_sentiment(["AAPL"])
+        self.assertEqual(result, {})

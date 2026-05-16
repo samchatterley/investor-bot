@@ -225,5 +225,18 @@ class TestCheckQuoteGateApproved(unittest.TestCase):
         self.assertAlmostEqual(result.ask, 150.1)
 
 
+class TestCheckQuoteGateNoTradeReturned(unittest.TestCase):
+    """Branch 133->155: trades.get(symbol) returns None → skip trade-age check, proceed to affordability."""
+
+    def test_none_trade_skips_age_check_and_approves(self):
+        from execution.quote_gate import check_quote_gate
+
+        q = _mock_quote(bid=149.9, ask=150.1)
+        client = _make_client(quote=q, trade=None)
+        result = check_quote_gate("AAPL", 500.0, data_client=client)
+        self.assertTrue(result.approved)
+        self.assertEqual(result.last_trade_age_seconds, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

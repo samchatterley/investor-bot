@@ -525,7 +525,7 @@ class TestSendHtml(unittest.TestCase):
 
             try:
                 _send_html("Subject", lambda name: "<p>hi</p>")
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_send_html raised on SMTP exception")
 
 
@@ -729,7 +729,7 @@ class TestGetLivePositions(unittest.TestCase):
         def _blocking_import(name, *args, **kwargs):
             if "execution.trader" in name or name == "execution.trader":
                 raise ImportError("execution module not available")
-            return real_import(name, *args, **kwargs)
+            return real_import(name, *args, **kwargs)  # pragma: no cover
 
         with patch("builtins.__import__", side_effect=_blocking_import):
             result = _get_live_positions()
@@ -922,3 +922,138 @@ class TestBuildPositionsSection(unittest.TestCase):
             # Should not raise even with an invalid entry_date
             html = _build_positions_section(record)
         self.assertIn("AAPL", html)
+
+    def test_non_hold_position_decision_not_indexed(self):
+        """Line 394->392: position_decision with action != HOLD is skipped in hold_decisions."""
+        live = {"AAPL": {"signal": "", "entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {"symbol": "AAPL", "action": "SELL", "reasoning": "", "summary": "sold"},
+                {
+                    "symbol": "AAPL",
+                    "action": "HOLD",
+                    "reasoning": "+1.0% unrealized",
+                    "summary": "",
+                },
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("AAPL", html)
+
+    def test_non_hold_action_skipped_in_fallback_symbol_list(self):
+        """Line 405->403: non-HOLD action in fallback loop is skipped."""
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {"symbol": "TSLA", "action": "SELL", "reasoning": "", "summary": ""},
+                {"symbol": "AAPL", "action": "HOLD", "reasoning": "", "summary": ""},
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value={}):
+            html = _build_positions_section(record)
+        self.assertIn("AAPL", html)
+        self.assertNotIn("TSLA", html)
+
+    def test_buy_candidate_with_empty_symbol_skipped(self):
+        """Line 417->415: buy_candidate with empty symbol is skipped."""
+        live = {"AAPL": {"signal": "", "entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [
+                {"symbol": "", "reasoning": "should be skipped"},
+                {"symbol": "AAPL", "reasoning": "valid candidate"},
+            ],
+            "position_decisions": [
+                {"symbol": "AAPL", "action": "HOLD", "reasoning": "", "summary": ""}
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("AAPL", html)
+        self.assertIn("valid candidate", html)
+
+    def test_buy_reason_not_overwritten_when_symbol_in_buy_candidates(self):
+        """Line 421->419: BUY decision for symbol already in buy_reasons is skipped."""
+        live = {"AAPL": {"signal": "", "entry_date": ""}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [{"symbol": "AAPL", "reasoning": "from candidates"}],
+            "position_decisions": [
+                {"symbol": "AAPL", "action": "HOLD", "reasoning": "", "summary": ""}
+            ],
+            "decisions": [
+                {"symbol": "AAPL", "decision_type": "BUY", "reasoning": "from decisions"}
+            ],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("from candidates", html)
+        self.assertNotIn("from decisions", html)
+
+
+class TestNamedRecipientsEmptyPart(unittest.TestCase):
+    """Line 36->31: EMAIL_RECIPIENTS part with no colon and empty string skips appending."""
+
+    def test_trailing_comma_creates_empty_part_skipped(self):
+        with (
+            patch("notifications.emailer.EMAIL_RECIPIENTS", "Sam:sam@a.com,"),
+            patch("notifications.emailer.EMAIL_TO", ""),
+            patch("notifications.emailer.EMAIL_CC", ""),
+        ):
+            result = _named_recipients()
+        self.assertEqual(result, [("Sam", "sam@a.com")])
+
+
+class TestHumaniseDetailEmptyPart(unittest.TestCase):
+    """Line 223->210: detail string with empty segment (adjacent pipes) skips append."""
+
+    def test_empty_segment_between_pipes_skipped(self):
+        result = _humanise_detail("momentum||confidence=8")
+        self.assertIn("Upward momentum", result)
+        self.assertIn("8/10", result)
+        self.assertNotIn("None", result)
+
+
+class TestTradeCardNoDetail(unittest.TestCase):
+    """Line 230->237: _trade_card with empty detail_str → detail_row is empty string."""
+
+    def test_buy_card_with_pipe_only_detail_gives_empty_detail_str(self):
+        record = {
+            "trades_executed": [{"symbol": "AAPL", "action": "BUY", "detail": "|"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [{"symbol": "AAPL", "reasoning": "Strong setup"}],
+            "position_decisions": [],
+            "decisions": [],
+        }
+        html = _build_trade_cards(record)
+        self.assertIn("AAPL", html)
+        self.assertNotIn("padding:6px 16px 14px;background:#f1f8f1", html)
+
+
+class TestBuildTradeCardsNonBuyDecision(unittest.TestCase):
+    """Line 271->270: decisions loop with non-BUY decision_type is skipped."""
+
+    def test_non_buy_decision_not_added_to_buy_reasons(self):
+        record = {
+            "trades_executed": [{"symbol": "NVDA", "action": "BUY", "detail": "$3000"}],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [],
+            "decisions": [
+                {"symbol": "NVDA", "decision_type": "HOLD", "reasoning": "already holding"}
+            ],
+        }
+        html = _build_trade_cards(record)
+        self.assertIn("NVDA", html)
+        self.assertNotIn("already holding", html)

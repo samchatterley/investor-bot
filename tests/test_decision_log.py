@@ -146,14 +146,14 @@ class TestDecisionWriteFailures(DecisionLogBase):
         def failing_open(path, *args, **kwargs):
             if str(path) == decision_log._DECISIONS_PATH:
                 raise OSError("disk full")
-            return real_open(path, *args, **kwargs)
+            return real_open(path, *args, **kwargs)  # pragma: no cover
 
         with patch("builtins.open", side_effect=failing_open):
             try:
                 from utils.decision_log import log_decisions
 
                 log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_write raised on JSONL write failure")
 
     def test_sqlite_write_failure_does_not_raise(self):
@@ -163,7 +163,7 @@ class TestDecisionWriteFailures(DecisionLogBase):
         with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
             try:
                 log_decisions(_decisions(buy_symbols=["AAPL"]), "open", set())
-            except Exception:
+            except Exception:  # pragma: no cover
                 self.fail("_write raised on SQLite failure")
 
 
@@ -209,6 +209,17 @@ class TestLoadDecisions(DecisionLogBase):
         result = load_decisions()
         self.assertEqual(len(result), 2)
 
+    def test_skips_blank_lines(self):
+        from utils.decision_log import load_decisions
+
+        with open(self.decisions_path, "w") as f:
+            f.write('{"valid": true}\n')
+            f.write("\n")
+            f.write("   \n")
+            f.write('{"also_valid": true}\n')
+        result = load_decisions()
+        self.assertEqual(len(result), 2)
+
     def test_load_decisions_suppresses_read_exception(self):
         # Lines 126-127: open() raises inside the try block → except passes, returns empty list
         import builtins
@@ -222,7 +233,7 @@ class TestLoadDecisions(DecisionLogBase):
         def failing_open(path, *args, **kwargs):
             if str(path) == self.decisions_path:
                 raise OSError("read error")
-            return real_open(path, *args, **kwargs)
+            return real_open(path, *args, **kwargs)  # pragma: no cover
 
         with patch("builtins.open", side_effect=failing_open):
             from utils.decision_log import load_decisions

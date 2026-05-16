@@ -686,7 +686,7 @@ class TestBulkDownloadKeyError(unittest.TestCase):
         def _xs_raises(key, **kwargs):
             if key == "AAPL":
                 raise KeyError("AAPL")
-            return original_xs(key, **kwargs)
+            return original_xs(key, **kwargs)  # pragma: no cover
 
         raw.xs = _xs_raises  # type: ignore[method-assign]
 
@@ -771,7 +771,7 @@ class TestGetIntradayData(unittest.TestCase):
             # First call is inside the per-symbol intraday loop
             if call_count[0] == 1:
                 return pd.DataFrame(columns=self_df.columns)
-            return original_sort(self_df, *args, **kwargs)
+            return original_sort(self_df, *args, **kwargs)  # pragma: no cover
 
         with (
             self._patch_alpaca({"AAPL": [bar]}),
@@ -827,3 +827,119 @@ class TestGetIntradayData(unittest.TestCase):
             result = get_intraday_data(["AAPL"])
 
         self.assertNotIn("AAPL", result)
+
+
+class TestBulkDownloadBranchGaps(unittest.TestCase):
+    """Branches 288->284 and 292->294 in _bulk_download."""
+
+    def test_xs_returns_empty_df_symbol_excluded(self):
+        """Line 288->284: sym_df.empty after xs() → symbol not added to result."""
+        from data.market_data import _bulk_download
+
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        cols = pd.MultiIndex.from_tuples([("Open", "AAPL"), ("Close", "AAPL")], names=[None, None])
+        raw = pd.DataFrame([[float("nan")] * 2] * 5, index=idx, columns=cols)
+
+        with patch("data.market_data.yf.download", return_value=raw):
+            result = _bulk_download(["AAPL"], 200)
+
+        self.assertNotIn("AAPL", result)
+
+    def test_multi_symbol_non_multiindex_returns_empty(self):
+        """Line 292->294: not MultiIndex and len(symbols)>1 → elif False → return {}."""
+        from data.market_data import _bulk_download
+
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        raw = pd.DataFrame({"Open": [1.0] * 5, "Close": [2.0] * 5}, index=idx)
+
+        with patch("data.market_data.yf.download", return_value=raw):
+            result = _bulk_download(["AAPL", "NVDA"], 200)
+
+        self.assertEqual(result, {})
+
+
+class TestGetIntradayDataOrbBranches(unittest.TestCase):
+    """Branches 459->475, 463->475, 477->485 in get_intraday_data."""
+
+    def _make_alpaca_bar(self, ts_et, open_=100.0, high=101.0, low=99.0, close=100.5, vol=50_000):
+        bar = MagicMock()
+        bar.timestamp = ts_et
+        bar.open = open_
+        bar.high = high
+        bar.low = low
+        bar.close = close
+        bar.volume = vol
+        return bar
+
+    def _patch_alpaca(self, bars_by_sym: dict):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = bars_by_sym
+        mock_client.get_stock_bars.return_value = mock_resp
+        return patch("data.market_data.StockHistoricalDataClient", return_value=mock_client)
+
+    def _fake_now_et(self, hour=11, minute=0):
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        return datetime(2025, 6, 10, hour, minute, 0, tzinfo=_ET)
+
+    def test_all_bars_after_orb_end_gives_empty_orb_bars(self):
+        """Line 459->475: orb_bars.empty (all bars after ORB end at 10:00) → skip orb block."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=11)
+        bar_ts = datetime(2025, 6, 10, 10, 30, 0, tzinfo=_ET)
+        bar = self._make_alpaca_bar(bar_ts)
+
+        with (
+            self._patch_alpaca({"AAPL": [bar]}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertIsNone(result["AAPL"]["orb_high"])
+        self.assertIsNone(result["AAPL"]["orb_low"])
+
+    def test_no_post_orb_bars_skips_breakout_check(self):
+        """Line 463->475: post_orb.empty (all bars within ORB) → skip breakout calculation."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=11)
+        bar_ts = datetime(2025, 6, 10, 9, 35, 0, tzinfo=_ET)
+        bar = self._make_alpaca_bar(bar_ts)
+
+        with (
+            self._patch_alpaca({"AAPL": [bar]}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertFalse(result["AAPL"]["orb_breakout_up"])
+        self.assertFalse(result["AAPL"]["orb_breakout_down"])
+
+    def test_fewer_than_15_five_min_bars_skips_rsi(self):
+        """Line 477->485: len(five_min) < 15 → intraday_rsi stays None."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=10, minute=5)
+        bar_ts = datetime(2025, 6, 10, 9, 35, 0, tzinfo=_ET)
+        bar = self._make_alpaca_bar(bar_ts)
+
+        with (
+            self._patch_alpaca({"AAPL": [bar]}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertIsNone(result["AAPL"]["intraday_rsi"])

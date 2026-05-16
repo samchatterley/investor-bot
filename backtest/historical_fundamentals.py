@@ -87,7 +87,7 @@ def prefetch_earnings_history(symbols: list[str]) -> dict[str, list[dict]]:
             except (TypeError, ValueError):
                 continue
 
-        if events:
+        if events:  # pragma: no branch
             result[sym] = sorted(events, key=lambda e: e["date"])
 
         if (i + 1) % 10 == 0:

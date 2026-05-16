@@ -23,12 +23,6 @@ class TestApplyConfigChanges(unittest.TestCase):
         self.patcher.stop()
         shutil.rmtree(self.tmpdir)
 
-    def _read(self) -> dict:
-        if not os.path.exists(self.runtime_path):
-            return {}
-        with open(self.runtime_path) as f:
-            return json.load(f)
-
     def test_empty_list_returns_empty(self):
         result = _apply_config_changes([])
         self.assertEqual(result, [])
@@ -404,3 +398,60 @@ class TestRunWeeklyReview(unittest.TestCase):
             result = run_weekly_review()
         self.assertIsNotNone(result)
         self.assertEqual(result["week_summary"], "Wrapped JSON week")
+
+    def test_backtick_wrapped_without_json_label(self):
+        """Line 267->269: raw starts with ``` but NOT 'json' — skips the [4:] strip."""
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "Backtick no-label week",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        wrapped = f"```\n{json.dumps(fake_review)}\n```"
+        msg = MagicMock()
+        msg.content = [MagicMock(text=wrapped)]
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_anthropic.return_value.messages.create.return_value = msg
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        self.assertEqual(result["week_summary"], "Backtick no-label week")
+
+    def test_logs_proposed_changes_with_applied_or_clamped_status(self):
+        """Line 285->284: change status in ('applied','clamped') logs the change."""
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [
+                {"parameter": "MIN_CONFIDENCE", "proposed_value": 8, "reason": "test"},
+                {"parameter": "SUPER_SECRET", "proposed_value": 99, "reason": "rejected"},
+            ],
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        statuses = {c["parameter"]: c["status"] for c in result["proposed_changes"]}
+        self.assertIn("MIN_CONFIDENCE", statuses)
+        self.assertIn("SUPER_SECRET", statuses)
+        self.assertEqual(statuses["SUPER_SECRET"], "rejected")

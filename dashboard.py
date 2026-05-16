@@ -452,7 +452,7 @@ elif page == "AI Decisions":
         buy_entries = [e for e in entries if e.get("action") == "BUY"]
         exec_entries = [e for e in entries if e.get("executed")]
         avg_conf = (
-            sum(e.get("confidence", 0) for e in buy_entries) / len(buy_entries)
+            sum((e.get("confidence") or 0) for e in buy_entries) / len(buy_entries)
             if buy_entries
             else 0
         )

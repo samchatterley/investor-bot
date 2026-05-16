@@ -144,5 +144,5 @@ class TestRecordPartialExit(_MetaTestBase):
         # Symbol not in DB — UPDATE touches no rows but should not raise
         try:
             record_partial_exit("GHOST")
-        except Exception:
+        except Exception:  # pragma: no cover
             self.fail("record_partial_exit raised on unknown symbol")

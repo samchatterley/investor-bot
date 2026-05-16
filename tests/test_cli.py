@@ -73,48 +73,6 @@ class TestCliHelpers(unittest.TestCase):
 
 
 class TestCmdStatus(unittest.TestCase):
-    def _run(self, halted=False, positions=None, api_error=False):
-        args = MagicMock()
-        mock_client = MagicMock()
-        mock_acc = _account()
-        mock_pos = positions or []
-
-        with (
-            patch("cli.config.HALT_FILE", "/tmp/halt_test_file_not_real"),
-            patch("cli.config.IS_PAPER", True),
-            patch("cli.config.MAX_POSITIONS", 5),
-        ):
-            if halted:
-                with (
-                    patch("os.path.exists", return_value=True),
-                    patch("cli.trader.get_client", return_value=mock_client),
-                    patch("cli.trader.get_account_info", return_value=mock_acc),
-                    patch("cli.trader.get_open_positions", return_value=mock_pos),
-                ):
-                    from cli import cmd_status
-
-                    output = _capture(cmd_status, args)
-            elif api_error:
-                with (
-                    patch("os.path.exists", return_value=False),
-                    patch("cli.trader", side_effect=Exception("API down")),
-                ):
-                    from cli import cmd_status
-
-                    output = _capture(cmd_status, args)
-            else:
-                with patch("os.path.exists", return_value=False):
-                    import cli as cli_mod
-
-                    with (
-                        patch.object(cli_mod, "_print_positions"),
-                        patch("execution.trader.get_client", return_value=mock_client),
-                        patch("execution.trader.get_account_info", return_value=mock_acc),
-                        patch("execution.trader.get_open_positions", return_value=mock_pos),
-                    ):
-                        output = _capture(cmd_status, args)
-        return output
-
     def test_shows_active_when_not_halted(self):
         args = MagicMock()
         mock_client = MagicMock()

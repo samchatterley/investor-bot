@@ -64,7 +64,7 @@ disable_error_code = ["union-attr", "arg-type", "index", "operator", "misc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short -q --cov --cov-report=term-missing --cov-fail-under=80"
+addopts = "--tb=short -q --cov --cov-report=term-missing --cov-fail-under=100"
 log_cli = false
 filterwarnings = [
     # alpaca-py's streaming module imports websockets.legacy at import time;
@@ -73,8 +73,15 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
+branch = true
 source = ["."]
-omit = ["tests/*", ".venv/*"]
+omit = [
+    ".venv/*",
+    "evals/*",
+    "*/vscode*",
+    "*/extensions/*",
+    "*/site-packages/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [

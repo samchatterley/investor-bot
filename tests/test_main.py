@@ -105,7 +105,7 @@ class TestReleaseLock(LockBase):
 
         try:
             _release_lock()
-        except Exception:
+        except Exception:  # pragma: no cover
             self.fail("_release_lock raised on missing lock file")
 
 
@@ -472,7 +472,7 @@ class TestRunClearHalt(unittest.TestCase):
 
         try:
             _run_clear_halt()
-        except Exception:
+        except Exception:  # pragma: no cover
             self.fail("_run_clear_halt raised with no halt file present")
 
     def test_logs_halt_cleared(self):
@@ -603,6 +603,25 @@ class TestHandlePartialExits(unittest.TestCase):
         symbols = [r["symbol"] for r in result]
         self.assertIn("AAPL", symbols)
         self.assertNotIn("NVDA", symbols)
+
+    def test_place_partial_sell_returns_none_no_trade_recorded(self):
+        """Branch 476->452: place_partial_sell returns None → is_success branch not taken."""
+        from main import _handle_partial_exits
+
+        with (
+            patch("main.trader.cancel_open_orders"),
+            patch("main.trader.get_position_meta", return_value={}),
+            patch("main.RiskConfig.from_config", return_value=MagicMock()),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=self._exit_levels()),
+            patch("main.trader.place_partial_sell", return_value=None),
+        ):
+            result = _handle_partial_exits(
+                MagicMock(),
+                [self._pos("AAPL", plpc=self._PARTIAL_PCT + 5)],
+                {},
+                dry_run=False,
+            )
+        self.assertEqual(result, [])
 
 
 # ── run() guard tests ──────────────────────────────────────────────────────────
@@ -3015,6 +3034,14 @@ class TestRunInnerQuoteGate(RunInnerBase):
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
         buy_mock.assert_not_called()
 
+    def test_live_buy_stack_without_extra_uses_defaults(self):
+        approved = self._make_qg(approved=True)
+        stack, mocks = self._live_buy_stack(approved)
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
 
 class TestRunInnerExecQuality(RunInnerBase):
     """Lines 1247-1251: ORDER_EXEC_QUALITY audit event logged when qg+fill data present."""
@@ -3165,7 +3192,7 @@ class TestLateReconciliationException(RunInnerBase):
                 from main import _run_inner
 
                 _run_inner(dry_run=False, mode="midday", today="2026-01-15")
-            except RuntimeError:
+            except RuntimeError:  # pragma: no cover
                 self.fail("Reconciliation exception must not propagate")
 
 
@@ -3269,7 +3296,7 @@ class TestEnrichedTradeFields(RunInnerBase):
         buy_trades = [
             t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
         ]
-        if not buy_trades:
+        if not buy_trades:  # pragma: no cover
             self.skipTest("No BUY trade triggered (sizing or gate blocked)")
         for t in buy_trades:
             self.assertEqual(t["decision_type"], "buy")
@@ -3279,7 +3306,7 @@ class TestEnrichedTradeFields(RunInnerBase):
         buy_trades = [
             t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
         ]
-        if not buy_trades:
+        if not buy_trades:  # pragma: no cover
             self.skipTest("No BUY trade triggered")
         for t in buy_trades:
             self.assertIn("key_signal", t)
@@ -3289,7 +3316,7 @@ class TestEnrichedTradeFields(RunInnerBase):
         buy_trades = [
             t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
         ]
-        if not buy_trades:
+        if not buy_trades:  # pragma: no cover
             self.skipTest("No BUY trade triggered")
         for t in buy_trades:
             self.assertIn("confidence", t)
@@ -3299,7 +3326,7 @@ class TestEnrichedTradeFields(RunInnerBase):
         buy_trades = [
             t for t in trades if t["action"] in ("BUY", "WOULD_BUY") and t["symbol"] == "AAPL"
         ]
-        if not buy_trades:
+        if not buy_trades:  # pragma: no cover
             self.skipTest("No BUY trade triggered")
         for t in buy_trades:
             self.assertIn("reasoning", t)
@@ -3334,9 +3361,8 @@ class TestEnrichedTradeFields(RunInnerBase):
         call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
         trades = call_kwargs.get("trades_executed", [])
         tsla_trades = [t for t in trades if t.get("symbol") == "TSLA"]
-        if tsla_trades:
-            for t in tsla_trades:
-                self.assertEqual(t.get("decision_type"), "rule_based")
+        for t in tsla_trades:
+            self.assertEqual(t.get("decision_type"), "rule_based")
 
 
 class TestCheckRuleBasedStops(unittest.TestCase):
@@ -3415,6 +3441,136 @@ class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
             from main import _run_inner
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+
+class TestRunInnerMissingBranches(RunInnerBase):
+    """Targeted tests for previously uncovered branches in _run_inner."""
+
+    def test_vix_none_skips_vix_log(self):
+        """Branch 777->779: vix=None → VIX info line not logged; macro check still runs."""
+        stack, mocks = self._patch_all(**{"main.market_data.get_vix": None})
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+    def test_dollar_daily_loss_cap_not_reached(self):
+        """Branch 713->720: daily_loss_usd < MAX_DAILY_LOSS_USD → cap not triggered."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        stack, mocks = self._patch_all(
+            **{
+                "main.risk_manager.check_daily_loss": (False, 0.0),
+                "main.config.MAX_DAILY_LOSS_USD": 500.0,
+                "main.trader.get_account_info": _account(99_900, 30_000),
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+    def test_experiment_baseline_none_skips_drawdown_check(self):
+        """Branch 739->764: load_experiment_baseline returns None → drawdown check skipped."""
+        stack, mocks = self._patch_all(
+            **{
+                "main.config.MAX_EXPERIMENT_DRAWDOWN_USD": 50.0,
+                "main.load_experiment_baseline": None,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+    def test_earnings_exit_dry_run_skips_close(self):
+        """Branch 808->804: dry_run=True with earnings risk → close skipped."""
+        close_mock = MagicMock()
+        positions = [
+            {
+                "symbol": "AAPL",
+                "unrealized_pl": 50.0,
+                "unrealized_plpc": 1.0,
+                "qty": 10.0,
+                "market_value": 1500.0,
+                "current_price": 150.0,
+            }
+        ]
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": positions,
+                "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
+                "main.trader.close_position": close_mock,
+                "main._handle_partial_exits": [],
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+        close_mock.assert_not_called()
+
+    def test_sell_pos_not_in_open_positions_still_records_sell(self):
+        """Branch 1082->1093: sell succeeds but pos not found in open_positions by symbol."""
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        record_sell_mock = MagicMock()
+        decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [],
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.trader.close_position": close_mock,
+                "main.trader.record_sell": record_sell_mock,
+                "main._check_rule_based_stops": {"AAPL"},
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
+    def test_buy_rejected_not_partial_timeout_continues_loop(self):
+        """Branch 1437->1215: buy result REJECTED → neither FILLED nor PARTIAL/TIMEOUT → continue."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="insufficient funds"
+            )
+        )
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.place_buy_order": buy_mock,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.validate_ai_response": (True, []),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called()
+
+    def test_close_mode_no_day_summary_skips_email(self):
+        """Branch 1634->exit: mode=close but get_day_summary returns None → no email sent."""
+        email_mock = MagicMock()
+        stack, mocks = self._patch_all(
+            **{
+                "main.get_day_summary": None,
+                "main.emailer.send_summary": email_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="close", today="2026-01-15")
+        email_mock.assert_not_called()
 
 
 if __name__ == "__main__":

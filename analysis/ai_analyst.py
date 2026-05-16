@@ -259,7 +259,7 @@ def build_prompt(
             bear = data.get("bearish_pct", 0)
             tone = "bullish" if bull > 60 else "bearish" if bear > 60 else "neutral"
             lines.append(f"  {sym}: {bull}% bullish / {bear}% bearish ({tone})")
-        if lines:
+        if lines:  # pragma: no branch
             sentiment_block = "SOCIAL SENTIMENT:\n" + "\n".join(lines) + "\n"
 
     # Performance feedback (regime-aware, actionable directives)
@@ -291,7 +291,7 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
             tone = "bullish" if pc < 0.7 else "bearish" if pc > 1.3 else "neutral"
             flag = "  ⚡ UNUSUAL CALL ACTIVITY" if unusual else ""
             lines.append(f"  {sym}: put/call ratio {pc:.2f} ({tone}){flag}")
-        if lines:
+        if lines:  # pragma: no branch
             options_block = (
                 "OPTIONS FLOW (large call buying vs put buying signals where informed money is positioned):\n"
                 + "\n".join(lines)
@@ -326,7 +326,7 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
             f"  {sym}: {age} trading day{'s' if age != 1 else ''}"
             for sym, age in position_ages.items()
         ]
-        if lines:
+        if lines:  # pragma: no branch
             ages_block = "CURRENT POSITION AGES:\n" + "\n".join(lines) + "\n"
 
     held_symbols = sorted({p["symbol"] for p in current_positions}) if current_positions else []

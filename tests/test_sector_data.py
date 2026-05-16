@@ -152,3 +152,38 @@ class TestGetSectorPerformance(unittest.TestCase):
         with patch("data.sector_data.yf.download", return_value=mock_data):
             result = get_sector_performance()
         self.assertEqual(result, {})
+
+    def test_etf_not_in_close_columns_skipped(self):
+        """Line 92->91: ETF ticker not present in close.columns → sector skipped."""
+        from data.sector_data import SECTOR_ETFS, get_sector_performance
+
+        first_etf = next(iter(SECTOR_ETFS.values()))
+        close_df = pd.DataFrame({first_etf: [100.0, 101.0, 102.0] * 3})
+        mock_data = MagicMock()
+        mock_data.empty = False
+        mock_data.__len__ = MagicMock(return_value=9)
+        mock_data.__getitem__ = MagicMock(return_value=close_df)
+
+        with patch("data.sector_data.yf.download", return_value=mock_data):
+            result = get_sector_performance(days=5)
+
+        self.assertIsInstance(result, dict)
+        missing_etfs = [s for s, e in SECTOR_ETFS.items() if e != first_etf]
+        for sector in missing_etfs:
+            self.assertNotIn(sector, result)
+
+    def test_nan_return_excluded(self):
+        """Line 94->91: return value is NaN → sector not added to perf dict."""
+        from data.sector_data import SECTOR_ETFS, get_sector_performance
+
+        etfs = list(SECTOR_ETFS.values())
+        close_df = pd.DataFrame({etf: [float("nan")] * 9 for etf in etfs})
+        mock_data = MagicMock()
+        mock_data.empty = False
+        mock_data.__len__ = MagicMock(return_value=9)
+        mock_data.__getitem__ = MagicMock(return_value=close_df)
+
+        with patch("data.sector_data.yf.download", return_value=mock_data):
+            result = get_sector_performance(days=5)
+
+        self.assertEqual(result, {})
