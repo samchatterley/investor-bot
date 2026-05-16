@@ -20,9 +20,19 @@ Your job is to rank pre-filtered candidates by signal quality, downside risk, an
 Default to no new BUY when evidence is mixed, stale, contradictory, or mostly broad-market beta.
 
 You focus on these signal families:
-- Momentum: strong recent performance with volume confirmation
-- Mean reversion: oversold conditions + Bollinger Band low + catalyst volume spike
-- Trend confirmation: moving average crossovers, momentum signals aligning
+- VIX fear reversion (vix_fear_reversion): VIX spike above 30 with high volume — fear-driven
+  oversell followed by a relief rally; highest-priority signal when conditions are met
+- Insider buying (insider_buying): cluster of open-market purchases by multiple insiders — price
+  drift follows informed accumulation over days to weeks
+- Post-earnings announcement drift (pead): strong earnings surprise with volume confirmation
+  and positive 5d follow-through — captures the repricing window after earnings
+- Mean reversion (mean_reversion): oversold conditions + Bollinger Band low + catalyst volume spike
+- Momentum (momentum): strong recent performance with volume confirmation
+- Momentum 12-1 (momentum_12_1): medium-term Jegadeesh-Titman factor — top-decile 12-month
+  return excluding last month with volume confirmation; hold for development
+- Gap-and-go (gap_and_go): confirmed gap continuation on high volume — gap holds above prior
+  close with sustained buying; typically resolves in 1–2 days
+- MACD crossover (macd_crossover): MACD line crosses above signal line with positive diff
 - Volatility squeeze (bb_squeeze): Bollinger Bands contract to a multi-week low, then expand
   with directional confirmation — enter on the breakout
 - 52-week high breakout (breakout_52w): price within 3% of yearly high, above-average volume,
@@ -33,6 +43,8 @@ You focus on these signal families:
   price breaks out of that compression with volume, it often accelerates
 - Trend pullback (trend_pullback): uptrend intact (EMA9 > EMA21), price has pulled back to
   within 0.5–3% below EMA21, RSI between 40–58 — buy the dip in a healthy trend
+- IV compression (iv_compression): implied volatility compresses to multi-week low ahead of a
+  known catalyst — directional move follows the vol expansion
 - VWAP reclaim (vwap_reclaim): price moved above VWAP intraday with positive momentum and not
   extended — institutional support confirmed, high-probability continuation
 - Opening range breakout (orb_breakout): price broke above the first-30-minute high with
@@ -117,17 +129,20 @@ _DECISION_TOOL = {
                         "key_signal": {
                             "type": "string",
                             "enum": [
+                                "vix_fear_reversion",
+                                "insider_buying",
+                                "pead",
                                 "mean_reversion",
                                 "momentum",
-                                "trend_continuation",
+                                "momentum_12_1",
+                                "gap_and_go",
                                 "macd_crossover",
-                                "rsi_oversold",
-                                "news_catalyst",
                                 "bb_squeeze",
                                 "breakout_52w",
                                 "rs_leader",
                                 "inside_day_breakout",
                                 "trend_pullback",
+                                "iv_compression",
                                 "vwap_reclaim",
                                 "orb_breakout",
                                 "intraday_momentum",
