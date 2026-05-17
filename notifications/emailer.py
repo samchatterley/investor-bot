@@ -766,7 +766,10 @@ def _build_weekly_html(
     week_summary = review.get("week_summary", "")
     what_worked = review.get("what_worked", [])
     what_didnt = review.get("what_didnt", [])
-    lessons = review.get("lessons", [])
+    lessons = [
+        item.get("lesson", str(item)) if isinstance(item, dict) else item
+        for item in review.get("lessons", [])
+    ]
     applied = [
         c for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped")
     ]
