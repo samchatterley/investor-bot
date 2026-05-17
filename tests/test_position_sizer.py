@@ -5,7 +5,12 @@ import unittest
 from unittest.mock import patch
 
 import config
-from risk.position_sizer import get_max_positions, kelly_fraction, risk_budget_size
+from risk.position_sizer import (
+    drawdown_scalar,
+    get_max_positions,
+    kelly_fraction,
+    risk_budget_size,
+)
 
 
 class TestKellyFraction(unittest.TestCase):
@@ -240,3 +245,58 @@ class TestGetMaxPositions(unittest.TestCase):
 
     def test_small_account_returns_three(self):
         self.assertEqual(get_max_positions(5_000), 3)
+
+
+class TestDrawdownScalar(unittest.TestCase):
+    def _history(self, values: list[float]) -> list[dict]:
+        return [{"account_after": {"portfolio_value": v}} for v in values]
+
+    def test_empty_history_returns_one(self):
+        self.assertEqual(drawdown_scalar([]), 1.0)
+
+    def test_single_record_returns_one(self):
+        self.assertEqual(drawdown_scalar(self._history([100_000])), 1.0)
+
+    def test_no_drawdown_returns_one(self):
+        history = self._history([100_000, 102_000, 105_000])
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_small_drawdown_below_threshold_returns_one(self):
+        # 3% drawdown — below the 5% threshold
+        history = self._history([100_000, 105_000, 101_850])
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_exactly_at_threshold_returns_half(self):
+        # exactly -5% from peak
+        history = self._history([100_000, 100_000, 95_000])
+        self.assertEqual(drawdown_scalar(history), 0.5)
+
+    def test_beyond_threshold_returns_half(self):
+        # -10% drawdown
+        history = self._history([100_000, 110_000, 99_000])
+        self.assertEqual(drawdown_scalar(history), 0.5)
+
+    def test_recovery_above_threshold_returns_one(self):
+        # Was down, now recovered to within 5%
+        history = self._history([100_000, 110_000, 90_000, 105_000])
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_implausible_values_filtered_out(self):
+        # Records below $1000 are ignored; only the plausible ones count
+        history = self._history([100_000, 100_000, 500])
+        # Only two plausible values: 100_000 and 100_000 — no drawdown → 1.0
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_only_one_plausible_value_returns_one(self):
+        history = self._history([500, 100_000])
+        # Only one plausible value → can't compute drawdown
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_all_implausible_returns_one(self):
+        history = self._history([100, 200, 300])
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_missing_key_returns_one(self):
+        # Malformed records with 2 entries pass the length check but KeyError in values extraction
+        bad_history = [{"wrong_key": {}}, {"wrong_key": {}}]
+        self.assertEqual(drawdown_scalar(bad_history), 1.0)

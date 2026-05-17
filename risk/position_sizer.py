@@ -137,6 +137,42 @@ def get_max_positions(portfolio_value: float) -> int:
         return 3
 
 
+_DRAWDOWN_REDUCE_THRESHOLD = -5.0  # % below all-time peak that triggers size reduction
+_DRAWDOWN_SIZE_SCALAR = 0.5  # multiply notional by this when in drawdown
+_MIN_PLAUSIBLE_VALUE = 1_000.0  # ignore placeholder/corrupted records below this
+
+
+def drawdown_scalar(portfolio_history: list[dict]) -> float:
+    """Return 0.5 when portfolio is >5% below its all-time peak, else 1.0.
+
+    Guards against opening full-size positions into a sustained drawdown.
+    Mirrors the plausibility filter used by the circuit breaker.
+    """
+    if len(portfolio_history) < 2:
+        return 1.0
+    try:
+        values = [
+            r["account_after"]["portfolio_value"]
+            for r in portfolio_history
+            if r["account_after"]["portfolio_value"] >= _MIN_PLAUSIBLE_VALUE
+        ]
+        if len(values) < 2:
+            return 1.0
+        peak = max(values)
+        current = values[-1]
+        drawdown_pct = (current / peak - 1) * 100
+        if drawdown_pct <= _DRAWDOWN_REDUCE_THRESHOLD:
+            logger.info(
+                f"Drawdown-adaptive sizing: {drawdown_pct:.1f}% from peak "
+                f"— position size reduced to {_DRAWDOWN_SIZE_SCALAR:.0%}"
+            )
+            return _DRAWDOWN_SIZE_SCALAR
+        return 1.0
+    except (KeyError, IndexError, ZeroDivisionError) as e:
+        logger.warning(f"drawdown_scalar: could not compute drawdown: {e}")
+        return 1.0
+
+
 def small_account_size(portfolio_value: float, max_single_order: float = 55.0) -> float:
     """
     Explicit-notional sizing for small-account experiment mode (<$200 account).

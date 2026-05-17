@@ -696,6 +696,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
     history = portfolio_tracker.load_history()
+    _dd_scalar = position_sizer.drawdown_scalar(history)
     cb_triggered, cb_drawdown = risk_manager.check_circuit_breaker(history)
     if cb_triggered:
         audit_log.log_circuit_breaker(cb_drawdown)
@@ -1279,7 +1280,8 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             confidence,
                             signal=candidate.get("key_signal", "unknown"),
                             regime=regime.get("regime", "UNKNOWN"),
-                        ),
+                        )
+                        * _dd_scalar,
                         available_cash,
                     )
 
