@@ -65,6 +65,7 @@ import config  # noqa: E402
 
 config.validate()
 import main as bot  # noqa: E402
+from analysis.performance import get_attribution  # noqa: E402
 from analysis.weekly_review import run_weekly_review  # noqa: E402
 from notifications.emailer import send_weekly_review  # noqa: E402
 from scripts.run_diagnostics import run_diagnostics  # noqa: E402
@@ -118,9 +119,10 @@ def _weekly_review():
 
     logger.info("Running weekly self-review...")
     try:
+        attribution = get_attribution(90)
         review = run_weekly_review()
         if review:
-            send_weekly_review(review, test_report=test_report)
+            send_weekly_review(review, test_report=test_report, attribution=attribution)
         elif test_report:
             from datetime import date as _date
 

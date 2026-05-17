@@ -2,7 +2,7 @@ import json
 import logging
 import math
 import os
-from datetime import date
+from datetime import date, timedelta
 
 from config import LOG_DIR
 
@@ -62,11 +62,18 @@ def record_trade_outcome(
     confidence: int = 0,
     sector: str = "Unknown",
     hold_days: int = 0,
+    symbol: str | None = None,
+    date_closed: str | None = None,
+    entry_date: str | None = None,
+    entry_price: float | None = None,
+    exit_price: float | None = None,
+    exit_reason: str | None = None,
 ):
     """Record the outcome of a closed trade tagged by signal, regime, confidence, sector, and hold duration.
 
     Called whenever a position closes (sell, stop loss, stale/earnings exit).
-    Accumulates into signal_stats.json for position sizing and attribution reporting.
+    Writes to both signal_stats.json (all-time aggregated) and the trades SQL table
+    (individual records, queryable by date window). The SQL write requires symbol.
     """
     stats = _load_stats()
     if signal not in stats:
@@ -102,6 +109,34 @@ def record_trade_outcome(
     logger.info(
         f"Signal stats updated: {signal} [{regime} | {sector} | {hb} | conf={confidence}] → {return_pct:+.2f}%"
     )
+
+    if symbol is not None:
+        try:
+            from utils.db import get_db
+
+            closed = date_closed or date.today().isoformat()
+            with get_db() as conn:
+                conn.execute(
+                    "INSERT INTO trades (date_closed, symbol, signal, entry_regime, entry_date, "
+                    "entry_price, exit_price, pnl_pct, days_held, confidence, sector, "
+                    "exit_reason, source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'live')",
+                    (
+                        closed,
+                        symbol,
+                        signal,
+                        regime,
+                        entry_date,
+                        entry_price,
+                        exit_price,
+                        return_pct,
+                        hold_days or None,
+                        confidence or None,
+                        sector,
+                        exit_reason,
+                    ),
+                )
+        except Exception as e:
+            logger.warning(f"record_trade_outcome: trades table write failed: {e}")
 
 
 def _bucket_summary(bucket: dict) -> dict:
@@ -207,6 +242,83 @@ def get_attribution_summary() -> dict:
         "by_sector": by_sector,
         "by_regime": by_regime,
         "by_hold_days": by_hold,
+        "best_signal": _best(by_signal),
+        "worst_signal": _worst(by_signal),
+        "best_sector": _best(by_sector),
+        "optimal_hold": _best(by_hold),
+    }
+
+
+def get_attribution(days: int | None = 90) -> dict:
+    """Return P&L attribution from the trades SQL table, filtered to the last `days` days.
+
+    Falls back to get_attribution_summary() (signal_stats.json) when the trades table
+    is empty — backwards-compatible for deployments that pre-date the trades table.
+
+    Returns the same shape as get_attribution_summary() plus total_trades and period_days.
+    """
+    try:
+        from utils.db import get_db
+
+        params: list = ["live"]
+        where = "WHERE source = ?"
+        if days is not None:
+            cutoff = (date.today() - timedelta(days=days)).isoformat()
+            where += " AND date_closed >= ?"
+            params.append(cutoff)
+        with get_db() as conn:
+            rows = conn.execute(
+                f"SELECT signal, entry_regime, sector, days_held, pnl_pct FROM trades {where}",
+                params,
+            ).fetchall()
+    except Exception as e:
+        logger.warning(f"get_attribution: db query failed, falling back to signal_stats: {e}")
+        return get_attribution_summary()
+
+    if not rows:
+        return get_attribution_summary()
+
+    def _agg(pairs: list[tuple[str, float]]) -> dict[str, dict]:
+        buckets: dict[str, dict] = {}
+        for key, pnl in pairs:
+            if key not in buckets:
+                buckets[key] = {"trades": 0, "wins": 0, "total": 0.0}
+            buckets[key]["trades"] += 1
+            buckets[key]["total"] = round(buckets[key]["total"] + pnl, 4)
+            if pnl > 0:
+                buckets[key]["wins"] += 1
+        return {
+            k: {
+                "trades": v["trades"],
+                "win_rate": round(v["wins"] / v["trades"] * 100, 1),
+                "avg_return_pct": round(v["total"] / v["trades"], 2),
+            }
+            for k, v in buckets.items()
+        }
+
+    def _ranked(d: dict) -> dict:
+        return dict(sorted(d.items(), key=lambda x: x[1]["avg_return_pct"], reverse=True))
+
+    by_signal = _ranked(_agg([(r["signal"] or "unknown", r["pnl_pct"] or 0.0) for r in rows]))
+    by_regime = _ranked(_agg([(r["entry_regime"] or "UNKNOWN", r["pnl_pct"] or 0.0) for r in rows]))
+    by_sector = _ranked(_agg([(r["sector"] or "Unknown", r["pnl_pct"] or 0.0) for r in rows]))
+    by_hold = _ranked(
+        _agg([(_hold_bucket(r["days_held"] or 0), r["pnl_pct"] or 0.0) for r in rows])
+    )
+
+    def _best(d: dict) -> str | None:
+        return next(iter(d), None) if d else None
+
+    def _worst(d: dict) -> str | None:
+        return next(iter(reversed(list(d))), None) if d else None
+
+    return {
+        "by_signal": by_signal,
+        "by_regime": by_regime,
+        "by_sector": by_sector,
+        "by_hold_days": by_hold,
+        "total_trades": len(rows),
+        "period_days": days,
         "best_signal": _best(by_signal),
         "worst_signal": _worst(by_signal),
         "best_sector": _best(by_sector),
@@ -335,6 +447,27 @@ def compute_metrics(records: list[dict]) -> dict:
     }
 
 
+def _attribution_table_html(title: str, rows: dict) -> str:
+    """Render a single attribution breakdown as a compact HTML table."""
+    if not rows:
+        return ""
+    header = f'<h3 style="font-size:13px;margin:16px 0 8px;color:#555">{title}</h3>'
+    th = '<th style="padding:5px 10px 5px 0;text-align:left;font-size:11px;color:#aaa;text-transform:uppercase;border-bottom:2px solid #eee">'
+    td_label = '<td style="padding:5px 10px 5px 0;font-size:12px;font-weight:600;color:#333;border-bottom:1px solid #f5f5f5">'
+    table = f'<table style="width:100%;border-collapse:collapse"><tr>{th}Label</th>{th}Trades</th>{th}Win %</th>{th}Avg Ret %</th></tr>'
+    for label, data in rows.items():
+        avg = data["avg_return_pct"]
+        colour = "#2e7d32" if avg > 0 else "#c62828"
+        table += (
+            f"<tr>{td_label}{label}</td>"
+            f'<td style="padding:5px 10px 5px 0;font-size:12px;color:#555;border-bottom:1px solid #f5f5f5">{data["trades"]}</td>'
+            f'<td style="padding:5px 10px 5px 0;font-size:12px;color:#555;border-bottom:1px solid #f5f5f5">{data["win_rate"]:.0f}%</td>'
+            f'<td style="padding:5px 10px 5px 0;font-size:12px;font-weight:600;color:{colour};border-bottom:1px solid #f5f5f5">{avg:+.2f}%</td></tr>'
+        )
+    table += "</table>"
+    return header + table
+
+
 def generate_dashboard(records: list[dict]):
     """Generate an HTML performance dashboard at logs/dashboard.html."""
     if not records:
@@ -367,6 +500,25 @@ def generate_dashboard(records: list[dict]):
                 <td>{t.get("symbol", "")}</td>
                 <td>{t.get("detail", "")}</td>
             </tr>"""
+
+    attribution = get_attribution(90)
+    attribution_period = attribution.get("period_days", 90)
+    attribution_total = attribution.get("total_trades", 0)
+    attribution_html = ""
+    if attribution:
+        sig_html = _attribution_table_html("By Signal", attribution.get("by_signal", {}))
+        reg_html = _attribution_table_html("By Regime", attribution.get("by_regime", {}))
+        sec_html = _attribution_table_html("By Sector", attribution.get("by_sector", {}))
+        hold_html = _attribution_table_html("By Hold Duration", attribution.get("by_hold_days", {}))
+        if any([sig_html, reg_html, sec_html, hold_html]):
+            attribution_html = f"""
+<div class="chart-wrap">
+  <h2>Performance Attribution — last {attribution_period}d ({attribution_total} trades)</h2>
+  <div class="charts-row" style="grid-template-columns:1fr 1fr">
+    <div>{sig_html}{reg_html}</div>
+    <div>{sec_html}{hold_html}</div>
+  </div>
+</div>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -441,6 +593,8 @@ def generate_dashboard(records: list[dict]):
     <tbody>{trade_rows}</tbody>
   </table>
 </div>
+
+{attribution_html}
 
 <script>
 const dates = [{dates_js}];

@@ -68,19 +68,28 @@ def _send_html(subject: str, html_fn):
 
 
 _SIGNAL_LABELS = {
+    "vix_fear_reversion": "Fear-spike relief rally",
+    "insider_buying": "Cluster insider purchases",
+    "pead": "Post-earnings drift",
     "mean_reversion": "Oversold bounce",
     "momentum": "Upward momentum",
-    "trend_continuation": "Continuing uptrend",
+    "momentum_12_1": "Medium-term momentum factor",
+    "gap_and_go": "Gap continuation",
     "macd_crossover": "Momentum shift",
+    "bb_squeeze": "Volatility squeeze breakout",
+    "breakout_52w": "52-week high breakout",
+    "rs_leader": "Relative strength leader",
+    "inside_day_breakout": "Inside day breakout",
+    "trend_pullback": "Trend pullback entry",
+    "iv_compression": "IV compression breakout",
+    "vwap_reclaim": "VWAP reclaim",
+    "orb_breakout": "Opening range breakout",
+    "intraday_momentum": "Intraday momentum",
+    # legacy — kept for backward-compat with historical DB records
+    "trend_continuation": "Continuing uptrend",
     "rsi_oversold": "Oversold reversal",
     "news_catalyst": "News-driven move",
-    "bb_squeeze": "Volatility squeeze breakout",
-    "orb_breakout": "Opening range breakout",
     "orb_breakout_down": "Opening range breakdown",
-    "breakout_52w": "52-week high breakout",
-    "inside_day_breakout": "Inside day breakout",
-    "rs_leader": "Relative strength leader",
-    "intraday_momentum": "Intraday momentum",
     "unknown": "Mixed signals",
 }
 
@@ -683,7 +692,77 @@ def _build_diagnostics_section(report: dict) -> str:
     </table>"""
 
 
-def _build_weekly_html(review: dict, name: str = "there", test_report: dict | None = None) -> str:
+def _build_attribution_html(attribution: dict) -> str:
+    """Render the 4 attribution breakdown tables for the weekly email."""
+    if not attribution:
+        return ""
+
+    def _table(title: str, rows: dict) -> str:
+        if not rows:
+            return ""
+        th_style = (
+            "padding:6px 10px 6px 0;font-family:Arial,Helvetica,sans-serif;"
+            "font-size:11px;color:#aaa;text-transform:uppercase;border-bottom:2px solid #eee;text-align:left"
+        )
+        td_style = (
+            "padding:6px 10px 6px 0;font-family:Arial,Helvetica,sans-serif;"
+            "font-size:12px;border-bottom:1px solid #f5f5f5"
+        )
+        header = (
+            f'<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;'
+            f'color:#555;margin:14px 0 6px 0;text-transform:uppercase;letter-spacing:.4px">{title}</p>'
+        )
+        tbl = (
+            f'<table width="100%" cellpadding="0" cellspacing="0">'
+            f'<tr><th style="{th_style}">Label</th>'
+            f'<th style="{th_style}">Trades</th>'
+            f'<th style="{th_style}">Win%</th>'
+            f'<th style="{th_style}">Avg Ret</th></tr>'
+        )
+        for label, data in rows.items():
+            avg = data["avg_return_pct"]
+            colour = "#2e7d32" if avg >= 0 else "#c62828"
+            tbl += (
+                f'<tr><td style="{td_style};font-weight:600;color:#333">{label}</td>'
+                f'<td style="{td_style};color:#555">{data["trades"]}</td>'
+                f'<td style="{td_style};color:#555">{data["win_rate"]:.0f}%</td>'
+                f'<td style="{td_style};font-weight:600;color:{colour}">{avg:+.2f}%</td></tr>'
+            )
+        tbl += "</table>"
+        return header + tbl
+
+    period = attribution.get("period_days", 90)
+    total = attribution.get("total_trades", 0)
+    if not total:
+        return ""
+
+    sig = _table("By Signal", attribution.get("by_signal", {}))
+    reg = _table("By Regime", attribution.get("by_regime", {}))
+    sec = _table("By Sector", attribution.get("by_sector", {}))
+    hold = _table("By Hold Duration", attribution.get("by_hold_days", {}))
+
+    if not any([sig, reg, sec, hold]):
+        return ""
+
+    return f"""
+        <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#888;
+                  text-transform:uppercase;letter-spacing:.6px;margin:24px 0 10px 0">
+          Performance Attribution — last {period} days ({total} trades)
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td width="50%" style="vertical-align:top;padding-right:16px">{sig}{reg}</td>
+            <td width="50%" style="vertical-align:top">{sec}{hold}</td>
+          </tr>
+        </table>"""
+
+
+def _build_weekly_html(
+    review: dict,
+    name: str = "there",
+    test_report: dict | None = None,
+    attribution: dict | None = None,
+) -> str:
     week_summary = review.get("week_summary", "")
     what_worked = review.get("what_worked", [])
     what_didnt = review.get("what_didnt", [])
@@ -783,6 +862,7 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
 
           {_section("What worked", _bullets(what_worked, "#2e7d32"))}
           {_section("What didn&#39;t work", _bullets(what_didnt, "#c62828"))}
+          {_build_attribution_html(attribution or {})}
           {_section("Lessons injected into next week&#39;s prompts", _bullets(lessons, "#1565c0"))}
           {_section("Proposed config changes", changes_block)}
           {rejected_block}
@@ -800,7 +880,11 @@ def _build_weekly_html(review: dict, name: str = "there", test_report: dict | No
 </html>"""
 
 
-def send_weekly_review(review: dict, test_report: dict | None = None):
+def send_weekly_review(
+    review: dict,
+    test_report: dict | None = None,
+    attribution: dict | None = None,
+):
     applied_count = sum(
         1 for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped")
     )
@@ -812,7 +896,7 @@ def send_weekly_review(review: dict, test_report: dict | None = None):
     diag_note = f" · tests {test_report.get('status', '')}" if test_report else ""
     _send_html(
         subject=f"Weekly Review {date.today().isoformat()}{change_note}{diag_note}",
-        html_fn=lambda name: _build_weekly_html(review, name, test_report),
+        html_fn=lambda name: _build_weekly_html(review, name, test_report, attribution),
     )
 
 

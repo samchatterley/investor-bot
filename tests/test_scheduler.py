@@ -239,20 +239,24 @@ class TestWeeklyReview(unittest.TestCase):
         mock_review.assert_called_once()
 
     def test_review_result_triggers_send(self):
-        """A truthy review result causes send_weekly_review to be called."""
+        """A truthy review result causes send_weekly_review to be called with attribution."""
         mod = self._get_mod()
         mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
         diag_report = {"status": "PASS"}
         review_result = {"summary": "good week"}
+        attribution_data = {"by_signal": {}, "total_trades": 0}
         mock_diag = MagicMock(return_value=diag_report)
         mock_review = MagicMock(return_value=review_result)
         mock_send = MagicMock()
         mod.run_diagnostics = mock_diag
         mod.run_weekly_review = mock_review
         mod.send_weekly_review = mock_send
+        mod.get_attribution = MagicMock(return_value=attribution_data)
         with patch("os.path.exists", return_value=False):
             mod._weekly_review()
-        mock_send.assert_called_once_with(review_result, test_report=diag_report)
+        mock_send.assert_called_once_with(
+            review_result, test_report=diag_report, attribution=attribution_data
+        )
 
     def test_diagnostics_exception_still_runs_review(self):
         """If run_diagnostics raises, _weekly_review still calls run_weekly_review."""

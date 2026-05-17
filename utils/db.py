@@ -128,6 +128,25 @@ CREATE TABLE IF NOT EXISTS order_events (
     ts               TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_oe_client_id ON order_events(client_order_id);
+
+CREATE TABLE IF NOT EXISTS trades (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_closed  TEXT NOT NULL,
+    symbol       TEXT,
+    signal       TEXT,
+    entry_regime TEXT,
+    entry_date   TEXT,
+    entry_price  REAL,
+    exit_price   REAL,
+    pnl_pct      REAL,
+    days_held    INTEGER,
+    confidence   INTEGER,
+    sector       TEXT,
+    exit_reason  TEXT,
+    source       TEXT NOT NULL DEFAULT 'live'
+);
+CREATE INDEX IF NOT EXISTS idx_trades_date_closed ON trades(date_closed);
+CREATE INDEX IF NOT EXISTS idx_trades_signal      ON trades(signal);
 """
 
 
@@ -207,6 +226,31 @@ _MIGRATIONS: list[tuple[int, str]] = [
             "payload TEXT NOT NULL DEFAULT '{}', "
             "ts TEXT NOT NULL); "
             "CREATE INDEX IF NOT EXISTS idx_oe_client_id ON order_events(client_order_id)"
+        ),
+    ),
+    (
+        4,
+        # Per-trade record table for queryable, time-sliced P&L attribution.
+        # signal_stats.json remains the all-time aggregated store; this table
+        # enables recency filtering and cohort SQL queries.
+        (
+            "CREATE TABLE IF NOT EXISTS trades ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "date_closed TEXT NOT NULL, "
+            "symbol TEXT, "
+            "signal TEXT, "
+            "entry_regime TEXT, "
+            "entry_date TEXT, "
+            "entry_price REAL, "
+            "exit_price REAL, "
+            "pnl_pct REAL, "
+            "days_held INTEGER, "
+            "confidence INTEGER, "
+            "sector TEXT, "
+            "exit_reason TEXT, "
+            "source TEXT NOT NULL DEFAULT 'live'); "
+            "CREATE INDEX IF NOT EXISTS idx_trades_date_closed ON trades(date_closed); "
+            "CREATE INDEX IF NOT EXISTS idx_trades_signal ON trades(signal)"
         ),
     ),
 ]

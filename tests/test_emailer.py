@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from notifications.emailer import (
     _all_recipients,
+    _build_attribution_html,
     _build_closed_section,
     _build_diagnostics_section,
     _build_html,
@@ -1057,3 +1058,97 @@ class TestBuildTradeCardsNonBuyDecision(unittest.TestCase):
         html = _build_trade_cards(record)
         self.assertIn("NVDA", html)
         self.assertNotIn("already holding", html)
+
+
+class TestBuildAttributionHtml(unittest.TestCase):
+    """Lines 695-757: _build_attribution_html renders 4 breakdown tables."""
+
+    def _attribution(self, total=5, by_signal=None, by_regime=None, by_sector=None, by_hold=None):
+        return {
+            "by_signal": by_signal
+            or {"momentum": {"trades": 3, "win_rate": 66.7, "avg_return_pct": 2.1}},
+            "by_regime": by_regime
+            or {"BULL_TRENDING": {"trades": 3, "win_rate": 66.7, "avg_return_pct": 2.1}},
+            "by_sector": by_sector
+            or {"Technology": {"trades": 2, "win_rate": 50.0, "avg_return_pct": -0.5}},
+            "by_hold_days": by_hold
+            or {"1-2d": {"trades": 2, "win_rate": 50.0, "avg_return_pct": 1.0}},
+            "total_trades": total,
+            "period_days": 90,
+        }
+
+    def test_empty_dict_returns_empty_string(self):
+        self.assertEqual(_build_attribution_html({}), "")
+
+    def test_zero_total_trades_returns_empty_string(self):
+        attr = self._attribution(total=0)
+        self.assertEqual(_build_attribution_html(attr), "")
+
+    def test_all_empty_breakdowns_returns_empty_string(self):
+        attr = {
+            "by_signal": {},
+            "by_regime": {},
+            "by_sector": {},
+            "by_hold_days": {},
+            "total_trades": 5,
+            "period_days": 90,
+        }
+        self.assertEqual(_build_attribution_html(attr), "")
+
+    def test_with_data_returns_html_with_header(self):
+        html = _build_attribution_html(self._attribution())
+        self.assertIn("Performance Attribution", html)
+        self.assertIn("90", html)
+        self.assertIn("5 trades", html)
+
+    def test_signal_label_appears_in_output(self):
+        html = _build_attribution_html(self._attribution())
+        self.assertIn("momentum", html)
+
+    def test_positive_avg_return_uses_green_colour(self):
+        attr = self._attribution(
+            by_signal={"momentum": {"trades": 3, "win_rate": 100.0, "avg_return_pct": 2.5}},
+            by_regime={},
+            by_sector={},
+            by_hold={},
+        )
+        html = _build_attribution_html(attr)
+        self.assertIn("#2e7d32", html)
+
+    def test_negative_avg_return_uses_red_colour(self):
+        attr = self._attribution(
+            by_signal={"mean_reversion": {"trades": 2, "win_rate": 0.0, "avg_return_pct": -1.3}},
+            by_regime={},
+            by_sector={},
+            by_hold={},
+        )
+        html = _build_attribution_html(attr)
+        self.assertIn("#c62828", html)
+
+    def test_period_days_in_header(self):
+        attr = self._attribution()
+        attr["period_days"] = 30
+        html = _build_attribution_html(attr)
+        self.assertIn("30", html)
+
+    def test_win_rate_formatted_as_percentage(self):
+        attr = self._attribution(
+            by_signal={"momentum": {"trades": 3, "win_rate": 66.7, "avg_return_pct": 1.0}},
+            by_regime={},
+            by_sector={},
+            by_hold={},
+        )
+        html = _build_attribution_html(attr)
+        self.assertIn("67%", html)
+
+    def test_regime_breakdown_appears(self):
+        html = _build_attribution_html(self._attribution())
+        self.assertIn("BULL_TRENDING", html)
+
+    def test_sector_breakdown_appears(self):
+        html = _build_attribution_html(self._attribution())
+        self.assertIn("Technology", html)
+
+    def test_hold_duration_breakdown_appears(self):
+        html = _build_attribution_html(self._attribution())
+        self.assertIn("1-2d", html)
