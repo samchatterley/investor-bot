@@ -1328,6 +1328,23 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
         close_mock.assert_called()
 
+    def test_correlated_candidate_not_bought(self):
+        """When correlation filter returns True, buy order is skipped for that candidate."""
+        buy_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.correlation.correlated_with_held": True,
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+
 
 class TestLockFile(unittest.TestCase):
     """Line 51: _lock_file() uses config.today_et() to build the path."""

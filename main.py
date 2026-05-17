@@ -41,7 +41,14 @@ from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
 from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult, OrderStatus
 from notifications import alerts, emailer
-from risk import earnings_calendar, exit_optimiser, macro_calendar, position_sizer, risk_manager
+from risk import (
+    correlation,
+    earnings_calendar,
+    exit_optimiser,
+    macro_calendar,
+    position_sizer,
+    risk_manager,
+)
 from risk.risk_config import RiskConfig
 from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
@@ -1229,6 +1236,11 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                     break
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
+
+                # Correlation filter — skip if returns too closely track an existing position
+                if correlation.correlated_with_held(symbol, {p["symbol"] for p in open_positions}):
+                    logger.info(f"Skipping {symbol}: correlated with an existing position")
+                    continue
 
                 # Order-intent ledger guard — survives process restarts unlike broker queries.
                 # Blocks re-submission when a prior same-day intent is still active.
