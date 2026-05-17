@@ -577,6 +577,82 @@ class TestRunWeeklyReview(unittest.TestCase):
         self.assertIn('"signal": "momentum"', prompt_text)
         self.assertIn('"confidence": 8', prompt_text)
 
+    def test_buy_no_signal_omits_signal_key(self):
+        """BUY trade where _parse_detail returns sig=None: signal key absent, no KeyError."""
+        from analysis.weekly_review import run_weekly_review
+
+        record = self._make_record((date.today() - timedelta(days=3)).isoformat())
+        record["trades_executed"] = [{"symbol": "AAPL", "action": "BUY", "detail": "$500.00"}]
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch("analysis.weekly_review.load_history", return_value=[record]),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_client = mock_anthropic.return_value
+            mock_client.messages.create.return_value = self._mock_ai_response(fake_review)
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        prompt_text = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+        self.assertNotIn('"signal"', prompt_text)
+
+    def test_buy_no_confidence_omits_confidence_key(self):
+        """BUY trade where _parse_detail returns conf=None: confidence key absent."""
+        from analysis.weekly_review import run_weekly_review
+
+        record = self._make_record((date.today() - timedelta(days=3)).isoformat())
+        record["trades_executed"] = [
+            {"symbol": "AAPL", "action": "BUY", "detail": "$500.00 | breakout"}
+        ]
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch("analysis.weekly_review.load_history", return_value=[record]),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_client = mock_anthropic.return_value
+            mock_client.messages.create.return_value = self._mock_ai_response(fake_review)
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        prompt_text = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+        self.assertNotIn('"confidence"', prompt_text)
+
+    def test_sell_trade_stores_exit_reason(self):
+        """Non-BUY trade: detail stored as exit_reason in prompt."""
+        from analysis.weekly_review import run_weekly_review
+
+        record = self._make_record((date.today() - timedelta(days=3)).isoformat())
+        record["trades_executed"] = [
+            {"symbol": "AAPL", "action": "SELL", "detail": "trailing stop hit"}
+        ]
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch("analysis.weekly_review.load_history", return_value=[record]),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_client = mock_anthropic.return_value
+            mock_client.messages.create.return_value = self._mock_ai_response(fake_review)
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        prompt_text = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+        self.assertIn("trailing stop hit", prompt_text)
+
 
 class TestParseDetail(unittest.TestCase):
     def setUp(self):
