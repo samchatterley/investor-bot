@@ -10,6 +10,7 @@ Runs Sunday evenings via run_scheduler.py.
 Output saved to logs/weekly_review_YYYY-MM-DD.json.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ from datetime import date, timedelta
 import anthropic
 
 import config as cfg
-from analysis.performance import compute_metrics, get_win_rates
+from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
 from utils.portfolio_tracker import load_history
 
@@ -156,6 +157,24 @@ def get_latest_review(regime: str | None = None) -> list[dict]:
     return result
 
 
+def _parse_detail(detail: str) -> tuple[str | None, int | None]:
+    """Extract (signal, confidence) from a pipe-separated BUY detail string.
+
+    Format: "$500.00 | momentum | confidence=8"
+    Returns (None, None) when the format is unrecognised (sell / exit details).
+    """
+    signal: str | None = None
+    confidence: int | None = None
+    for part in detail.split("|"):
+        part = part.strip()
+        if part.startswith("confidence="):
+            with contextlib.suppress(ValueError, IndexError):
+                confidence = int(part.split("=")[1])
+        elif part and not part.startswith("$") and "Kelly" not in part and part != "dry run":
+            signal = part
+    return signal, confidence
+
+
 def run_weekly_review() -> dict | None:
     """
     Ask Claude to review the past 7 days and generate lessons for next week.
@@ -173,18 +192,27 @@ def run_weekly_review() -> dict | None:
 
     metrics = compute_metrics(week_records)
     win_rates = get_win_rates()
+    week_attribution = get_attribution(7)
     current_params = _current_param_values()
 
-    trade_summary = [
-        {
-            "date": r["date"],
-            "symbol": t["symbol"],
-            "action": t["action"],
-            "detail": t.get("detail", ""),
-        }
-        for r in week_records
-        for t in r.get("trades_executed", [])
-    ]
+    trade_summary = []
+    for r in week_records:
+        for t in r.get("trades_executed", []):
+            entry: dict = {
+                "date": r["date"],
+                "symbol": t["symbol"],
+                "action": t["action"],
+            }
+            if t.get("action", "").upper() == "BUY":
+                sig, conf = _parse_detail(t.get("detail", ""))
+                if sig:
+                    entry["signal"] = sig
+                if conf is not None:
+                    entry["confidence"] = conf
+            else:
+                entry["exit_reason"] = t.get("detail", "")
+            trade_summary.append(entry)
+
     daily_breakdown = [
         {
             "date": r["date"],
@@ -197,6 +225,31 @@ def run_weekly_review() -> dict | None:
     param_block = "\n".join(
         f"  {p} = {current_params[p]}  (allowed range: {spec['min']}–{spec['max']})  — {spec['desc']}"
         for p, spec in _SAFE_PARAMS.items()
+    )
+
+    # Build compact 7-day attribution block for Claude
+    attr_lines: list[str] = []
+    total_attr = week_attribution.get("total_trades", 0) if week_attribution else 0
+    if total_attr:
+        attr_lines.append(f"7-DAY TRADE ATTRIBUTION ({total_attr} closed trades from DB):")
+        for dim_name, dim_key in [
+            ("By signal", "by_signal"),
+            ("By regime", "by_regime"),
+            ("By sector", "by_sector"),
+        ]:
+            dim = week_attribution.get(dim_key, {})
+            if dim:
+                parts = [
+                    f"{k}: {v['trades']}t {v['win_rate']:.0f}%wr {v['avg_return_pct']:+.2f}%"
+                    for k, v in dim.items()
+                ]
+                attr_lines.append(f"  {dim_name}: {' | '.join(parts)}")
+        best_sig = week_attribution.get("best_signal")
+        worst_sig = week_attribution.get("worst_signal")
+        if best_sig:
+            attr_lines.append(f"  Best performing: {best_sig}  |  Worst: {worst_sig or 'n/a'}")
+    attribution_block = (
+        "\n".join(attr_lines) if attr_lines else "No closed-trade DB records for this week."
     )
 
     prompt = f"""You are reviewing the past week of automated trading to identify what worked,
@@ -213,6 +266,8 @@ DAILY BREAKDOWN:
 
 TRADES THIS WEEK:
 {json.dumps(trade_summary, indent=2)}
+
+{attribution_block}
 
 ALL-TIME SIGNAL WIN RATES (with regime and confidence breakdowns):
 {json.dumps(win_rates, indent=2)}
@@ -258,7 +313,7 @@ Respond with ONLY this JSON:
         ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         response = ai_client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1500,
+            max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()  # type: ignore[union-attr]
@@ -271,6 +326,7 @@ Respond with ONLY this JSON:
         # Validate proposed changes and record for logging — not applied to disk
         proposed_changes = _apply_config_changes(review.get("config_changes", []))
         review["proposed_changes"] = proposed_changes
+        review["week_attribution"] = week_attribution or {}
 
         path = os.path.join(LOG_DIR, f"weekly_review_{date.today().isoformat()}.json")
         os.makedirs(LOG_DIR, exist_ok=True)

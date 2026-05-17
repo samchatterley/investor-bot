@@ -240,10 +240,18 @@ class TestRunWeeklyReview(unittest.TestCase):
         self.runtime_patcher = patch(
             "analysis.weekly_review._RUNTIME_CONFIG_PATH", self.runtime_path
         )
+        self.get_attribution_patcher = patch(
+            "analysis.weekly_review.get_attribution", return_value={}
+        )
+        self.get_win_rates_patcher = patch("analysis.weekly_review.get_win_rates", return_value={})
         self.log_patcher.start()
         self.runtime_patcher.start()
+        self.mock_get_attribution = self.get_attribution_patcher.start()
+        self.get_win_rates_patcher.start()
         self.addCleanup(self.log_patcher.stop)
         self.addCleanup(self.runtime_patcher.stop)
+        self.addCleanup(self.get_attribution_patcher.stop)
+        self.addCleanup(self.get_win_rates_patcher.stop)
         self.addCleanup(shutil.rmtree, self.tmpdir)
 
     def _make_record(self, date_str, pnl=100.0):
@@ -455,3 +463,169 @@ class TestRunWeeklyReview(unittest.TestCase):
         self.assertIn("MIN_CONFIDENCE", statuses)
         self.assertIn("SUPER_SECRET", statuses)
         self.assertEqual(statuses["SUPER_SECRET"], "rejected")
+
+    def test_week_attribution_key_in_return_dict(self):
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        self.mock_get_attribution.return_value = {"total_trades": 3, "by_signal": {}}
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+        self.assertIn("week_attribution", result)
+        self.assertEqual(result["week_attribution"]["total_trades"], 3)
+
+    def test_get_attribution_called_with_days_7(self):
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            run_weekly_review()
+        self.mock_get_attribution.assert_called_once_with(7)
+
+    def test_attribution_block_injected_into_prompt(self):
+        """When get_attribution returns data, Claude's prompt includes the attribution block."""
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        self.mock_get_attribution.return_value = {
+            "total_trades": 5,
+            "by_signal": {"momentum": {"trades": 5, "win_rate": 60.0, "avg_return_pct": 1.5}},
+            "by_regime": {},
+            "by_sector": {},
+            "best_signal": "momentum",
+            "worst_signal": None,
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_client = mock_anthropic.return_value
+            mock_client.messages.create.return_value = self._mock_ai_response(fake_review)
+            run_weekly_review()
+        call_args = mock_client.messages.create.call_args
+        prompt_text = call_args[1]["messages"][0]["content"]
+        self.assertIn("7-DAY TRADE ATTRIBUTION", prompt_text)
+        self.assertIn("momentum", prompt_text)
+
+    def test_trade_summary_enriched_with_signal_and_confidence(self):
+        """BUY trades with pipe-separated detail appear with signal+confidence in the prompt."""
+        from analysis.weekly_review import run_weekly_review
+
+        record = self._make_record((date.today() - timedelta(days=3)).isoformat())
+        record["trades_executed"] = [
+            {
+                "symbol": "AAPL",
+                "action": "BUY",
+                "detail": "$500.00 | momentum | confidence=8",
+            }
+        ]
+        fake_review = {
+            "week_summary": "OK",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch("analysis.weekly_review.load_history", return_value=[record]),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_client = mock_anthropic.return_value
+            mock_client.messages.create.return_value = self._mock_ai_response(fake_review)
+            run_weekly_review()
+        prompt_text = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+        self.assertIn('"signal": "momentum"', prompt_text)
+        self.assertIn('"confidence": 8', prompt_text)
+
+
+class TestParseDetail(unittest.TestCase):
+    def setUp(self):
+        from analysis.weekly_review import _parse_detail
+
+        self._parse_detail = _parse_detail
+
+    def test_standard_buy_extracts_signal_and_confidence(self):
+        sig, conf = self._parse_detail("$500.00 | momentum | confidence=8")
+        self.assertEqual(sig, "momentum")
+        self.assertEqual(conf, 8)
+
+    def test_confidence_only_string(self):
+        sig, conf = self._parse_detail("confidence=7")
+        self.assertIsNone(sig)
+        self.assertEqual(conf, 7)
+
+    def test_signal_only_no_confidence(self):
+        sig, conf = self._parse_detail("$200.00 | mean_reversion")
+        self.assertEqual(sig, "mean_reversion")
+        self.assertIsNone(conf)
+
+    def test_dry_run_label_excluded_from_signal(self):
+        sig, conf = self._parse_detail("$500.00 | momentum | confidence=8 | dry run")
+        self.assertEqual(sig, "momentum")
+        self.assertEqual(conf, 8)
+
+    def test_kelly_label_excluded_from_signal(self):
+        sig, conf = self._parse_detail("$300.00 | momentum | Kelly=0.5 | confidence=7")
+        self.assertEqual(sig, "momentum")
+        self.assertEqual(conf, 7)
+
+    def test_empty_string_returns_none_none(self):
+        sig, conf = self._parse_detail("")
+        self.assertIsNone(sig)
+        self.assertIsNone(conf)
+
+    def test_price_only_part_excluded_from_signal(self):
+        # A bare "$price" part is excluded; only signal-named parts are kept
+        sig, conf = self._parse_detail("$198.50")
+        self.assertIsNone(sig)
+        self.assertIsNone(conf)
+
+    def test_invalid_confidence_value_skipped(self):
+        sig, conf = self._parse_detail("$500.00 | momentum | confidence=abc")
+        self.assertEqual(sig, "momentum")
+        self.assertIsNone(conf)
+
+    def test_dollar_prefix_part_excluded_from_signal(self):
+        sig, conf = self._parse_detail("$1000.00 | breakout | confidence=9")
+        self.assertEqual(sig, "breakout")
+        self.assertEqual(conf, 9)
