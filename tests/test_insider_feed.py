@@ -1,6 +1,7 @@
 """Tests for data/insider_feed.py — SEC EDGAR Form 4 insider purchase detection."""
 
 import unittest
+from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 from data.insider_feed import (
@@ -9,6 +10,10 @@ from data.insider_feed import (
     _recent_form4_filings,
     get_insider_activity,
 )
+
+# Dynamic dates — always within the 10-day default lookback window
+_D1 = (date.today() - timedelta(days=1)).isoformat()
+_D2 = (date.today() - timedelta(days=2)).isoformat()
 
 _TICKERS_JSON = {
     "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
@@ -19,7 +24,7 @@ _SUBMISSIONS_JSON = {
     "filings": {
         "recent": {
             "form": ["4", "4", "10-K"],
-            "filingDate": ["2026-05-08", "2026-05-07", "2026-01-15"],
+            "filingDate": [_D1, _D2, "2026-01-15"],
             "accessionNumber": [
                 "0000320193-26-000001",
                 "0000320193-26-000002",
@@ -248,7 +253,7 @@ class TestGetInsiderActivity(unittest.TestCase):
             "filings": {
                 "recent": {
                     "form": ["4"],
-                    "filingDate": ["2026-05-08"],
+                    "filingDate": [_D1],
                     "accessionNumber": ["0000320193-26-000001"],
                     "primaryDocument": ["form4.xml"],
                 }
@@ -275,7 +280,7 @@ class TestGetInsiderActivity(unittest.TestCase):
             "filings": {
                 "recent": {
                     "form": ["4"],
-                    "filingDate": ["2026-05-08"],
+                    "filingDate": [_D1],
                     "accessionNumber": ["0000320193-26-000001"],
                     "primaryDocument": ["form4.xml"],
                 }
@@ -344,7 +349,7 @@ class TestRecentForm4FilingsDateParseError(unittest.TestCase):
             "filings": {
                 "recent": {
                     "form": ["4", "4"],
-                    "filingDate": ["not-a-date", "2026-05-08"],
+                    "filingDate": ["not-a-date", _D1],
                     "accessionNumber": [
                         "0000320193-26-000099",
                         "0000320193-26-000001",
