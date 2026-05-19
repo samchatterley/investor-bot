@@ -1659,19 +1659,22 @@ class TestRunInnerDryRunSell(RunInnerBase):
 
 
 class TestRunInnerRegimeMaxOrders(RunInnerBase):
-    """Lines 561-562: HIGH_VOL regime → regime_max_orders = 2, regime_conf_bump = 1."""
+    """HIGH_VOL_DOWNTREND regime → min_confidence_bump = 2, max_orders = 1."""
 
     def test_high_vol_regime_takes_high_vol_branch(self):
-        """Lines 561-562: HIGH_VOL path sets regime_max_orders=2 and conf_bump=1."""
+        """HIGH_VOL_DOWNTREND maps to min_confidence_bump=2; confidence=9 clears the bar."""
         buy_mock = MagicMock(
             return_value=OrderResult(
                 status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
             )
         )
-        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}])
         stack, mocks = self._patch_all(
             **{
-                "main.stock_scanner.get_market_regime": {"regime": "HIGH_VOL", "is_bearish": False},
+                "main.stock_scanner.get_market_regime": {
+                    "regime": "HIGH_VOL_DOWNTREND",
+                    "is_bearish": False,
+                },
                 "main.ai_analyst.get_trading_decisions": decisions,
                 "main.trader.place_buy_order": buy_mock,
                 "main.market_data.get_market_snapshots": [
@@ -2842,6 +2845,28 @@ class TestRunInnerOrderLedgerUnavailable(RunInnerBase):
                 "utils.order_ledger.has_active_intent",
                 side_effect=OrderLedgerUnavailable("db locked"),
             ),
+        ):
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+
+    def test_active_intent_skips_buy(self):
+        """Lines 1245-1248: has_active_intent returns True → symbol skipped."""
+        buy_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with (
+            stack,
+            patch("utils.order_ledger.has_active_intent", return_value=True),
         ):
             from main import _run_inner
 

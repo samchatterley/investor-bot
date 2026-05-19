@@ -53,44 +53,57 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
 #
 # mean_reversion is intentionally absent from CHOPPY: live paper data shows +0.28% avg
 # (100% win rate, n=2 — small sample).  Reassess after ≥5 live trades in CHOPPY.
+_BEAR_DAY_BLOCKED = frozenset(
+    {
+        "rs_leader",
+        "breakout_52w",
+        "momentum_12_1",
+        "momentum",
+        "macd_crossover",
+        "bb_squeeze",
+        "trend_pullback",
+        "inside_day_breakout",
+        "gap_and_go",
+        "orb_breakout",
+        "intraday_momentum",
+        "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
+    }
+)
+_HIGH_VOL_BLOCKED = frozenset(
+    {
+        "rs_leader",
+        "breakout_52w",
+        "momentum",
+        "gap_and_go",
+        "orb_breakout",
+    }
+)
+_CHOPPY_BLOCKED = frozenset(
+    {
+        # Trend-following signals underperform without clear directional bias.
+        "rs_leader",
+        "breakout_52w",
+        "momentum_12_1",
+        "momentum",
+        "gap_and_go",
+        "macd_crossover",  # -2.0% avg in CHOPPY — n=33
+        "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
+    }
+)
+
 REGIME_BLOCKED: dict[str, frozenset[str]] = {
-    "BEAR_DAY": frozenset(
-        {
-            "rs_leader",
-            "breakout_52w",
-            "momentum_12_1",
-            "momentum",
-            "macd_crossover",
-            "bb_squeeze",
-            "trend_pullback",
-            "inside_day_breakout",
-            "gap_and_go",
-            "orb_breakout",
-            "intraday_momentum",
-            "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
-        }
-    ),
-    "HIGH_VOL": frozenset(
-        {
-            "rs_leader",
-            "breakout_52w",
-            "momentum",
-            "gap_and_go",
-            "orb_breakout",
-        }
-    ),
-    "CHOPPY": frozenset(
-        {
-            # Trend-following signals underperform without clear directional bias.
-            "rs_leader",
-            "breakout_52w",
-            "momentum_12_1",
-            "momentum",
-            "gap_and_go",
-            "macd_crossover",  # -2.0% avg in CHOPPY — n=33
-            "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
-        }
-    ),
+    # Legacy names (kept for backward compatibility)
+    "BEAR_DAY": _BEAR_DAY_BLOCKED,
+    "HIGH_VOL": _HIGH_VOL_BLOCKED,
+    "BULL_TRENDING": frozenset(),
+    "CHOPPY": _CHOPPY_BLOCKED,
+    # New 5-state names
+    "STRESS_RISK_OFF": _BEAR_DAY_BLOCKED,
+    "HIGH_VOL_DOWNTREND": _HIGH_VOL_BLOCKED,
+    "DEFENSIVE_DOWNTREND": _CHOPPY_BLOCKED,
+    "BULL_TREND": frozenset(),
+    "NEUTRAL_CHOP": _CHOPPY_BLOCKED,
+    "UNKNOWN": _BEAR_DAY_BLOCKED,
 }
 
 

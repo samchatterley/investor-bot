@@ -27,28 +27,24 @@ def _make_preloaded(symbols=("SPY", "AAPL"), n=300):
 
 
 class TestComputeRegime(unittest.TestCase):
-    def test_bull_trending_when_spy_strong(self):
+    def test_returns_valid_regime_dict_when_spy_present(self):
         from backtest.replay import _compute_regime
 
         preloaded = {"SPY": _make_preloaded_df(n=50, base=400.0)}
-        # Last bar much higher than 5 bars ago to trigger BULL_TRENDING
-        spy = preloaded["SPY"].copy()
-        closes = list(spy["Close"])
-        for i in range(len(closes) - 6, len(closes)):
-            closes[i] = closes[i - 6] * 1.05  # +5% over 5 days
-        spy["Close"] = closes
-        preloaded["SPY"] = spy
-        as_of = str(spy.index[-1].date())
-        result = _compute_regime(preloaded, as_of)
-        self.assertIn(
-            result["regime"], ("BULL_TRENDING", "CHOPPY", "HIGH_VOL", "BEAR_DAY", "UNKNOWN")
-        )
+        as_of = str(preloaded["SPY"].index[-1].date())
+        result, _ = _compute_regime(preloaded, as_of)
+        self.assertIn("regime", result)
         self.assertIn("is_bearish", result)
+        valid_regimes = {
+            r.value
+            for r in __import__("data.market_regime", fromlist=["MarketRegime"]).MarketRegime
+        }
+        self.assertIn(result["regime"], valid_regimes)
 
     def test_returns_unknown_when_spy_missing(self):
         from backtest.replay import _compute_regime
 
-        result = _compute_regime({}, "2025-01-10")
+        result, _ = _compute_regime({}, "2025-01-10")
         self.assertEqual(result["regime"], "UNKNOWN")
         self.assertFalse(result["is_bearish"])
 
@@ -57,22 +53,23 @@ class TestComputeRegime(unittest.TestCase):
 
         preloaded = {"SPY": _make_preloaded_df(n=3)}
         as_of = str(preloaded["SPY"].index[-1].date())
-        result = _compute_regime(preloaded, as_of)
+        result, _ = _compute_regime(preloaded, as_of)
         self.assertEqual(result["regime"], "UNKNOWN")
 
-    def test_bear_day_when_large_1d_drop(self):
+    def test_defensive_downtrend_when_large_1d_drop_no_vix(self):
+        """Single-day drop without VIX data → DEFENSIVE_DOWNTREND (not STRESS which needs multi-feature)."""
         import config  # noqa: PLC0415
         from backtest.replay import _compute_regime
 
         spy = _make_preloaded_df(n=20, base=400.0)
-        # Force last close well below previous to trigger is_bearish
         closes = spy["Close"].tolist()
         closes[-1] = closes[-2] * (1 + (config.BEAR_MARKET_SPY_THRESHOLD - 1) / 100)
         spy["Close"] = closes
         as_of = str(spy.index[-1].date())
-        result = _compute_regime({"SPY": spy}, as_of)
-        self.assertTrue(result["is_bearish"])
-        self.assertEqual(result["regime"], "BEAR_DAY")
+        result, _ = _compute_regime({"SPY": spy}, as_of)
+        # Without VIX context a single bad day is DEFENSIVE_DOWNTREND, not STRESS
+        self.assertFalse(result["is_bearish"])
+        self.assertEqual(result["regime"], "DEFENSIVE_DOWNTREND")
 
     def test_vix_extracted_when_vix_in_preloaded(self):
         from backtest.replay import _compute_regime
@@ -81,7 +78,7 @@ class TestComputeRegime(unittest.TestCase):
         vix_df = _make_preloaded_df(n=20, base=18.0)
         preloaded["^VIX"] = vix_df
         as_of = str(vix_df.index[-1].date())
-        result = _compute_regime(preloaded, as_of)
+        result, _ = _compute_regime(preloaded, as_of)
         self.assertIn("vix", result)
         self.assertIsNotNone(result["vix"])
 
@@ -89,40 +86,36 @@ class TestComputeRegime(unittest.TestCase):
         from backtest.replay import _compute_regime
 
         spy = _make_preloaded_df(n=50, base=400.0)
-        cutoff_idx = 20
-        as_of = str(spy.index[cutoff_idx].date())
-        result = _compute_regime({"SPY": spy}, as_of)
-        # Just verify it doesn't crash and returns a valid dict
+        as_of = str(spy.index[20].date())
+        result, _ = _compute_regime({"SPY": spy}, as_of)
         self.assertIn("regime", result)
 
-    def test_high_vol_regime_when_vix_high_and_spy_down(self):
-        """Line 87: vix > 25 and spy_5d < -3 and not bearish → HIGH_VOL."""
+    def test_high_vol_downtrend_when_vix_high_and_spy_down(self):
+        """VIX > 25 and spy_5d < -3 → HIGH_VOL_DOWNTREND."""
         from backtest.replay import _compute_regime
 
         n = 20
         idx = pd.bdate_range("2025-01-01", periods=n)
         closes = [100.0] * n
-        # spy_5d: close[-6]=104, close[-1]=100 → -3.85%; spy_1d: close[-2]=101 → -0.99% (not bearish)
         closes[-6] = 104.0
         closes[-5] = 103.5
         closes[-4] = 103.0
         closes[-3] = 102.5
         closes[-2] = 101.0
-        closes[-1] = 100.0
+        closes[-1] = 100.0  # spy_5d ≈ -3.85%, spy_1d ≈ -0.99% (not STRESS threshold)
         spy = pd.DataFrame({"Close": closes}, index=idx)
         vix_df = pd.DataFrame({"Close": [26.0] * n}, index=idx)
         as_of = str(idx[-1].date())
-        result = _compute_regime({"SPY": spy, "^VIX": vix_df}, as_of)
-        self.assertEqual(result["regime"], "HIGH_VOL")
+        result, _ = _compute_regime({"SPY": spy, "^VIX": vix_df}, as_of)
+        self.assertEqual(result["regime"], "HIGH_VOL_DOWNTREND")
 
-    def test_bull_trending_regime_when_spy_strong(self):
-        """Line 89: spy_5d > 2 and spy_1d > 0 → BULL_TRENDING."""
+    def test_neutral_chop_when_spy_strong_but_insufficient_bars_for_ma200(self):
+        """spy_5d > 2% and spy_1d > 0 but only 20 bars — no MA200 → NEUTRAL_CHOP."""
         from backtest.replay import _compute_regime
 
         n = 20
         idx = pd.bdate_range("2025-01-01", periods=n)
         closes = [100.0] * n
-        # spy_5d: close[-6]=100, close[-1]=103 → +3%; spy_1d: close[-2]=102 → +0.98%
         closes[-6] = 100.0
         closes[-5] = 100.5
         closes[-4] = 101.0
@@ -131,16 +124,27 @@ class TestComputeRegime(unittest.TestCase):
         closes[-1] = 103.0
         spy = pd.DataFrame({"Close": closes}, index=idx)
         as_of = str(idx[-1].date())
-        result = _compute_regime({"SPY": spy}, as_of)
-        self.assertEqual(result["regime"], "BULL_TRENDING")
+        result, _ = _compute_regime({"SPY": spy}, as_of)
+        # Without MA200 (< 200 bars), BULL_TREND requires above MA200 → falls to NEUTRAL_CHOP
+        self.assertEqual(result["regime"], "NEUTRAL_CHOP")
 
     def test_compute_regime_exception_returns_unknown(self):
-        """Lines 100-102: invalid as_of causes Timestamp error → returns UNKNOWN."""
+        """Invalid as_of causes Timestamp error → returns UNKNOWN."""
         from backtest.replay import _compute_regime
 
         spy = pd.DataFrame({"Close": [100.0]}, index=pd.bdate_range("2025-01-01", periods=1))
-        result = _compute_regime({"SPY": spy}, "not-a-valid-date")
+        result, _ = _compute_regime({"SPY": spy}, "not-a-valid-date")
         self.assertEqual(result["regime"], "UNKNOWN")
+
+    def test_returns_tuple_of_dict_and_state(self):
+        """_compute_regime returns (dict, PreviousRegimeState | None) for hysteresis threading."""
+        from backtest.replay import _compute_regime
+
+        preloaded = {"SPY": _make_preloaded_df(n=50, base=400.0)}
+        as_of = str(preloaded["SPY"].index[-1].date())
+        out = _compute_regime(preloaded, as_of)
+        self.assertIsInstance(out, tuple)
+        self.assertEqual(len(out), 2)
 
 
 class TestBuildPreloaded(unittest.TestCase):
@@ -406,7 +410,7 @@ class TestRunHistoricalReplayLive(unittest.TestCase):
             "is_bearish": True,
             "spy_change_pct": -3.0,
             "spy_5d_pct": -5.0,
-            "regime": "BEAR_DAY",
+            "regime": "STRESS_RISK_OFF",
         }
         decisions = {
             "buy_candidates": [{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}],
@@ -416,7 +420,7 @@ class TestRunHistoricalReplayLive(unittest.TestCase):
         with (
             patch("backtest.replay._build_preloaded", return_value=self._minimal_preloaded()),
             patch("backtest.replay.market_data.get_market_snapshots", return_value=snap),
-            patch("backtest.replay._compute_regime", return_value=bear_regime),
+            patch("backtest.replay._compute_regime", return_value=(bear_regime, None)),
             patch("execution.stock_scanner.prefilter_candidates", side_effect=lambda x: x),
             patch("analysis.ai_analyst.get_trading_decisions", return_value=decisions),
         ):

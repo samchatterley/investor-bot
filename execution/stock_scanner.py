@@ -3,6 +3,8 @@ import logging
 import yfinance as yf
 
 from config import MIN_VOLUME
+from data.market_regime import fetch_spy_vix_history, load_regime_state, save_regime_state
+from data.market_regime import get_market_regime as _compute_regime
 from signals.evaluator import REGIME_BLOCKED, evaluate_signals
 
 logger = logging.getLogger(__name__)
@@ -150,40 +152,23 @@ EXTENDED_UNIVERSE = list(
 
 
 def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> dict:
-    """
-    4-state regime: BULL_TRENDING, CHOPPY, HIGH_VOL, BEAR_DAY.
-    Each state guides which signal types Claude should favour.
+    """5-state regime classifier backed by data.market_regime.
+
+    threshold_pct and vix are accepted for backward-compatible call sites
+    but the shared module uses its own RegimeThresholds defaults.
+    Returns a backward-compatible dict (is_bearish, spy_change_pct, spy_5d_pct, regime).
     """
     try:
-        hist = yf.Ticker("SPY").history(period="20d")
-        if len(hist) < 6:
-            return {
-                "is_bearish": False,
-                "spy_change_pct": 0.0,
-                "spy_5d_pct": 0.0,
-                "regime": "UNKNOWN",
-            }
-
-        spy_1d = float((hist["Close"].iloc[-1] / hist["Close"].iloc[-2] - 1) * 100)
-        spy_5d = float((hist["Close"].iloc[-1] / hist["Close"].iloc[-6] - 1) * 100)
-        is_bearish = bool(spy_1d <= threshold_pct)
-
-        if is_bearish:
-            regime = "BEAR_DAY"
-        elif vix is not None and vix > 25 and spy_5d < -3:
-            regime = "HIGH_VOL"
-        elif spy_5d > 2 and spy_1d > 0:
-            regime = "BULL_TRENDING"
-        else:
-            regime = "CHOPPY"
-
-        logger.info(f"SPY 1d: {spy_1d:+.2f}%  5d: {spy_5d:+.2f}%  Regime: {regime}")
-        return {
-            "is_bearish": is_bearish,
-            "spy_change_pct": round(spy_1d, 2),
-            "spy_5d_pct": round(spy_5d, 2),
-            "regime": regime,
-        }
+        spy_df, vix_df = fetch_spy_vix_history()
+        previous = load_regime_state()
+        snapshot = _compute_regime(spy_df, vix_df, previous=previous)
+        save_regime_state(snapshot)
+        result = snapshot.to_dict()
+        logger.info(
+            f"SPY 1d: {result['spy_change_pct']:+.2f}%  5d: {result['spy_5d_pct']:+.2f}%"
+            f"  Regime: {result['regime']}  ({result['data_quality']})"
+        )
+        return result
     except Exception as e:
         logger.error(f"Market regime check failed: {e}")
         return {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"}

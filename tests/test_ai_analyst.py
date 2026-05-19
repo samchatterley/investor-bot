@@ -54,15 +54,15 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("99000", result)
 
     def test_bear_day_warning_when_is_bearish(self):
-        regime = {"regime": "BEAR_DAY", "spy_change_pct": -2.5, "is_bearish": True}
+        regime = {"regime": "STRESS_RISK_OFF", "spy_change_pct": -2.5, "is_bearish": True}
         result = self._build(market_regime=regime)
-        self.assertIn("BEAR DAY", result)
+        self.assertIn("STRESS_RISK_OFF", result)
         self.assertIn("NO new BUYs", result)
 
     def test_regime_block_appears_when_not_bearish(self):
-        regime = {"regime": "BULL_TRENDING", "spy_change_pct": 1.2, "is_bearish": False}
+        regime = {"regime": "BULL_TREND", "spy_change_pct": 1.2, "is_bearish": False}
         result = self._build(market_regime=regime)
-        self.assertIn("BULL_TRENDING", result)
+        self.assertIn("BULL_TREND", result)
 
     def test_vix_block_appears(self):
         result = self._build(vix=22.5)

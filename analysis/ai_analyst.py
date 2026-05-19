@@ -176,11 +176,18 @@ _DECISION_TOOL = {
 
 
 _REGIME_ADVICE = {
+    # New 5-state names
+    "STRESS_RISK_OFF": "STRESS REGIME — multi-factor crisis signal active. NO new BUYs. Focus exclusively on protecting open positions.",
+    "HIGH_VOL_DOWNTREND": "High volatility + price weakness — only the highest-conviction setups (confidence already raised mechanically). Reduce size; avoid momentum and breakout entries.",
+    "DEFENSIVE_DOWNTREND": "Steady market weakness — be cautious with trend entries. Mean-reversion setups are preferred. Confidence threshold is raised mechanically.",
+    "BULL_TREND": "Confirmed uptrend above MA200 — favour momentum and trend-continuation setups at normal sizing.",
+    "NEUTRAL_CHOP": "Directionless market — mean-reversion setups are preferred. Trend-following and momentum signals need stronger conviction; confidence threshold is already raised mechanically.",
+    "UNKNOWN": "",
+    # Legacy names (backward compat — callers using old regime strings)
     "BULL_TRENDING": "Market is trending upward — favour momentum and trend-continuation setups.",
     "CHOPPY": "Market is choppy with no clear direction — mean-reversion setups are preferred. Other signals (momentum, breakout) need strong conviction to justify entry; the confidence threshold is already raised mechanically, so trust your score if it genuinely reaches it.",
     "HIGH_VOL": "High volatility with a weakening market — only the highest-conviction setups. Be conservative with confidence scores.",
     "BEAR_DAY": "BEAR DAY — SPY down sharply. NO new BUYs.",
-    "UNKNOWN": "",
 }
 
 
@@ -204,18 +211,27 @@ def build_prompt(
     lessons: Sequence[str | dict] | None = None,
 ) -> str:
 
-    # Market regime (4-state)
+    # Market regime (5-state)
     regime_block = ""
     if market_regime:
         regime_name = market_regime.get("regime", "UNKNOWN")
         spy_1d = market_regime.get("spy_change_pct", 0.0)
         spy_5d = market_regime.get("spy_5d_pct")
         advice = _REGIME_ADVICE.get(regime_name, "")
+        data_quality = market_regime.get("data_quality", "")
+        reasons = market_regime.get("reasons", [])
+        quality_note = f" [{data_quality}]" if data_quality and data_quality != "full" else ""
         if market_regime.get("is_bearish"):
-            regime_block = f"⚠️  BEAR DAY: SPY {spy_1d:+.1f}% today. NO new BUYs.\n"
+            reasons_str = f"  ({'; '.join(reasons[:2])})" if reasons else ""
+            regime_block = (
+                f"⚠️  REGIME: {regime_name}{quality_note} — SPY {spy_1d:+.1f}% today."
+                f"  NO new BUYs.{reasons_str}\n"
+            )
         else:
             week_str = f", {spy_5d:+.1f}% this week" if spy_5d is not None else ""
-            regime_block = f"MARKET REGIME: {regime_name} (SPY {spy_1d:+.1f}% today{week_str})\n"
+            regime_block = (
+                f"MARKET REGIME: {regime_name}{quality_note} (SPY {spy_1d:+.1f}% today{week_str})\n"
+            )
             if advice:
                 regime_block += f"→ {advice}\n"
 

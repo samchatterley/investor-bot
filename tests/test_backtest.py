@@ -2954,57 +2954,60 @@ class TestFetchIntradayBarsImportError(unittest.TestCase):
             _cfg_real.ALPACA_SECRET_KEY = orig_secret
 
 
-class TestComputeRegimesAllBranches(unittest.TestCase):
-    """Lines 385-401: all four regime branches."""
+class TestComputeRegimeSeriesAllBranches(unittest.TestCase):
+    """Exercise all 5-state regime branches via the shared compute_regime_series."""
 
-    def _spy_df(self, spy_1d: float, spy_5d: float) -> pd.DataFrame:
-        """Build a minimal SPY indicator DataFrame that produces the given returns."""
-        idx = pd.bdate_range("2025-03-03", periods=2)
-        # ret_1d: close[1]/close[0] - 1 = spy_1d/100
-        close0 = 100.0
-        close1 = close0 * (1 + spy_1d / 100)
-        df = pd.DataFrame({"Close": [close0, close1], "ret_5d": [0.0, spy_5d]}, index=idx)
+    def _make_spy(self, closes: list[float]) -> pd.DataFrame:
+        idx = pd.bdate_range("2025-01-01", periods=len(closes))
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        df.index = pd.DatetimeIndex(df.index).tz_localize(None)
         return df
 
-    def test_bear_day_regime(self):
-        """Line 394: spy_1d <= -1.5 → BEAR_DAY."""
-        from backtest.engine import _compute_regimes
+    def _make_vix(self, closes: list[float]) -> pd.DataFrame:
+        idx = pd.bdate_range("2025-01-01", periods=len(closes))
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        df.index = pd.DatetimeIndex(df.index).tz_localize(None)
+        return df
 
-        spy = self._spy_df(spy_1d=-2.0, spy_5d=-1.0)
-        vix_spikes = {}
-        regimes = _compute_regimes(spy, vix_spikes)
-        date_str = spy.index[1].strftime("%Y-%m-%d")
-        self.assertEqual(regimes[date_str], "BEAR_DAY")
+    def test_neutral_chop_regime(self):
+        from data.market_regime import compute_regime_series
 
-    def test_high_vol_regime(self):
-        """Line 393: vix_spike=True and spy_5d < -3 → HIGH_VOL."""
-        from backtest.engine import _compute_regimes
+        spy = self._make_spy([100.0] * 10)
+        dates = [ts.strftime("%Y-%m-%d") for ts in spy.index[-3:]]
+        result = compute_regime_series(spy, None, dates)
+        # Flat SPY → no directional signal → NEUTRAL_CHOP
+        for v in result.values():
+            self.assertEqual(v, "NEUTRAL_CHOP")
 
-        spy = self._spy_df(spy_1d=0.0, spy_5d=-4.0)  # not a BEAR_DAY (spy_1d > -1.5)
-        vix_spikes = {spy.index[1].strftime("%Y-%m-%d"): True}
-        regimes = _compute_regimes(spy, vix_spikes)
-        date_str = spy.index[1].strftime("%Y-%m-%d")
-        self.assertEqual(regimes[date_str], "HIGH_VOL")
+    def test_defensive_downtrend_regime(self):
+        from data.market_regime import compute_regime_series
 
-    def test_bull_trending_regime(self):
-        """Line 395: spy_5d > 2 and spy_1d > 0 → BULL_TRENDING."""
-        from backtest.engine import _compute_regimes
+        # spy_5d between -5% and -1.5% → DEFENSIVE_DOWNTREND
+        closes = [100.0] * 5 + [97.5] * 5  # -2.5% over 5 days
+        spy = self._make_spy(closes)
+        dates = [spy.index[-1].strftime("%Y-%m-%d")]
+        result = compute_regime_series(spy, None, dates)
+        self.assertEqual(result[dates[0]], "DEFENSIVE_DOWNTREND")
 
-        spy = self._spy_df(spy_1d=0.5, spy_5d=3.0)
-        vix_spikes = {}
-        regimes = _compute_regimes(spy, vix_spikes)
-        date_str = spy.index[1].strftime("%Y-%m-%d")
-        self.assertEqual(regimes[date_str], "BULL_TRENDING")
+    def test_high_vol_downtrend_regime(self):
+        from data.market_regime import compute_regime_series
 
-    def test_choppy_regime(self):
-        """Line 397: none of the above → CHOPPY."""
-        from backtest.engine import _compute_regimes
+        closes = [100.0] * 5 + [96.0] * 5  # spy_5d ≈ -4%
+        spy = self._make_spy(closes)
+        vix = self._make_vix([26.0] * 10)
+        dates = [spy.index[-1].strftime("%Y-%m-%d")]
+        result = compute_regime_series(spy, vix, dates)
+        self.assertEqual(result[dates[0]], "HIGH_VOL_DOWNTREND")
 
-        spy = self._spy_df(spy_1d=0.1, spy_5d=0.5)  # mild positive, not bull-trending
-        vix_spikes = {}
-        regimes = _compute_regimes(spy, vix_spikes)
-        date_str = spy.index[1].strftime("%Y-%m-%d")
-        self.assertEqual(regimes[date_str], "CHOPPY")
+    def test_returns_valid_regime_strings(self):
+        from data.market_regime import MarketRegime, compute_regime_series
+
+        spy = self._make_spy([100.0] * 10)
+        dates = [ts.strftime("%Y-%m-%d") for ts in spy.index[-5:]]
+        result = compute_regime_series(spy, None, dates)
+        valid = {r.value for r in MarketRegime}
+        for v in result.values():
+            self.assertIn(v, valid)
 
 
 class TestBootstrapCellCiRngFailure(unittest.TestCase):
@@ -3663,6 +3666,31 @@ class TestRunHoldoutEvaluationNewPaths(unittest.TestCase):
                     frozen_params={}, version="vTEST_SPY", symbols=["AAPL"]
                 )
         self.assertIn("total_trades", result)
+
+    def test_vix_exception_in_holdout(self):
+        """Lines 2132-2133: VIX download raises → warning logged, continues."""
+        import tempfile
+
+        fake_raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return fake_raw
+            raise RuntimeError("VIX unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "holdout_log.jsonl")
+            with (
+                patch("backtest.engine.yf.download", side_effect=_dl),
+                patch("backtest.engine.LOG_DIR", tmp),
+                patch("backtest.engine._HOLDOUT_LOG", log_path),
+            ):
+                result = run_holdout_evaluation(
+                    frozen_params={}, version="vTEST_VIX_EXC", symbols=["AAPL"]
+                )
+        self.assertIsInstance(result, dict)
 
 
 class TestBackwardEliminationSteps(unittest.TestCase):

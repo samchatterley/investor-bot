@@ -49,6 +49,7 @@ from risk import (
     position_sizer,
     risk_manager,
 )
+from risk.regime_policy import get_regime_policy
 from risk.risk_config import RiskConfig
 from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
@@ -1187,17 +1188,9 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
 
         if slots > 0:
             regime_name = regime.get("regime", "UNKNOWN")
-            # Mechanical regime gates — tighter than verbal prompt advice alone
-            if regime_name == "CHOPPY":
-                regime_max_orders = config.MAX_ORDERS_PER_RUN
-                regime_conf_bump = 1
-            elif regime_name == "HIGH_VOL":
-                regime_max_orders = 2
-                regime_conf_bump = 1
-            else:
-                regime_max_orders = config.MAX_ORDERS_PER_RUN
-                regime_conf_bump = 0
-            effective_max_orders = min(config.MAX_ORDERS_PER_RUN, regime_max_orders)
+            regime_policy = get_regime_policy(regime_name)
+            effective_max_orders = min(config.MAX_ORDERS_PER_RUN, regime_policy.max_orders_per_run)
+            regime_conf_bump = regime_policy.min_confidence_bump
 
             min_confidence = (
                 config.MIN_CONFIDENCE + regime_conf_bump + (1 if vix and vix > 25 else 0)

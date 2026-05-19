@@ -13,11 +13,6 @@ from execution.stock_scanner import (
 )
 
 
-def _spy_history(prices: list[float]) -> pd.DataFrame:
-    """Build a minimal history DataFrame from a list of close prices."""
-    return pd.DataFrame({"Close": prices, "Volume": [1_000_000] * len(prices)})
-
-
 def _snap(**kwargs):
     defaults = {
         "symbol": "TEST",
@@ -43,61 +38,92 @@ def _snap(**kwargs):
 
 
 class TestGetMarketRegime(unittest.TestCase):
-    def _mock_spy(self, prices):
-        mock_ticker = MagicMock()
-        mock_ticker.history.return_value = _spy_history(prices)
-        return patch("execution.stock_scanner.yf.Ticker", return_value=mock_ticker)
+    """Tests for the thin wrapper in execution/stock_scanner.py.
 
-    def test_bull_trending_regime(self):
-        # 5-day gain > 2%, today positive
-        prices = [100, 101, 102, 103, 104, 106]
-        with self._mock_spy(prices):
+    The wrapper calls fetch_spy_vix_history, load_regime_state, the shared
+    classify function, and save_regime_state.  We mock those four seams so
+    tests don't need network access or a live yfinance install.
+    """
+
+    def _mock_shared(self, regime_name: str, is_bearish: bool = False):
+        """Return a context manager that injects a pre-built snapshot."""
+        from data.market_regime import (
+            MarketRegime,
+            MarketRegimeSnapshot,
+            RegimeFeatures,
+        )
+
+        idx = pd.bdate_range("2024-01-01", periods=10)
+        spy_df = pd.DataFrame({"Close": [400.0] * 10}, index=idx)
+        vix_df = pd.DataFrame({"Close": [18.0] * 10}, index=idx)
+        features = RegimeFeatures(
+            spy_ret_1d=1.0,
+            spy_ret_5d=3.0,
+            spy_ret_20d=5.0,
+            spy_above_ma200=True,
+            spy_drawdown_pct=-1.0,
+            vix=18.0,
+            vix_ma20=17.0,
+            vix_vs_ma=1.06,
+            vix_5d_change=-2.0,
+            data_quality="full",
+        )
+        snapshot = MarketRegimeSnapshot(
+            regime=MarketRegime(regime_name),
+            reasons=(f"test {regime_name}",),
+            features=features,
+        )
+        import contextlib
+
+        return contextlib.ExitStack(), [
+            patch("execution.stock_scanner.fetch_spy_vix_history", return_value=(spy_df, vix_df)),
+            patch("execution.stock_scanner.load_regime_state", return_value=None),
+            patch("execution.stock_scanner._compute_regime", return_value=snapshot),
+            patch("execution.stock_scanner.save_regime_state"),
+        ]
+
+    def _with_regime(self, regime_name: str):
+        _, patches = self._mock_shared(regime_name)
+        return patches
+
+    def test_bull_trend_regime(self):
+        patchers = self._with_regime("BULL_TREND")
+        with patchers[0], patchers[1], patchers[2], patchers[3]:
             result = get_market_regime(threshold_pct=-1.5)
-        self.assertEqual(result["regime"], "BULL_TRENDING")
+        self.assertEqual(result["regime"], "BULL_TREND")
         self.assertFalse(result["is_bearish"])
 
-    def test_bear_day_regime(self):
-        # Today drops > 1.5%
-        prices = [100, 100, 100, 100, 100, 98]
-        with self._mock_spy(prices):
+    def test_stress_regime_sets_is_bearish(self):
+        patchers = self._with_regime("STRESS_RISK_OFF")
+        with patchers[0], patchers[1], patchers[2], patchers[3]:
             result = get_market_regime(threshold_pct=-1.5)
-        self.assertEqual(result["regime"], "BEAR_DAY")
+        self.assertEqual(result["regime"], "STRESS_RISK_OFF")
         self.assertTrue(result["is_bearish"])
 
-    def test_high_vol_regime(self):
-        # VIX > 25, 5-day return < -3%
-        prices = [100, 100, 100, 100, 100, 96]
-        # spy_1d = -4% → triggers BEAR_DAY first; we need 1d flat but 5d down
-        prices = [100, 96, 96, 96, 96, 96]
-        with self._mock_spy(prices):
+    def test_high_vol_downtrend_regime(self):
+        patchers = self._with_regime("HIGH_VOL_DOWNTREND")
+        with patchers[0], patchers[1], patchers[2], patchers[3]:
             result = get_market_regime(threshold_pct=-1.5, vix=30.0)
-        # 1d = 0%, 5d ≈ -4%, VIX 30 → HIGH_VOL
-        self.assertEqual(result["regime"], "HIGH_VOL")
+        self.assertEqual(result["regime"], "HIGH_VOL_DOWNTREND")
 
-    def test_choppy_regime(self):
-        prices = [100, 100, 100, 100, 100, 100]
-        with self._mock_spy(prices):
+    def test_neutral_chop_regime(self):
+        patchers = self._with_regime("NEUTRAL_CHOP")
+        with patchers[0], patchers[1], patchers[2], patchers[3]:
             result = get_market_regime(threshold_pct=-1.5)
-        self.assertEqual(result["regime"], "CHOPPY")
-
-    def test_insufficient_history_returns_unknown(self):
-        mock_ticker = MagicMock()
-        mock_ticker.history.return_value = _spy_history([100, 101])
-        with patch("execution.stock_scanner.yf.Ticker", return_value=mock_ticker):
-            result = get_market_regime()
-        self.assertEqual(result["regime"], "UNKNOWN")
+        self.assertEqual(result["regime"], "NEUTRAL_CHOP")
 
     def test_exception_returns_unknown(self):
-        with patch("execution.stock_scanner.yf.Ticker", side_effect=Exception("network")):
+        with patch(
+            "execution.stock_scanner.fetch_spy_vix_history",
+            side_effect=Exception("network"),
+        ):
             result = get_market_regime()
         self.assertEqual(result["regime"], "UNKNOWN")
         self.assertFalse(result["is_bearish"])
 
     def test_result_has_required_keys(self):
-        prices = [100] * 6
-        mock_ticker = MagicMock()
-        mock_ticker.history.return_value = _spy_history(prices)
-        with patch("execution.stock_scanner.yf.Ticker", return_value=mock_ticker):
+        patchers = self._with_regime("NEUTRAL_CHOP")
+        with patchers[0], patchers[1], patchers[2], patchers[3]:
             result = get_market_regime()
         for key in ("is_bearish", "spy_change_pct", "spy_5d_pct", "regime"):
             self.assertIn(key, result)

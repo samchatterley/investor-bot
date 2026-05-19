@@ -15,6 +15,12 @@ import yfinance as yf
 import config
 from analysis import ai_analyst
 from data import market_data
+from data.market_regime import (
+    PreviousRegimeState,
+)
+from data.market_regime import (
+    get_market_regime as _classify_regime,
+)
 from execution import stock_scanner
 from risk import macro_calendar
 
@@ -55,51 +61,40 @@ def _build_preloaded(
     return preloaded
 
 
-def _compute_regime(preloaded: dict[str, pd.DataFrame], as_of: str) -> dict:
-    """Derive the 4-state market regime from preloaded SPY data up to as_of."""
-    spy_df = preloaded.get("SPY")
-    if spy_df is None:
-        return {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"}
+def _compute_regime(
+    preloaded: dict[str, pd.DataFrame],
+    as_of: str,
+    previous: PreviousRegimeState | None = None,
+) -> tuple[dict, PreviousRegimeState | None]:
+    """Derive the 5-state market regime from preloaded SPY/VIX data up to as_of.
+
+    Returns (regime_dict, next_previous_state) so the caller can thread
+    hysteresis state through sequential simulation days.
+    """
+    spy_raw = preloaded.get("SPY")
+    if spy_raw is None:
+        return (
+            {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"},
+            previous,
+        )
     try:
-        sliced = spy_df[spy_df.index <= pd.Timestamp(as_of)]["Close"].dropna()
-        if len(sliced) < 6:
-            return {
-                "is_bearish": False,
-                "spy_change_pct": 0.0,
-                "spy_5d_pct": 0.0,
-                "regime": "UNKNOWN",
-            }
+        spy_df = pd.DataFrame({"Close": spy_raw["Close"].astype(float)}).dropna()
+        spy_df.index = pd.DatetimeIndex(spy_df.index).tz_localize(None)
 
-        spy_1d = float((sliced.iloc[-1] / sliced.iloc[-2] - 1) * 100)
-        spy_5d = float((sliced.iloc[-1] / sliced.iloc[-6] - 1) * 100)
+        vix_raw = preloaded.get("^VIX")
+        vix_df: pd.DataFrame | None = None
+        if vix_raw is not None:
+            vix_df = pd.DataFrame({"Close": vix_raw["Close"].astype(float)}).dropna()
+            vix_df.index = pd.DatetimeIndex(vix_df.index).tz_localize(None)
 
-        vix_df = preloaded.get("^VIX")
-        vix: float | None = None
-        if vix_df is not None:
-            vix_sliced = vix_df[vix_df.index <= pd.Timestamp(as_of)]["Close"].dropna()
-            if not vix_sliced.empty:  # pragma: no branch
-                vix = float(vix_sliced.iloc[-1])
-
-        is_bearish = spy_1d <= config.BEAR_MARKET_SPY_THRESHOLD
-        if is_bearish:
-            regime = "BEAR_DAY"
-        elif vix is not None and vix > 25 and spy_5d < -3:
-            regime = "HIGH_VOL"
-        elif spy_5d > 2 and spy_1d > 0:
-            regime = "BULL_TRENDING"
-        else:
-            regime = "CHOPPY"
-
-        return {
-            "is_bearish": is_bearish,
-            "spy_change_pct": round(spy_1d, 2),
-            "spy_5d_pct": round(spy_5d, 2),
-            "regime": regime,
-            "vix": vix,
-        }
+        snapshot = _classify_regime(spy_df, vix_df, as_of=as_of, previous=previous)
+        return snapshot.to_dict(), snapshot.to_previous()
     except Exception as e:
         logger.error(f"replay: regime computation failed for {as_of}: {e}")
-        return {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"}
+        return (
+            {"is_bearish": False, "spy_change_pct": 0.0, "spy_5d_pct": 0.0, "regime": "UNKNOWN"},
+            previous,
+        )
 
 
 def run_historical_replay(
@@ -155,6 +150,7 @@ def run_historical_replay(
     positions: dict[str, dict] = {}  # symbol -> {shares, entry_price, entry_date}
     daily_records: list[dict] = []
     all_trades: list[dict] = []
+    _regime_previous: PreviousRegimeState | None = None  # hysteresis state across days
 
     slippage_factor = 1.0 + (config.SLIPPAGE_BPS + config.SPREAD_BPS / 2) / 10_000
     sell_factor = 1.0 - (config.SLIPPAGE_BPS + config.SPREAD_BPS / 2) / 10_000
@@ -174,7 +170,7 @@ def run_historical_replay(
             continue
 
         # ── Regime ───────────────────────────────────────────────────────────
-        regime = _compute_regime(preloaded, as_of)
+        regime, _regime_previous = _compute_regime(preloaded, as_of, _regime_previous)
 
         # ── Pre-filter ────────────────────────────────────────────────────────
         held_syms = set(positions.keys())

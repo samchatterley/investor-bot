@@ -49,6 +49,7 @@ from config import (
     SPREAD_BPS,
     STOCK_UNIVERSE,
 )
+from data.market_regime import compute_regime_series
 from data.universe_history import get_universe_for_date
 from risk.risk_config import RiskConfig
 from signals.evaluator import (
@@ -377,28 +378,18 @@ def _fetch_intraday_bars(
     return result
 
 
-def _compute_regimes(
+def _build_regime_map(
     spy_indicators: pd.DataFrame,
-    vix_spike_by_date: dict[str, bool],
+    vix_df_for_regime: pd.DataFrame | None,
 ) -> dict[str, str]:
-    """Map each date to a market regime string using SPY returns and VIX spike flag."""
-    spy_close = spy_indicators["Close"]
-    spy_ret_1d = (spy_close / spy_close.shift(1) - 1) * 100
-    regimes: dict[str, str] = {}
-    for ts in spy_indicators.index:
-        date_str = ts.strftime("%Y-%m-%d")
-        spy_1d = float(spy_ret_1d.get(ts, 0) or 0)
-        spy_5d = float(spy_indicators.loc[ts].get("ret_5d", 0) or 0)
-        vix_spike = vix_spike_by_date.get(date_str, False)
-        if spy_1d <= -1.5:
-            regimes[date_str] = "BEAR_DAY"
-        elif vix_spike and spy_5d < -3:
-            regimes[date_str] = "HIGH_VOL"
-        elif spy_5d > 2 and spy_1d > 0:
-            regimes[date_str] = "BULL_TRENDING"
-        else:
-            regimes[date_str] = "CHOPPY"
-    return regimes
+    """Build a {date_str: regime_name} map using the shared 5-state classifier."""
+    spy_close = pd.DataFrame({"Close": spy_indicators["Close"].astype(float)}).dropna()
+    spy_close.index = pd.DatetimeIndex(spy_close.index).tz_localize(None)
+    trading_dates = [ts.strftime("%Y-%m-%d") for ts in spy_indicators.index]
+    result = compute_regime_series(spy_close, vix_df_for_regime, trading_dates)
+    stress_days = sum(1 for r in result.values() if r == "STRESS_RISK_OFF")
+    logger.info(f"Regime map computed — {stress_days} STRESS_RISK_OFF sessions")
+    return result
 
 
 def _binomial_p_value(wins: int, n: int, p0: float = 0.5) -> float:
@@ -1024,6 +1015,7 @@ def run_backtest(
 
     # VIX data for fear-reversion signal and regime detection
     vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_for_regime: pd.DataFrame | None = None
     try:
         vix_raw = yf.download(
             "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
@@ -1032,6 +1024,8 @@ def run_backtest(
             vix_close = vix_raw["Close"]
             if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
                 vix_close = vix_close.iloc[:, 0]
+            _vix_df_for_regime = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_for_regime.index = pd.DatetimeIndex(_vix_df_for_regime.index).tz_localize(None)
             vix_ma20 = vix_close.rolling(20).mean()
             vix_spike_s = vix_close > vix_ma20 * 1.3
             vix_spike_by_date = {
@@ -1041,12 +1035,17 @@ def run_backtest(
     except Exception as exc:
         logger.warning(f"VIX fetch failed — vix_fear_reversion and regime filter disabled: {exc}")
 
-    # Regime map for trend-signal gating
+    # Regime map for trend-signal gating (shared module with hysteresis)
     regime_by_date: dict[str, str] = {}
     if spy_indicators is not None and "Close" in spy_indicators.columns:
-        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
-        bear_days = sum(1 for r in regime_by_date.values() if r == "BEAR_DAY")
-        logger.info(f"Regime map computed — {bear_days} BEAR_DAY sessions")
+        _spy_df_for_regime = pd.DataFrame({"Close": spy_indicators["Close"].astype(float)}).dropna()
+        _spy_df_for_regime.index = pd.DatetimeIndex(_spy_df_for_regime.index).tz_localize(None)
+        _trading_dates = [ts.strftime("%Y-%m-%d") for ts in spy_indicators.index]
+        regime_by_date = compute_regime_series(
+            _spy_df_for_regime, _vix_df_for_regime, _trading_dates
+        )
+        stress_days = sum(1 for r in regime_by_date.values() if r == "STRESS_RISK_OFF")
+        logger.info(f"Regime map computed — {stress_days} STRESS_RISK_OFF sessions")
 
     # Alpaca intraday bars for vwap_reclaim / orb_breakout / intraday_momentum
     intraday_data: dict | None = None
@@ -1414,6 +1413,7 @@ def run_ablation(
             logger.warning(f"SPY fetch failed: {exc}")
 
     vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_ablation: pd.DataFrame | None = None
     try:
         vix_raw = yf.download(
             "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
@@ -1422,6 +1422,8 @@ def run_ablation(
             vix_close = vix_raw["Close"]
             if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
                 vix_close = vix_close.iloc[:, 0]
+            _vix_df_ablation = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_ablation.index = pd.DatetimeIndex(_vix_df_ablation.index).tz_localize(None)
             vix_ma20 = vix_close.rolling(20).mean()
             vix_spike_s = vix_close > vix_ma20 * 1.3
             vix_spike_by_date = {
@@ -1432,7 +1434,7 @@ def run_ablation(
 
     regime_by_date: dict[str, str] = {}
     if spy_indicators is not None and "Close" in spy_indicators.columns:
-        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_ablation)
 
     earnings_history: dict[str, list[dict]] | None = None
     insider_history: dict[str, list[dict]] | None = None
@@ -1570,6 +1572,7 @@ def run_backward_elimination(
             logger.warning(f"SPY fetch failed: {exc}")
 
     vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_belim: pd.DataFrame | None = None
     try:
         vix_raw = yf.download(
             "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
@@ -1578,6 +1581,8 @@ def run_backward_elimination(
             vix_close = vix_raw["Close"]
             if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
                 vix_close = vix_close.iloc[:, 0]
+            _vix_df_belim = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_belim.index = pd.DatetimeIndex(_vix_df_belim.index).tz_localize(None)
             vix_ma20 = vix_close.rolling(20).mean()
             vix_spike_s = vix_close > vix_ma20 * 1.3
             vix_spike_by_date = {
@@ -1588,7 +1593,7 @@ def run_backward_elimination(
 
     regime_by_date: dict[str, str] = {}
     if spy_indicators is not None and "Close" in spy_indicators.columns:
-        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_belim)
 
     earnings_history: dict[str, list[dict]] | None = None
     insider_history: dict[str, list[dict]] | None = None
@@ -1805,6 +1810,7 @@ def run_signal_analysis(
             logger.warning(f"SPY fetch failed: {exc}")
 
     vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_signal: pd.DataFrame | None = None
     try:
         vix_raw = yf.download(
             "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
@@ -1813,6 +1819,8 @@ def run_signal_analysis(
             vix_close = vix_raw["Close"]
             if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
                 vix_close = vix_close.iloc[:, 0]
+            _vix_df_signal = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_signal.index = pd.DatetimeIndex(_vix_df_signal.index).tz_localize(None)
             vix_ma20 = vix_close.rolling(20).mean()
             vix_spike_s = vix_close > vix_ma20 * 1.3
             vix_spike_by_date = {
@@ -1823,7 +1831,7 @@ def run_signal_analysis(
 
     regime_by_date: dict[str, str] = {}
     if spy_indicators is not None and "Close" in spy_indicators.columns:
-        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_signal)
 
     earnings_history: dict[str, list[dict]] | None = None
     insider_history: dict[str, list[dict]] | None = None
@@ -2105,9 +2113,28 @@ def run_holdout_evaluation(
 
     spy_indicators = indicators.get("SPY")
     vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_holdout: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=holdout_end_str, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_holdout = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_holdout.index = pd.DatetimeIndex(_vix_df_holdout.index).tz_localize(None)
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
     regime_by_date: dict[str, str] = {}
     if spy_indicators is not None and "Close" in spy_indicators.columns:
-        regime_by_date = _compute_regimes(spy_indicators, vix_spike_by_date)
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_holdout)
 
     results = _run_simulation(
         indicators,
