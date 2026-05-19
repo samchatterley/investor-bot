@@ -115,6 +115,14 @@ def save_daily_run(
         except (json.JSONDecodeError, KeyError):
             pass  # corrupt existing file — overwrite silently
 
+    # Anchor daily_pnl to the start-of-day baseline so all mode-suffixed runs
+    # (open_sells, midday, close) show the full-day gain/loss rather than the
+    # within-run change.  For the open run, baseline == account_before so the
+    # result is identical to the original calculation.
+    baseline = load_daily_baseline()
+    if baseline is not None:
+        record["daily_pnl"] = account_after["portfolio_value"] - baseline
+
     with open(path, "w") as f:
         json.dump(record, f, indent=2)
 

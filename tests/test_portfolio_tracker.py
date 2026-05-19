@@ -24,9 +24,15 @@ class PortfolioTrackerBase(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.log_patcher = patch("utils.portfolio_tracker.LOG_DIR", self.tmpdir)
+        self.baseline_path_patcher = patch(
+            "utils.portfolio_tracker._BASELINE_PATH",
+            os.path.join(self.tmpdir, "daily_baseline.json"),
+        )
         self.log_patcher.start()
+        self.baseline_path_patcher.start()
 
     def tearDown(self):
+        self.baseline_path_patcher.stop()
         self.log_patcher.stop()
         shutil.rmtree(self.tmpdir)
 
@@ -58,9 +64,21 @@ class TestSaveAndLoad(PortfolioTrackerBase):
         self.assertEqual(len(records), 0)
 
     def test_daily_pnl_stored_correctly(self):
+        # No baseline saved → P&L = account_after − account_before
         save_daily_run("2026-01-15", _account(100_000), _account(101_500), _ai(), [], [])
         records = load_history()
         self.assertAlmostEqual(records[0]["daily_pnl"], 1_500.0)
+
+    def test_daily_pnl_anchors_to_baseline_when_available(self):
+        # Baseline saved at open → all subsequent runs show whole-day P&L
+        from utils.portfolio_tracker import save_daily_baseline
+
+        save_daily_baseline(100_000.0)
+        # Simulate a midday run where account_before reflects intraday drift
+        save_daily_run("2026-01-15-midday", _account(100_200), _account(100_800), _ai(), [], [])
+        records = load_history()
+        # P&L should be anchored to baseline (100_000), not to account_before (100_200)
+        self.assertAlmostEqual(records[0]["daily_pnl"], 800.0)
 
     def test_load_ignores_json_missing_required_keys(self):
         # Branch 316->312: valid JSON but missing "date" or "account_after" → skipped
