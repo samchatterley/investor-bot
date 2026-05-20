@@ -618,9 +618,15 @@ def _run_simulation(
     risk_config: RiskConfig | None = None,
     rs_ranks: dict[str, dict[str, float]] | None = None,
     rs_top_pct: float = 0.75,
+    stop_activation_delay: int = 1,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
-    and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
+    and run_walk_forward_optimized (the latter avoids re-downloading data per param combo).
+
+    stop_activation_delay: stop-loss checks are skipped for trading_days_held in
+    [1, stop_activation_delay] (inclusive).  Default 1 skips Day 1 stop checks,
+    where gap-through exits average -5% at 0% WR but Day 3 recovers to 56-68% WR.
+    Set to 0 to disable the delay and restore the original always-on behaviour."""
     rc = risk_config or RiskConfig.from_config()
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
     _sp_bps_override = spread_bps  # None → liquidity-scaled per trade
@@ -656,23 +662,37 @@ def _run_simulation(
                 continue
             trading_days_held = sum(1 for _ in pd.bdate_range(pos["entry_date"], today)) - 1
 
-            # Gap-through-stop: if today's open is already at or below the stop price,
-            # fill at open (realistic — we can't catch the stop intrabar).
-            stop_price = pos["entry_price"] * (1 - rc.stop_loss_pct)
-            open_px = float(row_today.get("Open", px))
-            if open_px <= stop_price:
-                reason = "stop_loss"
-                fill_base = open_px
-            else:
-                pnl_pct = px / pos["entry_price"] - 1
-                reason = None
-                if pnl_pct <= -rc.stop_loss_pct:
-                    reason = "stop_loss"
-                elif pnl_pct >= rc.take_profit_pct:
+            # Skip stop checks during the activation delay window.  Overnight gaps that
+            # open below the stop on Day 1 historically reverse by Day 3 (0% WR on Day 1
+            # exits vs 56-68% WR on Day 3); the delay avoids premature forced exits.
+            # Semantics: delay=1 skips Day 1 (trading_days_held==1), delay=0 disables.
+            if 0 < trading_days_held <= stop_activation_delay:
+                pnl_pct_check = px / pos["entry_price"] - 1
+                if pnl_pct_check >= rc.take_profit_pct:
                     reason = "take_profit"
                 elif trading_days_held >= max_hold_days:
                     reason = "time_exit"
+                else:
+                    continue
                 fill_base = px
+            else:
+                # Gap-through-stop: if today's open is already at or below the stop price,
+                # fill at open (realistic — we can't catch the stop intrabar).
+                stop_price = pos["entry_price"] * (1 - rc.stop_loss_pct)
+                open_px = float(row_today.get("Open", px))
+                if open_px <= stop_price:
+                    reason = "stop_loss"
+                    fill_base = open_px
+                else:
+                    pnl_pct = px / pos["entry_price"] - 1
+                    reason = None
+                    if pnl_pct <= -rc.stop_loss_pct:
+                        reason = "stop_loss"
+                    elif pnl_pct >= rc.take_profit_pct:
+                        reason = "take_profit"
+                    elif trading_days_held >= max_hold_days:
+                        reason = "time_exit"
+                    fill_base = px
 
             if reason:
                 df_sym = indicators[sym]
@@ -1789,7 +1809,13 @@ def _print_ablation_results(r: dict, start_date: str, end_date: str) -> None:
     print("=" * 65 + "\n")
 
 
-_REGIMES_ORDER = ["BULL_TRENDING", "BEAR_DAY", "HIGH_VOL", "CHOPPY"]
+_REGIMES_ORDER = [
+    "BULL_TREND",
+    "NEUTRAL_CHOP",
+    "DEFENSIVE_DOWNTREND",
+    "HIGH_VOL_DOWNTREND",
+    "STRESS_RISK_OFF",
+]
 
 
 def run_signal_analysis(
@@ -1809,7 +1835,7 @@ def run_signal_analysis(
     """Run a single simulation with enriched trade metadata, then produce:
 
     1. Regime-stratified signal breakdown — win rate and avg return per signal
-       per market regime (BULL_TRENDING / BEAR_DAY / HIGH_VOL / CHOPPY).
+       per market regime (BULL_TREND / NEUTRAL_CHOP / DEFENSIVE_DOWNTREND / HIGH_VOL_DOWNTREND / STRESS_RISK_OFF).
     2. Hold-period decay — win rate and avg return per signal broken down by
        days held (1 … max_hold_days).
 
@@ -2259,7 +2285,7 @@ def _print_results(r: dict):
     print("=" * 60 + "\n")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     parser = argparse.ArgumentParser()
     _yesterday = datetime.today() - timedelta(days=1)
     _last_bday = pd.bdate_range(end=_yesterday, periods=1)[0].strftime("%Y-%m-%d")

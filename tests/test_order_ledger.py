@@ -119,5 +119,5 @@ class TestGetUnresolvedIntents(OrderLedgerBase):
         self.assertEqual(result, [])
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

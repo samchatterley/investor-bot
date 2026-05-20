@@ -1650,7 +1650,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             emailer.send_summary(day_summary)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--mode", choices=["open", "open_sells", "midday", "close"], default="open")

@@ -421,5 +421,5 @@ class TestHealthReportLog(unittest.TestCase):
         self.assertIn("unexpected broker position", joined)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

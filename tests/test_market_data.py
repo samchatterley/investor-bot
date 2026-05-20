@@ -626,6 +626,22 @@ class TestGetMarketSnapshots(unittest.TestCase):
         self.assertEqual(len(result), 4)
         self.assertTrue(all("rs_rank_pct" in s for s in result))
 
+    def test_fundamentals_merged_into_snapshot_when_present(self):
+        """Line 357: snap.update(fundamentals[sym]) executed when sym in fundamentals."""
+        from data.market_data import get_market_snapshots
+
+        snap = self._make_snap("AAPL")
+        with (
+            patch("data.market_data._bulk_download", return_value={}),
+            patch("data.market_data.get_fundamentals", return_value={"AAPL": {"pe_ratio": 22.5}}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+        ):
+            result = get_market_snapshots(["AAPL"])
+        self.assertEqual(result[0]["pe_ratio"], 22.5)
+
 
 class TestGetSpy20dReturn(unittest.TestCase):
     def test_exception_returns_none(self):

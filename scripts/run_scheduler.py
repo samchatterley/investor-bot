@@ -148,7 +148,7 @@ def _sigterm_handler(_signum, _frame):
     sys.exit(0)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     _check_singleton()
     atexit.register(_remove_pid_file)
     signal.signal(signal.SIGTERM, _sigterm_handler)

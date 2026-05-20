@@ -496,5 +496,5 @@ class TestSigtermHandler(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -281,5 +281,5 @@ class TestSaveReport(unittest.TestCase):
         self.assertEqual(dumped_report["total"], 5)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

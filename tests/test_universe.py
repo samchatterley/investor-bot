@@ -595,5 +595,5 @@ class TestBuildScanUniverse(unittest.TestCase):
         mock_save.assert_not_called()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -77,10 +77,13 @@ branch = true
 source = ["."]
 omit = [
     ".venv/*",
+    "*/.venv/*",
     "evals/*",
+    "*/evals/*",
     "*/vscode*",
     "*/extensions/*",
     "*/site-packages/*",
+    "*/python_files/*",
 ]
 
 [tool.coverage.report]

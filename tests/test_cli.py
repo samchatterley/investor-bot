@@ -707,5 +707,5 @@ class TestMainEntryPoint(unittest.TestCase):
         mock_fn.assert_called_once()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

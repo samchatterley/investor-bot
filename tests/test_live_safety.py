@@ -747,5 +747,5 @@ class TestUniversePriceFilter(unittest.TestCase):
             self.assertEqual(cfg.MAX_PRICE_USD, 0.0)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

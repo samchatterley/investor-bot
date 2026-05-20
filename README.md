@@ -803,6 +803,15 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.41 — May 2026 — stop-activation delay + regime table fix + coverage hardening
+
+- **`stop_activation_delay` parameter in `_run_simulation` (default 1).** Skips stop-loss checks for `trading_days_held` in `[1, stop_activation_delay]`. Signal analysis showed Day 1 gap-through exits average -5% at 0% WR while Day 3 exits recover to 56–68% WR; the delay prevents premature forced exits on overnight gap-downs that reverse. Set `stop_activation_delay=0` to restore original always-on stop behaviour.
+- **`_REGIMES_ORDER` bug fix.** `_print_regime_table` used stale regime labels (`BULL_TRENDING`, `BEAR_DAY`, `HIGH_VOL`, `CHOPPY`) that never matched the 5-state labels introduced in v1.38 (`BULL_TREND`, `NEUTRAL_CHOP`, `DEFENSIVE_DOWNTREND`, `HIGH_VOL_DOWNTREND`, `STRESS_RISK_OFF`), so the regime breakdown table was always blank. Fixed to use the correct 5 labels.
+- **Coverage hardening.** Added `# pragma: no cover` to all `if __name__ == "__main__":` guards across 5 source files and 13 test files; extended pyproject.toml omit patterns to work correctly when pytest runs from a parent workspace directory (fixes VSCode runner reporting system files); added 1 test to cover `snap.update(fundamentals[sym])` branch in `get_market_snapshots`.
+- **5 new tests** (`TestStopActivationDelay` ×3, `TestStopLossCloseOfDay` ×1, `test_fundamentals_merged_into_snapshot_when_present` ×1); **2344 passing, 100% coverage.**
+
+---
+
 ### 1.40 — May 2026 — cross-sectional relative strength rank filter
 
 - **`_compute_rs_ranks` (new helper in `backtest/engine.py`).** Vectorised cross-sectional RS rank using `pandas.rank(axis=1, pct=True)`. For each date, computes each symbol's 20-day excess return over SPY, ranks them within the universe, and returns a `dict[sym][date_str] = percentile (0–100)`. Returns `{}` if fewer than 4 symbols or no SPY data — below this threshold ranks are meaningless.

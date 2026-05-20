@@ -140,5 +140,5 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
         self.assertNotIn("_REGIME_BLOCKED", names)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

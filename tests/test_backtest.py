@@ -1702,7 +1702,11 @@ class TestRunSimulationEdgeCases(unittest.TestCase):
         aapl_df = _build_indicator_df(idx, close_vals, open_vals=[99.5, 100.0, None])
         indicators = {"AAPL": aapl_df}
         result = _run_simulation(
-            indicators, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+            indicators,
+            trading_dates,
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            stop_activation_delay=0,
         )
         sell_trades = [t for t in result["trades"] if t.get("reason") == "stop_loss"]
         self.assertEqual(len(sell_trades), 1)
@@ -3048,7 +3052,119 @@ class TestRunSimulationGapThroughStop(unittest.TestCase):
         open_vals = [entry_price * 0.999, entry_price, open_day2]
         aapl_df = _build_indicator_df(idx, close_vals, open_vals=open_vals)
         result = _run_simulation(
-            {"AAPL": aapl_df}, trading_dates, initial_capital=10_000.0, params=_LOOSE_ENTRY
+            {"AAPL": aapl_df},
+            trading_dates,
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            stop_activation_delay=0,
+        )
+        stop_trades = [t for t in result["trades"] if t.get("reason") == "stop_loss"]
+        self.assertGreater(len(stop_trades), 0)
+
+
+class TestStopActivationDelay(unittest.TestCase):
+    """Lines 669-676: stop_activation_delay skips stop checks during delay window."""
+
+    def _build_df(self, close_vals, open_vals):
+        idx = pd.bdate_range("2025-01-02", periods=len(close_vals))
+        return idx, _build_indicator_df(idx, close_vals, open_vals=open_vals)
+
+    def test_day1_stop_skipped_with_delay(self):
+        """Lines 674-675: Day 1 open below stop → skipped (continue) when delay=1."""
+        from config import STOP_LOSS_PCT
+
+        # Entry on Day 0; Day 1 opens well below stop; Day 2 close recovers above entry
+        stop = 100.0 * (1 - STOP_LOSS_PCT)
+        gap_open = stop * 0.9  # would trigger gap-through without delay
+        close_vals = [100.0, 100.0, 105.0, 105.0]
+        open_vals = [99.9, gap_open, 105.0, 105.0]
+        idx, df = self._build_df(close_vals, open_vals)
+
+        # With delay=1: Day 1 stop is skipped; position exits at time_exit or Day 3
+        result_with = _run_simulation(
+            {"AAPL": df},
+            idx[1:],
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            stop_activation_delay=1,
+        )
+        # Without delay: Day 1 gap-through fires immediately
+        result_without = _run_simulation(
+            {"AAPL": df},
+            idx[1:],
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            stop_activation_delay=0,
+        )
+        # With delay, the position should hold past Day 1 → better final value
+        self.assertGreaterEqual(result_with["final_value"], result_without["final_value"])
+
+    def test_time_exit_fires_during_delay_when_max_hold_reached(self):
+        """Line 674: time_exit fires inside the delay window when max_hold_days reached."""
+        # max_hold_days=1, stop_activation_delay=2: on Day 1, days_held=1 is in the
+        # delay window AND >= max_hold_days → time_exit branch (line 674) is taken.
+        close_vals = [100.0, 100.0, 100.0, 100.0]
+        open_vals = [99.9, 100.0, 100.0, 100.0]
+        idx, df = self._build_df(close_vals, open_vals)
+
+        result = _run_simulation(
+            {"AAPL": df},
+            idx[1:],
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            max_hold_days=1,
+            stop_activation_delay=2,
+        )
+        time_exits = [t for t in result["trades"] if t.get("reason") == "time_exit"]
+        self.assertGreater(len(time_exits), 0)
+
+    def test_take_profit_still_fires_during_delay(self):
+        """Line 671: take_profit exits even within the stop activation delay window."""
+        from config import TAKE_PROFIT_PCT
+
+        # Entry at 100 on Day 1; Day 2 close is +20% (above 15% take-profit threshold).
+        # trading_days_held=1 on Day 2 → inside delay window, but take_profit still fires.
+        entry = 100.0
+        tp_close = entry * (1 + TAKE_PROFIT_PCT + 0.05)  # 20%+ gain
+        close_vals = [entry, entry, tp_close, tp_close]
+        open_vals = [entry * 0.999, entry, tp_close * 0.999, tp_close]
+        idx, df = self._build_df(close_vals, open_vals)
+
+        result = _run_simulation(
+            {"AAPL": df},
+            idx[1:],
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            stop_activation_delay=2,
+        )
+        tp_trades = [t for t in result["trades"] if t.get("reason") == "take_profit"]
+        self.assertGreater(len(tp_trades), 0)
+
+
+class TestStopLossCloseOfDay(unittest.TestCase):
+    """Line 690: close-of-day stop fires when open is fine but close drops below stop."""
+
+    def test_close_of_day_stop_fires_after_delay_window(self):
+        """Line 690: open > stop_price but close <= -stop_loss_pct → stop_loss reason."""
+        from config import STOP_LOSS_PCT
+
+        # Entry at 100; Day 2 (outside delay=1 window) opens fine but closes well below stop
+        entry = 100.0
+        stop = entry * (1 - STOP_LOSS_PCT)
+        close_day2 = stop * 0.95  # below stop, triggers close-of-day stop
+        open_day2 = entry * 0.99  # open is fine (above stop)
+
+        idx = pd.bdate_range("2025-01-02", periods=4)
+        close_vals = [entry, entry, close_day2, close_day2]
+        open_vals = [entry * 0.999, entry, open_day2, open_day2]
+        df = _build_indicator_df(idx, close_vals, open_vals=open_vals)
+
+        result = _run_simulation(
+            {"AAPL": df},
+            idx[1:],
+            initial_capital=10_000.0,
+            params=_LOOSE_ENTRY,
+            stop_activation_delay=1,
         )
         stop_trades = [t for t in result["trades"] if t.get("reason") == "stop_loss"]
         self.assertGreater(len(stop_trades), 0)
@@ -3532,7 +3648,7 @@ class TestRunSignalAnalysisNewPaths(unittest.TestCase):
         r = {
             "regime_stats": {
                 "orb_breakout": {
-                    "BULL_TRENDING": {
+                    "BULL_TREND": {
                         "wins": 5,
                         "losses": 3,
                         "total_return": 4.0,
@@ -3541,7 +3657,7 @@ class TestRunSignalAnalysisNewPaths(unittest.TestCase):
                     }
                 },
                 "momentum": {
-                    "CHOPPY": {
+                    "NEUTRAL_CHOP": {
                         "wins": 2,
                         "losses": 8,
                         "total_return": -1.5,
@@ -3572,7 +3688,7 @@ class TestRunSignalAnalysisNewPaths(unittest.TestCase):
         r = {
             "regime_stats": {
                 "momentum": {
-                    "BULL_TRENDING": {
+                    "BULL_TREND": {
                         "wins": 20,
                         "losses": 10,
                         "total_return": 15.0,

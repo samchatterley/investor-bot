@@ -87,7 +87,7 @@ def _save_report(report: dict):
         logger.warning(f"Could not save test report: {e}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
     report = run_diagnostics()
     print(f"\n{'=' * 40}")
