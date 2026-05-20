@@ -21,6 +21,7 @@ from backtest.engine import (
     _bootstrap_cell_ci,
     _compute_indicators,
     _compute_intraday_day,
+    _compute_rs_ranks,
     _entry_signal,
     _holm_bonferroni,
     _liquidity_spread_bps,
@@ -4026,3 +4027,87 @@ class TestFetchIntradayBarsBody(unittest.TestCase):
             self.assertEqual(result, {})
 
         self._with_keys(run)
+
+
+class TestComputeRsRanks(unittest.TestCase):
+    """Cover lines 565-575: _compute_rs_ranks main computation path."""
+
+    def _sym_df(self, slope=0.1, n=100):
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        closes = pd.Series([100.0 + i * slope for i in range(n)], index=idx)
+        return pd.DataFrame({"ret_20d": closes.pct_change(20) * 100})
+
+    def test_four_symbols_produce_rank_percentiles(self):
+        """Lines 565-575: ≥4 symbols with ret_20d + spy_indicators → non-empty dict."""
+        indicators = {
+            "AAPL": self._sym_df(0.10),
+            "MSFT": self._sym_df(0.15),
+            "GOOGL": self._sym_df(0.20),
+            "NVDA": self._sym_df(0.25),
+        }
+        spy_df = self._sym_df(0.12)
+
+        result = _compute_rs_ranks(indicators, spy_df)
+
+        self.assertIsInstance(result, dict)
+        self.assertGreater(len(result), 0)
+        for ranks in result.values():
+            for rank_pct in ranks.values():
+                self.assertGreaterEqual(rank_pct, 0.0)
+                self.assertLessEqual(rank_pct, 100.0)
+
+    def test_symbol_with_all_nan_excluded_from_result(self):
+        """Line 573->571: sym_series.empty after dropna → symbol not in result."""
+        idx = pd.bdate_range("2024-11-01", periods=100)
+        # NaN-only symbol: rank will be NaN everywhere, dropna() gives empty series
+        nan_df = pd.DataFrame({"ret_20d": [float("nan")] * 100}, index=idx)
+        indicators = {
+            "AAPL": self._sym_df(0.10),
+            "MSFT": self._sym_df(0.15),
+            "GOOGL": self._sym_df(0.20),
+            "NVDA": nan_df,
+        }
+        spy_df = self._sym_df(0.12)
+
+        result = _compute_rs_ranks(indicators, spy_df)
+
+        self.assertNotIn("NVDA", result)
+        self.assertGreater(len(result), 0)
+
+
+class TestRsRankFilterContinue(unittest.TestCase):
+    """Cover line 771: low RS rank → continue skips signal candidate."""
+
+    def _build_four_indicators(self, n=100):
+        symbols = ("AAPL", "FLAT", "MSFT", "GOOGL")
+        raw = _make_raw(n=n, symbols=symbols)
+        indicators = {}
+        for sym in symbols:
+            close = raw["Close"][sym]
+            open_ = raw["Open"][sym]
+            volume = raw["Volume"][sym]
+            df = pd.DataFrame({"Close": close, "Open": open_, "Volume": volume}).dropna()
+            df = _compute_indicators(df)
+            if not df.empty:  # pragma: no branch
+                indicators[sym] = df
+        return indicators
+
+    def test_low_rs_rank_signals_filtered(self):
+        """Line 771: rank_pct < 75 → continue executed for those candidates."""
+        indicators = self._build_four_indicators()
+        dates = pd.bdate_range("2025-02-03", "2025-02-28")
+        loose = {"mom_vol_threshold": 0.9, "mom_ret5d_threshold": 0.3}
+
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in pd.bdate_range("2024-11-01", "2025-02-28")]
+        rs_ranks = {
+            "AAPL": dict.fromkeys(all_dates, 10.0),
+            "FLAT": dict.fromkeys(all_dates, 30.0),
+            "MSFT": dict.fromkeys(all_dates, 60.0),
+            "GOOGL": dict.fromkeys(all_dates, 100.0),
+        }
+
+        without_rs = _run_simulation(indicators, dates, params=loose, rs_ranks=None)
+        with_rs = _run_simulation(indicators, dates, params=loose, rs_ranks=rs_ranks)
+
+        self.assertIn("total_trades", with_rs)
+        self.assertLessEqual(with_rs["total_trades"], without_rs["total_trades"])

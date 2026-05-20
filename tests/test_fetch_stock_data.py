@@ -100,7 +100,7 @@ class TestFetchStockData(unittest.TestCase):
 
 
 class TestGetMarketSnapshots(unittest.TestCase):
-    def _snap(self, symbol, price=150.0):
+    def _snap(self, symbol, price=150.0, ret_20d_pct=4.0):
         return {
             "symbol": symbol,
             "current_price": price,
@@ -112,6 +112,7 @@ class TestGetMarketSnapshots(unittest.TestCase):
             "ret_1d_pct": 0.5,
             "ret_5d_pct": 2.0,
             "ret_10d_pct": 3.0,
+            "ret_20d_pct": ret_20d_pct,
             "weekly_trend_up": True,
         }
 

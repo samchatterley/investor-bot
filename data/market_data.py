@@ -101,6 +101,7 @@ def fetch_stock_data(
         df["ret_1d"] = close.pct_change(1) * 100
         df["ret_5d"] = close.pct_change(5) * 100
         df["ret_10d"] = close.pct_change(10) * 100
+        df["ret_20d"] = close.pct_change(20) * 100
 
         # Historical volatility percentile: where today's 20-day HV sits in its 252-day range.
         # hv_rank=0.10 means current HV is in the bottom 10% → vol compression → squeeze likely.
@@ -172,6 +173,9 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "ret_1d_pct": round(float(latest["ret_1d"]), 2),
         "ret_5d_pct": round(float(latest["ret_5d"]), 2),
         "ret_10d_pct": round(float(latest["ret_10d"]), 2),
+        "ret_20d_pct": round(float(_r20), 2)
+        if (_r20 := latest.get("ret_20d")) is not None and pd.notna(_r20)
+        else 0.0,
         "rsi_14": round(float(latest["rsi"]), 1),
         "macd_diff": round(float(latest["macd_diff"]), 4),
         "macd_crossed_up": bool(latest["macd_diff"] > 0 and prev["macd_diff"] <= 0),
@@ -235,6 +239,19 @@ def get_spy_10d_return() -> float | None:
         if len(hist) >= 11:
             return round(
                 (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-11]) - 1) * 100, 2
+            )
+    except Exception:
+        pass
+    return None
+
+
+def get_spy_20d_return() -> float | None:
+    """Return SPY's 20-day return % for relative strength calculation."""
+    try:
+        hist = yf.Ticker("SPY").history(period="35d")
+        if len(hist) >= 21:
+            return round(
+                (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-21]) - 1) * 100, 2
             )
     except Exception:
         pass
@@ -306,9 +323,11 @@ def get_market_snapshots(
     if preloaded is not None and as_of is not None:
         spy_5d = _spy_return_from_preloaded(preloaded, as_of, 5)
         spy_10d = _spy_return_from_preloaded(preloaded, as_of, 10)
+        spy_20d = _spy_return_from_preloaded(preloaded, as_of, 20)
     else:
         spy_5d = get_spy_5d_return()
         spy_10d = get_spy_10d_return()
+        spy_20d = get_spy_20d_return()
         # Single bulk download replaces 75+ parallel Ticker.history() calls
         fetch_days = max(days + 150, 200)
         live_bulk = _bulk_download(symbols, fetch_days)
@@ -332,6 +351,8 @@ def get_market_snapshots(
             snap["rel_strength_5d"] = round(snap["ret_5d_pct"] - spy_5d, 2)
         if spy_10d is not None:
             snap["rel_strength_10d"] = round(snap["ret_10d_pct"] - spy_10d, 2)
+        if spy_20d is not None and snap.get("ret_20d_pct") is not None:
+            snap["rel_strength_20d"] = round(snap["ret_20d_pct"] - spy_20d, 2)
         if sym in fundamentals:
             snap.update(fundamentals[sym])
         return snap
@@ -341,6 +362,20 @@ def get_market_snapshots(
         for snap in executor.map(_fetch_one, symbols):
             if snap is not None:
                 snapshots.append(snap)
+
+    # Cross-sectional RS rank: percentile within this universe (100 = top).
+    # Requires rel_strength_20d on at least 4 snapshots to be meaningful.
+    rs20_pairs = [
+        (i, s["rel_strength_20d"]) for i, s in enumerate(snapshots) if "rel_strength_20d" in s
+    ]
+    if len(rs20_pairs) >= 4:
+        n = len(rs20_pairs)
+        sorted_scores = sorted(v for _, v in rs20_pairs)
+        for idx, score in rs20_pairs:
+            snapshots[idx]["rs_rank_pct"] = round(
+                sum(1 for v in sorted_scores if v < score) / n * 100, 1
+            )
+
     return snapshots
 
 

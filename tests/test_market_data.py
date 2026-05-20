@@ -593,6 +593,60 @@ class TestGetMarketSnapshots(unittest.TestCase):
             result = get_market_snapshots([])
         self.assertEqual(result, [])
 
+    def test_rs_rank_pct_computed_when_four_or_more_symbols(self):
+        """Lines 374-377: ≥4 snapshots with rel_strength_20d → rs_rank_pct added."""
+        from data.market_data import get_market_snapshots
+
+        symbols = ["AAPL", "MSFT", "GOOGL", "NVDA"]
+        snaps = {
+            sym: dict(self._make_snap(sym), ret_20d_pct=float(i + 1))
+            for i, sym in enumerate(symbols)
+        }
+
+        def _fake_summarise(sym, df, **kw):
+            return snaps[sym]
+
+        patches = [
+            patch("data.market_data._bulk_download", return_value={}),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", side_effect=_fake_summarise),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=1.0),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            result = get_market_snapshots(symbols)
+        finally:
+            for p in patches:
+                p.stop()
+
+        self.assertEqual(len(result), 4)
+        self.assertTrue(all("rs_rank_pct" in s for s in result))
+
+
+class TestGetSpy20dReturn(unittest.TestCase):
+    def test_exception_returns_none(self):
+        """Lines 256-258: yf.Ticker raises → exception caught, returns None."""
+        from data.market_data import get_spy_20d_return
+
+        with patch("data.market_data.yf.Ticker", side_effect=Exception("network error")):
+            result = get_spy_20d_return()
+        self.assertIsNone(result)
+
+    def test_insufficient_rows_returns_none(self):
+        """Line 252->258: hist has fewer than 21 rows → falls through to return None."""
+        from data.market_data import get_spy_20d_return
+
+        short_hist = pd.DataFrame({"Close": [400.0] * 10})
+        ticker_mock = MagicMock()
+        ticker_mock.history.return_value = short_hist
+        with patch("data.market_data.yf.Ticker", return_value=ticker_mock):
+            result = get_spy_20d_return()
+        self.assertIsNone(result)
+
 
 class TestBulkDownload(unittest.TestCase):
     """_bulk_download: single API call returns per-symbol DataFrames."""

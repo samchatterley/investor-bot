@@ -106,6 +106,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Extended indicators for new daily signals ─────────────────────────────
     df["ret_10d"] = close.pct_change(10) * 100
+    df["ret_20d"] = close.pct_change(20) * 100
 
     # MACD cross: diff crosses from <= 0 to > 0 (NaN comparisons return False)
     df["macd_cross"] = (df["macd_diff"].shift(1) <= 0) & (df["macd_diff"] > 0)
@@ -536,6 +537,44 @@ def _bootstrap_cell_ci(
     return (round(boot_stats[lo_idx], 4), round(boot_stats[hi_idx], 4))
 
 
+# Signals exempt from the cross-sectional RS rank filter.
+# mean_reversion deliberately buys beaten-down stocks (low RS expected).
+# insider_buying and pead are fundamental/event signals, not price-momentum.
+_RS_EXEMPT_SIGNALS = frozenset({"mean_reversion", "insider_buying", "pead"})
+
+
+def _compute_rs_ranks(
+    indicators: dict[str, pd.DataFrame],
+    spy_indicators: pd.DataFrame | None,
+) -> dict[str, dict[str, float]]:
+    """Cross-sectional 20d relative-strength percentile ranks.
+
+    For each trading date ranks every symbol by (ret_20d − SPY_ret_20d).
+    Returns {symbol: {date_str: percentile}} where 100 = top of universe.
+    Returns {} when spy_indicators is None or lacks ret_20d.
+    """
+    if spy_indicators is None or "ret_20d" not in spy_indicators.columns:
+        return {}
+
+    frames: dict[str, pd.Series] = {
+        sym: df["ret_20d"] for sym, df in indicators.items() if "ret_20d" in df.columns
+    }
+    if len(frames) < 4:
+        return {}
+
+    wide = pd.DataFrame(frames)
+    spy_ret20 = spy_indicators["ret_20d"].reindex(wide.index)
+    excess = wide.sub(spy_ret20, axis=0)
+    rs_rank_wide = excess.rank(axis=1, pct=True, na_option="keep") * 100
+
+    result: dict[str, dict[str, float]] = {}
+    for sym in rs_rank_wide.columns:
+        sym_series = rs_rank_wide[sym].dropna()
+        if not sym_series.empty:
+            result[sym] = {ts.strftime("%Y-%m-%d"): float(v) for ts, v in sym_series.items()}
+    return result
+
+
 def _liquidity_spread_bps(adv_usd: float) -> float:
     """Liquidity-scaled half-spread: wider for illiquid names.
 
@@ -577,6 +616,8 @@ def _run_simulation(
     insider_history: dict[str, list[dict]] | None = None,
     disabled_signals: frozenset[str] | None = None,
     risk_config: RiskConfig | None = None,
+    rs_ranks: dict[str, dict[str, float]] | None = None,
+    rs_top_pct: float = 0.75,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo)."""
@@ -724,6 +765,10 @@ def _run_simulation(
                 disabled_signals=disabled_signals,
             )
             if signal:
+                if rs_ranks is not None and signal not in _RS_EXEMPT_SIGNALS:
+                    rank_pct = rs_ranks.get(sym, {}).get(prev_date_str)
+                    if rank_pct is not None and rank_pct < rs_top_pct * 100:
+                        continue
                 candidates.append((sym, signal, float(prev_row["rsi"])))
 
         def _sort_key(item: tuple) -> tuple:
@@ -1068,6 +1113,7 @@ def run_backtest(
         )
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
     results = _run_simulation(
         indicators,
         trading_dates,
@@ -1084,6 +1130,7 @@ def run_backtest(
         vix_spike_by_date=vix_spike_by_date or None,
         earnings_history=earnings_history,
         insider_history=insider_history,
+        rs_ranks=rs_ranks,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -1459,6 +1506,7 @@ def run_ablation(
         "vix_spike_by_date": vix_spike_by_date or None,
         "earnings_history": earnings_history,
         "insider_history": insider_history,
+        "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
     }
 
     logger.info("Ablation: running baseline…")
@@ -1618,6 +1666,7 @@ def run_backward_elimination(
         "vix_spike_by_date": vix_spike_by_date or None,
         "earnings_history": earnings_history,
         "insider_history": insider_history,
+        "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
     }
 
     logger.info("Backward elimination: running baseline…")
@@ -1858,6 +1907,7 @@ def run_signal_analysis(
         vix_spike_by_date=vix_spike_by_date or None,
         earnings_history=earnings_history,
         insider_history=insider_history,
+        rs_ranks=_compute_rs_ranks(indicators, spy_indicators),
     )
 
     closed = [
@@ -2146,6 +2196,7 @@ def run_holdout_evaluation(
         spy_indicators=spy_indicators,
         regime_by_date=regime_by_date or None,
         vix_spike_by_date=vix_spike_by_date or None,
+        rs_ranks=_compute_rs_ranks(indicators, spy_indicators),
     )
     results["start"] = holdout_start_str
     results["end"] = holdout_end_str
