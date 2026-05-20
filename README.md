@@ -803,6 +803,18 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.42 — May 2026 — regime blocking refinements + range_reversion signal + stop delay extension
+
+- **`mean_reversion` blocked in `NEUTRAL_CHOP` and `STRESS_RISK_OFF`.** Backtest analysis (2015–2026) showed mean_reversion carries negative expected value in these regimes: WR 49%, avg -0.1%, n=687 (p>0.05 Holm-corrected) in NEUTRAL_CHOP; WR 47%, p>0.05 (n=129) in STRESS_RISK_OFF. The signal retains edge in DEFENSIVE_DOWNTREND (WR 53%, avg +0.6%, n=112) and remains unblocked there.
+- **`rs_leader` disabled.** All 246 trades in BULL_TREND (its only firing regime) returned WR 51%, avg -0.13% — statistically indistinguishable from chance. Signal added to `_BULL_TREND_BLOCKED` (the only regime where it fires), effectively removing it from live trading with zero infrastructure cost.
+- **`stop_activation_delay` default extended from 1 to 2.** Day 2 stop-loss exits show the same gap-through pattern as Day 1 (WR 2–8%, avg -5 to -8%) while Day 3 recovers to 55–69% WR. The delay now skips stop checks on both Day 1 and Day 2 after entry. Take-profit and time-exits are unaffected by the delay.
+- **`range_reversion` signal (new).** Fires when `adx < 20` (confirmed range-bound) and `bb_pct < 0.10` (lower 10% of Bollinger Band) and `rsi < 30` (extreme oversold). The ADX gate provides implicit regime filtering — range-bound conditions rarely occur in trending bear/bull markets — so no explicit regime block is needed. RS-exempt (buys beaten-down stocks like mean_reversion). Priority 11 (between `iv_compression`=10 and `mean_reversion`=12).
+- **`_RS_EXEMPT_SIGNALS` updated** to include `range_reversion` alongside `mean_reversion`, `insider_buying`, `pead`.
+- **REGIME_BLOCKED restructured.** Split the old single `_CHOPPY_BLOCKED` into `_DEFENSIVE_BLOCKED` (DEFENSIVE_DOWNTREND — permits mean_reversion) and `_NEUTRAL_CHOP_BLOCKED` (includes mean_reversion). Added `_BULL_TREND_BLOCKED = frozenset({"rs_leader"})`. Legacy regime names (`BEAR_DAY`, `HIGH_VOL`, `BULL_TRENDING`, `CHOPPY`) kept as aliases for backward compatibility.
+- **11 new tests**: `TestRangeReversionSignal` ×7, scanner range_reversion ×1, test_risk_config range_reversion ×2, restored previously-shadowed duplicate test ×1; **2351 passing, 100% coverage.**
+
+---
+
 ### 1.41 — May 2026 — stop-activation delay + regime table fix + coverage hardening
 
 - **`stop_activation_delay` parameter in `_run_simulation` (default 1).** Skips stop-loss checks for `trading_days_held` in `[1, stop_activation_delay]`. Signal analysis showed Day 1 gap-through exits average -5% at 0% WR while Day 3 exits recover to 56–68% WR; the delay prevents premature forced exits on overnight gap-downs that reverse. Set `stop_activation_delay=0` to restore original always-on stop behaviour.

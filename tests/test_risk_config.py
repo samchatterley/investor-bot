@@ -91,10 +91,10 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
 
         self.assertIn("iv_compression", REGIME_BLOCKED["BEAR_DAY"])
 
-    def test_choppy_excludes_mean_reversion(self):
+    def test_choppy_blocks_mean_reversion(self):
         from signals.evaluator import REGIME_BLOCKED
 
-        self.assertNotIn("mean_reversion", REGIME_BLOCKED["CHOPPY"])
+        self.assertIn("mean_reversion", REGIME_BLOCKED["CHOPPY"])
 
     def test_choppy_blocks_macd_crossover(self):
         from signals.evaluator import REGIME_BLOCKED
@@ -138,6 +138,18 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
             if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
         }
         self.assertNotIn("_REGIME_BLOCKED", names)
+
+    def test_range_reversion_not_blocked_in_choppy(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertNotIn("range_reversion", REGIME_BLOCKED["CHOPPY"])
+
+    def test_range_reversion_not_blocked_in_bear_day(self):
+        # range_reversion uses adx < 20 gate — bear markets are trending (adx >= 20),
+        # so the signal naturally doesn't fire; explicit blocking is unnecessary
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertNotIn("range_reversion", REGIME_BLOCKED["BEAR_DAY"])
 
 
 if __name__ == "__main__":  # pragma: no cover

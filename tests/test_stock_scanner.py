@@ -561,7 +561,8 @@ class TestRegimeBlocking(unittest.TestCase):
 
     # ── CHOPPY blocks ────────────────────────────────────────────────────────
 
-    def test_choppy_blocks_mean_reversion(self):
+    def test_choppy_filters_insufficient_signals(self):
+        # Boundary snap (vol below threshold, rsi at boundary) — no signal fires
         snap = _snap(rsi_14=35, bb_pct=0.25, vol_ratio=1.1)
         result = prefilter_candidates([snap], regime="CHOPPY")
         self.assertEqual(result, [])
@@ -581,12 +582,11 @@ class TestRegimeBlocking(unittest.TestCase):
         result = prefilter_candidates([snap], regime="CHOPPY")
         self.assertEqual(result, [])
 
-    def test_choppy_permits_mean_reversion(self):
-        # mean_reversion excluded from CHOPPY blocks (live data: +0.28% avg, 100% win rate, n=2)
+    def test_choppy_blocks_mean_reversion(self):
+        # mean_reversion blocked in CHOPPY/NEUTRAL_CHOP: WR 49%, avg -0.1%, n=687 (p>0.05)
         snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
         result = prefilter_candidates([snap], regime="CHOPPY")
-        self.assertEqual(len(result), 1)
-        self.assertIn("mean_reversion", result[0]["matched_signals"])
+        self.assertEqual(result, [])
 
     # ── BEAR_DAY blocks ──────────────────────────────────────────────────────
 
@@ -595,12 +595,11 @@ class TestRegimeBlocking(unittest.TestCase):
         result = prefilter_candidates([snap], regime="BEAR_DAY")
         self.assertEqual(result, [])
 
-    def test_bear_day_does_not_block_mean_reversion(self):
-        # rsi<35, bb<0.25, vol>1.2 — canonical thresholds (strict greater-than)
+    def test_bear_day_blocks_mean_reversion(self):
+        # mean_reversion blocked in BEAR_DAY/STRESS_RISK_OFF: WR 47%, p>0.05 (n=129)
         snap = _snap(rsi_14=32, bb_pct=0.22, vol_ratio=1.3)
         result = prefilter_candidates([snap], regime="BEAR_DAY")
-        self.assertEqual(len(result), 1)
-        self.assertIn("mean_reversion", result[0]["matched_signals"])
+        self.assertEqual(result, [])
 
     # ── No blocking when regime is None or unrecognised ──────────────────────
 
@@ -610,11 +609,19 @@ class TestRegimeBlocking(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIn("mean_reversion", result[0]["matched_signals"])
 
-    def test_bull_trending_does_not_block_any_signal(self):
+    def test_bull_trending_blocks_rs_leader(self):
+        # rs_leader blocked in BULL_TRENDING/BULL_TREND: WR 51%, avg -0.13%, n=246 (no edge)
         snap = _snap(rsi_14=32, bb_pct=0.22, vol_ratio=1.3)
         result = prefilter_candidates([snap], regime="BULL_TRENDING")
         self.assertEqual(len(result), 1)
         self.assertIn("mean_reversion", result[0]["matched_signals"])
+
+    def test_range_reversion_fires_in_neutral_chop(self):
+        # range_reversion is designed for NEUTRAL_CHOP — must survive the CHOPPY blocked set
+        snap = _snap(rsi_14=25, bb_pct=0.05, adx=15)
+        result = prefilter_candidates([snap], regime="CHOPPY")
+        self.assertEqual(len(result), 1)
+        self.assertIn("range_reversion", result[0]["matched_signals"])
 
 
 class TestEvaluateSignalsNoneGuard(unittest.TestCase):

@@ -497,13 +497,13 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         result = _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="BEAR_DAY")
         self.assertNotEqual(result, "rs_leader")
 
-    def test_bear_day_allows_mean_reversion(self):
+    def test_bear_day_blocks_mean_reversion(self):
         row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
-        self.assertEqual(_entry_signal(row, regime="BEAR_DAY"), "mean_reversion")
+        self.assertIsNone(_entry_signal(row, regime="BEAR_DAY"))
 
-    def test_bull_trending_allows_rs_leader(self):
+    def test_bull_trending_blocks_rs_leader(self):
         row = _make_row(ret_5d=5.0, ret_10d=7.0, ema9=101, ema21=100, adx=30)
-        self.assertEqual(
+        self.assertNotEqual(
             _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="BULL_TRENDING"),
             "rs_leader",
         )
@@ -512,11 +512,10 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
         self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
 
-    def test_choppy_permits_mean_reversion(self):
-        # mean_reversion intentionally excluded from CHOPPY blocks:
-        # live paper data shows +0.28% avg (100% win rate, n=2); reassess after ≥5 trades.
+    def test_choppy_blocks_mean_reversion(self):
+        # mean_reversion blocked in NEUTRAL_CHOP/CHOPPY: WR 49%, avg -0.1%, n=687 (p>0.05)
         row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
-        self.assertEqual(_entry_signal(row, regime="CHOPPY"), "mean_reversion")
+        self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
 
     def test_none_regime_blocks_nothing(self):
         row = _make_row(ema9=105, ema21=100, macd_diff=0.5, ret_5d=2.0, vol_ratio=1.5, adx=25)
@@ -557,6 +556,41 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
             }
         )
         self.assertEqual(_entry_signal(row), "momentum")
+
+
+class TestRangeReversionSignal(unittest.TestCase):
+    """range_reversion: extreme oversold in confirmed range-bound (adx < 20) conditions."""
+
+    def test_fires_when_range_bound_oversold(self):
+        row = _make_row(adx=15, bb_pct=0.05, rsi=25)
+        self.assertEqual(_entry_signal(row), "range_reversion")
+
+    def test_no_fire_when_trending(self):
+        # adx >= 20 → trending market, range_reversion implicit gate fails
+        row = _make_row(adx=25, bb_pct=0.05, rsi=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_when_bb_not_low_enough(self):
+        row = _make_row(adx=15, bb_pct=0.15, rsi=25)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_when_rsi_not_oversold(self):
+        row = _make_row(adx=15, bb_pct=0.05, rsi=32)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_not_blocked_in_neutral_chop(self):
+        # range_reversion is designed for NEUTRAL_CHOP — must not be in its blocked set
+        row = _make_row(adx=15, bb_pct=0.05, rsi=25)
+        self.assertEqual(_entry_signal(row, regime="CHOPPY"), "range_reversion")
+
+    def test_rs_exempt(self):
+        from backtest.engine import _RS_EXEMPT_SIGNALS
+
+        self.assertIn("range_reversion", _RS_EXEMPT_SIGNALS)
+
+    def test_signal_priority_between_iv_compression_and_mean_reversion(self):
+        self.assertGreater(_SIGNAL_PRIORITY["range_reversion"], _SIGNAL_PRIORITY["iv_compression"])
+        self.assertLess(_SIGNAL_PRIORITY["range_reversion"], _SIGNAL_PRIORITY["mean_reversion"])
 
 
 class TestMomentum121Signal(unittest.TestCase):
@@ -1396,6 +1430,7 @@ class TestSignalPriority(unittest.TestCase):
         "trend_pullback",
         "breakout_52w",
         "rs_leader",
+        "range_reversion",
         "vwap_reclaim",
         "orb_breakout",
         "intraday_momentum",

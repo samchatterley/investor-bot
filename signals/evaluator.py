@@ -15,7 +15,7 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "vix_fear_reversion": 0,
     "insider_buying": 1,
     "pead": 2,
-    # rs_leader and breakout_52w outrank bb_squeeze; breakout_52w < momentum_12_1 < gap_and_go
+    # rs_leader blocked in BULL_TREND (no edge); breakout_52w < momentum_12_1 < gap_and_go
     "rs_leader": 3,
     "breakout_52w": 4,
     "momentum_12_1": 5,
@@ -24,13 +24,14 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "inside_day_breakout": 8,
     "trend_pullback": 9,
     "iv_compression": 10,
+    "range_reversion": 11,
     # mean_reversion outranks momentum (counter-cyclical conviction beats trend-following)
-    "mean_reversion": 11,
-    "momentum": 12,
-    "macd_crossover": 13,
-    "orb_breakout": 14,
-    "vwap_reclaim": 15,
-    "intraday_momentum": 16,
+    "mean_reversion": 12,
+    "momentum": 13,
+    "macd_crossover": 14,
+    "orb_breakout": 15,
+    "vwap_reclaim": 16,
+    "intraday_momentum": 17,
 }
 
 # Canonical default thresholds — used when no walk-forward params are supplied.
@@ -47,12 +48,9 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
 # Canonical regime-blocked signal set — imported by both the backtest engine and
 # live scanner so the two systems always suppress the same signals in the same regimes.
 #
-# These are working hypotheses derived from backtest analysis (2021–2026 walk-forward)
-# and live paper-trading validation.  Treat every entry as a lean, not a hard rule:
+# These are working hypotheses derived from backtest analysis (2015–2026) and
+# live paper-trading validation.  Treat every entry as a lean, not a hard rule:
 # low trade counts and survivorship risk mean individual cells are suggestive, not proven.
-#
-# mean_reversion is intentionally absent from CHOPPY: live paper data shows +0.28% avg
-# (100% win rate, n=2 — small sample).  Reassess after ≥5 live trades in CHOPPY.
 _BEAR_DAY_BLOCKED = frozenset(
     {
         "rs_leader",
@@ -67,6 +65,7 @@ _BEAR_DAY_BLOCKED = frozenset(
         "orb_breakout",
         "intraday_momentum",
         "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
+        "mean_reversion",  # WR 47%, p>0.05 in STRESS_RISK_OFF (n=129)
     }
 )
 _HIGH_VOL_BLOCKED = frozenset(
@@ -78,9 +77,9 @@ _HIGH_VOL_BLOCKED = frozenset(
         "orb_breakout",
     }
 )
-_CHOPPY_BLOCKED = frozenset(
+# DEFENSIVE_DOWNTREND: mean_reversion has edge here (WR 53%, avg +0.6%, n=112) — kept.
+_DEFENSIVE_BLOCKED = frozenset(
     {
-        # Trend-following signals underperform without clear directional bias.
         "rs_leader",
         "breakout_52w",
         "momentum_12_1",
@@ -90,19 +89,24 @@ _CHOPPY_BLOCKED = frozenset(
         "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
     }
 )
+# NEUTRAL_CHOP: mean_reversion drags (WR 49%, avg -0.1%, n=687 — p>0.05 Holm-corrected).
+_NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion"})
+
+# BULL_TREND: rs_leader has no edge (WR 51%, avg -0.13%, n=246 — all trades in this regime).
+_BULL_TREND_BLOCKED = frozenset({"rs_leader"})
 
 REGIME_BLOCKED: dict[str, frozenset[str]] = {
     # Legacy names (kept for backward compatibility)
     "BEAR_DAY": _BEAR_DAY_BLOCKED,
     "HIGH_VOL": _HIGH_VOL_BLOCKED,
-    "BULL_TRENDING": frozenset(),
-    "CHOPPY": _CHOPPY_BLOCKED,
+    "BULL_TRENDING": _BULL_TREND_BLOCKED,
+    "CHOPPY": _NEUTRAL_CHOP_BLOCKED,
     # New 5-state names
     "STRESS_RISK_OFF": _BEAR_DAY_BLOCKED,
     "HIGH_VOL_DOWNTREND": _HIGH_VOL_BLOCKED,
-    "DEFENSIVE_DOWNTREND": _CHOPPY_BLOCKED,
-    "BULL_TREND": frozenset(),
-    "NEUTRAL_CHOP": _CHOPPY_BLOCKED,
+    "DEFENSIVE_DOWNTREND": _DEFENSIVE_BLOCKED,
+    "BULL_TREND": _BULL_TREND_BLOCKED,
+    "NEUTRAL_CHOP": _NEUTRAL_CHOP_BLOCKED,
     "UNKNOWN": _BEAR_DAY_BLOCKED,
 }
 
@@ -264,6 +268,13 @@ def evaluate_signals(
         and "iv_compression" not in blocked
     ):
         matched.append("iv_compression")
+
+    # Range reversion: extreme oversold within confirmed range-bound conditions.
+    # The adx < 20 gate implicitly restricts this to non-trending regimes, so no
+    # explicit regime block is needed — it naturally fires in NEUTRAL_CHOP and
+    # quiet DEFENSIVE_DOWNTREND but not in trending bull/bear regimes.
+    if adx < 20 and bb < 0.10 and rsi < 30 and "range_reversion" not in blocked:
+        matched.append("range_reversion")
 
     # Momentum
     if (

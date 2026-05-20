@@ -540,7 +540,7 @@ def _bootstrap_cell_ci(
 # Signals exempt from the cross-sectional RS rank filter.
 # mean_reversion deliberately buys beaten-down stocks (low RS expected).
 # insider_buying and pead are fundamental/event signals, not price-momentum.
-_RS_EXEMPT_SIGNALS = frozenset({"mean_reversion", "insider_buying", "pead"})
+_RS_EXEMPT_SIGNALS = frozenset({"mean_reversion", "range_reversion", "insider_buying", "pead"})
 
 
 def _compute_rs_ranks(
@@ -618,14 +618,15 @@ def _run_simulation(
     risk_config: RiskConfig | None = None,
     rs_ranks: dict[str, dict[str, float]] | None = None,
     rs_top_pct: float = 0.75,
-    stop_activation_delay: int = 1,
+    stop_activation_delay: int = 2,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo).
 
     stop_activation_delay: stop-loss checks are skipped for trading_days_held in
-    [1, stop_activation_delay] (inclusive).  Default 1 skips Day 1 stop checks,
-    where gap-through exits average -5% at 0% WR but Day 3 recovers to 56-68% WR.
+    [1, stop_activation_delay] (inclusive).  Default 2 skips Day 1 and Day 2 stop
+    checks — Day 2 exits show the same gap-through pattern as Day 1 (WR 2-8%, avg
+    -5 to -8%) while Day 3 recovers to 55-69% WR.
     Set to 0 to disable the delay and restore the original always-on behaviour."""
     rc = risk_config or RiskConfig.from_config()
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
