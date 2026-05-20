@@ -803,6 +803,33 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.40 — May 2026 — cross-sectional relative strength rank filter
+
+- **`_compute_rs_ranks` (new helper in `backtest/engine.py`).** Vectorised cross-sectional RS rank using `pandas.rank(axis=1, pct=True)`. For each date, computes each symbol's 20-day excess return over SPY, ranks them within the universe, and returns a `dict[sym][date_str] = percentile (0–100)`. Returns `{}` if fewer than 4 symbols or no SPY data — below this threshold ranks are meaningless.
+- **`_run_simulation` RS rank filter.** Non-exempt signals from symbols with `rank_pct < 75` (i.e. below the 75th percentile of excess 20d return over SPY) are silently skipped. Exempt signals: `mean_reversion` (deliberately buys weak stocks), `insider_buying`, `pead` (event-driven). The filter is always on; set `rs_top_pct=0.0` to disable. Wired into all five `run_*` entry points.
+- **`ret_20d` added** to `_compute_indicators` / `_build_indicators` for both backtest and live path.
+- **Live scanning extended.** `get_spy_20d_return()` fetches live SPY 20-day return. `summarise_for_ai` exposes `ret_20d_pct`. `get_market_snapshots` adds `rel_strength_20d` per snapshot (excess over SPY), then computes cross-sectional `rs_rank_pct` (0–100) when ≥4 snapshots carry `rel_strength_20d`.
+- **12 new tests** (`TestComputeRsRanks` ×2, `TestRsRankFilterContinue` ×1, `TestGetSpy20dReturn` ×2, `TestRsRankPctComputation` ×1); **2335 passing, 100% coverage.**
+
+---
+
+### 1.39 — May 2026 — daily P&L anchored to start-of-day baseline
+
+- **`save_daily_run` P&L fix.** Each mode-suffixed run file (open_sells, midday, close) now anchors `daily_pnl` to `load_daily_baseline()` — the open-of-day portfolio value saved at the first run — so all files show the full-day gain/loss rather than the within-run change. For the open run the result is identical (baseline == account_before). Previously the close run showed a small negative P&L because it only measured the delta since the close run started.
+- **`_BASELINE_PATH` isolation in tests.** `PortfolioTrackerBase.setUp` patches `utils.portfolio_tracker._BASELINE_PATH` directly (computed at import time from `LOG_DIR`) so baseline reads/writes are fully isolated in temp directories.
+- **1 new test** (`test_daily_pnl_anchors_to_baseline_when_available`); **2321 passing, 100% coverage.**
+
+---
+
+### 1.38 — May 2026 — 5-state market regime detection with hysteresis
+
+- **`signals/market_regime.py` (new shared module).** Replaces the duplicated inline regime logic in `backtest/engine.py` and `execution/stock_scanner.py`. Exports `compute_regime_series(spy_df, vix_df, trading_dates)` → `dict[date_str, regime]` with five states: `BULL_TREND`, `NEUTRAL`, `CHOPPY`, `BEAR_DAY`, `STRESS_RISK_OFF`. Hysteresis via `_transition_with_hysteresis()` prevents single-bar whipsaws.
+- **`REGIME_BLOCKED` canonical dict** now lives in `signals/evaluator.py` and is shared by both the backtest engine and the live scanner — no more silent divergence.
+- **Full test suite:** `TestMarketRegime` ×24, `TestComputeRegimeSeries` + helpers; 100% coverage enforced.
+- **2320 tests, 100% coverage.**
+
+---
+
 ### 1.37 — May 2026 — FMP fundamentals and analyst consensus
 
 - **`data/fundamentals.py` (new).** Fetches financial ratios (ROE, profit margin, D/E, current ratio) via FMP `/v3/ratios-ttm/{symbol}` and analyst consensus (bullish %, bearish %, analyst count, price target) via `/v3/analyst-stock-recommendations/` + `/v3/price-target-consensus/`. Both use a 24-hour JSON cache so the initial fill costs ~150 FMP calls and subsequent runs cost nothing. Falls back to empty gracefully when `FMP_API_KEY` is unset.
