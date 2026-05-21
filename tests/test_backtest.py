@@ -105,6 +105,7 @@ def _make_row(**kwargs) -> pd.Series:
         "close_above_open": False,
         "mom_12_1": 0.0,
         "hv_rank": 1.0,
+        "rsi_divergence": False,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -596,6 +597,58 @@ class TestRangeReversionSignal(unittest.TestCase):
     def test_signal_priority_between_iv_compression_and_mean_reversion(self):
         self.assertGreater(_SIGNAL_PRIORITY["range_reversion"], _SIGNAL_PRIORITY["iv_compression"])
         self.assertLess(_SIGNAL_PRIORITY["range_reversion"], _SIGNAL_PRIORITY["mean_reversion"])
+
+
+class TestRsiDivergenceSignal(unittest.TestCase):
+    """rsi_divergence: bullish RSI divergence (price lower, RSI higher vs 5d ago) in ranging conditions."""
+
+    def _row(self, **kw):
+        kw.setdefault("rsi_divergence", True)
+        kw.setdefault("adx", 20)
+        kw.setdefault("rsi", 38)
+        kw.setdefault("vol_ratio", 1.2)
+        return _make_row(**kw)
+
+    def test_fires_in_neutral_chop(self):
+        row = self._row()
+        self.assertEqual(_entry_signal(row, regime="NEUTRAL_CHOP"), "rsi_divergence")
+
+    def test_fires_without_regime(self):
+        row = self._row()
+        self.assertEqual(_entry_signal(row), "rsi_divergence")
+
+    def test_no_fire_when_divergence_false(self):
+        row = _make_row(rsi_divergence=False, adx=20, rsi=38, vol_ratio=1.2)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_when_adx_too_high(self):
+        row = self._row(adx=26)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_when_rsi_too_high(self):
+        row = self._row(rsi=46)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_no_fire_when_vol_too_low(self):
+        row = self._row(vol_ratio=0.9)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_blocked_in_bull_trend(self):
+        row = self._row()
+        self.assertIsNone(_entry_signal(row, regime="BULL_TRENDING"))
+
+    def test_blocked_in_stress_risk_off(self):
+        row = self._row()
+        self.assertIsNone(_entry_signal(row, regime="BEAR_DAY"))
+
+    def test_rs_exempt(self):
+        from backtest.engine import _RS_EXEMPT_SIGNALS
+
+        self.assertIn("rsi_divergence", _RS_EXEMPT_SIGNALS)
+
+    def test_priority_between_range_reversion_and_mean_reversion(self):
+        self.assertGreater(_SIGNAL_PRIORITY["rsi_divergence"], _SIGNAL_PRIORITY["range_reversion"])
+        self.assertLess(_SIGNAL_PRIORITY["rsi_divergence"], _SIGNAL_PRIORITY["mean_reversion"])
 
 
 class TestMomentum121Signal(unittest.TestCase):

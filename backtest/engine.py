@@ -154,6 +154,13 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["hv_20d"] = daily_returns.rolling(20).std() * math.sqrt(252) * 100
     df["hv_rank"] = df["hv_20d"].rolling(252, min_periods=30).rank(pct=True)
 
+    # RSI divergence: price lower than 5 days ago but RSI higher — structural bullish divergence.
+    # Gates (adx < 25, rsi < 45, vol) are applied in evaluate_signals(); this column captures
+    # the pure price/RSI structural pattern.
+    df["rsi_divergence"] = ((close < close.shift(5)) & (df["rsi"] > df["rsi"].shift(5))).fillna(
+        False
+    )
+
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
 
@@ -185,6 +192,7 @@ def _row_to_snapshot(
         "is_inside_day": bool(row.get("is_inside_day", False)),
         "gap_pct": float(row.get("gap_pct", 0)),
         "close_above_open": bool(row.get("close_above_open", False)),
+        "rsi_divergence": bool(row.get("rsi_divergence", False)),
         "spy_ret_5d": spy_ret_5d,
         "spy_ret_10d": spy_ret_10d,
     }
@@ -541,7 +549,9 @@ def _bootstrap_cell_ci(
 # Signals exempt from the cross-sectional RS rank filter.
 # mean_reversion deliberately buys beaten-down stocks (low RS expected).
 # insider_buying and pead are fundamental/event signals, not price-momentum.
-_RS_EXEMPT_SIGNALS = frozenset({"mean_reversion", "range_reversion", "insider_buying", "pead"})
+_RS_EXEMPT_SIGNALS = frozenset(
+    {"mean_reversion", "range_reversion", "rsi_divergence", "insider_buying", "pead"}
+)
 
 
 def _compute_rs_ranks(
@@ -940,6 +950,7 @@ def _run_simulation(
         "bb_squeeze",
         "trend_pullback",
         "breakout_52w",
+        "rsi_divergence",
     ]
     if any("is_inside_day" in df.columns for df in indicators.values()):
         signals_tested.append("inside_day_breakout")
@@ -978,6 +989,8 @@ def _run_simulation(
         "intraday_momentum",
         "insider_buying",
         "pead",
+        "rsi_divergence",
+        "range_reversion",
     }
     signals_not_tested = sorted(all_backtestable - set(signals_tested))
 

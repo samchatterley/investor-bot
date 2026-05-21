@@ -622,6 +622,25 @@ class TestRegimeBlocking(unittest.TestCase):
         result = prefilter_candidates([snap], regime="CHOPPY")
         self.assertEqual(result, [])
 
+    def test_iv_compression_blocked_in_neutral_chop(self):
+        # iv_compression blocked in NEUTRAL_CHOP: WR 51%, avg +0.0%, n=506
+        snap = _snap(hv_rank=0.10, ema9_above_ema21=True, vol_ratio=1.2)
+        result = prefilter_candidates([snap], regime="NEUTRAL_CHOP")
+        signals = result[0]["matched_signals"] if result else []
+        self.assertNotIn("iv_compression", signals)
+
+    def test_rsi_divergence_fires_in_neutral_chop(self):
+        snap = _snap(rsi_divergence=True, adx=20, rsi_14=38, vol_ratio=1.2)
+        result = prefilter_candidates([snap], regime="NEUTRAL_CHOP")
+        self.assertTrue(result)
+        self.assertIn("rsi_divergence", result[0]["matched_signals"])
+
+    def test_rsi_divergence_blocked_in_bull_trend(self):
+        snap = _snap(rsi_divergence=True, adx=20, rsi_14=38, vol_ratio=1.2)
+        result = prefilter_candidates([snap], regime="BULL_TRENDING")
+        signals = result[0]["matched_signals"] if result else []
+        self.assertNotIn("rsi_divergence", signals)
+
 
 class TestEvaluateSignalsNoneGuard(unittest.TestCase):
     """evaluate_signals must not crash when snapshot fields are None (market_data gaps)."""

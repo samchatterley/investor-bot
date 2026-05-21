@@ -803,6 +803,16 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.44 — May 2026 — iv_compression blocked in NEUTRAL_CHOP + rsi_divergence signal
+
+- **`iv_compression` blocked in `NEUTRAL_CHOP`.** Backtest shows WR 51%, avg +0.0%, n=506 — 506 trades generating zero net alpha, well below the 0.32% round-trip cost threshold. Removed by adding to `_NEUTRAL_CHOP_BLOCKED`. Remains active in BULL_TREND (WR 62%, avg +1.2%, n=13, small but positive) and HIGH_VOL_DOWNTREND.
+- **`rsi_divergence` signal (new).** Fires when price is lower than 5 days ago but RSI is recovering (bullish structural divergence). Signal gates in `evaluate_signals()`: `adx < 25` (range-bound), `rsi < 45` (in oversold territory), `vol > 1.0`. The structural divergence condition (price/RSI comparison) is pre-computed as a boolean column `rsi_divergence` in both `_compute_indicators()` (backtest) and `fetch_stock_data()` (live). Priority 12 — between `range_reversion` (11) and `mean_reversion` (13). RS-exempt (buys weakness like mean_reversion).
+- **Regime blocking for `rsi_divergence`:** Blocked in `BULL_TREND` (divergence in uptrends is consolidation, not reversal) and `STRESS_RISK_OFF`/`BEAR_DAY` (no mean-reversion buying in stress regimes). Fires in `NEUTRAL_CHOP`, `DEFENSIVE_DOWNTREND`, and `HIGH_VOL_DOWNTREND` — evaluation will determine if blocking is needed after first backtest.
+- **`range_reversion` added to `all_backtestable`** — previously missing from the signals-not-tested reporting set, so it was silently excluded from `signals_not_tested` output.
+- **19 new tests** (`TestRsiDivergenceSignal` ×11, scanner iv_compression + rsi_divergence ×3, test_risk_config ×4, test_market_data rsi_divergence ×2 + required key ×1 net); **2380 passing, 100% coverage.**
+
+---
+
 ### 1.43 — May 2026 — PEAD fix, signal blocking refinements, cost sensitivity output, research-grade warnings
 
 - **PEAD portfolio trades fixed.** `run_backtest()` lacked a `use_earnings_only` parameter, so the `--use-earnings-only` CLI flag was silently dropped — earnings were never fetched in the portfolio path, producing 0 PEAD portfolio entries despite 1,543 signal-analysis occurrences. Added `use_earnings_only: bool = False` to `run_backtest()` with the same prefetch pattern as `run_signal_analysis()`.

@@ -127,6 +127,11 @@ def fetch_stock_data(
         # Inside day: today's entire range is contained within the previous day's range
         df["is_inside_day"] = (df["High"] < df["High"].shift(1)) & (df["Low"] > df["Low"].shift(1))
 
+        # RSI divergence: price lower than 5 days ago but RSI recovering (bullish structural divergence)
+        df["rsi_divergence"] = ((close < close.shift(5)) & (df["rsi"] > df["rsi"].shift(5))).fillna(
+            False
+        )
+
         # Weekly trend — resample daily to weekly, compute EMA9/EMA21/RSI on weekly candles
         try:
             weekly_close = close.resample("W-FRI").last().dropna()
@@ -205,6 +210,9 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "adx": round(float(_adx), 1)
         if (_adx := latest.get("adx")) is not None and pd.notna(_adx)
         else 30.0,
+        "rsi_divergence": bool(latest.get("rsi_divergence", False))
+        if pd.notna(latest.get("rsi_divergence", False))
+        else False,
     }
 
 

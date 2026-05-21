@@ -25,13 +25,14 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "trend_pullback": 9,
     "iv_compression": 10,
     "range_reversion": 11,
+    "rsi_divergence": 12,
     # mean_reversion outranks momentum (counter-cyclical conviction beats trend-following)
-    "mean_reversion": 12,
-    "momentum": 13,
-    "macd_crossover": 14,
-    "orb_breakout": 15,
-    "vwap_reclaim": 16,
-    "intraday_momentum": 17,
+    "mean_reversion": 13,
+    "momentum": 14,
+    "macd_crossover": 15,
+    "orb_breakout": 16,
+    "vwap_reclaim": 17,
+    "intraday_momentum": 18,
 }
 
 # Canonical default thresholds — used when no walk-forward params are supplied.
@@ -66,6 +67,7 @@ _BEAR_DAY_BLOCKED = frozenset(
         "intraday_momentum",
         "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
         "mean_reversion",  # WR 47%, p>0.05 in STRESS_RISK_OFF (n=129)
+        "rsi_divergence",  # no mean-reversion buying in stress regimes
     }
 )
 _HIGH_VOL_BLOCKED = frozenset(
@@ -91,11 +93,13 @@ _DEFENSIVE_BLOCKED = frozenset(
     }
 )
 # NEUTRAL_CHOP: mean_reversion drags (WR 49%, avg -0.1%, n=687 — p>0.05 Holm-corrected).
-_NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion"})
+# iv_compression blocked: WR 51%, avg +0.0%, n=506 — doesn't clear 0.32% round-trip cost threshold.
+_NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion", "iv_compression"})
 
 # BULL_TREND: rs_leader and momentum_12_1 have no edge (rs_leader WR 51%, avg -0.13%, n=246;
 # momentum_12_1 WR 48%, avg -0.2%, n=97 — both p>0.05 Holm-corrected).
-_BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1"})
+# rsi_divergence: divergence setups in uptrends are consolidations, not reversals worth buying.
+_BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"})
 
 REGIME_BLOCKED: dict[str, frozenset[str]] = {
     # Legacy names (kept for backward compatibility)
@@ -277,6 +281,13 @@ def evaluate_signals(
     # quiet DEFENSIVE_DOWNTREND but not in trending bull/bear regimes.
     if adx < 20 and bb < 0.10 and rsi < 30 and "range_reversion" not in blocked:
         matched.append("range_reversion")
+
+    # RSI divergence: price lower than 5 days ago but RSI recovering — bullish structural
+    # divergence in range-bound conditions.  The adx < 25 gate keeps it out of trending
+    # regimes; explicit regime blocks cover BULL_TREND and STRESS_RISK_OFF.
+    rsi_div = bool(snapshot.get("rsi_divergence", False))
+    if rsi_div and adx < 25 and rsi < 45 and vol > 1.0 and "rsi_divergence" not in blocked:
+        matched.append("rsi_divergence")
 
     # Momentum
     if (

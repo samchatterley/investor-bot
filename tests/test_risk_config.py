@@ -157,6 +157,27 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
 
         self.assertIn("momentum_12_1", REGIME_BLOCKED["BULL_TREND"])
 
+    def test_iv_compression_blocked_in_neutral_chop(self):
+        # Blocked: WR 51%, avg +0.0%, n=506 — doesn't clear 0.32% round-trip cost threshold
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("iv_compression", REGIME_BLOCKED["NEUTRAL_CHOP"])
+
+    def test_rsi_divergence_not_blocked_in_neutral_chop(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertNotIn("rsi_divergence", REGIME_BLOCKED["NEUTRAL_CHOP"])
+
+    def test_rsi_divergence_blocked_in_bull_trend(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("rsi_divergence", REGIME_BLOCKED["BULL_TREND"])
+
+    def test_rsi_divergence_blocked_in_stress_risk_off(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("rsi_divergence", REGIME_BLOCKED["STRESS_RISK_OFF"])
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

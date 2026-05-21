@@ -37,6 +37,7 @@ def _make_df(rows=3, close_vals=None):
             "bb_squeeze": [False] * n,
             "high_52w": [closes[-1] * 1.05] * n,  # 5% above current price
             "is_inside_day": [False] * n,
+            "rsi_divergence": [False] * n,
         }
     )
     return df
@@ -70,6 +71,7 @@ class TestSummariseForAI(unittest.TestCase):
             "bar_date",
             "bar_is_final",
             "data_source",
+            "rsi_divergence",
         ]:
             self.assertIn(key, result, f"Missing key: {key}")
 
@@ -250,6 +252,20 @@ class TestSummariseForAI(unittest.TestCase):
 
         result = summarise_for_ai("AAPL", _make_df())
         self.assertIsNone(result["bar_is_final"])
+
+    def test_rsi_divergence_true_when_set(self):
+        from data.market_data import summarise_for_ai
+
+        df = _make_df()
+        df["rsi_divergence"] = [False, False, True]
+        result = summarise_for_ai("AAPL", df)
+        self.assertTrue(result["rsi_divergence"])
+
+    def test_rsi_divergence_false_by_default(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", _make_df())
+        self.assertFalse(result["rsi_divergence"])
 
 
 class TestGetVix(unittest.TestCase):
