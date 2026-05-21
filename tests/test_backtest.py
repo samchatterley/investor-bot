@@ -578,10 +578,15 @@ class TestRangeReversionSignal(unittest.TestCase):
         row = _make_row(adx=15, bb_pct=0.05, rsi=32)
         self.assertIsNone(_entry_signal(row))
 
-    def test_not_blocked_in_neutral_chop(self):
-        # range_reversion is designed for NEUTRAL_CHOP — must not be in its blocked set
+    def test_blocked_in_neutral_chop(self):
+        # range_reversion blocked in NEUTRAL_CHOP: WR 46%, p>0.05, n=52
         row = _make_row(adx=15, bb_pct=0.05, rsi=25)
-        self.assertEqual(_entry_signal(row, regime="CHOPPY"), "range_reversion")
+        self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
+
+    def test_blocked_in_defensive_downtrend(self):
+        # range_reversion blocked in DEFENSIVE_DOWNTREND: WR 30%, avg -2.1%, n=10
+        row = _make_row(adx=15, bb_pct=0.05, rsi=25)
+        self.assertIsNone(_entry_signal(row, regime="DEFENSIVE_DOWNTREND"))
 
     def test_rs_exempt(self):
         from backtest.engine import _RS_EXEMPT_SIGNALS
@@ -620,9 +625,10 @@ class TestMomentum121Signal(unittest.TestCase):
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
         self.assertIsNone(_entry_signal(row, regime="CHOPPY"))
 
-    def test_allowed_on_bull_trending(self):
+    def test_blocked_on_bull_trending(self):
+        # momentum_12_1 blocked in BULL_TREND: WR 48%, avg -0.2%, n=97 (p>0.05 Holm-corrected)
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
-        self.assertEqual(_entry_signal(row, regime="BULL_TRENDING"), "momentum_12_1")
+        self.assertIsNone(_entry_signal(row, regime="BULL_TRENDING"))
 
     def test_allowed_on_high_vol(self):
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
@@ -3305,6 +3311,100 @@ class TestRunBacktextNewPaths(unittest.TestCase):
             run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07", use_fundamentals=True)
         mock_earn.assert_called_once()
         mock_ins.assert_called_once()
+
+    def test_use_earnings_only_fetches_earnings_not_insider(self):
+        """use_earnings_only=True → earnings fetched, insider NOT fetched (pead fix)."""
+        with (
+            patch("backtest.engine.yf.download", return_value=_make_raw(n=100)),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_backtest(["AAPL", "FLAT"], "2025-03-01", "2025-03-07", use_earnings_only=True)
+        mock_earn.assert_called_once()
+        mock_ins.assert_not_called()
+
+
+class TestPrintResultsHoldout(unittest.TestCase):
+    """_print_results: holdout contamination flag and bias notes."""
+
+    def _make_results(self, end="2023-12-31"):
+        return {
+            "start": "2023-01-01",
+            "end": end,
+            "initial_capital": 100_000.0,
+            "final_value": 110_000.0,
+            "total_return_pct": 10.0,
+            "total_trades": 50,
+            "win_rate_pct": 55.0,
+            "avg_return_per_trade_pct": 0.3,
+            "max_drawdown_pct": -5.0,
+            "sharpe_ratio": 0.8,
+            "by_signal": {"mean_reversion": {"wins": 30, "losses": 20, "total_return": 15.0}},
+            "signals_tested": ["mean_reversion"],
+            "equity_curve": [],
+        }
+
+    def test_holdout_flag_shown_when_contaminated(self):
+        from backtest.engine import _print_results
+
+        r = self._make_results(end="2025-01-01")
+        with patch("builtins.print") as mock_print:
+            _print_results(r)
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call.args)
+        self.assertIn("OOS", output)
+
+    def test_holdout_flag_absent_when_clean(self):
+        from backtest.engine import _print_results
+
+        r = self._make_results(end="2023-12-31")
+        with patch("builtins.print") as mock_print:
+            _print_results(r)
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call.args)
+        self.assertNotIn("OOS", output)
+
+
+class TestPrintCostSensitivity(unittest.TestCase):
+    """_print_cost_sensitivity: shows net returns at 1×/2×/3× costs, flags fragile signals."""
+
+    def _make_results(self):
+        return {
+            "by_signal": {
+                "mean_reversion": {"wins": 58, "losses": 42, "total_return": 99.0},
+                "range_reversion": {"wins": 50, "losses": 50, "total_return": 4.0},
+            }
+        }
+
+    def test_fragile_flag_on_low_edge_signal(self):
+        from backtest.engine import _print_cost_sensitivity
+
+        with patch("builtins.print") as mock_print:
+            _print_cost_sensitivity(self._make_results(), "2020-01-01", "2024-12-31")
+        output = " ".join(str(c) for call in mock_print.call_args_list for c in call.args)
+        self.assertIn("⚠", output)
+
+    def test_no_flag_on_high_edge_signal(self):
+        from backtest.engine import _print_cost_sensitivity
+
+        with patch("builtins.print") as mock_print:
+            _print_cost_sensitivity(self._make_results(), "2020-01-01", "2024-12-31")
+        lines = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+        mean_rev_line = next((ln for ln in lines if "mean_reversion" in ln), "")
+        self.assertNotIn("⚠", mean_rev_line)
+
+    def test_empty_by_signal_returns_silently(self):
+        from backtest.engine import _print_cost_sensitivity
+
+        _print_cost_sensitivity({}, "2020-01-01", "2024-12-31")
+        _print_cost_sensitivity({"by_signal": {}}, "2020-01-01", "2024-12-31")
+
+    def test_zero_trade_signal_skipped(self):
+        from backtest.engine import _print_cost_sensitivity
+
+        r = {"by_signal": {"mean_reversion": {"wins": 0, "losses": 0, "total_return": 0.0}}}
+        with patch("builtins.print") as mock_print:
+            _print_cost_sensitivity(r, "2020-01-01", "2024-12-31")
+        lines = [str(c.args[0]) for c in mock_print.call_args_list if c.args]
+        self.assertFalse(any("mean_reversion" in ln for ln in lines))
 
 
 class TestRunWalkForwardNewPaths(unittest.TestCase):

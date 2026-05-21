@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import json
 import logging
 import math
@@ -1041,6 +1042,7 @@ def run_backtest(
     use_intraday: bool = False,
     per_signal_cap: int = 2,
     use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
 ) -> dict:
 
     _assert_pre_holdout(end_date)
@@ -1048,6 +1050,7 @@ def run_backtest(
     logger.info(
         f"Backtest: {start_date} → {end_date} | {len(symbols)} symbols | ${initial_capital:.0f} capital"
         + (" | intraday=ON" if use_intraday else "")
+        + (" | earnings=ON" if use_earnings_only else "")
         + (" | fundamentals=ON" if use_fundamentals else "")
     )
 
@@ -1124,13 +1127,16 @@ def run_backtest(
     # Historical fundamentals for pead / insider_buying point-in-time simulation
     earnings_history: dict[str, list[dict]] | None = None
     insider_history: dict[str, list[dict]] | None = None
-    if use_fundamentals:
-        logger.info("Pre-fetching fundamental data (earnings + insider)…")
+    if use_fundamentals or use_earnings_only:
+        logger.info("Pre-fetching earnings history…")
         earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        logger.info("Pre-fetching insider history…")
         insider_history = prefetch_insider_history(symbols)
+    if use_fundamentals:
         logger.info(
-            f"Fundamentals ready: {len(earnings_history)} earnings, "
-            f"{len(insider_history)} insider histories"
+            f"Fundamentals ready: {len(earnings_history or {})} earnings, "
+            f"{len(insider_history or {})} insider histories"
         )
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
@@ -1999,6 +2005,7 @@ def run_signal_analysis(
     }
     _print_regime_table(out, start_date, end_date)
     _print_hold_period_table(out, start_date, end_date)
+    _print_cost_sensitivity(results, start_date, end_date)
     _print_regime_blocked(regime_blocked, start_date, end_date)
     return out
 
@@ -2015,6 +2022,9 @@ def _print_regime_table(r: dict, start_date: str, end_date: str) -> None:
     print(f"  REGIME-STRATIFIED SIGNAL BREAKDOWN  {start_date} → {end_date}")
     print("=" * 68)
     print("  NOTE: Rule proxy only — survivorship risk, no delisted symbols.")
+    print("  COUNTS: Signal-analysis trade counts include all signal occurrences;")
+    print("  portfolio trade counts (run_backtest) apply additional RS-rank, per-signal-cap,")
+    print("  and cash constraints — expect lower portfolio counts for the same run.")
     for sig in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
         if sig not in stats:
             continue
@@ -2077,6 +2087,44 @@ def _print_hold_period_table(r: dict, start_date: str, end_date: str) -> None:
             flag = "  ← decays" if avg < -0.1 else ""
             print(f"    Day {d}:  WR {wr:>3.0f}%  avg {avg:>+5.1f}%  {n:>3} trades{flag}")
     print("\n" + "=" * 68 + "\n")
+
+
+def _print_cost_sensitivity(results: dict, start_date: str, end_date: str) -> None:
+    """Show net-return sensitivity at 1×/2×/3× the modelled round-trip cost.
+
+    Costs are already baked into pnl_pct at trade time.  To model higher costs,
+    we subtract additional round-trip increments of (SLIPPAGE_BPS + SPREAD_BPS) * 2.
+    Signals with avg return < 2× base costs are flagged as cost-sensitive.
+    """
+    by_signal = results.get("by_signal", {})
+    if not by_signal:
+        return
+    base_one_way_bps = SLIPPAGE_BPS + SPREAD_BPS
+    rt_increment_pct = base_one_way_bps * 2 / 10_000
+    print("\n" + "=" * 68)
+    print(f"  COST SENSITIVITY  {start_date} → {end_date}")
+    print("=" * 68)
+    print(
+        f"  Costs already applied at 1× ({SLIPPAGE_BPS} slippage + {SPREAD_BPS} spread bps one-way = "
+        f"{base_one_way_bps * 2} bps round-trip)."
+    )
+    print("  Columns show net avg return if costs were 1×/2×/3× modelled level.")
+    print(f"  ⚠ = edge < 2× base round-trip cost ({base_one_way_bps * 2} bps) — fragile.\n")
+    print(f"  {'Signal':<25}  {'Trades':>6}  {'1× (now)':>9}  {'2× costs':>9}  {'3× costs':>9}")
+    print("  " + "-" * 62)
+    for sig in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
+        if sig not in by_signal:
+            continue
+        d = by_signal[sig]
+        n = d["wins"] + d["losses"]
+        if n == 0:
+            continue
+        avg = d["total_return"] / n
+        at_2x = avg - rt_increment_pct
+        at_3x = avg - 2 * rt_increment_pct
+        fragile = "  ⚠" if avg < 2 * rt_increment_pct else ""
+        print(f"  {sig:<25}  {n:>6}  {avg:>+8.2f}%  {at_2x:>+8.2f}%  {at_3x:>+8.2f}%{fragile}")
+    print("=" * 68 + "\n")
 
 
 def _print_regime_blocked(
@@ -2260,6 +2308,9 @@ def _save_results(r: dict):
 
 def _print_results(r: dict):
     tested = r.get("signals_tested", [])
+    holdout_contaminated = False
+    with contextlib.suppress(KeyError, ValueError):
+        holdout_contaminated = datetime.strptime(r["end"], "%Y-%m-%d").date() >= HOLDOUT_START_DATE
     print("\n" + "=" * 60)
     print(f"  BACKTEST RESULTS  {r['start']} → {r['end']}")
     print("=" * 60)
@@ -2267,6 +2318,9 @@ def _print_results(r: dict):
     print("        (Claude, news, options, macro context excluded).")
     print("  BIAS: Universe from current tradable listings — survivorship")
     print("        risk present; delistings and failures not represented.")
+    if holdout_contaminated:
+        print(f"  OOS:  Run overlaps holdout (post {HOLDOUT_START_DATE}) —")
+        print("        results are NOT independent out-of-sample evidence.")
     print(f"  Signals tested:    {', '.join(tested)}")
     print(f"  Initial capital:   ${r['initial_capital']:.2f}")
     print(f"  Final value:       ${r['final_value']:.2f}")
@@ -2454,4 +2508,5 @@ if __name__ == "__main__":  # pragma: no cover
             use_intraday=args.use_intraday,
             per_signal_cap=args.per_signal_cap,
             use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
         )

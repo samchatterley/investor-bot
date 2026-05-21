@@ -803,6 +803,19 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.43 — May 2026 — PEAD fix, signal blocking refinements, cost sensitivity output, research-grade warnings
+
+- **PEAD portfolio trades fixed.** `run_backtest()` lacked a `use_earnings_only` parameter, so the `--use-earnings-only` CLI flag was silently dropped — earnings were never fetched in the portfolio path, producing 0 PEAD portfolio entries despite 1,543 signal-analysis occurrences. Added `use_earnings_only: bool = False` to `run_backtest()` with the same prefetch pattern as `run_signal_analysis()`.
+- **`range_reversion` blocked in `NEUTRAL_CHOP` and `DEFENSIVE_DOWNTREND`.** Backtest shows WR 46%, avg -0.0%, p>0.05, n=52 in NEUTRAL_CHOP (its target regime) and WR 30%, avg -2.1%, n=10 in DEFENSIVE_DOWNTREND. Both fail to clear the 2× round-trip cost threshold (0.32%). Added to `_DEFENSIVE_BLOCKED`, which propagates automatically to `_NEUTRAL_CHOP_BLOCKED`. Signal remains active in `HIGH_VOL_DOWNTREND` and `STRESS_RISK_OFF` (small n, positive, ADX gate mostly prevents misfires anyway).
+- **`momentum_12_1` blocked in `BULL_TREND`.** WR 48%, avg -0.2%, n=97 — large enough sample (p>0.05 Holm-corrected) to confirm no edge in trend-following conditions. Added to `_BULL_TREND_BLOCKED`.
+- **Cost sensitivity table in signal analysis output.** `_print_cost_sensitivity()` appended to `run_signal_analysis` output — shows each signal's avg return at 1×, 2×, and 3× the modelled cost (SLIPPAGE_BPS + SPREAD_BPS). Signals with avg < 2× round-trip cost (0.32% at current settings) are flagged ⚠ as fragile.
+- **Signal-analysis vs portfolio count discrepancy note.** `_print_regime_table` header now explains that signal-analysis counts all occurrences while portfolio counts apply RS-rank, per-signal-cap, and cash constraints — clarifying the systematic difference without implying a bug.
+- **Holdout contamination flag in `_print_results`.** Runs with `end_date ≥ HOLDOUT_START_DATE` (2024-01-01) now print a clear `OOS: Run overlaps holdout` warning so results are not mistaken for independent out-of-sample evidence.
+- **Survivorship/proxy warning in dashboard.** Backtest page now shows a persistent warning banner noting the rule-proxy nature of the backtest (no Claude judgement, news, options, macro context) and that the universe uses current tradable listings (survivorship bias present). By-signal table flags signals with n < 30 with `*` and a caption.
+- **10 new tests** (`TestPrintResultsHoldout` ×2, `TestPrintCostSensitivity` ×4, `test_use_earnings_only_fetches_earnings_not_insider` ×1, `test_blocked_in_defensive_downtrend` ×1, `test_momentum_12_1_blocked_in_bull_trend` ×1, `test_results_all_signals_high_n_no_caption` ×1); **2361 passing, 100% coverage.**
+
+---
+
 ### 1.42 — May 2026 — regime blocking refinements + range_reversion signal + stop delay extension
 
 - **`mean_reversion` blocked in `NEUTRAL_CHOP` and `STRESS_RISK_OFF`.** Backtest analysis (2015–2026) showed mean_reversion carries negative expected value in these regimes: WR 49%, avg -0.1%, n=687 (p>0.05 Holm-corrected) in NEUTRAL_CHOP; WR 47%, p>0.05 (n=129) in STRESS_RISK_OFF. The signal retains edge in DEFENSIVE_DOWNTREND (WR 53%, avg +0.6%, n=112) and remains unblocked there.

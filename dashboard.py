@@ -562,6 +562,11 @@ elif page == "Backtest":
             "No backtest results yet. Run: `python cli.py backtest --start 2025-01-01 --end 2025-12-31`"
         )
     else:
+        st.warning(
+            "**Rule proxy only** — excludes Claude judgement, news, options, and macro context. "
+            "Universe uses current tradable listings: **survivorship bias present**, no delisted symbols. "
+            "Results are research-grade signal triage, not deployment-confidence evidence."
+        )
         st.caption(
             f"Period: **{results['start']}** → **{results['end']}**  ·  "
             f"Initial capital: **${results['initial_capital']:,.2f}**"
@@ -596,13 +601,17 @@ elif page == "Backtest":
         if results.get("by_signal"):
             _section("Performance by Signal")
             rows = []
+            low_n_present = False
             for sig, data in results["by_signal"].items():
                 total = data["wins"] + data["losses"]
                 wr = data["wins"] / total * 100 if total else 0
                 avg = data["total_return"] / total if total else 0
+                low_n = total < 30
+                if low_n:
+                    low_n_present = True
                 rows.append(
                     {
-                        "Signal": sig,
+                        "Signal": f"{sig} *" if low_n else sig,
                         "Trades": total,
                         "Win Rate": f"{wr:.0f}%",
                         "Avg Return": f"{avg:+.2f}%",
@@ -610,6 +619,8 @@ elif page == "Backtest":
                     }
                 )
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            if low_n_present:
+                st.caption("\\* n < 30 — low confidence, suggestive only.")
 
         if results.get("trades"):
             with st.expander("Full trade log"):

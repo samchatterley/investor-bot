@@ -139,17 +139,23 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
         }
         self.assertNotIn("_REGIME_BLOCKED", names)
 
-    def test_range_reversion_not_blocked_in_choppy(self):
+    def test_range_reversion_blocked_in_choppy(self):
+        # Blocked: WR 46%, p>0.05, n=52 in NEUTRAL_CHOP
         from signals.evaluator import REGIME_BLOCKED
 
-        self.assertNotIn("range_reversion", REGIME_BLOCKED["CHOPPY"])
+        self.assertIn("range_reversion", REGIME_BLOCKED["CHOPPY"])
 
-    def test_range_reversion_not_blocked_in_bear_day(self):
-        # range_reversion uses adx < 20 gate — bear markets are trending (adx >= 20),
-        # so the signal naturally doesn't fire; explicit blocking is unnecessary
+    def test_range_reversion_blocked_in_defensive_downtrend(self):
+        # Blocked: WR 30%, avg -2.1% in DEFENSIVE_DOWNTREND (n=10)
         from signals.evaluator import REGIME_BLOCKED
 
-        self.assertNotIn("range_reversion", REGIME_BLOCKED["BEAR_DAY"])
+        self.assertIn("range_reversion", REGIME_BLOCKED["DEFENSIVE_DOWNTREND"])
+
+    def test_momentum_12_1_blocked_in_bull_trend(self):
+        # Blocked: WR 48%, avg -0.2%, n=97 in BULL_TREND (p>0.05 Holm-corrected)
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("momentum_12_1", REGIME_BLOCKED["BULL_TREND"])
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -87,13 +87,15 @@ _DEFENSIVE_BLOCKED = frozenset(
         "gap_and_go",
         "macd_crossover",  # -2.0% avg in CHOPPY — n=33
         "inside_day_breakout",  # -0.6% avg in CHOPPY — n=101
+        "range_reversion",  # WR 30%, avg -2.1% in DEFENSIVE_DOWNTREND (n=10); WR 46%, p>0.05 in NEUTRAL_CHOP (n=52)
     }
 )
 # NEUTRAL_CHOP: mean_reversion drags (WR 49%, avg -0.1%, n=687 — p>0.05 Holm-corrected).
 _NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion"})
 
-# BULL_TREND: rs_leader has no edge (WR 51%, avg -0.13%, n=246 — all trades in this regime).
-_BULL_TREND_BLOCKED = frozenset({"rs_leader"})
+# BULL_TREND: rs_leader and momentum_12_1 have no edge (rs_leader WR 51%, avg -0.13%, n=246;
+# momentum_12_1 WR 48%, avg -0.2%, n=97 — both p>0.05 Holm-corrected).
+_BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1"})
 
 REGIME_BLOCKED: dict[str, frozenset[str]] = {
     # Legacy names (kept for backward compatibility)

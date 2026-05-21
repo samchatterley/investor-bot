@@ -435,6 +435,14 @@ class TestBacktestPage(unittest.TestCase):
         _, mock_st = _reload("Backtest", os_exists=True, open_data=json.dumps(r))
         mock_st.columns.assert_called()
 
+    def test_results_all_signals_high_n_no_caption(self):
+        # Covers 610->612 False branch (low_n=False) and 622->625 False branch (low_n_present=False)
+        r = json.loads(_backtest_results(with_signals=True))
+        r["by_signal"]["momentum"]["wins"] = 20
+        r["by_signal"]["momentum"]["losses"] = 15  # n=35 >= 30
+        _, mock_st = _reload("Backtest", os_exists=True, open_data=json.dumps(r))
+        mock_st.columns.assert_called()
+
 
 # ── Diagnostics page (lines 552-608) ─────────────────────────────────────────
 

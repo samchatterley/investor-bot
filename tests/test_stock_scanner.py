@@ -616,12 +616,11 @@ class TestRegimeBlocking(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIn("mean_reversion", result[0]["matched_signals"])
 
-    def test_range_reversion_fires_in_neutral_chop(self):
-        # range_reversion is designed for NEUTRAL_CHOP — must survive the CHOPPY blocked set
+    def test_range_reversion_blocked_in_neutral_chop(self):
+        # range_reversion blocked in CHOPPY/NEUTRAL_CHOP: WR 46%, p>0.05, n=52
         snap = _snap(rsi_14=25, bb_pct=0.05, adx=15)
         result = prefilter_candidates([snap], regime="CHOPPY")
-        self.assertEqual(len(result), 1)
-        self.assertIn("range_reversion", result[0]["matched_signals"])
+        self.assertEqual(result, [])
 
 
 class TestEvaluateSignalsNoneGuard(unittest.TestCase):
