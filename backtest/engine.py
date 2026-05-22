@@ -1056,6 +1056,7 @@ def run_backtest(
     per_signal_cap: int = 2,
     use_fundamentals: bool = False,
     use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
 ) -> dict:
 
     _assert_pre_holdout(end_date)
@@ -1171,6 +1172,7 @@ def run_backtest(
         earnings_history=earnings_history,
         insider_history=insider_history,
         rs_ranks=rs_ranks,
+        disabled_signals=disabled_signals,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -1437,6 +1439,7 @@ def run_ablation(
     per_signal_cap: int = 2,
     use_fundamentals: bool = False,
     use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
 ) -> dict:
     """Measure each signal's marginal contribution to portfolio Sharpe.
 
@@ -1547,6 +1550,7 @@ def run_ablation(
         "earnings_history": earnings_history,
         "insider_history": insider_history,
         "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
+        "disabled_signals": disabled_signals,
     }
 
     logger.info("Ablation: running baseline…")
@@ -1558,8 +1562,10 @@ def run_ablation(
         result = _run_simulation(
             indicators,
             trading_dates,
-            **sim_kwargs,
-            disabled_signals=frozenset({signal_name}),
+            **{
+                **sim_kwargs,
+                "disabled_signals": frozenset({signal_name}) | (disabled_signals or frozenset()),
+            },
         )
         baseline_sig = baseline["by_signal"].get(signal_name, {})
         baseline_trades = baseline_sig.get("wins", 0) + baseline_sig.get("losses", 0)
@@ -1593,6 +1599,7 @@ def run_backward_elimination(
     per_signal_cap: int = 2,
     use_fundamentals: bool = False,
     use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
 ) -> dict:
     """Greedy backward elimination: iteratively remove the signal that most
     improves Sharpe, until no remaining signal is a net drag.
@@ -1707,6 +1714,7 @@ def run_backward_elimination(
         "earnings_history": earnings_history,
         "insider_history": insider_history,
         "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
+        "disabled_signals": disabled_signals,
     }
 
     logger.info("Backward elimination: running baseline…")
@@ -1730,8 +1738,11 @@ def run_backward_elimination(
             trial = _run_simulation(
                 indicators,
                 trading_dates,
-                **sim_kwargs,
-                disabled_signals=frozenset(disabled | {signal_name}),
+                **{
+                    **sim_kwargs,
+                    "disabled_signals": frozenset(disabled | {signal_name})
+                    | (disabled_signals or frozenset()),
+                },
             )
             delta = trial["sharpe_ratio"] - current_result["sharpe_ratio"]
             sig_data = current_result["by_signal"].get(signal_name, {})
@@ -1851,6 +1862,7 @@ def run_signal_analysis(
     per_signal_cap: int = 2,
     use_fundamentals: bool = False,
     use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
 ) -> dict:
     """Run a single simulation with enriched trade metadata, then produce:
 
@@ -1954,6 +1966,7 @@ def run_signal_analysis(
         earnings_history=earnings_history,
         insider_history=insider_history,
         rs_ranks=_compute_rs_ranks(indicators, spy_indicators),
+        disabled_signals=disabled_signals,
     )
 
     closed = [
@@ -2421,6 +2434,11 @@ if __name__ == "__main__":  # pragma: no cover
         help="Comma-separated signals to disable globally (e.g. rs_leader,momentum_12_1)",
     )
     args = parser.parse_args()
+    _disabled = (
+        frozenset(s.strip() for s in args.disabled_signals.split(",") if s.strip())
+        if args.disabled_signals
+        else None
+    )
     if args.holdout:
         if not args.version:
             parser.error("--holdout requires --version (e.g. --version v1.29)")
@@ -2438,13 +2456,9 @@ if __name__ == "__main__":  # pragma: no cover
             per_signal_cap=args.per_signal_cap,
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
         )
     elif args.walk_forward:
-        _disabled = (
-            frozenset(s.strip() for s in args.disabled_signals.split(",") if s.strip())
-            if args.disabled_signals
-            else None
-        )
         result = run_walk_forward_optimized(
             STOCK_UNIVERSE,
             args.start,
@@ -2501,6 +2515,7 @@ if __name__ == "__main__":  # pragma: no cover
             per_signal_cap=args.per_signal_cap,
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
         )
     elif args.ablation:
         run_ablation(
@@ -2511,6 +2526,7 @@ if __name__ == "__main__":  # pragma: no cover
             per_signal_cap=args.per_signal_cap,
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
         )
     else:
         run_backtest(
@@ -2522,4 +2538,5 @@ if __name__ == "__main__":  # pragma: no cover
             per_signal_cap=args.per_signal_cap,
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
         )

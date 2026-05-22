@@ -803,6 +803,14 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.45 — May 2026 — rsi_divergence parameter gates + disabled_signals bug fix
+
+- **`rsi_divergence` signal gates now configurable via `DEFAULT_SIGNAL_PARAMS`.** Three new walk-forward-tunable thresholds added: `rsi_div_rsi_max` (default 45.0 — gate: `rsi < this`), `rsi_div_vol_min` (default 1.0 — gate: `vol > this`), `rsi_div_bb_max` (default 1.0 — gate: `bb_pct < this`, 1.0 = no constraint). Previously hardcoded in `evaluate_signals()`; now flow through the `p` dict like all other signal params.
+- **`--disabled-signals` wired into all entry points.** The CLI flag was only connected to `run_walk_forward_optimized`. The `_disabled` parsing is now hoisted to top-level scope and passed into `run_backtest`, `run_signal_analysis`, `run_ablation`, and `run_backward_elimination`. Bug: `run_ablation` and `run_backward_elimination` passed `disabled_signals` both in `sim_kwargs` and as an explicit keyword to `_run_simulation`, causing `TypeError: got multiple values for keyword argument`. Fixed by merging the caller-specified set into the per-trial set via `{**sim_kwargs, "disabled_signals": frozenset(...) | (disabled_signals or frozenset())}`.
+- **3 new tests** (`test_rsi_div_rsi_max_param_blocks_signal`, `test_rsi_div_vol_min_param_blocks_signal`, `test_rsi_div_bb_max_param_blocks_signal`); **2382 passing, 100% coverage.**
+
+---
+
 ### 1.44 — May 2026 — iv_compression blocked in NEUTRAL_CHOP + rsi_divergence signal
 
 - **`iv_compression` blocked in `NEUTRAL_CHOP`.** Backtest shows WR 51%, avg +0.0%, n=506 — 506 trades generating zero net alpha, well below the 0.32% round-trip cost threshold. Removed by adding to `_NEUTRAL_CHOP_BLOCKED`. Remains active in BULL_TREND (WR 62%, avg +1.2%, n=13, small but positive) and HIGH_VOL_DOWNTREND.

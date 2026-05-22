@@ -650,6 +650,18 @@ class TestRsiDivergenceSignal(unittest.TestCase):
         self.assertGreater(_SIGNAL_PRIORITY["rsi_divergence"], _SIGNAL_PRIORITY["range_reversion"])
         self.assertLess(_SIGNAL_PRIORITY["rsi_divergence"], _SIGNAL_PRIORITY["mean_reversion"])
 
+    def test_rsi_div_rsi_max_param_blocks_signal(self):
+        row = self._row(rsi=40)
+        self.assertIsNone(_entry_signal(row, params={"rsi_div_rsi_max": 38.0}))
+
+    def test_rsi_div_vol_min_param_blocks_signal(self):
+        row = self._row(vol_ratio=1.2)
+        self.assertIsNone(_entry_signal(row, params={"rsi_div_vol_min": 1.3}))
+
+    def test_rsi_div_bb_max_param_blocks_signal(self):
+        row = self._row(bb_pct=0.40)
+        self.assertIsNone(_entry_signal(row, params={"rsi_div_bb_max": 0.30}))
+
 
 class TestMomentum121Signal(unittest.TestCase):
     """momentum_12_1: Jegadeesh-Titman 12-1 medium-term momentum signal."""

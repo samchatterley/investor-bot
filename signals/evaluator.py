@@ -44,6 +44,9 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "mom_vol_threshold": 1.3,
     "mom_ret5d_threshold": 1.0,
     "mom12_1_threshold": 10.0,
+    "rsi_div_rsi_max": 45.0,  # gate: rsi < this value (tighter = fewer but higher-quality trades)
+    "rsi_div_vol_min": 1.0,  # gate: vol > this value (higher = require volume confirmation)
+    "rsi_div_bb_max": 1.0,  # gate: bb_pct < this value (1.0 = no constraint; lower = lower-band only)
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
@@ -286,7 +289,14 @@ def evaluate_signals(
     # divergence in range-bound conditions.  The adx < 25 gate keeps it out of trending
     # regimes; explicit regime blocks cover BULL_TREND and STRESS_RISK_OFF.
     rsi_div = bool(snapshot.get("rsi_divergence", False))
-    if rsi_div and adx < 25 and rsi < 45 and vol > 1.0 and "rsi_divergence" not in blocked:
+    if (
+        rsi_div
+        and adx < 25
+        and rsi < p["rsi_div_rsi_max"]
+        and vol > p["rsi_div_vol_min"]
+        and bb < p["rsi_div_bb_max"]
+        and "rsi_divergence" not in blocked
+    ):
         matched.append("rsi_divergence")
 
     # Momentum
