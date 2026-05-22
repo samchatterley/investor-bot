@@ -630,7 +630,7 @@ class TestRegimeBlocking(unittest.TestCase):
         self.assertNotIn("iv_compression", signals)
 
     def test_rsi_divergence_fires_in_neutral_chop(self):
-        snap = _snap(rsi_divergence=True, adx=20, rsi_14=38, vol_ratio=1.2)
+        snap = _snap(rsi_divergence=True, adx=20, rsi_14=38, vol_ratio=1.2, bb_pct=0.20)
         result = prefilter_candidates([snap], regime="NEUTRAL_CHOP")
         self.assertTrue(result)
         self.assertIn("rsi_divergence", result[0]["matched_signals"])

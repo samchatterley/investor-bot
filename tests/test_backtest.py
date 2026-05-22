@@ -607,6 +607,7 @@ class TestRsiDivergenceSignal(unittest.TestCase):
         kw.setdefault("adx", 20)
         kw.setdefault("rsi", 38)
         kw.setdefault("vol_ratio", 1.2)
+        kw.setdefault("bb_pct", 0.20)  # must clear rsi_div_bb_max=0.30 default
         return _make_row(**kw)
 
     def test_fires_in_neutral_chop(self):
@@ -659,8 +660,9 @@ class TestRsiDivergenceSignal(unittest.TestCase):
         self.assertIsNone(_entry_signal(row, params={"rsi_div_vol_min": 1.3}))
 
     def test_rsi_div_bb_max_param_blocks_signal(self):
-        row = self._row(bb_pct=0.40)
-        self.assertIsNone(_entry_signal(row, params={"rsi_div_bb_max": 0.30}))
+        # bb_pct=0.25 is below default threshold (0.30) but above stricter threshold (0.20)
+        row = self._row(bb_pct=0.25)
+        self.assertIsNone(_entry_signal(row, params={"rsi_div_bb_max": 0.20}))
 
 
 class TestMomentum121Signal(unittest.TestCase):

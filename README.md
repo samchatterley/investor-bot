@@ -803,6 +803,13 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.46 — May 2026 — rsi_div_bb_max default tightened to 0.30
+
+- **`rsi_div_bb_max` default changed from 1.0 → 0.30.** Parameter variant testing (baseline vs vol_min=1.3 vs rsi_max=38 vs bb_max=0.30) showed variant C dominates: portfolio return +36.7% vs +31.2% baseline (+5.5pp), Sharpe 0.290 vs 0.270. Requiring price in the lower third of the Bollinger Band ensures the divergence fires on genuine lower-band touches rather than mid-band noise. Trade count 240 vs 272 — modest reduction, slot-filling role in NEUTRAL_CHOP preserved. Tightening RSI to <38 (variant B) was worse (avg -0.46%) — the RSI 38–45 zone carried the edge.
+- **0 new tests** (no new code paths; existing param test updated to use threshold=0.20 to remain a genuine non-default test); **2382 passing, 100% coverage.**
+
+---
+
 ### 1.45 — May 2026 — rsi_divergence parameter gates + disabled_signals bug fix
 
 - **`rsi_divergence` signal gates now configurable via `DEFAULT_SIGNAL_PARAMS`.** Three new walk-forward-tunable thresholds added: `rsi_div_rsi_max` (default 45.0 — gate: `rsi < this`), `rsi_div_vol_min` (default 1.0 — gate: `vol > this`), `rsi_div_bb_max` (default 1.0 — gate: `bb_pct < this`, 1.0 = no constraint). Previously hardcoded in `evaluate_signals()`; now flow through the `p` dict like all other signal params.

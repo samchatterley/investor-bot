@@ -46,7 +46,7 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "mom12_1_threshold": 10.0,
     "rsi_div_rsi_max": 45.0,  # gate: rsi < this value (tighter = fewer but higher-quality trades)
     "rsi_div_vol_min": 1.0,  # gate: vol > this value (higher = require volume confirmation)
-    "rsi_div_bb_max": 1.0,  # gate: bb_pct < this value (1.0 = no constraint; lower = lower-band only)
+    "rsi_div_bb_max": 0.30,  # gate: bb_pct < this value — lower third of BB (tightened from 1.0 in v1.46)
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
