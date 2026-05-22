@@ -38,15 +38,48 @@ SIGNAL_PRIORITY: dict[str, int] = {
 # Canonical default thresholds — used when no walk-forward params are supplied.
 # These are the source of truth; backtest/engine.py imports them.
 DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
+    # mean_reversion
     "rsi_threshold": 35.0,
     "bb_threshold": 0.25,
     "mr_vol_threshold": 1.2,
+    # momentum
     "mom_vol_threshold": 1.3,
     "mom_ret5d_threshold": 1.0,
     "mom12_1_threshold": 10.0,
-    "rsi_div_rsi_max": 45.0,  # gate: rsi < this value (tighter = fewer but higher-quality trades)
-    "rsi_div_vol_min": 1.0,  # gate: vol > this value (higher = require volume confirmation)
-    "rsi_div_bb_max": 0.30,  # gate: bb_pct < this value — lower third of BB (tightened from 1.0 in v1.46)
+    # rsi_divergence
+    "rsi_div_rsi_max": 45.0,
+    "rsi_div_vol_min": 1.0,
+    "rsi_div_bb_max": 0.30,  # tightened from 1.0 in v1.46
+    # vix_fear_reversion
+    "vfr_vol_min": 1.0,
+    # rs_leader
+    "rsl_excess_5d_min": 2.0,
+    "rsl_excess_10d_min": 3.0,
+    # breakout_52w
+    "bk52_pct_min": -3.0,  # max distance from 52w high (0 = at high; -5 = 5% below)
+    "bk52_vol_min": 1.2,
+    # gap_and_go
+    "gap_pct_min": 2.0,
+    "gap_vol_min": 1.5,
+    # bb_squeeze
+    "bbs_vol_min": 1.2,
+    # inside_day_breakout
+    "idb_vol_min": 1.1,
+    # trend_pullback
+    "tp_ema21_lo": -3.0,  # must be at least this far below EMA21
+    "tp_ema21_hi": -0.5,  # must be no more than this far below EMA21
+    "tp_rsi_lo": 40.0,  # RSI floor (not too oversold for a pullback)
+    "tp_rsi_hi": 58.0,  # RSI ceiling (not overbought)
+    "tp_vol_min": 1.0,
+    # iv_compression
+    "ivc_hv_rank_max": 0.20,  # HV rank below this = historically quiet vol
+    "ivc_vol_min": 1.1,
+    # range_reversion
+    "rr_adx_max": 20.0,  # ADX below this = range-bound
+    "rr_bb_max": 0.10,  # price in extreme lower band
+    "rr_rsi_max": 30.0,  # extreme oversold
+    # macd_crossover
+    "macd_vol_min": 1.2,
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
@@ -193,7 +226,7 @@ def evaluate_signals(
     matched: list[str] = []
 
     # Counter-cyclical — fires during fear spikes; never regime-blocked
-    if vix_spike and vol > 1.0 and "vix_fear_reversion" not in blocked:
+    if vix_spike and vol > p["vfr_vol_min"] and "vix_fear_reversion" not in blocked:
         matched.append("vix_fear_reversion")
 
     # Fundamental conviction — bypass regime filter
@@ -207,15 +240,21 @@ def evaluate_signals(
         spy_ret_5d is not None
         and spy_ret_10d is not None
         and "rs_leader" not in blocked
-        and (ret_5d - spy_ret_5d) > 2.0
-        and (ret_10d - spy_ret_10d) > 3.0
+        and (ret_5d - spy_ret_5d) > p["rsl_excess_5d_min"]
+        and (ret_10d - spy_ret_10d) > p["rsl_excess_10d_min"]
         and ema_up
         and adx >= 20
     ):
         matched.append("rs_leader")
 
     # 52-week breakout
-    if pct_52w >= -3.0 and vol > 1.2 and ema_up and adx >= 20 and "breakout_52w" not in blocked:
+    if (
+        pct_52w >= p["bk52_pct_min"]
+        and vol > p["bk52_vol_min"]
+        and ema_up
+        and adx >= 20
+        and "breakout_52w" not in blocked
+    ):
         matched.append("breakout_52w")
 
     # 12-month momentum (skipped when mom_12_1_pct field absent)
@@ -230,9 +269,9 @@ def evaluate_signals(
 
     # Gap and go
     if (
-        gap_pct > 2.0
+        gap_pct > p["gap_pct_min"]
         and close_above_open
-        and vol > 1.5
+        and vol > p["gap_vol_min"]
         and adx >= 20
         and "gap_and_go" not in blocked
     ):
@@ -241,7 +280,7 @@ def evaluate_signals(
     # Bollinger squeeze
     if (
         bb_squeeze
-        and vol > 1.2
+        and vol > p["bbs_vol_min"]
         and (ema_up or macd_diff > 0)
         and adx >= 20
         and "bb_squeeze" not in blocked
@@ -251,7 +290,7 @@ def evaluate_signals(
     # Inside day breakout
     if (
         is_inside_day
-        and vol > 1.1
+        and vol > p["idb_vol_min"]
         and (ema_up or macd_diff > 0)
         and adx >= 20
         and "inside_day_breakout" not in blocked
@@ -261,9 +300,9 @@ def evaluate_signals(
     # Trend pullback to EMA21 within uptrend
     if (
         ema_up
-        and -3.0 <= pct_ema21 <= -0.5
-        and 40 <= rsi <= 58
-        and vol > 1.0
+        and p["tp_ema21_lo"] <= pct_ema21 <= p["tp_ema21_hi"]
+        and p["tp_rsi_lo"] <= rsi <= p["tp_rsi_hi"]
+        and vol > p["tp_vol_min"]
         and adx >= 20
         and "trend_pullback" not in blocked
     ):
@@ -271,18 +310,21 @@ def evaluate_signals(
 
     # IV compression
     if (
-        hv_rank < 0.20
+        hv_rank < p["ivc_hv_rank_max"]
         and (ema_up or macd_diff > 0)
-        and vol > 1.1
+        and vol > p["ivc_vol_min"]
         and "iv_compression" not in blocked
     ):
         matched.append("iv_compression")
 
     # Range reversion: extreme oversold within confirmed range-bound conditions.
-    # The adx < 20 gate implicitly restricts this to non-trending regimes, so no
-    # explicit regime block is needed — it naturally fires in NEUTRAL_CHOP and
-    # quiet DEFENSIVE_DOWNTREND but not in trending bull/bear regimes.
-    if adx < 20 and bb < 0.10 and rsi < 30 and "range_reversion" not in blocked:
+    # The adx < rr_adx_max gate implicitly restricts this to non-trending regimes.
+    if (
+        adx < p["rr_adx_max"]
+        and bb < p["rr_bb_max"]
+        and rsi < p["rr_rsi_max"]
+        and "range_reversion" not in blocked
+    ):
         matched.append("range_reversion")
 
     # RSI divergence: price lower than 5 days ago but RSI recovering — bullish structural
@@ -320,7 +362,7 @@ def evaluate_signals(
         matched.append("mean_reversion")
 
     # MACD crossover
-    if macd_up and vol > 1.2 and adx >= 20 and "macd_crossover" not in blocked:
+    if macd_up and vol > p["macd_vol_min"] and adx >= 20 and "macd_crossover" not in blocked:
         matched.append("macd_crossover")
 
     # Intraday signals (only active when intraday fields are present in snapshot)

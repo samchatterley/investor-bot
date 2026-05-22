@@ -29,6 +29,7 @@ from backtest.engine import (
     _print_ablation_results,
     _print_backward_elimination_results,
     _print_hold_period_table,
+    _print_param_sensitivity,
     _print_regime_blocked,
     _print_regime_table,
     _print_results,
@@ -39,6 +40,7 @@ from backtest.engine import (
     run_backtest,
     run_backward_elimination,
     run_holdout_evaluation,
+    run_param_sensitivity,
     run_signal_analysis,
     run_walk_forward_optimized,
 )
@@ -2551,6 +2553,109 @@ class TestAssertPreHoldout(unittest.TestCase):
             self.fail(f"_assert_pre_holdout raised on bad input: {exc}")
 
 
+class TestRunParamSensitivity(unittest.TestCase):
+    def _run(self, param_ranges=None, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_param_sensitivity(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges=param_ranges or {"rsi_threshold": [30.0, 35.0, 40.0]},
+                **kwargs,
+            )
+
+    def test_returns_baseline_and_by_param(self):
+        result = self._run()
+        self.assertIn("baseline", result)
+        self.assertIn("by_param", result)
+
+    def test_by_param_keys_match_param_ranges(self):
+        result = self._run(
+            param_ranges={"rsi_threshold": [30.0, 40.0], "bb_threshold": [0.20, 0.30]}
+        )
+        self.assertIn("rsi_threshold", result["by_param"])
+        self.assertIn("bb_threshold", result["by_param"])
+
+    def test_each_param_has_one_result_per_value(self):
+        result = self._run(param_ranges={"rsi_threshold": [28.0, 32.0, 38.0]})
+        self.assertEqual(set(result["by_param"]["rsi_threshold"].keys()), {28.0, 32.0, 38.0})
+
+    def test_each_result_has_required_keys(self):
+        result = self._run(param_ranges={"rsi_threshold": [35.0]})
+        res = result["by_param"]["rsi_threshold"][35.0]
+        for key in ("total_return_pct", "sharpe_ratio", "total_trades"):
+            self.assertIn(key, res)
+
+    def test_baseline_is_simulation_result(self):
+        result = self._run()
+        for key in ("total_return_pct", "sharpe_ratio", "total_trades"):
+            self.assertIn(key, result["baseline"])
+
+    def test_returns_empty_on_no_indicators(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_param_sensitivity(
+                ["AAPL"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges={"rsi_threshold": [35.0]},
+            )
+        self.assertEqual(result, {})
+
+    def test_base_params_override_defaults(self):
+        result = self._run(
+            param_ranges={"rsi_threshold": [35.0]},
+            base_params={"bb_threshold": 0.15},
+        )
+        self.assertIn("baseline", result)
+
+    def test_use_earnings_only_path(self):
+        result = self._run(
+            param_ranges={"rsi_threshold": [35.0]},
+            use_earnings_only=True,
+        )
+        self.assertIn("baseline", result)
+
+    def test_use_fundamentals_path(self):
+        result = self._run(
+            param_ranges={"rsi_threshold": [35.0]},
+            use_fundamentals=True,
+        )
+        self.assertIn("baseline", result)
+
+    def test_print_param_sensitivity_no_error(self):
+        result = self._run(param_ranges={"rsi_threshold": [30.0, 35.0]})
+        try:
+            _print_param_sensitivity(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_param_sensitivity raised: {exc}")
+
+    def test_print_marks_default_value_with_arrow(self, capsys=None):
+        from signals.evaluator import DEFAULT_SIGNAL_PARAMS
+
+        default_val = DEFAULT_SIGNAL_PARAMS["rsi_threshold"]
+        result = self._run(param_ranges={"rsi_threshold": [default_val, default_val + 5]})
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_param_sensitivity(result, "2025-01-01", "2025-06-30")
+        output = buf.getvalue()
+        self.assertIn("←", output)
+
+    def test_disabled_signals_wired_through(self):
+        result = self._run(
+            param_ranges={"rsi_threshold": [35.0]},
+            disabled_signals=frozenset({"momentum"}),
+        )
+        self.assertIn("baseline", result)
+
+
 class TestRunHoldoutEvaluation(unittest.TestCase):
     def _run(self, version: str = "vTEST", tmp_dir: str | None = None):
         ohlcv = _make_ohlcv_full(300)
@@ -3713,6 +3818,76 @@ class TestRunBackwardEliminationNewPaths(unittest.TestCase):
             _print_backward_elimination_results(r, "2025-01-01", "2025-06-30")
         except Exception as exc:  # pragma: no cover
             self.fail(f"_print_backward_elimination_results raised: {exc}")
+
+
+class TestRunParamSensitivityNewPaths(unittest.TestCase):
+    """Cover SPY MultiIndex path, VIX exception path, and regime_map branch."""
+
+    _RANGES = {"rsi_threshold": [35.0]}
+
+    def test_spy_multiindex_in_param_sensitivity(self):
+        main_raw = _make_raw(n=100)
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_multi = pd.DataFrame(
+            {("Close", "SPY"): [400.0] * 100, ("Volume", "SPY"): [5_000_000] * 100},
+            index=spy_idx,
+        )
+        spy_multi.columns = pd.MultiIndex.from_tuples(spy_multi.columns)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            return main_raw if call_count[0] == 1 else spy_multi
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_param_sensitivity(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", self._RANGES
+            )
+        self.assertIn("baseline", result)
+
+    def test_vix_exception_in_param_sensitivity(self):
+        main_raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return main_raw
+            raise RuntimeError("VIX unavailable")
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_param_sensitivity(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", self._RANGES
+            )
+        self.assertIn("baseline", result)
+
+    def test_regime_map_built_when_spy_present(self):
+        main_raw = _make_raw(n=100)
+        spy_idx = pd.bdate_range("2024-11-01", periods=100)
+        spy_df = pd.DataFrame({"Close": [400.0] * 100, "Volume": [5_000_000] * 100}, index=spy_idx)
+        call_count = [0]
+
+        def _dl(sym, **kwargs):
+            call_count[0] += 1
+            return main_raw if call_count[0] == 1 else spy_df
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_param_sensitivity(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", self._RANGES
+            )
+        self.assertIn("baseline", result)
 
 
 class TestRunSignalAnalysisNewPaths(unittest.TestCase):

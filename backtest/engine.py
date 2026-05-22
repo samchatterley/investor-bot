@@ -2197,6 +2197,174 @@ def _assert_pre_holdout(end_date_str: str) -> None:
         )
 
 
+def _print_param_sensitivity(r: dict, start_date: str, end_date: str) -> None:
+    b = r["baseline"]
+    print("\n" + "=" * 72)
+    print(f"  PARAMETER SENSITIVITY  {start_date} → {end_date}")
+    print("=" * 72)
+    print(
+        f"  Baseline: Sharpe {b['sharpe_ratio']:.3f} | "
+        f"Return {b['total_return_pct']:+.1f}% | {b['total_trades']} trades"
+    )
+    for param, sweep in sorted(r["by_param"].items()):
+        print(f"\n  {param}")
+        print(f"  {'Value':>10}  {'Return%':>9}  {'Sharpe':>8}  {'ΔSharpe':>8}  {'Trades':>7}")
+        print("  " + "-" * 52)
+        for val, res in sorted(sweep.items()):
+            delta = res["sharpe_ratio"] - b["sharpe_ratio"]
+            marker = " ←" if val == DEFAULT_SIGNAL_PARAMS.get(param) else ""
+            print(
+                f"  {val:>10.4g}  {res['total_return_pct']:>9.1f}  "
+                f"{res['sharpe_ratio']:>8.3f}  {delta:>+8.3f}  "
+                f"{res['total_trades']:>7}{marker}"
+            )
+    print("=" * 72 + "\n")
+
+
+def run_param_sensitivity(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    param_ranges: dict[str, list[float]],
+    base_params: dict | None = None,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
+) -> dict:
+    """Sweep each parameter in param_ranges over its values, holding all other
+    params at base_params (defaults to DEFAULT_SIGNAL_PARAMS).
+
+    Each parameter is varied independently (one-at-a-time sensitivity), not as
+    a full grid search.  Use run_walk_forward_optimized for full grid search.
+
+    Parameters
+    ----------
+    param_ranges : dict[str, list[float]]
+        Maps each parameter name to the list of values to test.
+        Example: {"rsi_threshold": [28, 32, 35, 38, 42]}
+    base_params : dict | None
+        Starting parameter set; merged over DEFAULT_SIGNAL_PARAMS.
+
+    Returns
+    -------
+    dict with keys:
+        "baseline"  — simulation result at base_params
+        "by_param"  — {param: {value: simulation_result}}
+    """
+    _assert_pre_holdout(end_date)
+
+    logger.info(
+        f"Param sensitivity: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"{sum(len(v) for v in param_ranges.values())} total sweeps"
+        + (" | earnings=ON" if use_earnings_only else "")
+        + (" | fundamentals=ON" if use_fundamentals else "")
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:  # pragma: no branch
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:  # pragma: no branch
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):  # pragma: no branch
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed: {exc}")
+
+    vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_ps: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_ps = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_ps.index = pd.DatetimeIndex(_vix_df_ps.index).tz_localize(None)
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_ps)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals or use_earnings_only:
+        earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        insider_history = prefetch_insider_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    effective_base = {**DEFAULT_SIGNAL_PARAMS, **(base_params or {})}
+
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "params": effective_base,
+        "slippage_bps": slippage_bps,
+        "spread_bps": spread_bps,
+        "spy_indicators": spy_indicators,
+        "per_signal_cap": per_signal_cap,
+        "regime_by_date": regime_by_date or None,
+        "vix_spike_by_date": vix_spike_by_date or None,
+        "earnings_history": earnings_history,
+        "insider_history": insider_history,
+        "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
+        "disabled_signals": disabled_signals,
+    }
+
+    logger.info("Param sensitivity: running baseline…")
+    baseline = _run_simulation(indicators, trading_dates, **sim_kwargs)
+
+    by_param: dict[str, dict[float, dict]] = {}
+    for param, values in param_ranges.items():
+        logger.info(f"Param sensitivity: sweeping {param} over {values}…")
+        by_param[param] = {}
+        for val in values:
+            trial_params = {**effective_base, param: val}
+            result = _run_simulation(
+                indicators,
+                trading_dates,
+                **{**sim_kwargs, "params": trial_params},
+            )
+            by_param[param][val] = result
+
+    out = {"baseline": baseline, "by_param": by_param}
+    _print_param_sensitivity(out, start_date, end_date)
+    return out
+
+
 def run_holdout_evaluation(
     frozen_params: dict,
     version: str,

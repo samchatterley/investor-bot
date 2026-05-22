@@ -803,6 +803,14 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.47 — May 2026 — full signal parameter sweep framework
+
+- **All signal thresholds now in `DEFAULT_SIGNAL_PARAMS`.** Every hardcoded gate value in `evaluate_signals()` is now a named, walk-forward-tunable parameter. 19 new entries added across all signals: `vfr_vol_min` (vix_fear_reversion), `rsl_excess_5d_min`/`rsl_excess_10d_min` (rs_leader), `bk52_pct_min`/`bk52_vol_min` (breakout_52w), `gap_pct_min`/`gap_vol_min` (gap_and_go), `bbs_vol_min` (bb_squeeze), `idb_vol_min` (inside_day_breakout), `tp_ema21_lo`/`tp_ema21_hi`/`tp_rsi_lo`/`tp_rsi_hi`/`tp_vol_min` (trend_pullback), `ivc_hv_rank_max`/`ivc_vol_min` (iv_compression), `rr_adx_max`/`rr_bb_max`/`rr_rsi_max` (range_reversion), `macd_vol_min` (macd_crossover). All default to their previous hardcoded values — no behaviour change.
+- **`run_param_sensitivity()` (new function in `backtest/engine.py`).** One-at-a-time parameter sweep: for each parameter in `param_ranges`, runs a simulation at each candidate value while holding all other params at `base_params` (defaulting to `DEFAULT_SIGNAL_PARAMS`). Returns `{"baseline": ..., "by_param": {param: {value: sim_result}}}`. Prints a formatted table showing Return%, Sharpe, ΔSharpe, and Trades per value, marking the current default with `←`. Use to quickly identify which direction to push a threshold before committing to a walk-forward run. `--disabled-signals` and `use_earnings_only`/`use_fundamentals` all wired through.
+- **15 new tests** (`TestRunParamSensitivity` ×12, `TestRunParamSensitivityNewPaths` ×3); **2397 passing, 100% coverage.**
+
+---
+
 ### 1.46 — May 2026 — rsi_div_bb_max default tightened to 0.30
 
 - **`rsi_div_bb_max` default changed from 1.0 → 0.30.** Parameter variant testing (baseline vs vol_min=1.3 vs rsi_max=38 vs bb_max=0.30) showed variant C dominates: portfolio return +36.7% vs +31.2% baseline (+5.5pp), Sharpe 0.290 vs 0.270. Requiring price in the lower third of the Bollinger Band ensures the divergence fires on genuine lower-band touches rather than mid-band noise. Trade count 240 vs 272 — modest reduction, slot-filling role in NEUTRAL_CHOP preserved. Tightening RSI to <38 (variant B) was worse (avg -0.46%) — the RSI 38–45 zone carried the edge.
