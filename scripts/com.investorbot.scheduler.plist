@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.investorbot.scheduler</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/samchatterley/Development/Claude Test/InvestorBotHard/.venv/bin/python3</string>
+        <string>/Users/samchatterley/Development/Claude Test/InvestorBotHard/scripts/run_scheduler.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/samchatterley/Development/Claude Test/InvestorBotHard</string>
+
+    <!-- Restart immediately if the process exits for any reason -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Start automatically when loaded (on login / launchctl load) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Wait 10s before a restart so we don't spin on a hard crash -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/samchatterley/Development/Claude Test/InvestorBotHard/logs/scheduler.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/samchatterley/Development/Claude Test/InvestorBotHard/logs/scheduler.log</string>
+</dict>
+</plist>

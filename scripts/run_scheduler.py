@@ -167,5 +167,8 @@ if __name__ == "__main__":  # pragma: no cover
     logger.info("Ctrl+C to stop.")
 
     while True:
-        schedule.run_pending()
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            logger.error(f"Unexpected scheduler loop error: {e}", exc_info=True)
         time.sleep(30)
