@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/samchatterley/.claude/save_todos.py"
+          }
+        ]
+      }
+    ]
+  }
+}
