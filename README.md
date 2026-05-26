@@ -803,6 +803,13 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.48 — May 2026 — adopt 8 parameter wins from full stretch test
+
+- **Full one-at-a-time parameter sweep run across all 29 `DEFAULT_SIGNAL_PARAMS`.** 145 simulations (2015–2023). 8 clear wins adopted (Sharpe improves with flat or declining trade count — genuine quality improvement, not slot-filling): `bb_threshold` 0.25→0.15, `vfr_vol_min` 1.0→1.5, `bk52_pct_min` -3.0→-2.0, `gap_vol_min` 1.5→2.0, `tp_ema21_lo` -3.0→-2.0, `tp_rsi_lo` 40.0→50.0, `ivc_hv_rank_max` 0.20→0.10, `ivc_vol_min` 1.1→1.2. 3 suspicious results (large trade count increases) deferred for `run_signal_analysis` investigation: `rsi_div_vol_min=0.8` (+0.17 Sharpe, +139 trades), `bbs_vol_min=1.0` (+0.11 Sharpe, +250 trades), `rr_rsi_max=40` (+0.03 Sharpe, +117 trades).
+- **0 new tests** (threshold changes only; 27 test fixture values updated to match tighter thresholds); **2397 passing, 100% coverage.**
+
+---
+
 ### 1.47 — May 2026 — full signal parameter sweep framework
 
 - **All signal thresholds now in `DEFAULT_SIGNAL_PARAMS`.** Every hardcoded gate value in `evaluate_signals()` is now a named, walk-forward-tunable parameter. 19 new entries added across all signals: `vfr_vol_min` (vix_fear_reversion), `rsl_excess_5d_min`/`rsl_excess_10d_min` (rs_leader), `bk52_pct_min`/`bk52_vol_min` (breakout_52w), `gap_pct_min`/`gap_vol_min` (gap_and_go), `bbs_vol_min` (bb_squeeze), `idb_vol_min` (inside_day_breakout), `tp_ema21_lo`/`tp_ema21_hi`/`tp_rsi_lo`/`tp_rsi_hi`/`tp_vol_min` (trend_pullback), `ivc_hv_rank_max`/`ivc_vol_min` (iv_compression), `rr_adx_max`/`rr_bb_max`/`rr_rsi_max` (range_reversion), `macd_vol_min` (macd_crossover). All default to their previous hardcoded values — no behaviour change.

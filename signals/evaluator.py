@@ -40,7 +40,7 @@ SIGNAL_PRIORITY: dict[str, int] = {
 DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     # mean_reversion
     "rsi_threshold": 35.0,
-    "bb_threshold": 0.25,
+    "bb_threshold": 0.15,  # tightened from 0.25 in v1.48
     "mr_vol_threshold": 1.2,
     # momentum
     "mom_vol_threshold": 1.3,
@@ -51,29 +51,29 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "rsi_div_vol_min": 1.0,
     "rsi_div_bb_max": 0.30,  # tightened from 1.0 in v1.46
     # vix_fear_reversion
-    "vfr_vol_min": 1.0,
+    "vfr_vol_min": 1.5,  # raised from 1.0 in v1.48 — require genuine panic volume
     # rs_leader
     "rsl_excess_5d_min": 2.0,
     "rsl_excess_10d_min": 3.0,
     # breakout_52w
-    "bk52_pct_min": -3.0,  # max distance from 52w high (0 = at high; -5 = 5% below)
+    "bk52_pct_min": -2.0,  # tightened from -3.0 in v1.48 — within 2% of 52w high
     "bk52_vol_min": 1.2,
     # gap_and_go
     "gap_pct_min": 2.0,
-    "gap_vol_min": 1.5,
+    "gap_vol_min": 2.0,  # raised from 1.5 in v1.48 — strong vol confirmation for gaps
     # bb_squeeze
     "bbs_vol_min": 1.2,
     # inside_day_breakout
     "idb_vol_min": 1.1,
     # trend_pullback
-    "tp_ema21_lo": -3.0,  # must be at least this far below EMA21
+    "tp_ema21_lo": -2.0,  # tightened from -3.0 in v1.48 — buy closer to EMA support
     "tp_ema21_hi": -0.5,  # must be no more than this far below EMA21
-    "tp_rsi_lo": 40.0,  # RSI floor (not too oversold for a pullback)
+    "tp_rsi_lo": 50.0,  # raised from 40.0 in v1.48 — healthy pullback only (RSI ≥50)
     "tp_rsi_hi": 58.0,  # RSI ceiling (not overbought)
     "tp_vol_min": 1.0,
     # iv_compression
-    "ivc_hv_rank_max": 0.20,  # HV rank below this = historically quiet vol
-    "ivc_vol_min": 1.1,
+    "ivc_hv_rank_max": 0.10,  # tightened from 0.20 in v1.48 — only extreme vol compression
+    "ivc_vol_min": 1.2,  # raised from 1.1 in v1.48
     # range_reversion
     "rr_adx_max": 20.0,  # ADX below this = range-bound
     "rr_bb_max": 0.10,  # price in extreme lower band

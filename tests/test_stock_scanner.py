@@ -136,8 +136,8 @@ class TestPrefilterCandidates(unittest.TestCase):
         self.assertEqual(len(result), 1)
 
     def test_mean_reversion_signal_passes(self):
-        # rsi<35, bb<0.25, vol>1.2 (canonical thresholds from signals/evaluator.py)
-        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        # rsi<35, bb<0.15, vol>1.2 (canonical thresholds from signals/evaluator.py)
+        snap = _snap(rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
 
@@ -178,7 +178,7 @@ class TestPrefilterCandidates(unittest.TestCase):
         self.assertEqual(prefilter_candidates([]), [])
 
     def test_mixed_batch_filters_correctly(self):
-        good = _snap(symbol="GOOD", rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        good = _snap(symbol="GOOD", rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         bad = _snap(symbol="BAD")
         result = prefilter_candidates([good, bad])
         self.assertEqual(len(result), 1)
@@ -252,7 +252,7 @@ class TestPrefilterCandidates(unittest.TestCase):
         self.assertEqual(len(prefilter_candidates([snap])), 1)
 
     def test_trend_pullback_just_below_ema21_passes(self):
-        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-0.6, rsi_14=45, vol_ratio=1.1)
+        snap = _snap(ema9_above_ema21=True, price_vs_ema21_pct=-0.6, rsi_14=53, vol_ratio=1.1)
         self.assertEqual(len(prefilter_candidates([snap])), 1)
 
     def test_trend_pullback_ema_not_up_fails(self):
@@ -302,7 +302,7 @@ class TestInsiderBuyingSignal(unittest.TestCase):
 
     def test_insider_buying_combined_with_technical_signal(self):
         # insider_cluster AND mean_reversion both fire → both appear in matched_signals
-        snap = _snap(insider_cluster=True, rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        snap = _snap(insider_cluster=True, rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
         signals = result[0]["matched_signals"]
@@ -321,12 +321,12 @@ class TestMatchedSignals(unittest.TestCase):
     """prefilter_candidates annotates each result with matched_signals."""
 
     def test_matched_signals_present_on_all_results(self):
-        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        snap = _snap(rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertIn("matched_signals", result[0])
 
     def test_mean_reversion_signal_annotated(self):
-        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        snap = _snap(rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertIn("mean_reversion", result[0]["matched_signals"])
 
@@ -338,7 +338,7 @@ class TestMatchedSignals(unittest.TestCase):
     def test_multiple_signals_all_annotated(self):
         snap = _snap(
             rsi_14=30,
-            bb_pct=0.20,
+            bb_pct=0.10,
             vol_ratio=1.5,
             ema9_above_ema21=True,
             macd_diff=0.5,
@@ -483,7 +483,7 @@ class TestPassesQualityScreen(unittest.TestCase):
         self.assertEqual(prefilter_candidates([snap]), [])
 
     def test_prefilter_passes_stock_without_quality_fields(self):
-        snap = _snap(rsi_14=30, bb_pct=0.20, vol_ratio=1.3)
+        snap = _snap(rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
 
@@ -526,13 +526,13 @@ class TestIvCompressionSignal(unittest.TestCase):
     """prefilter_candidates: iv_compression — historical volatility percentile squeeze."""
 
     def test_iv_compression_fires_with_ema_confirmation(self):
-        snap = _snap(hv_rank=0.10, ema9_above_ema21=True, vol_ratio=1.2)
+        snap = _snap(hv_rank=0.05, ema9_above_ema21=True, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
         self.assertIn("iv_compression", result[0]["matched_signals"])
 
     def test_iv_compression_fires_with_macd_confirmation(self):
-        snap = _snap(hv_rank=0.15, ema9_above_ema21=False, macd_diff=0.05, vol_ratio=1.15)
+        snap = _snap(hv_rank=0.05, ema9_above_ema21=False, macd_diff=0.05, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
         self.assertIn("iv_compression", result[0]["matched_signals"])
@@ -604,14 +604,14 @@ class TestRegimeBlocking(unittest.TestCase):
     # ── No blocking when regime is None or unrecognised ──────────────────────
 
     def test_no_regime_does_not_block_mean_reversion(self):
-        snap = _snap(rsi_14=32, bb_pct=0.22, vol_ratio=1.3)
+        snap = _snap(rsi_14=32, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
         self.assertIn("mean_reversion", result[0]["matched_signals"])
 
     def test_bull_trending_blocks_rs_leader(self):
         # rs_leader blocked in BULL_TRENDING/BULL_TREND: WR 51%, avg -0.13%, n=246 (no edge)
-        snap = _snap(rsi_14=32, bb_pct=0.22, vol_ratio=1.3)
+        snap = _snap(rsi_14=32, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap], regime="BULL_TRENDING")
         self.assertEqual(len(result), 1)
         self.assertIn("mean_reversion", result[0]["matched_signals"])

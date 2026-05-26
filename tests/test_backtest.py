@@ -214,7 +214,7 @@ class TestComputeIndicators(unittest.TestCase):
 class TestEntrySignal(unittest.TestCase):
     def test_mean_reversion_fires_when_all_conditions_met(self):
         self.assertEqual(
-            _entry_signal(_make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5)), "mean_reversion"
+            _entry_signal(_make_row(rsi=30, bb_pct=0.10, vol_ratio=1.5)), "mean_reversion"
         )
 
     def test_mean_reversion_fails_rsi_at_boundary(self):
@@ -258,7 +258,7 @@ class TestEntrySignal(unittest.TestCase):
     def test_mean_reversion_takes_priority_over_momentum(self):
         row = _make_row(
             rsi=30,
-            bb_pct=0.20,
+            bb_pct=0.10,
             vol_ratio=1.5,
             ema9=105,
             ema21=100,
@@ -279,7 +279,7 @@ class TestEntrySignalNewDailySignals(unittest.TestCase):
 
     def test_macd_crossover_blocked_by_mean_reversion(self):
         # mean_reversion has higher priority
-        row = _make_row(rsi=30, bb_pct=0.20, vol_ratio=1.5, macd_cross=True)
+        row = _make_row(rsi=30, bb_pct=0.10, vol_ratio=1.5, macd_cross=True)
         self.assertEqual(_entry_signal(row), "mean_reversion")
 
     def test_bb_squeeze_fires_with_ema_up(self):
@@ -450,7 +450,7 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
 
     # ── gap_and_go ────────────────────────────────────────────────────────────
     def test_gap_and_go_fires(self):
-        row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=1.6, adx=25)
+        row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=2.1, adx=25)
         self.assertEqual(_entry_signal(row), "gap_and_go")
 
     def test_gap_and_go_blocked_by_low_adx(self):
@@ -476,22 +476,22 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
     # ── vix_fear_reversion ────────────────────────────────────────────────────
     def test_vix_fear_reversion_fires(self):
         self.assertEqual(
-            _entry_signal(_make_row(vol_ratio=1.2), vix_spike=True), "vix_fear_reversion"
+            _entry_signal(_make_row(vol_ratio=1.6), vix_spike=True), "vix_fear_reversion"
         )
 
     def test_vix_fear_reversion_not_fire_without_spike(self):
-        self.assertIsNone(_entry_signal(_make_row(vol_ratio=1.2), vix_spike=False))
+        self.assertIsNone(_entry_signal(_make_row(vol_ratio=1.6), vix_spike=False))
 
     def test_vix_fear_reversion_fires_on_bear_day(self):
         # vix_fear_reversion is not regime-blocked — counter-cyclical
-        row = _make_row(vol_ratio=1.2)
+        row = _make_row(vol_ratio=1.6)
         self.assertEqual(
             _entry_signal(row, regime="BEAR_DAY", vix_spike=True), "vix_fear_reversion"
         )
 
     def test_vix_fear_reversion_takes_priority_over_mean_reversion(self):
         # Both could fire — vix_fear_reversion has higher priority
-        row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
+        row = _make_row(rsi=28, bb_pct=0.10, vol_ratio=1.6)
         self.assertEqual(_entry_signal(row, vix_spike=True), "vix_fear_reversion")
 
     # ── regime blocking ───────────────────────────────────────────────────────
@@ -534,7 +534,7 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         self.assertEqual(_entry_signal(row), "momentum")
 
     def test_mean_reversion_not_adx_gated(self):
-        row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5, adx=5)
+        row = _make_row(rsi=28, bb_pct=0.10, vol_ratio=1.5, adx=5)
         self.assertEqual(_entry_signal(row), "mean_reversion")
 
     def test_adx_blocks_bb_squeeze_when_low(self):
@@ -866,7 +866,7 @@ class TestEntrySignalWithParams(unittest.TestCase):
 
     def test_looser_rsi_threshold_fires_where_default_would_not(self):
         # RSI=38 is above the default threshold of 35, so default → no signal
-        row = _make_row(rsi=38, bb_pct=0.20, vol_ratio=1.5)
+        row = _make_row(rsi=38, bb_pct=0.10, vol_ratio=1.5)
         self.assertIsNone(_entry_signal(row))
         self.assertEqual(_entry_signal(row, {"rsi_threshold": 40}), "mean_reversion")
 
@@ -882,11 +882,11 @@ class TestEntrySignalWithParams(unittest.TestCase):
 
     def test_partial_params_merge_with_defaults(self):
         # Override only rsi_threshold; other defaults (bb, vol) still apply
-        row = _make_row(rsi=38, bb_pct=0.20, vol_ratio=1.5)
+        row = _make_row(rsi=38, bb_pct=0.10, vol_ratio=1.5)
         self.assertEqual(_entry_signal(row, {"rsi_threshold": 40}), "mean_reversion")
 
     def test_stricter_rsi_threshold_blocks_signal(self):
-        row = _make_row(rsi=34, bb_pct=0.20, vol_ratio=1.5)
+        row = _make_row(rsi=34, bb_pct=0.10, vol_ratio=1.5)
         self.assertEqual(_entry_signal(row), "mean_reversion")  # fires on default
         self.assertIsNone(_entry_signal(row, {"rsi_threshold": 30}))  # blocked by strict threshold
 
@@ -1616,7 +1616,7 @@ class TestSignalPriority(unittest.TestCase):
             "Open": [99.5] * n,
             "Volume": [2_000_000] * n,
             "rsi": [28.0] * n,
-            "bb_pct": [0.15] * n,
+            "bb_pct": [0.10] * n,
             "vol_ratio": [1.5] * n,
             "ema9": [99.0] * n,
             "ema21": [100.0] * n,
@@ -1752,11 +1752,11 @@ class TestSignalPriority(unittest.TestCase):
         trading_dates = idx[1:]
         n = len(idx)
 
-        # SYM0–SYM1: bb_squeeze; SYM2: mean_reversion (rsi<35, bb_pct<0.25, vol>1.2)
+        # SYM0–SYM1: bb_squeeze; SYM2: mean_reversion (rsi<35, bb_pct<0.15, vol>1.2)
         bb_overrides = {"bb_squeeze": [True] * n}
         mr_overrides = {
             "rsi": [28.0] * n,
-            "bb_pct": [0.15] * n,
+            "bb_pct": [0.10] * n,
             "vol_ratio": [1.5] * n,
             "ema9": [99.0] * n,
             "ema21": [100.0] * n,
@@ -2015,11 +2015,11 @@ class TestIvCompressionSignal(unittest.TestCase):
     """iv_compression: historical volatility percentile squeeze."""
 
     def test_fires_with_ema_confirmation(self):
-        row = _make_row(hv_rank=0.10, ema9=101, ema21=100, vol_ratio=1.2)
+        row = _make_row(hv_rank=0.05, ema9=101, ema21=100, vol_ratio=1.3)
         self.assertEqual(_entry_signal(row), "iv_compression")
 
     def test_fires_with_macd_confirmation(self):
-        row = _make_row(hv_rank=0.15, ema9=99, ema21=100, macd_diff=0.1, vol_ratio=1.15)
+        row = _make_row(hv_rank=0.05, ema9=99, ema21=100, macd_diff=0.1, vol_ratio=1.3)
         self.assertEqual(_entry_signal(row), "iv_compression")
 
     def test_no_fire_when_hv_rank_above_threshold(self):
