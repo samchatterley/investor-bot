@@ -9,6 +9,15 @@
             "command": "python3 /Users/samchatterley/.claude/save_todos.py"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /Users/samchatterley/.claude/hooks/reload_bot.py"
+          }
+        ]
       }
     ]
   }

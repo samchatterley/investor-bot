@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """PostToolUse hook — writes current TodoWrite state to TODO.md."""
+
 import json
 import os
 import sys
