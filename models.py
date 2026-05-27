@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+if TYPE_CHECKING:
+    from utils.health import HealthStatus
 
 
 class BrokerStateUnavailable(Exception):
@@ -133,3 +136,81 @@ class DecisionSet(BaseModel):
                 f"Symbol(s) in both BUY candidates and SELL decisions: {sorted(conflicts)}"
             )
         return self
+
+
+# ── Pipeline phase contracts ──────────────────────────────────────────────────
+# These dataclasses are the typed interfaces between each phase of _run_inner.
+# In Option B they live here; in Option A they travel with their core/ modules.
+
+
+@dataclass(frozen=True)
+class RunCtx:
+    """Immutable per-run parameters threaded through every pipeline phase."""
+
+    run_id: str
+    dry_run: bool
+    mode: str
+    today: str
+    live_shadow: bool
+    should_run_live_gates: bool
+
+
+@dataclass
+class RunState:
+    """Mutable execution state accumulated across pipeline phases."""
+
+    all_trades: list
+    executed_symbols: set
+    daily_notional_spent: float
+
+
+@dataclass(frozen=True)
+class RiskFlags:
+    """Output of _evaluate_risk_limits: per-run trading gate states.
+
+    health_status: HealthStatus (utils.health) — imported lazily at call sites.
+    """
+
+    health_status: HealthStatus
+    dd_scalar: float
+    cb_triggered: bool
+    daily_loss_triggered: bool
+    daily_loss_pct: float
+    exp_drawdown_triggered: bool
+
+
+@dataclass(frozen=True)
+class MarketContext:
+    """Market-wide context fetched once at the start of each run."""
+
+    vix: float | None
+    regime: dict
+    macro: dict
+    sector_perf: dict
+    leading_sectors: list
+    lessons: str | None
+
+
+@dataclass(frozen=True)
+class PositionSnapshot:
+    """Point-in-time broker position state; re-fetched after each exit phase."""
+
+    open_positions: list
+    held_symbols: set
+    position_ages: dict
+    stale: list
+    open_shorts_db: set
+    earnings_risk: dict
+    atr_by_symbol: dict
+
+
+@dataclass(frozen=True)
+class DataBundle:
+    """Enriched market data and pre-filtered candidates ready for AI analysis."""
+
+    snapshots: list
+    ai_snapshots: list
+    filtered_candidates: list
+    options_sigs: dict
+    news: dict
+    sentiment: dict
