@@ -45,6 +45,7 @@ from models import (
     OrderLedgerUnavailable,
     OrderResult,
     OrderStatus,
+    PositionSnapshot,
 )
 from notifications import alerts, emailer
 from risk import (
@@ -693,6 +694,92 @@ def _execute_shorts(
 # ── Pipeline phase helpers ────────────────────────────────────────────────────
 
 
+def _get_position_snapshot(client) -> PositionSnapshot:
+    """Fetch a point-in-time view of all broker positions and derived state."""
+    open_positions = trader.get_open_positions(client)
+    held_symbols = {p["symbol"] for p in open_positions}
+    position_ages = trader.get_position_ages()
+    open_shorts_db = trader.get_open_shorts()
+    stale = [
+        sym
+        for sym, age in position_ages.items()
+        if age
+        >= (
+            config.MAX_SHORT_HOLD_DAYS
+            if sym in open_shorts_db
+            else config.SIGNAL_MAX_HOLD_DAYS.get(
+                trader.get_position_meta(sym).get("signal", "unknown"),
+                config.MAX_HOLD_DAYS,
+            )
+        )
+    ]
+    earnings_risk = earnings_calendar.get_earnings_risk_positions(
+        list(held_symbols), config.EARNINGS_WARNING_DAYS
+    )
+    atr_by_symbol = _fetch_atr_for_held(held_symbols)
+    return PositionSnapshot(
+        open_positions=open_positions,
+        held_symbols=held_symbols,
+        position_ages=position_ages,
+        stale=stale,
+        open_shorts_db=open_shorts_db,
+        earnings_risk=earnings_risk,
+        atr_by_symbol=atr_by_symbol,
+    )
+
+
+def _manage_existing_positions(
+    client, dry_run: bool, all_trades: list, snap: PositionSnapshot
+) -> None:
+    """Execute partial exits then earnings-risk exits on currently held positions."""
+    partials = _handle_partial_exits(client, snap.open_positions, snap.atr_by_symbol, dry_run)
+    all_trades.extend(partials)
+
+    # Refresh after partial exits before earnings checks
+    post_partial_positions = trader.get_open_positions(client)
+    post_partial_held = {p["symbol"] for p in post_partial_positions}
+    position_ages = trader.get_position_ages()
+
+    for symbol, ed in snap.earnings_risk.items():
+        if symbol not in post_partial_held:
+            continue
+        logger.warning(f"Exiting {symbol} — earnings on {ed}")
+        audit_log.log_earnings_exit(symbol, str(ed))
+        if not dry_run:
+            result = trader.close_position(client, symbol)
+            if result.is_success:
+                meta = trader.get_position_meta(symbol)
+                pos = next((p for p in post_partial_positions if p["symbol"] == symbol), None)
+                if pos:  # pragma: no branch
+                    performance.record_trade_outcome(
+                        meta["signal"],
+                        pos["unrealized_plpc"],
+                        regime=meta["regime"],
+                        confidence=meta["confidence"],
+                        sector=sector_data.get_sector(symbol),
+                        hold_days=position_ages.get(symbol, 1),
+                        symbol=symbol,
+                        entry_date=meta.get("entry_date"),
+                        entry_price=meta.get("entry_price"),
+                        exit_reason="earnings_exit",
+                    )
+                    audit_log.log_position_closed(symbol, "earnings_exit", pos["unrealized_plpc"])
+                trader.record_sell(symbol)
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "detail": "earnings exit",
+                        "decision_type": "rule_based",
+                    }
+                )
+            else:
+                logger.error(
+                    f"  Earnings exit FAILED {symbol} — "
+                    f"{result.rejection_reason or 'close failed after retries'}"
+                )
+
+
 def _fetch_market_context() -> MarketContext:
     """Fetch market-wide context: VIX, regime, macro, sector, lessons."""
     logger.info("Fetching market context...")
@@ -978,88 +1065,15 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # ── Market context ────────────────────────────────────────────────────────
     mc = _fetch_market_context()
 
-    # ── Open positions & earnings guard ──────────────────────────────────────
-    open_positions = trader.get_open_positions(client)
-    held_symbols = {p["symbol"] for p in open_positions}
-    earnings_risk = earnings_calendar.get_earnings_risk_positions(
-        list(held_symbols), config.EARNINGS_WARNING_DAYS
-    )
-
-    # ── ATR for held positions (used by partial exits + rule-based stops) ────
-    atr_by_symbol = _fetch_atr_for_held(held_symbols)
-
-    # ── Partial exits (all modes) ─────────────────────────────────────────────
-    partials = _handle_partial_exits(client, open_positions, atr_by_symbol, dry_run)
-    all_trades.extend(partials)
-
-    open_positions = trader.get_open_positions(client)
-    held_symbols = {p["symbol"] for p in open_positions}
-
-    # ── Full cycle (all modes) ────────────────────────────────────────────────
-    position_ages = trader.get_position_ages()
-
-    # Exit earnings-risk positions
-    for symbol, ed in earnings_risk.items():
-        if symbol in held_symbols:
-            logger.warning(f"Exiting {symbol} — earnings on {ed}")
-            audit_log.log_earnings_exit(symbol, str(ed))
-            if not dry_run:
-                result = trader.close_position(client, symbol)
-                if result.is_success:
-                    meta = trader.get_position_meta(symbol)
-                    pos = next((p for p in open_positions if p["symbol"] == symbol), None)
-                    if pos:  # pragma: no branch
-                        performance.record_trade_outcome(
-                            meta["signal"],
-                            pos["unrealized_plpc"],
-                            regime=meta["regime"],
-                            confidence=meta["confidence"],
-                            sector=sector_data.get_sector(symbol),
-                            hold_days=position_ages.get(symbol, 1),
-                            symbol=symbol,
-                            entry_date=meta.get("entry_date"),
-                            entry_price=meta.get("entry_price"),
-                            exit_reason="earnings_exit",
-                        )
-                        audit_log.log_position_closed(
-                            symbol, "earnings_exit", pos["unrealized_plpc"]
-                        )
-                    trader.record_sell(symbol)
-                    all_trades.append(
-                        {
-                            "symbol": symbol,
-                            "action": "SELL",
-                            "detail": "earnings exit",
-                            "decision_type": "rule_based",
-                        }
-                    )
-                else:
-                    logger.error(
-                        f"  Earnings exit FAILED {symbol} — {result.rejection_reason or 'close failed after retries'}"
-                    )
-
-    open_positions = trader.get_open_positions(client)
-    held_symbols = {p["symbol"] for p in open_positions}
-    position_ages = trader.get_position_ages()
-    open_shorts_db = trader.get_open_shorts()
-    stale = [
-        sym
-        for sym, age in position_ages.items()
-        if age
-        >= (
-            config.MAX_SHORT_HOLD_DAYS
-            if sym in open_shorts_db
-            else config.SIGNAL_MAX_HOLD_DAYS.get(
-                trader.get_position_meta(sym).get("signal", "unknown"),
-                config.MAX_HOLD_DAYS,
-            )
-        )
-    ]
+    # ── Position state + managed exits ───────────────────────────────────────
+    snap = _get_position_snapshot(client)
+    _manage_existing_positions(client, dry_run, all_trades, snap)
+    snap = _get_position_snapshot(client)  # refresh after exits
 
     # ── Scan universe ─────────────────────────────────────────────────────────
     logger.info("Scanning for top movers...")
     top_movers = stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
-    scan_symbols = list(set(build_scan_universe(client)) | held_symbols | set(top_movers))
+    scan_symbols = list(set(build_scan_universe(client)) | snap.held_symbols | set(top_movers))
     logger.info(f"Scanning {len(scan_symbols)} symbols")
 
     # ── Market data (parallel) ────────────────────────────────────────────────
@@ -1072,34 +1086,34 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # ── Intraday enrichment (VWAP, ORB, gap, intraday momentum) ─────────────
     intraday = market_data.get_intraday_data([s["symbol"] for s in snapshots])
     if intraday:  # pragma: no branch
-        for snap in snapshots:  # pragma: no cover
-            if snap["symbol"] in intraday:
-                snap.update(intraday[snap["symbol"]])
+        for s in snapshots:  # pragma: no cover
+            if s["symbol"] in intraday:
+                s.update(intraday[s["symbol"]])
 
     # ── Insider activity (SEC EDGAR Form 4 — open-market cluster purchases) ──
     logger.info("Fetching insider activity...")
     insider_data = insider_feed.get_insider_activity([s["symbol"] for s in snapshots])
-    for snap in snapshots:
-        if snap["symbol"] in insider_data:
-            snap.update(insider_data[snap["symbol"]])
+    for s in snapshots:
+        if s["symbol"] in insider_data:
+            s.update(insider_data[s["symbol"]])
 
     # ── News sentiment (Alpha Vantage structured scores) ─────────────────────
     logger.info("Fetching AV news sentiment...")
     av_data = av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])
-    for snap in snapshots:
-        if snap["symbol"] in av_data:
-            snap.update(av_data[snap["symbol"]])
+    for s in snapshots:
+        if s["symbol"] in av_data:
+            s.update(av_data[s["symbol"]])
 
     # ── PEAD (Post-Earnings Announcement Drift) candidates ───────────────────
     logger.info("Fetching earnings surprise data...")
     pead_data = earnings_surprise.get_earnings_surprise([s["symbol"] for s in snapshots])
-    for snap in snapshots:
-        if snap["symbol"] in pead_data:
-            snap.update(pead_data[snap["symbol"]])
+    for s in snapshots:
+        if s["symbol"] in pead_data:
+            s.update(pead_data[s["symbol"]])
 
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
-    held_snaps = [s for s in snapshots if s["symbol"] in held_symbols]
-    candidate_snaps = [s for s in snapshots if s["symbol"] not in held_symbols]
+    held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]
+    candidate_snaps = [s for s in snapshots if s["symbol"] not in snap.held_symbols]
 
     # Small-account universe price filter — restricts to names where one whole share
     # can be stop-protected within the per-order cap.
@@ -1165,7 +1179,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     raw_news = news_fetcher.fetch_news(news_symbols)
     news = sanitize_headlines(raw_news)
 
-    sent = sentiment_module.get_sentiment(list(held_symbols) + top_movers[:10])
+    sent = sentiment_module.get_sentiment(list(snap.held_symbols) + top_movers[:10])
 
     # ── AI analysis ──────────────────────────────────────────────────────────
     track_record = portfolio_tracker.get_track_record(10)
@@ -1173,18 +1187,18 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     logger.info("Running AI analysis...")
     decisions = ai_analyst.get_trading_decisions(
         snapshots=ai_snapshots,
-        current_positions=open_positions,
+        current_positions=snap.open_positions,
         available_cash=account_now["cash"],
         portfolio_value=account_now["portfolio_value"],
         news_by_symbol=news,
         track_record=track_record,
         market_regime=mc.regime,
-        position_ages=position_ages,
-        stale_positions=stale,
+        position_ages=snap.position_ages,
+        stale_positions=snap.stale,
         vix=mc.vix,
         sector_performance=mc.sector_perf,
         sentiment=sent,
-        earnings_risk={sym: str(ed) for sym, ed in earnings_risk.items()},
+        earnings_risk={sym: str(ed) for sym, ed in snap.earnings_risk.items()},
         macro_risk=mc.macro,
         leading_sectors=mc.leading_sectors,
         options_signals=options_sigs,
@@ -1198,7 +1212,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
 
     # ── Validate AI response before acting ───────────────────────────────────
     is_valid, validation_errors = validate_ai_response(
-        decisions, ai_known_symbols, held_symbols=held_symbols
+        decisions, ai_known_symbols, held_symbols=snap.held_symbols
     )
     if not is_valid:
         audit_log.log_validation_failure(validation_errors)
@@ -1270,12 +1284,16 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     symbols_to_sell = {
         d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
     }
-    symbols_to_sell |= {sym for sym in stale if sym in held_symbols and sym not in open_shorts_db}
-    symbols_to_sell |= _check_rule_based_stops(open_positions, position_ages, atr_by_symbol)
+    symbols_to_sell |= {
+        sym for sym in snap.stale if sym in snap.held_symbols and sym not in snap.open_shorts_db
+    }
+    symbols_to_sell |= _check_rule_based_stops(
+        snap.open_positions, snap.position_ages, snap.atr_by_symbol
+    )
     # Exclude any short positions from the sell set (handled separately below)
-    symbols_to_sell -= open_shorts_db
+    symbols_to_sell -= snap.open_shorts_db
 
-    symbols_to_cover = {sym for sym in stale if sym in open_shorts_db}
+    symbols_to_cover = {sym for sym in snap.stale if sym in snap.open_shorts_db}
 
     for symbol in symbols_to_sell:
         decision = next(
@@ -1289,7 +1307,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             reason = f"Time-based exit (≥{limit} days for {signal} signal)"
         logger.info(f"  SELL {symbol} — {reason}")
         if not dry_run:
-            pos = next((p for p in open_positions if p["symbol"] == symbol), None)
+            pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
             result = trader.close_position(client, symbol)
             if result.is_success:
                 if pos:
@@ -1300,7 +1318,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         regime=meta["regime"],
                         confidence=meta["confidence"],
                         sector=sector_data.get_sector(symbol),
-                        hold_days=position_ages.get(symbol, 1),
+                        hold_days=snap.position_ages.get(symbol, 1),
                         symbol=symbol,
                         entry_date=meta.get("entry_date"),
                         entry_price=meta.get("entry_price"),
@@ -1354,7 +1372,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         reason = f"Time-based cover (≥{config.MAX_SHORT_HOLD_DAYS} days short)"
         logger.info(f"  COVER {symbol} — {reason}")
         if not dry_run:
-            pos = next((p for p in open_positions if p["symbol"] == symbol), None)
+            pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
             result = trader.close_position(client, symbol)
             if result.is_success:
                 audit_log.log_position_closed(
@@ -1392,6 +1410,9 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # ── Execute buys (open + midday modes; close/open_sells are exits only) ────
     # midday is now eligible for buys because intraday signals (VWAP, ORB,
     # intraday_momentum) surface setups that develop after the open.
+    # Initialised from the post-exit snapshot; overwritten with a fresher fetch
+    # inside the else branch when buys are not skipped.
+    open_positions = snap.open_positions
     skip_buys = (
         mode in ("close", "open_sells")
         or cb_triggered
@@ -1589,16 +1610,16 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
                         break
 
-                snap = next(
+                sym_snap = next(
                     (s for s in snapshots if s["symbol"] == symbol),
                     None,  # type: ignore[arg-type]
                 )
                 if notional >= 1.0:
                     # Guard: skip if notional buys < 1 whole share — Alpaca cannot stop-protect sub-share positions
-                    if snap and notional / snap["current_price"] < 1.0:
+                    if sym_snap and notional / sym_snap["current_price"] < 1.0:
                         logger.warning(
-                            f"  Skipping {symbol}: ${notional:.2f} at ${snap['current_price']:.2f}"
-                            f" = {notional / snap['current_price']:.3f} shares — sub-share position cannot be stop-protected"
+                            f"  Skipping {symbol}: ${notional:.2f} at ${sym_snap['current_price']:.2f}"
+                            f" = {notional / sym_snap['current_price']:.3f} shares — sub-share position cannot be stop-protected"
                         )
                         continue
                     if not dry_run:
@@ -1610,7 +1631,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             orders_placed += 1
                             daily_notional_spent += notional
                             trader.add_daily_notional(today, notional)
-                            entry_price = snap["current_price"] if snap else 0.0
+                            entry_price = sym_snap["current_price"] if sym_snap else 0.0
                             trader.record_buy(
                                 symbol,
                                 entry_price,
@@ -1625,7 +1646,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                 audit_log.log_order_filled(
                                     symbol, buy_result.broker_order_id or "", buy_result.filled_qty
                                 )
-                                current_price = snap["current_price"] if snap else None
+                                current_price = sym_snap["current_price"] if sym_snap else None
                                 # Floor to whole shares — Alpaca rejects fractional stop orders
                                 stop_qty = int(math.floor(buy_result.filled_qty))
                                 t_stop_submit = time.monotonic()
