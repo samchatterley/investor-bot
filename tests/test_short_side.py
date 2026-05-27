@@ -532,5 +532,56 @@ class TestSideMigration(unittest.TestCase):
         self.assertNotIn("AAPL", shorts)
 
 
-if __name__ == "__main__":
+# ── Error-path branches ───────────────────────────────────────────────────────
+
+
+class TestPlaceShortOrderErrorPaths(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def test_ledger_import_failure_still_places_order(self):
+        import sys
+
+        from execution.trader import place_short_order
+
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "s1"
+        client.submit_order.return_value = submitted
+        with (
+            _meta_patcher(self.tmpdir),
+            patch("execution.trader.wait_for_fill", return_value=(5.0, 50.0)),
+            patch.dict(sys.modules, {"utils.order_ledger": None}),
+        ):
+            result = place_short_order(client, "WEAK", 5)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+
+    def test_raises_ledger_unavailable_on_live_when_intent_fails(self):
+        from execution.trader import place_short_order
+        from models import OrderLedgerUnavailable
+
+        with (
+            _meta_patcher(self.tmpdir),
+            patch("execution.trader.IS_PAPER", False),
+            patch("utils.order_ledger.create_intent", return_value=None),
+            self.assertRaises(OrderLedgerUnavailable),
+        ):
+            place_short_order(MagicMock(), "WEAK", 5)
+
+
+class TestGetOpenPositionsDbErrors(unittest.TestCase):
+    def test_get_open_longs_returns_empty_on_db_error(self):
+        from execution.trader import get_open_longs
+
+        with patch("execution.trader._db", side_effect=Exception("db down")):
+            self.assertEqual(get_open_longs(), set())
+
+    def test_get_open_shorts_returns_empty_on_db_error(self):
+        from execution.trader import get_open_shorts
+
+        with patch("execution.trader._db", side_effect=Exception("db down")):
+            self.assertEqual(get_open_shorts(), set())
+
+
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()
