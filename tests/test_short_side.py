@@ -406,6 +406,19 @@ class TestEnsureStopsAttachedShorts(unittest.TestCase):
         mock_cover.assert_not_called()
         self.assertTrue(result)
 
+    def test_zero_qty_position_skipped_silently(self):
+        # pos_qty == 0 → neither long nor short branch taken (670->646)
+        from execution.trader import ensure_stops_attached
+
+        zero_pos = _mock_position("FLAT", 0, 50.0)
+        client = MagicMock()
+        client.get_all_positions.return_value = [zero_pos]
+        client.get_orders.return_value = []
+
+        with _meta_patcher(self.tmpdir):
+            result = ensure_stops_attached(client)
+        self.assertTrue(result)
+
 
 # ── scan_short_candidates ─────────────────────────────────────────────────────
 
@@ -567,6 +580,39 @@ class TestPlaceShortOrderErrorPaths(unittest.TestCase):
             self.assertRaises(OrderLedgerUnavailable),
         ):
             place_short_order(MagicMock(), "WEAK", 5)
+
+    def test_timeout_without_ledger(self):
+        # trader.py 949->952: _ledger=False path when wait_for_fill times out
+        import sys
+
+        from execution.trader import place_short_order
+
+        client = MagicMock()
+        submitted = MagicMock()
+        submitted.id = "s1"
+        client.submit_order.return_value = submitted
+        with (
+            _meta_patcher(self.tmpdir),
+            patch("execution.trader.wait_for_fill", return_value=None),
+            patch.dict(sys.modules, {"utils.order_ledger": None}),
+        ):
+            result = place_short_order(client, "WEAK", 5)
+        self.assertEqual(result.status, OrderStatus.TIMEOUT)
+
+    def test_exception_without_ledger(self):
+        # trader.py 957->960: _ledger=False path when submit_order raises
+        import sys
+
+        from execution.trader import place_short_order
+
+        client = MagicMock()
+        client.submit_order.side_effect = RuntimeError("broker down")
+        with (
+            _meta_patcher(self.tmpdir),
+            patch.dict(sys.modules, {"utils.order_ledger": None}),
+        ):
+            result = place_short_order(client, "WEAK", 5)
+        self.assertEqual(result.status, OrderStatus.REJECTED)
 
 
 class TestGetOpenPositionsDbErrors(unittest.TestCase):
