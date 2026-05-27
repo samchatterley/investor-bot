@@ -3615,5 +3615,290 @@ class TestRunInnerMissingBranches(RunInnerBase):
         email_mock.assert_not_called()
 
 
+class TestExecuteShorts(unittest.TestCase):
+    """Lines 543-682: _execute_shorts — slot gate, hedge cap, live/shadow/dry paths."""
+
+    def _snap(self, symbol="WEAK"):
+        return {
+            "symbol": symbol,
+            "current_price": 50.0,
+            "rs_rank_pct": 10.0,
+            "price_vs_ema21_pct": -2.0,
+            "avg_volume": 1_000_000,
+        }
+
+    def _account_now(self):
+        return {"portfolio_value": 100_000.0, "cash": 50_000.0}
+
+    def _run(
+        self, candidates=None, dry_run=True, _live_shadow=False, initial_executed=None, **overrides
+    ):
+        from main import _execute_shorts
+
+        if candidates is None:
+            candidates = [self._snap()]
+
+        filled_order = OrderResult(
+            status=OrderStatus.FILLED,
+            symbol="WEAK",
+            broker_order_id="x",
+            filled_qty=5.0,
+            filled_avg_price=50.0,
+        )
+        defaults = {
+            "main.stock_scanner.scan_short_candidates": candidates,
+            "main.trader.get_open_shorts": set(),
+            "main.trader.get_long_notional": 50_000.0,
+            "main.trader.get_short_notional": 0.0,
+            "main.correlation.correlated_with_held": False,
+            "main.position_sizer.risk_budget_size": 500.0,
+            "main.trader.place_short_order": filled_order,
+            "main.trader.record_short": None,
+            "main.audit_log.log_order_placed": None,
+            "main.audit_log.log_event": None,
+            "main.trader.place_short_cover_stop": OrderResult(
+                status=OrderStatus.FILLED, symbol="WEAK"
+            ),
+            "main.trader.close_position": OrderResult(status=OrderStatus.FILLED, symbol="WEAK"),
+            "main.trader.record_cover": None,
+            "main.alerts.alert_error": None,
+        }
+        defaults.update(overrides)
+
+        all_trades: list = []
+        executed_symbols: set = set(initial_executed or [])
+
+        with contextlib.ExitStack() as stack:
+            mocks = {}
+            for target, val in defaults.items():
+                if val is None:
+                    mocks[target] = stack.enter_context(patch(target, return_value=None))
+                elif isinstance(val, bool):
+                    mocks[target] = stack.enter_context(patch(target, return_value=val))
+                else:
+                    mocks[target] = stack.enter_context(patch(target, return_value=val))
+            _execute_shorts(
+                client=MagicMock(),
+                snapshots=[self._snap()],
+                regime={"regime": "BULL_TREND"},
+                open_positions=[],
+                account_now=self._account_now(),
+                all_trades=all_trades,
+                executed_symbols=executed_symbols,
+                dry_run=dry_run,
+                _live_shadow=_live_shadow,
+            )
+        return all_trades, executed_symbols, mocks
+
+    def test_short_slots_full_returns_early(self):
+        # All short slots occupied → no candidates iterated
+        full_shorts = {f"S{i}" for i in range(config.MAX_SHORT_POSITIONS)}
+        all_trades, _, mocks = self._run(**{"main.trader.get_open_shorts": full_shorts})
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_hedge_cap_reached_returns_early(self):
+        # short_notional >= long_notional * cap → returns early
+        all_trades, _, mocks = self._run(
+            **{
+                "main.trader.get_long_notional": 10_000.0,
+                "main.trader.get_short_notional": 5_001.0,
+            }
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_dry_run_appends_trade_no_order(self):
+        all_trades, executed, mocks = self._run(dry_run=True)
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(len(all_trades), 1)
+        self.assertEqual(all_trades[0]["action"], "SHORT")
+        self.assertIn("WEAK", executed)
+
+    def test_shadow_mode_logs_would_short(self):
+        all_trades, executed, mocks = self._run(dry_run=False, _live_shadow=True)
+        mocks["main.trader.place_short_order"].assert_not_called()
+        mocks["main.audit_log.log_event"].assert_called_once()
+        self.assertEqual(all_trades[0]["action"], "WOULD_SHORT")
+        self.assertIn("WEAK", executed)
+
+    def test_live_mode_places_order_and_records(self):
+        all_trades, executed, mocks = self._run(dry_run=False)
+        mocks["main.trader.place_short_order"].assert_called_once()
+        mocks["main.trader.record_short"].assert_called_once()
+        mocks["main.trader.place_short_cover_stop"].assert_called_once()
+        self.assertEqual(all_trades[0]["action"], "SHORT")
+        self.assertIn("WEAK", executed)
+
+    def test_cover_stop_fail_closes_position(self):
+        all_trades, executed, mocks = self._run(
+            dry_run=False,
+            **{
+                "main.trader.place_short_cover_stop": OrderResult(
+                    status=OrderStatus.STOP_FAILED, symbol="WEAK"
+                )
+            },
+        )
+        mocks["main.trader.close_position"].assert_called_once()
+        mocks["main.trader.record_cover"].assert_called_once()
+        # Position closed → not added to executed_symbols
+        self.assertNotIn("WEAK", executed)
+
+    def test_correlated_candidate_skipped(self):
+        all_trades, _, mocks = self._run(
+            dry_run=True, **{"main.correlation.correlated_with_held": True}
+        )
+        self.assertEqual(all_trades, [])
+
+    def test_no_price_candidate_skipped(self):
+        snap = self._snap()
+        snap["current_price"] = 0.0
+        all_trades, _, _ = self._run(candidates=[snap], dry_run=True)
+        self.assertEqual(all_trades, [])
+
+    def test_zero_shares_skipped(self):
+        # With a tiny position_sizer budget, qty_shares floors to 0
+        all_trades, _, mocks = self._run(
+            dry_run=True, **{"main.position_sizer.risk_budget_size": 0.01}
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_per_order_hedge_cap_skip(self):
+        # Short notional already near cap; single order would breach it
+        all_trades, _, mocks = self._run(
+            dry_run=False,
+            **{
+                "main.trader.get_long_notional": 1_000.0,
+                "main.trader.get_short_notional": 400.0,
+            },
+        )
+        # hedge_cap = 1000 * 0.5 = 500; order_notional = 5 shares * 50 = 250; 400+250=650 > 500
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_loop_breaks_when_slots_filled(self):
+        # 2 candidates but only 1 slot → first placed, second triggers break
+        candidates = [self._snap("W1"), self._snap("W2")]
+        occupied = {f"S{i}" for i in range(config.MAX_SHORT_POSITIONS - 1)}
+        all_trades, _, _ = self._run(
+            candidates=candidates,
+            dry_run=True,
+            **{"main.trader.get_open_shorts": occupied},
+        )
+        self.assertEqual(len(all_trades), 1)
+
+    def test_already_executed_symbol_skipped(self):
+        # symbol already in executed_symbols → continue (line 571)
+        _, executed, mocks = self._run(dry_run=True, initial_executed={"WEAK"})
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(len(executed), 1)  # still just WEAK, not added again
+
+    def test_live_order_rejected_not_recorded(self):
+        # place_short_order returns REJECTED → is_success False → branch 608->566
+        rejected = OrderResult(status=OrderStatus.REJECTED, symbol="WEAK")
+        _, executed, mocks = self._run(dry_run=False, **{"main.trader.place_short_order": rejected})
+        mocks["main.trader.record_short"].assert_not_called()
+        self.assertNotIn("WEAK", executed)
+
+    def test_zero_filled_qty_skips_cover_stop(self):
+        # filled_qty=0 → if short_result.filled_qty is False → skip cover stop (621->633)
+        zero_fill = OrderResult(
+            status=OrderStatus.FILLED,
+            symbol="WEAK",
+            broker_order_id="x",
+            filled_qty=0.0,
+            filled_avg_price=50.0,
+        )
+        _, executed, mocks = self._run(
+            dry_run=False, **{"main.trader.place_short_order": zero_fill}
+        )
+        mocks["main.trader.place_short_cover_stop"].assert_not_called()
+        self.assertIn("WEAK", executed)
+
+
+class TestRunInnerCoverShorts(RunInnerBase):
+    """Lines 1330-1367: stale short cover loop — live, dry, failed."""
+
+    def _short_position(self, symbol="WEAK"):
+        return {
+            "symbol": symbol,
+            "unrealized_pl": -50.0,
+            "unrealized_plpc": -2.0,
+            "qty": -5.0,
+            "market_value": -250.0,
+            "current_price": 50.0,
+        }
+
+    def test_stale_short_covered_live(self):
+        cover_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="WEAK"))
+        record_cover_mock = MagicMock()
+        positions = [self._short_position()]
+        ages = {"WEAK": config.MAX_SHORT_HOLD_DAYS}
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": positions,
+                "main.trader.get_open_shorts": {"WEAK"},
+                "main.trader.get_position_ages": ages,
+                "main.trader.close_position": cover_mock,
+                "main.trader.record_cover": record_cover_mock,
+                "main.trader.get_position_meta": MagicMock(return_value={"signal": "rs_short"}),
+                "main._execute_shorts": None,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        cover_mock.assert_called()
+        record_cover_mock.assert_called_with("WEAK")
+
+    def test_stale_short_cover_dry_run(self):
+        cover_mock = MagicMock()
+        positions = [self._short_position()]
+        ages = {"WEAK": config.MAX_SHORT_HOLD_DAYS}
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": positions,
+                "main.trader.get_open_shorts": {"WEAK"},
+                "main.trader.get_position_ages": ages,
+                "main.trader.close_position": cover_mock,
+                "main.trader.get_position_meta": MagicMock(return_value={"signal": "rs_short"}),
+                "main._execute_shorts": None,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+        cover_mock.assert_not_called()
+
+    def test_stale_short_cover_failed_logs_error(self):
+        cover_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.REJECTED, symbol="WEAK", rejection_reason="no borrow"
+            )
+        )
+        alert_mock = MagicMock()
+        positions = [self._short_position()]
+        ages = {"WEAK": config.MAX_SHORT_HOLD_DAYS}
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": positions,
+                "main.trader.get_open_shorts": {"WEAK"},
+                "main.trader.get_position_ages": ages,
+                "main.trader.close_position": cover_mock,
+                "main.trader.get_position_meta": MagicMock(return_value={"signal": "rs_short"}),
+                "main.alerts.alert_error": alert_mock,
+                "main._execute_shorts": None,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        alert_mock.assert_called()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

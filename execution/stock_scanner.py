@@ -2,7 +2,7 @@ import logging
 
 import yfinance as yf
 
-from config import MIN_VOLUME
+from config import ETF_SYMBOLS, MIN_VOLUME
 from data.market_regime import fetch_spy_vix_history, load_regime_state, save_regime_state
 from data.market_regime import get_market_regime as _compute_regime
 from signals.evaluator import REGIME_BLOCKED, evaluate_signals
@@ -289,3 +289,46 @@ def get_top_movers(n: int = 10) -> list[str]:
     except Exception as e:
         logger.error(f"Top movers scan failed: {e}")
         return []
+
+
+_SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset({"BULL_TREND", "NEUTRAL_CHOP"})
+
+
+def scan_short_candidates(
+    snapshots: list[dict],
+    regime: str | None,
+    held_symbols: set[str],
+) -> list[dict]:
+    """Return bottom-quartile RS candidates suitable for shorting.
+
+    Gates applied in order:
+    - Regime must be BULL_TREND or NEUTRAL_CHOP (short squeezes most violent elsewhere)
+    - rs_rank_pct < 25 (bottom quartile by 20-day relative strength)
+    - Price below EMA21 (structural downtrend)
+    - Not already held (long or short)
+    - Not an ETF (borrow risk and index rebalancing squeezes)
+    - Minimum volume filter
+
+    Returns candidates sorted by rs_rank_pct ascending (weakest first).
+    """
+    if regime not in _SHORT_ALLOWED_REGIMES:
+        return []
+
+    candidates = []
+    for s in snapshots:
+        symbol = s.get("symbol", "")
+        if symbol in held_symbols:
+            continue
+        if symbol in ETF_SYMBOLS:
+            continue
+        if s.get("avg_volume", 0) < MIN_VOLUME:
+            continue
+        rs_rank = s.get("rs_rank_pct")
+        if rs_rank is None or rs_rank >= 25.0:
+            continue
+        # Price must be below EMA21 — confirms structural downtrend.
+        if s.get("price_vs_ema21_pct", 0.0) >= 0:
+            continue
+        candidates.append(s)
+
+    return sorted(candidates, key=lambda x: x.get("rs_rank_pct", 0.0))

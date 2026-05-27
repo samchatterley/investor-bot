@@ -253,6 +253,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
             "CREATE INDEX IF NOT EXISTS idx_trades_signal ON trades(signal)"
         ),
     ),
+    (5, "ALTER TABLE positions ADD COLUMN side TEXT NOT NULL DEFAULT 'long'"),
 ]
 
 

@@ -516,6 +516,174 @@ def _handle_partial_exits(client, positions: list, atr_by_symbol: dict, dry_run:
     return executed
 
 
+def _execute_shorts(
+    client,
+    snapshots: list[dict],
+    regime: dict,
+    open_positions: list[dict],
+    account_now: dict,
+    all_trades: list,
+    executed_symbols: set,
+    dry_run: bool,
+    _live_shadow: bool,
+) -> None:
+    """Scan for and execute short positions (bottom-quartile RS, rule-gated).
+
+    - Max MAX_SHORT_POSITIONS concurrent shorts.
+    - Total short notional capped at MAX_SHORT_HEDGE_RATIO × long notional.
+    - Each position sized at SHORT_SIZE_SCALE × standard long size (whole shares only).
+    - Regime gate: BULL_TREND or NEUTRAL_CHOP only.
+    """
+    regime_name = regime.get("regime", "UNKNOWN")
+    held_symbols = {p["symbol"] for p in open_positions}
+    short_candidates = stock_scanner.scan_short_candidates(snapshots, regime_name, held_symbols)
+    if not short_candidates:
+        return
+
+    open_shorts = trader.get_open_shorts()
+    short_slots = config.MAX_SHORT_POSITIONS - len(open_shorts)
+    if short_slots <= 0:
+        logger.info(f"Short slots full: {len(open_shorts)}/{config.MAX_SHORT_POSITIONS}")
+        return
+
+    long_notional = trader.get_long_notional(client)
+    short_notional = trader.get_short_notional(client)
+    hedge_cap = long_notional * config.MAX_SHORT_HEDGE_RATIO
+    if short_notional >= hedge_cap and long_notional > 0:
+        logger.info(
+            f"Short hedge cap reached: ${short_notional:.0f} >= ${hedge_cap:.0f} "
+            f"({config.MAX_SHORT_HEDGE_RATIO:.0%} of long book)"
+        )
+        return
+
+    logger.info(
+        f"Short scan: {len(short_candidates)} candidates | "
+        f"slots={short_slots} | hedge {short_notional:.0f}/{hedge_cap:.0f}"
+    )
+
+    shorts_placed = 0
+    portfolio_value = account_now["portfolio_value"]
+    for candidate in short_candidates:
+        if shorts_placed >= short_slots:
+            break
+        symbol = candidate["symbol"]
+        if symbol in executed_symbols:
+            continue
+
+        # Correlation gate — skip if correlated with any held position
+        if correlation.correlated_with_held(symbol, held_symbols):
+            logger.info(f"  Short skip {symbol}: correlated with existing position")
+            continue
+
+        current_price = candidate.get("current_price", 0.0)
+        if not current_price:
+            continue
+
+        # Size: SHORT_SIZE_SCALE × standard long notional → whole shares
+        base_notional = position_sizer.risk_budget_size(
+            portfolio_value,
+            confidence=5,
+            signal="rs_short",
+            regime=regime_name,
+        )
+        target_notional = base_notional * config.SHORT_SIZE_SCALE
+        qty_shares = int(math.floor(target_notional / current_price))
+        if qty_shares < 1:
+            logger.info(
+                f"  Short skip {symbol}: ${target_notional:.0f} / ${current_price:.2f} = 0 shares"
+            )
+            continue
+
+        # Hedge cap check per-order
+        order_notional = qty_shares * current_price
+        if short_notional + order_notional > hedge_cap and long_notional > 0:
+            logger.info(f"  Short skip {symbol}: would breach hedge cap")
+            continue
+
+        logger.info(
+            f"  SHORT {symbol}: {qty_shares} shares @ ~${current_price:.2f} "
+            f"(${order_notional:.0f}) rs_rank={candidate.get('rs_rank_pct'):.1f}%"
+        )
+
+        if not dry_run and not _live_shadow:
+            short_result = trader.place_short_order(client, symbol, qty_shares)
+            if short_result and short_result.is_success:
+                shorts_placed += 1
+                short_notional += order_notional
+                entry_price = short_result.filled_avg_price or current_price
+                trader.record_short(
+                    symbol,
+                    entry_price,
+                    signal="rs_short",
+                    regime=regime_name,
+                )
+                audit_log.log_order_placed(
+                    symbol, "SHORT", order_notional, short_result.broker_order_id or ""
+                )
+                if short_result.filled_qty:
+                    cover_result = trader.place_short_cover_stop(
+                        client, symbol, short_result.filled_qty
+                    )
+                    if cover_result is None or not cover_result.is_success:
+                        logger.error(
+                            f"  SHORT {symbol}: cover stop FAILED — closing position immediately"
+                        )
+                        trader.close_position(client, symbol)
+                        trader.record_cover(symbol)
+                        short_notional -= order_notional
+                        continue
+                executed_symbols.add(symbol)
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "SHORT",
+                        "detail": f"{qty_shares} shares @ ~${current_price:.2f} | rs_rank={candidate.get('rs_rank_pct'):.1f}%",
+                        "decision_type": "short",
+                        "confidence": None,
+                        "key_signal": "rs_short",
+                        "reasoning": f"Bottom-quartile RS ({candidate.get('rs_rank_pct'):.1f}%) in {regime_name}",
+                    }
+                )
+        elif _live_shadow:
+            audit_log.log_event(
+                "WOULD_SHORT",
+                {
+                    "symbol": symbol,
+                    "qty_shares": qty_shares,
+                    "notional": round(order_notional, 2),
+                    "rs_rank_pct": candidate.get("rs_rank_pct"),
+                    "regime": regime_name,
+                },
+            )
+            all_trades.append(
+                {
+                    "symbol": symbol,
+                    "action": "WOULD_SHORT",
+                    "detail": f"shadow {qty_shares} shares @ ~${current_price:.2f}",
+                    "decision_type": "short",
+                    "confidence": None,
+                    "key_signal": "rs_short",
+                    "reasoning": f"Bottom-quartile RS ({candidate.get('rs_rank_pct'):.1f}%) in {regime_name}",
+                }
+            )
+            shorts_placed += 1
+            executed_symbols.add(symbol)
+        else:
+            all_trades.append(
+                {
+                    "symbol": symbol,
+                    "action": "SHORT",
+                    "detail": f"dry run {qty_shares} shares",
+                    "decision_type": "short",
+                    "confidence": None,
+                    "key_signal": "rs_short",
+                    "reasoning": f"Bottom-quartile RS ({candidate.get('rs_rank_pct'):.1f}%) in {regime_name}",
+                }
+            )
+            shorts_placed += 1
+            executed_symbols.add(symbol)
+
+
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 
@@ -852,13 +1020,18 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     open_positions = trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
     position_ages = trader.get_position_ages()
+    open_shorts_db = trader.get_open_shorts()
     stale = [
         sym
         for sym, age in position_ages.items()
         if age
-        >= config.SIGNAL_MAX_HOLD_DAYS.get(
-            trader.get_position_meta(sym).get("signal", "unknown"),
-            config.MAX_HOLD_DAYS,
+        >= (
+            config.MAX_SHORT_HOLD_DAYS
+            if sym in open_shorts_db
+            else config.SIGNAL_MAX_HOLD_DAYS.get(
+                trader.get_position_meta(sym).get("signal", "unknown"),
+                config.MAX_HOLD_DAYS,
+            )
         )
     ]
 
@@ -1070,12 +1243,18 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         },
     )
 
-    # ── Execute sells ─────────────────────────────────────────────────────────
+    # ── Execute sells / covers ────────────────────────────────────────────────
+    # Longs: AI SELL decisions + stale longs + rule-based stops
+    # Shorts: stale shorts only (AI doesn't manage short positions)
     symbols_to_sell = {
         d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
     }
-    symbols_to_sell |= {sym for sym in stale if sym in held_symbols}
+    symbols_to_sell |= {sym for sym in stale if sym in held_symbols and sym not in open_shorts_db}
     symbols_to_sell |= _check_rule_based_stops(open_positions, position_ages, atr_by_symbol)
+    # Exclude any short positions from the sell set (handled separately below)
+    symbols_to_sell -= open_shorts_db
+
+    symbols_to_cover = {sym for sym in stale if sym in open_shorts_db}
 
     for symbol in symbols_to_sell:
         decision = next(
@@ -1149,6 +1328,46 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                 )
             executed_symbols.add(symbol)
 
+    # ── Cover stale short positions ───────────────────────────────────────────
+    for symbol in symbols_to_cover:
+        reason = f"Time-based cover (≥{config.MAX_SHORT_HOLD_DAYS} days short)"
+        logger.info(f"  COVER {symbol} — {reason}")
+        if not dry_run:
+            pos = next((p for p in open_positions if p["symbol"] == symbol), None)
+            result = trader.close_position(client, symbol)
+            if result.is_success:
+                audit_log.log_position_closed(
+                    symbol, reason[:50], -(pos["unrealized_plpc"]) if pos else 0.0
+                )
+                trader.record_cover(symbol)
+                executed_symbols.add(symbol)
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "COVER",
+                        "detail": reason,
+                        "decision_type": "rule_based",
+                        "confidence": None,
+                        "reasoning": reason,
+                    }
+                )
+            else:
+                fail_detail = result.rejection_reason or "cover failed"
+                logger.error(f"  COVER FAILED {symbol} — {fail_detail}. Manual review required.")
+                alerts.alert_error("COVER FAILED", f"{symbol}: {fail_detail}")
+        else:
+            all_trades.append(
+                {
+                    "symbol": symbol,
+                    "action": "COVER",
+                    "detail": "dry run",
+                    "decision_type": "rule_based",
+                    "confidence": None,
+                    "reasoning": reason,
+                }
+            )
+            executed_symbols.add(symbol)
+
     # ── Execute buys (open + midday modes; close/open_sells are exits only) ────
     # midday is now eligible for buys because intraday signals (VWAP, ORB,
     # intraday_momentum) surface setups that develop after the open.
@@ -1178,13 +1397,14 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     else:
         account_now = trader.get_account_info(client)
         open_positions = trader.get_open_positions(client)
+        long_positions = [p for p in open_positions if p.get("qty", 0) > 0]
         available_cash = account_now["cash"] * (1 - config.CASH_RESERVE_PCT)
         max_positions = min(
             position_sizer.get_max_positions(account_now["portfolio_value"]),
             config.MAX_POSITIONS,
         )
-        slots = max_positions - len(open_positions)
-        logger.info(f"Position slots: {len(open_positions)}/{max_positions}")
+        slots = max_positions - len(long_positions)
+        logger.info(f"Position slots: {len(long_positions)}/{max_positions}")
 
         if slots > 0:
             regime_name = regime.get("regime", "UNKNOWN")
@@ -1521,6 +1741,19 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         executed_symbols.add(symbol)
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")
+
+    # ── Execute shorts ────────────────────────────────────────────────────────
+    _execute_shorts(
+        client=client,
+        snapshots=snapshots,
+        regime=regime,
+        open_positions=open_positions,
+        account_now=account_now,
+        all_trades=all_trades,
+        executed_symbols=executed_symbols,
+        dry_run=dry_run,
+        _live_shadow=_live_shadow,
+    )
 
     # ── Attach any missing stops (catches fills that arrived after wait_for_fill timed out,
     #    and re-covers positions whose stops were cancelled by a failed-sell cycle) ──

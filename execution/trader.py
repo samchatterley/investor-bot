@@ -627,39 +627,66 @@ def ensure_stops_attached(client: TradingClient) -> bool:
             return True
         open_orders = client.get_orders()
 
-        # Sum covered qty per symbol: stop orders AND any pending SELL (market/limit)
-        # A pending sell order commits those shares in Alpaca — placing a stop on top
-        # triggers error 40310000 "insufficient qty available". Treat any open SELL
-        # order as equivalent coverage so we don't attempt a redundant stop.
-        stop_qty: dict[str, float] = {}
+        # Long positions: any pending SELL order counts as coverage.
+        # Short positions: only stop/trailing_stop BUY orders count as coverage
+        # (a fresh BUY to open a new long should not suppress short stop attachment).
+        long_stop_qty: dict[str, float] = {}
+        short_cover_qty: dict[str, float] = {}
         for o in open_orders:
+            o_qty = float(o.qty or 0)
             if o.side == OrderSide.SELL:
-                stop_qty[o.symbol] = stop_qty.get(o.symbol, 0.0) + float(o.qty or 0)
+                long_stop_qty[o.symbol] = long_stop_qty.get(o.symbol, 0.0) + o_qty
+            elif o.side == OrderSide.BUY and str(getattr(o, "type", "")).lower() in (
+                "stop",
+                "trailing_stop",
+            ):
+                short_cover_qty[o.symbol] = short_cover_qty.get(o.symbol, 0.0) + o_qty
 
         all_protected = True
         for pos in positions:
             pos_qty = float(pos.qty)
-            covered = stop_qty.get(pos.symbol, 0.0)
-            uncovered = pos_qty - covered
-            if uncovered > 0.000001:  # tolerance avoids acting on float dust
-                whole_uncovered = int(math.floor(uncovered))
-                if whole_uncovered < 1:
-                    # Sub-share remainder — Alpaca cannot stop-protect this, skip silently
-                    continue
-                current_price = float(pos.current_price) if pos.current_price else None
-                logger.warning(
-                    f"Position {pos.symbol}: {pos_qty:.6f} shares, "
-                    f"{covered:.6f} covered by stops — attaching stop for {whole_uncovered}"
-                )
-                result = place_trailing_stop(
-                    client, pos.symbol, whole_uncovered, current_price=current_price
-                )
-                if result is None or not result.is_success:
-                    logger.error(
-                        f"ensure_stops_attached: FAILED to protect {pos.symbol} "
-                        f"({whole_uncovered} shares uncovered)"
+            if pos_qty > 0:
+                # Long position — needs a SELL stop
+                covered = long_stop_qty.get(pos.symbol, 0.0)
+                uncovered = pos_qty - covered
+                if uncovered > 0.000001:
+                    whole_uncovered = int(math.floor(uncovered))
+                    if whole_uncovered < 1:
+                        continue
+                    current_price = float(pos.current_price) if pos.current_price else None
+                    logger.warning(
+                        f"Long {pos.symbol}: {pos_qty:.6f} shares, "
+                        f"{covered:.6f} covered — attaching stop for {whole_uncovered}"
                     )
-                    all_protected = False
+                    result = place_trailing_stop(
+                        client, pos.symbol, whole_uncovered, current_price=current_price
+                    )
+                    if result is None or not result.is_success:
+                        logger.error(
+                            f"ensure_stops_attached: FAILED to protect long {pos.symbol} "
+                            f"({whole_uncovered} shares uncovered)"
+                        )
+                        all_protected = False
+            elif pos_qty < 0:
+                # Short position — needs a BUY cover stop
+                short_qty = abs(pos_qty)
+                covered = short_cover_qty.get(pos.symbol, 0.0)
+                uncovered = short_qty - covered
+                if uncovered > 0.000001:
+                    whole_uncovered = int(math.floor(uncovered))
+                    if whole_uncovered < 1:
+                        continue
+                    logger.warning(
+                        f"Short {pos.symbol}: {short_qty:.6f} shares, "
+                        f"{covered:.6f} covered — attaching cover stop for {whole_uncovered}"
+                    )
+                    result = place_short_cover_stop(client, pos.symbol, whole_uncovered)
+                    if result is None or not result.is_success:
+                        logger.error(
+                            f"ensure_stops_attached: FAILED to protect short {pos.symbol} "
+                            f"({whole_uncovered} shares uncovered)"
+                        )
+                        all_protected = False
         return all_protected
     except Exception as e:
         logger.error(f"ensure_stops_attached failed: {e}")
@@ -842,3 +869,201 @@ def add_daily_notional(market_date: str, amount: float):
             )
     except Exception as e:
         logger.warning(f"add_daily_notional failed: {e}")
+
+
+# ── Short selling ──────────────────────────────────────────────────────────
+
+
+def place_short_order(
+    client: TradingClient,
+    symbol: str,
+    qty_shares: int,
+) -> OrderResult | None:
+    """Open a short position by selling qty_shares not currently held.
+
+    Whole shares only — Alpaca does not support fractional short selling.
+    Returns None when qty_shares < 1 (pre-condition violation).
+    """
+    if qty_shares < 1:
+        logger.warning(f"Short order too small for {symbol}: {qty_shares} shares")
+        return None
+
+    client_order_id = f"ib-{symbol}-SHORT-{today_et().isoformat()}"
+    trade_date = today_et().isoformat()
+
+    try:
+        from utils.order_ledger import create_intent, log_order_event, update_intent
+
+        _ledger = True
+    except Exception:
+        _ledger = False
+
+    if _ledger:
+        intent_id = create_intent(symbol, "SHORT", trade_date, None, client_order_id)
+        if intent_id is None and not IS_PAPER:
+            raise OrderLedgerUnavailable(
+                f"place_short_order({symbol}): create_intent failed — cannot submit without durable pre-submit record"
+            )
+        log_order_event(client_order_id, "INTENT_CREATED", {"qty": qty_shares})
+
+    try:
+        order = client.submit_order(
+            MarketOrderRequest(
+                symbol=symbol,
+                qty=qty_shares,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
+            )
+        )
+        order_id = str(order.id)
+        logger.info(f"SHORT order placed: {symbol} {qty_shares} shares | order_id={order_id}")
+
+        if _ledger:
+            update_intent(client_order_id, "submitted", broker_order_id=order_id)
+            log_order_event(
+                client_order_id,
+                "ORDER_SUBMITTED",
+                {"broker_order_id": order_id},
+                broker_order_id=order_id,
+            )
+
+        fill_result = wait_for_fill(client, order_id)
+        if fill_result is not None:
+            filled_qty, filled_avg_price = fill_result
+            if _ledger:
+                update_intent(client_order_id, "filled")
+                log_order_event(
+                    client_order_id,
+                    "ORDER_FILLED",
+                    {"filled_qty": filled_qty, "filled_avg_price": filled_avg_price},
+                    broker_order_id=order_id,
+                )
+            return OrderResult(
+                status=OrderStatus.FILLED,
+                symbol=symbol,
+                broker_order_id=order_id,
+                filled_qty=filled_qty,
+                filled_avg_price=filled_avg_price,
+            )
+        if _ledger:
+            update_intent(client_order_id, "timeout")
+            log_order_event(client_order_id, "ORDER_TIMEOUT", {}, broker_order_id=order_id)
+        return OrderResult(
+            status=OrderStatus.TIMEOUT, symbol=symbol, broker_order_id=order_id, filled_qty=0.0
+        )
+    except Exception as e:
+        logger.error(f"Failed to place SHORT for {symbol}: {e}")
+        if _ledger:
+            update_intent(client_order_id, "rejected")
+            log_order_event(client_order_id, "ORDER_REJECTED", {"reason": str(e)})
+        return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
+
+
+def place_short_cover_stop(
+    client: TradingClient,
+    symbol: str,
+    qty: float,
+    trail_percent: float | None = None,
+) -> OrderResult | None:
+    """Attach a trailing buy-stop to protect an open short position.
+
+    The stop fires (buys to cover) if the price rises by trail_percent.
+    Whole shares only — Alpaca rejects fractional stop orders.
+    Returns None only for qty <= 0 pre-condition violation.
+    """
+    if not qty or qty <= 0:
+        return None
+    effective_trail = trail_percent if trail_percent is not None else TRAILING_STOP_PCT
+    whole_qty = int(math.floor(qty))
+    if whole_qty < 1:
+        logger.warning(f"Cannot stop-protect short {symbol}: qty {qty:.6f} is sub-share")
+        return OrderResult(status=OrderStatus.UNPROTECTED, symbol=symbol)
+    try:
+        order = client.submit_order(
+            TrailingStopOrderRequest(
+                symbol=symbol,
+                qty=whole_qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC,
+                trail_percent=effective_trail,
+            )
+        )
+        order_id = str(order.id)
+        logger.info(
+            f"Short cover stop: {symbol} {whole_qty} shares "
+            f"{effective_trail}% trail (BUY) | order_id={order_id}"
+        )
+        return OrderResult(status=OrderStatus.FILLED, symbol=symbol, stop_order_id=order_id)
+    except Exception as e:
+        logger.error(f"Failed to place short cover stop for {symbol}: {e}")
+        return OrderResult(status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason=str(e))
+
+
+def record_short(
+    symbol: str,
+    entry_price: float,
+    signal: str = "rs_short",
+    regime: str = "UNKNOWN",
+    confidence: int = 0,
+):
+    """Record an opened short position in the positions table."""
+    with _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO positions "
+            "(symbol, entry_date, entry_price, signal, regime, confidence, side) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                symbol,
+                today_et().isoformat(),
+                round(entry_price, 4),
+                signal,
+                regime,
+                confidence,
+                "short",
+            ),
+        )
+
+
+def record_cover(symbol: str):
+    """Remove a covered short from the positions table."""
+    with _db() as conn:
+        conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+
+
+def get_open_longs() -> set[str]:
+    """Return symbols of current long positions tracked in the DB."""
+    try:
+        with _db() as conn:
+            rows = conn.execute("SELECT symbol FROM positions WHERE side='long'").fetchall()
+        return {row["symbol"] for row in rows}
+    except Exception:
+        return set()
+
+
+def get_open_shorts() -> set[str]:
+    """Return symbols of current short positions tracked in the DB."""
+    try:
+        with _db() as conn:
+            rows = conn.execute("SELECT symbol FROM positions WHERE side='short'").fetchall()
+        return {row["symbol"] for row in rows}
+    except Exception:
+        return set()
+
+
+def get_short_notional(client: TradingClient) -> float:
+    """Return total short book notional (sum of abs market value of short positions)."""
+    try:
+        positions = client.get_all_positions()
+        return sum(abs(float(p.market_value)) for p in positions if float(p.qty) < 0)
+    except Exception:
+        return 0.0
+
+
+def get_long_notional(client: TradingClient) -> float:
+    """Return total long book notional (sum of market value of long positions)."""
+    try:
+        positions = client.get_all_positions()
+        return sum(float(p.market_value) for p in positions if float(p.qty) > 0)
+    except Exception:
+        return 0.0

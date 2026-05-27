@@ -78,6 +78,14 @@ MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "2" if _SAM else "5"))
 MAX_POSITION_PCT = 0.45  # Deprecated — legacy Kelly cap; kept only for config.validate(). Superseded by MAX_POSITION_WEIGHT.
 CASH_RESERVE_PCT = 0.10  # Always keep 10% as cash buffer
 
+# Short selling
+MAX_SHORT_POSITIONS = int(os.getenv("MAX_SHORT_POSITIONS", "3"))
+SHORT_SIZE_SCALE = float(os.getenv("SHORT_SIZE_SCALE", "0.5"))  # fraction of standard long size
+MAX_SHORT_HEDGE_RATIO = float(
+    os.getenv("MAX_SHORT_HEDGE_RATIO", "0.5")
+)  # short notional / long notional ceiling
+MAX_SHORT_HOLD_DAYS = int(os.getenv("MAX_SHORT_HOLD_DAYS", "3"))
+
 # Risk-budget sizing (replaces Kelly)
 RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity risked per trade
 MAX_POSITION_WEIGHT = 0.05  # 5% of portfolio per position (hard cap)
