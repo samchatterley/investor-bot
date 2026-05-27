@@ -1171,294 +1171,30 @@ def _execute_sell_phase(
             executed_symbols.add(symbol)
 
 
-# ── Main run ──────────────────────────────────────────────────────────────────
-
-
-def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
-    today = config.today_et().isoformat()
-    shadow_label = " [LIVE SHADOW — no orders]" if _live_shadow else ""
-    mode_label = "PAPER" if config.IS_PAPER else "*** LIVE ***"
-    logger.info(
-        f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''}{shadow_label} ==="
-    )
-    if (
-        not config.IS_PAPER
-        and not dry_run
-        and not _live_shadow
-        and config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK"
-    ):
-        logger.error(
-            "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
-            "Set it in .env or export it before running."
-        )
-        sys.exit(1)
-
-    if config.SMALL_ACCOUNT_MODE:
-        logger.info(
-            f"SMALL_ACCOUNT_MODE active: max_order=${config.MAX_SINGLE_ORDER_USD:.0f} "
-            f"max_daily=${config.MAX_DAILY_NOTIONAL_USD:.0f} "
-            f"max_deployed=${config.MAX_DEPLOYED_USD:.0f} "
-            f"max_positions={config.MAX_POSITIONS}"
-        )
-
-    try:
-        config.validate()
-    except ValueError as e:
-        logger.error(str(e))
-        sys.exit(1)
-
-    if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
-        logger.error("ALPACA_API_KEY not set.")
-        sys.exit(1)
-    if not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "your_anthropic_api_key_here":
-        logger.error("ANTHROPIC_API_KEY not set.")
-        sys.exit(1)
-
-    # Halt file check — bot refuses to run while HALT file exists
-    if os.path.exists(config.HALT_FILE):
-        logger.critical("Trading is HALTED. Delete halt file or run: python main.py --clear-halt")
-        sys.exit(1)
-
-    init_db()
-
-    lock_fd = _acquire_lock()
-    if lock_fd is None:
-        return
-
-    global _current_lock_fd
-    _current_lock_fd = lock_fd
-    signal.signal(signal.SIGTERM, _sigterm_handler)
-    signal.signal(signal.SIGHUP, _sigterm_handler)
-
-    try:
-        _run_inner(dry_run=dry_run, mode=mode, today=today, _live_shadow=_live_shadow)
-    except Exception as e:
-        logger.error(f"Unhandled error in trading run: {e}", exc_info=True)
-        alerts.alert_error("main.run", str(e))
-    finally:
-        _release_lock(lock_fd)
-        _current_lock_fd = None
-
-
-def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
-    run_id = str(uuid.uuid4())
-    audit_log.set_run_id(run_id)
-    decision_log.set_run_id(run_id)
-    logger.info(f"run_id={run_id}")
-
-    # True when this run should exercise live safety gates even though no orders are placed.
-    # Covers both real live runs and --live-shadow (full-pipeline validation mode).
-    should_run_live_gates = (not dry_run) or _live_shadow
-
-    client = trader.get_client()
-
-    # ── Broker account safety assertions (live only) ──────────────────────────
-    if not config.IS_PAPER and should_run_live_gates:
-        try:
-            _assert_account_safety(client)
-        except RuntimeError as e:
-            logger.critical(f"Account safety check failed: {e}")
-            sys.exit(1)
-
-    # ── Reconcile position metadata ───────────────────────────────────────────
-    # Runs before the market-closed check so the DB always reflects broker state
-    # regardless of market hours — stale entries from JSON migration are pruned here.
-    # reconcile_positions returns symbols that exist at the broker but had no
-    # local record — unexpected positions detected BEFORE they are normalised.
-    unexpected_positions = trader.reconcile_positions(client)
-
-    if not trader.is_market_open(client):
-        logger.info("Market is closed. Nothing to do.")
-        return
-
-    # ── Account snapshot ──────────────────────────────────────────────────────
-    account_before = trader.get_account_info(client)
-    logger.info(
-        f"Portfolio: ${account_before['portfolio_value']:.2f}  Cash: ${account_before['cash']:.2f}"
-    )
-    audit_log.log_run_start(
-        mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER
-    )
-
-    if mode == "open":
-        portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
-
-    # Set the experiment-start equity once, on the first live open run.
-    # Never overwritten — used to enforce MAX_EXPERIMENT_DRAWDOWN_USD for the lifetime of the run.
-    if not config.IS_PAPER and not dry_run and mode == "open":
-        save_experiment_baseline(account_before["portfolio_value"])
-    if unexpected_positions and not config.IS_PAPER and should_run_live_gates:
-        msg = (
-            f"Unexpected broker position(s) with no local record: {sorted(unexpected_positions)}. "
-            "These have been added as placeholders. Verify origin before continuing."
-        )
-        logger.critical(msg)
-        audit_log.log_event("UNEXPECTED_POSITIONS", {"symbols": sorted(unexpected_positions)})
-        alerts.alert_error("UNEXPECTED BROKER POSITIONS", msg)
-        # Write halt — unknown positions means broker state cannot be trusted
-        os.makedirs(config.LOG_DIR, exist_ok=True)
-        with open(config.HALT_FILE, "w") as _hf:
-            json.dump(
-                {
-                    "halted": True,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "reason": "unexpected_broker_positions",
-                    "symbols": sorted(unexpected_positions),
-                },
-                _hf,
-                indent=2,
-            )
-            _hf.write("\n")
-        sys.exit(1)
-
-    stops_ok = trader.ensure_stops_attached(client)
-    if not stops_ok and not config.IS_PAPER and not dry_run:
-        logger.critical(
-            "ensure_stops_attached reported uncovered live positions — halting to prevent "
-            "unprotected exposure. Resolve stops manually, then run --clear-halt."
-        )
-        os.makedirs(config.LOG_DIR, exist_ok=True)
-        halt_data = {
-            "halted": True,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "reason": "uncovered_positions_at_startup",
-        }
-        with open(config.HALT_FILE, "w") as f:
-            json.dump(halt_data, f, indent=2)
-            f.write("\n")
-        alerts.alert_error(
-            "HALT — UNCOVERED POSITIONS",
-            "Bot halted at startup: one or more live positions have no stop protection. "
-            "Attach stops manually, then run --clear-halt.",
-        )
-        sys.exit(1)
-
-    # ── Startup health check ──────────────────────────────────────────────────
-    health = run_startup_health_check(client)
-    health.log()
-    audit_log.log_event(
-        "STARTUP_HEALTH",
-        {"status": health.status, "issues": health.issues, "metrics": health.metrics},
-    )
-    if health.status == HealthStatus.RED:
-        logger.critical(
-            f"Startup health check RED ({len(health.issues)} issue(s)) — "
-            "new buys suspended this run. Resolve issues and restart."
-        )
-        alerts.alert_error(
-            "STARTUP HEALTH RED",
-            f"{len(health.issues)} safety issue(s) at startup: " + "; ".join(health.issues[:3]),
-        )
-        # In live non-dry-run mode a RED health is fatal for buys; we continue
-        # to allow sells/exits so existing positions can be managed.
-    elif health.status == HealthStatus.YELLOW:
-        logger.warning(
-            f"Startup health check YELLOW ({len(health.issues)} issue(s)) — "
-            "new buys suspended this run."
-        )
-
-    # ── Circuit breaker ───────────────────────────────────────────────────────
-    history = portfolio_tracker.load_history()
-    _dd_scalar = position_sizer.drawdown_scalar(history)
-    cb_triggered, cb_drawdown = risk_manager.check_circuit_breaker(history)
-    if cb_triggered:
-        audit_log.log_circuit_breaker(cb_drawdown)
-        alerts.alert_circuit_breaker(cb_drawdown)
-        logger.warning("Circuit breaker active — no new buys today.")
-
-    # ── Daily loss check ──────────────────────────────────────────────────────
-    _baseline = portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
-    dl_triggered, dl_pct = risk_manager.check_daily_loss(
-        _baseline, account_before["portfolio_value"]
-    )
-    # Dollar-denominated daily loss cap (active when MAX_DAILY_LOSS_USD > 0)
-    if not dl_triggered and config.MAX_DAILY_LOSS_USD > 0:
-        daily_loss_usd = _baseline - account_before["portfolio_value"]
-        if daily_loss_usd >= config.MAX_DAILY_LOSS_USD:
-            dl_triggered = True
-            dl_pct = (account_before["portfolio_value"] / _baseline - 1) * 100
-            logger.warning(
-                f"Dollar daily loss limit hit: ${daily_loss_usd:.2f} >= "
-                f"${config.MAX_DAILY_LOSS_USD:.2f}"
-            )
-    if dl_triggered:
-        audit_log.log_daily_loss_limit(dl_pct)
-        alerts.alert_daily_loss(dl_pct)
-        logger.warning("Daily loss limit hit — closing all positions.")
-        if not dry_run:
-            for pos in trader.get_open_positions(client):
-                trader.close_position(client, pos["symbol"])
-                audit_log.log_position_closed(
-                    pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
-                )
-                trader.record_sell(pos["symbol"])
-        return
-
-    # ── Experiment drawdown cap ───────────────────────────────────────────────
-    # Active when MAX_EXPERIMENT_DRAWDOWN_USD > 0 and a baseline has been set.
-    # Blocks new buys (but allows sells/exits) once total experiment loss is reached.
-    _exp_drawdown_triggered = False
-    if config.MAX_EXPERIMENT_DRAWDOWN_USD > 0:
-        _exp_baseline = load_experiment_baseline()
-        if _exp_baseline is not None:
-            _exp_loss = _exp_baseline - account_before["portfolio_value"]
-            if _exp_loss >= config.MAX_EXPERIMENT_DRAWDOWN_USD:
-                _exp_drawdown_triggered = True
-                logger.critical(
-                    f"Experiment drawdown cap reached: lost ${_exp_loss:.2f} of "
-                    f"${_exp_baseline:.2f} start equity "
-                    f"(limit ${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f}) — "
-                    "new buys blocked for remainder of experiment."
-                )
-                audit_log.log_event(
-                    "EXPERIMENT_DRAWDOWN_CAP",
-                    {
-                        "start_equity": _exp_baseline,
-                        "current_equity": account_before["portfolio_value"],
-                        "loss_usd": round(_exp_loss, 2),
-                        "limit_usd": config.MAX_EXPERIMENT_DRAWDOWN_USD,
-                    },
-                )
-                alerts.alert_error(
-                    "EXPERIMENT DRAWDOWN CAP",
-                    f"Total experiment loss ${_exp_loss:.2f} >= "
-                    f"${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f} limit — no new buys.",
-                )
-
-    all_trades: list = []
-    daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
-    executed_symbols: set[str] = set()
-
-    # ── Market context ────────────────────────────────────────────────────────
-    mc = _fetch_market_context()
-
-    # ── Position state + managed exits ───────────────────────────────────────
-    snap = _get_position_snapshot(client)
-    _manage_existing_positions(client, dry_run, all_trades, snap)
-    snap = _get_position_snapshot(client)  # refresh after exits
-
-    # ── Fetch + enrich market data, pre-filter candidates ────────────────────
-    db = _build_data_bundle(client, snap, mc)
-    if db is None:
-        return
-
-    # ── AI analysis + validation + decision logging ───────────────────────────
-    account_now = trader.get_account_info(client)
-    decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols)
-    if decisions is None:
-        return
-
-    # ── Execute sells / covers ────────────────────────────────────────────────
-    _execute_sell_phase(
-        client, snap, decisions, all_trades, executed_symbols, dry_run, _live_shadow
-    )
-
-    # ── Execute buys (open + midday modes; close/open_sells are exits only) ────
-    # midday is now eligible for buys because intraday signals (VWAP, ORB,
-    # intraday_momentum) surface setups that develop after the open.
+def _execute_buy_phase(
+    client,
+    snap: PositionSnapshot,
+    db: DataBundle,
+    mc: MarketContext,
+    decisions: dict,
+    health,
+    cb_triggered: bool,
+    _exp_drawdown_triggered: bool,
+    _dd_scalar: float,
+    account_now: dict,
+    should_run_live_gates: bool,
+    today: str,
+    mode: str,
+    dry_run: bool,
+    _live_shadow: bool,
+    all_trades: list,
+    executed_symbols: set,
+) -> tuple[list, dict]:
+    """Execute the buy loop. Returns (open_positions, account_now) for use by execute_shorts."""
     # Initialised from the post-exit snapshot; overwritten with a fresher fetch
     # inside the else branch when buys are not skipped.
     open_positions = snap.open_positions
+    daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
     skip_buys = (
         mode in ("close", "open_sells")
         or cb_triggered
@@ -1829,6 +1565,311 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         executed_symbols.add(symbol)
                 else:
                     logger.warning(f"  Skipping {symbol}: ${notional:.2f} too small")
+
+    return open_positions, account_now
+
+
+# ── Main run ──────────────────────────────────────────────────────────────────
+
+
+def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
+    today = config.today_et().isoformat()
+    shadow_label = " [LIVE SHADOW — no orders]" if _live_shadow else ""
+    mode_label = "PAPER" if config.IS_PAPER else "*** LIVE ***"
+    logger.info(
+        f"=== Trading bot | {today} | mode={mode} | {mode_label} {'[DRY RUN]' if dry_run else ''}{shadow_label} ==="
+    )
+    if (
+        not config.IS_PAPER
+        and not dry_run
+        and not _live_shadow
+        and config.LIVE_CONFIRM != "I-ACCEPT-REAL-MONEY-RISK"
+    ):
+        logger.error(
+            "Live trading requires LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK in the environment. "
+            "Set it in .env or export it before running."
+        )
+        sys.exit(1)
+
+    if config.SMALL_ACCOUNT_MODE:
+        logger.info(
+            f"SMALL_ACCOUNT_MODE active: max_order=${config.MAX_SINGLE_ORDER_USD:.0f} "
+            f"max_daily=${config.MAX_DAILY_NOTIONAL_USD:.0f} "
+            f"max_deployed=${config.MAX_DEPLOYED_USD:.0f} "
+            f"max_positions={config.MAX_POSITIONS}"
+        )
+
+    try:
+        config.validate()
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
+
+    if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
+        logger.error("ALPACA_API_KEY not set.")
+        sys.exit(1)
+    if not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "your_anthropic_api_key_here":
+        logger.error("ANTHROPIC_API_KEY not set.")
+        sys.exit(1)
+
+    # Halt file check — bot refuses to run while HALT file exists
+    if os.path.exists(config.HALT_FILE):
+        logger.critical("Trading is HALTED. Delete halt file or run: python main.py --clear-halt")
+        sys.exit(1)
+
+    init_db()
+
+    lock_fd = _acquire_lock()
+    if lock_fd is None:
+        return
+
+    global _current_lock_fd
+    _current_lock_fd = lock_fd
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGHUP, _sigterm_handler)
+
+    try:
+        _run_inner(dry_run=dry_run, mode=mode, today=today, _live_shadow=_live_shadow)
+    except Exception as e:
+        logger.error(f"Unhandled error in trading run: {e}", exc_info=True)
+        alerts.alert_error("main.run", str(e))
+    finally:
+        _release_lock(lock_fd)
+        _current_lock_fd = None
+
+
+def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
+    run_id = str(uuid.uuid4())
+    audit_log.set_run_id(run_id)
+    decision_log.set_run_id(run_id)
+    logger.info(f"run_id={run_id}")
+
+    # True when this run should exercise live safety gates even though no orders are placed.
+    # Covers both real live runs and --live-shadow (full-pipeline validation mode).
+    should_run_live_gates = (not dry_run) or _live_shadow
+
+    client = trader.get_client()
+
+    # ── Broker account safety assertions (live only) ──────────────────────────
+    if not config.IS_PAPER and should_run_live_gates:
+        try:
+            _assert_account_safety(client)
+        except RuntimeError as e:
+            logger.critical(f"Account safety check failed: {e}")
+            sys.exit(1)
+
+    # ── Reconcile position metadata ───────────────────────────────────────────
+    # Runs before the market-closed check so the DB always reflects broker state
+    # regardless of market hours — stale entries from JSON migration are pruned here.
+    # reconcile_positions returns symbols that exist at the broker but had no
+    # local record — unexpected positions detected BEFORE they are normalised.
+    unexpected_positions = trader.reconcile_positions(client)
+
+    if not trader.is_market_open(client):
+        logger.info("Market is closed. Nothing to do.")
+        return
+
+    # ── Account snapshot ──────────────────────────────────────────────────────
+    account_before = trader.get_account_info(client)
+    logger.info(
+        f"Portfolio: ${account_before['portfolio_value']:.2f}  Cash: ${account_before['cash']:.2f}"
+    )
+    audit_log.log_run_start(
+        mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER
+    )
+
+    if mode == "open":
+        portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
+
+    # Set the experiment-start equity once, on the first live open run.
+    # Never overwritten — used to enforce MAX_EXPERIMENT_DRAWDOWN_USD for the lifetime of the run.
+    if not config.IS_PAPER and not dry_run and mode == "open":
+        save_experiment_baseline(account_before["portfolio_value"])
+    if unexpected_positions and not config.IS_PAPER and should_run_live_gates:
+        msg = (
+            f"Unexpected broker position(s) with no local record: {sorted(unexpected_positions)}. "
+            "These have been added as placeholders. Verify origin before continuing."
+        )
+        logger.critical(msg)
+        audit_log.log_event("UNEXPECTED_POSITIONS", {"symbols": sorted(unexpected_positions)})
+        alerts.alert_error("UNEXPECTED BROKER POSITIONS", msg)
+        # Write halt — unknown positions means broker state cannot be trusted
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+        with open(config.HALT_FILE, "w") as _hf:
+            json.dump(
+                {
+                    "halted": True,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "reason": "unexpected_broker_positions",
+                    "symbols": sorted(unexpected_positions),
+                },
+                _hf,
+                indent=2,
+            )
+            _hf.write("\n")
+        sys.exit(1)
+
+    stops_ok = trader.ensure_stops_attached(client)
+    if not stops_ok and not config.IS_PAPER and not dry_run:
+        logger.critical(
+            "ensure_stops_attached reported uncovered live positions — halting to prevent "
+            "unprotected exposure. Resolve stops manually, then run --clear-halt."
+        )
+        os.makedirs(config.LOG_DIR, exist_ok=True)
+        halt_data = {
+            "halted": True,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "reason": "uncovered_positions_at_startup",
+        }
+        with open(config.HALT_FILE, "w") as f:
+            json.dump(halt_data, f, indent=2)
+            f.write("\n")
+        alerts.alert_error(
+            "HALT — UNCOVERED POSITIONS",
+            "Bot halted at startup: one or more live positions have no stop protection. "
+            "Attach stops manually, then run --clear-halt.",
+        )
+        sys.exit(1)
+
+    # ── Startup health check ──────────────────────────────────────────────────
+    health = run_startup_health_check(client)
+    health.log()
+    audit_log.log_event(
+        "STARTUP_HEALTH",
+        {"status": health.status, "issues": health.issues, "metrics": health.metrics},
+    )
+    if health.status == HealthStatus.RED:
+        logger.critical(
+            f"Startup health check RED ({len(health.issues)} issue(s)) — "
+            "new buys suspended this run. Resolve issues and restart."
+        )
+        alerts.alert_error(
+            "STARTUP HEALTH RED",
+            f"{len(health.issues)} safety issue(s) at startup: " + "; ".join(health.issues[:3]),
+        )
+        # In live non-dry-run mode a RED health is fatal for buys; we continue
+        # to allow sells/exits so existing positions can be managed.
+    elif health.status == HealthStatus.YELLOW:
+        logger.warning(
+            f"Startup health check YELLOW ({len(health.issues)} issue(s)) — "
+            "new buys suspended this run."
+        )
+
+    # ── Circuit breaker ───────────────────────────────────────────────────────
+    history = portfolio_tracker.load_history()
+    _dd_scalar = position_sizer.drawdown_scalar(history)
+    cb_triggered, cb_drawdown = risk_manager.check_circuit_breaker(history)
+    if cb_triggered:
+        audit_log.log_circuit_breaker(cb_drawdown)
+        alerts.alert_circuit_breaker(cb_drawdown)
+        logger.warning("Circuit breaker active — no new buys today.")
+
+    # ── Daily loss check ──────────────────────────────────────────────────────
+    _baseline = portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
+    dl_triggered, dl_pct = risk_manager.check_daily_loss(
+        _baseline, account_before["portfolio_value"]
+    )
+    # Dollar-denominated daily loss cap (active when MAX_DAILY_LOSS_USD > 0)
+    if not dl_triggered and config.MAX_DAILY_LOSS_USD > 0:
+        daily_loss_usd = _baseline - account_before["portfolio_value"]
+        if daily_loss_usd >= config.MAX_DAILY_LOSS_USD:
+            dl_triggered = True
+            dl_pct = (account_before["portfolio_value"] / _baseline - 1) * 100
+            logger.warning(
+                f"Dollar daily loss limit hit: ${daily_loss_usd:.2f} >= "
+                f"${config.MAX_DAILY_LOSS_USD:.2f}"
+            )
+    if dl_triggered:
+        audit_log.log_daily_loss_limit(dl_pct)
+        alerts.alert_daily_loss(dl_pct)
+        logger.warning("Daily loss limit hit — closing all positions.")
+        if not dry_run:
+            for pos in trader.get_open_positions(client):
+                trader.close_position(client, pos["symbol"])
+                audit_log.log_position_closed(
+                    pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
+                )
+                trader.record_sell(pos["symbol"])
+        return
+
+    # ── Experiment drawdown cap ───────────────────────────────────────────────
+    # Active when MAX_EXPERIMENT_DRAWDOWN_USD > 0 and a baseline has been set.
+    # Blocks new buys (but allows sells/exits) once total experiment loss is reached.
+    _exp_drawdown_triggered = False
+    if config.MAX_EXPERIMENT_DRAWDOWN_USD > 0:
+        _exp_baseline = load_experiment_baseline()
+        if _exp_baseline is not None:
+            _exp_loss = _exp_baseline - account_before["portfolio_value"]
+            if _exp_loss >= config.MAX_EXPERIMENT_DRAWDOWN_USD:
+                _exp_drawdown_triggered = True
+                logger.critical(
+                    f"Experiment drawdown cap reached: lost ${_exp_loss:.2f} of "
+                    f"${_exp_baseline:.2f} start equity "
+                    f"(limit ${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f}) — "
+                    "new buys blocked for remainder of experiment."
+                )
+                audit_log.log_event(
+                    "EXPERIMENT_DRAWDOWN_CAP",
+                    {
+                        "start_equity": _exp_baseline,
+                        "current_equity": account_before["portfolio_value"],
+                        "loss_usd": round(_exp_loss, 2),
+                        "limit_usd": config.MAX_EXPERIMENT_DRAWDOWN_USD,
+                    },
+                )
+                alerts.alert_error(
+                    "EXPERIMENT DRAWDOWN CAP",
+                    f"Total experiment loss ${_exp_loss:.2f} >= "
+                    f"${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f} limit — no new buys.",
+                )
+
+    all_trades: list = []
+    executed_symbols: set[str] = set()
+
+    # ── Market context ────────────────────────────────────────────────────────
+    mc = _fetch_market_context()
+
+    # ── Position state + managed exits ───────────────────────────────────────
+    snap = _get_position_snapshot(client)
+    _manage_existing_positions(client, dry_run, all_trades, snap)
+    snap = _get_position_snapshot(client)  # refresh after exits
+
+    # ── Fetch + enrich market data, pre-filter candidates ────────────────────
+    db = _build_data_bundle(client, snap, mc)
+    if db is None:
+        return
+
+    # ── AI analysis + validation + decision logging ───────────────────────────
+    account_now = trader.get_account_info(client)
+    decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols)
+    if decisions is None:
+        return
+
+    # ── Execute sells / covers ────────────────────────────────────────────────
+    _execute_sell_phase(
+        client, snap, decisions, all_trades, executed_symbols, dry_run, _live_shadow
+    )
+
+    # ── Execute buys ────────────────────────────────────────────────────────────
+    open_positions, account_now = _execute_buy_phase(
+        client=client,
+        snap=snap,
+        db=db,
+        mc=mc,
+        decisions=decisions,
+        health=health,
+        cb_triggered=cb_triggered,
+        _exp_drawdown_triggered=_exp_drawdown_triggered,
+        _dd_scalar=_dd_scalar,
+        account_now=account_now,
+        should_run_live_gates=should_run_live_gates,
+        today=today,
+        mode=mode,
+        dry_run=dry_run,
+        _live_shadow=_live_shadow,
+        all_trades=all_trades,
+        executed_symbols=executed_symbols,
+    )
 
     # ── Execute shorts ────────────────────────────────────────────────────────
     _execute_shorts(
