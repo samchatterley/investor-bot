@@ -926,6 +926,251 @@ def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> Dat
     )
 
 
+def _run_ai_phase(
+    db: DataBundle,
+    snap: PositionSnapshot,
+    mc: MarketContext,
+    account_now: dict,
+    run_id: str,
+    mode: str,
+    executed_symbols: set,
+) -> dict | None:
+    """Run AI analysis, validate, log decisions. Returns the decisions dict or None on failure."""
+    track_record = portfolio_tracker.get_track_record(10)
+    logger.info("Running AI analysis...")
+    decisions = ai_analyst.get_trading_decisions(
+        snapshots=db.ai_snapshots,
+        current_positions=snap.open_positions,
+        available_cash=account_now["cash"],
+        portfolio_value=account_now["portfolio_value"],
+        news_by_symbol=db.news,
+        track_record=track_record,
+        market_regime=mc.regime,
+        position_ages=snap.position_ages,
+        stale_positions=snap.stale,
+        vix=mc.vix,
+        sector_performance=mc.sector_perf,
+        sentiment=db.sentiment,
+        earnings_risk={sym: str(ed) for sym, ed in snap.earnings_risk.items()},
+        macro_risk=mc.macro,
+        leading_sectors=mc.leading_sectors,
+        options_signals=db.options_sigs,
+        lessons=mc.lessons,
+        run_id=run_id,
+    )
+
+    if not decisions:
+        logger.error("AI analysis failed. Aborting.")
+        return None
+
+    # ── Validate AI response before acting ───────────────────────────────────
+    ai_known_symbols = {s["symbol"] for s in db.ai_snapshots}
+    is_valid, validation_errors = validate_ai_response(
+        decisions, ai_known_symbols, held_symbols=snap.held_symbols
+    )
+    if not is_valid:
+        audit_log.log_validation_failure(validation_errors)
+        buy_domain_only = validation_errors and all(
+            e.startswith("BUY candidate '") or e.startswith("buy_candidates")
+            for e in validation_errors
+        )
+        if buy_domain_only:
+            # BUY domain errors (out-of-universe, already-held) only taint buy decisions.
+            # Sell decisions are independent and must still execute.
+            logger.warning(
+                f"AI response has {len(validation_errors)} BUY domain error(s) — "
+                f"blocking buys only, preserving sell decisions: {validation_errors}"
+            )
+            decisions["buy_candidates"] = []
+        else:
+            # Structural/schema errors: the whole response is untrustworthy.
+            logger.error(
+                f"AI response validation failed ({len(validation_errors)} structural error(s)) — "
+                f"blocking all Claude-driven decisions: {validation_errors}"
+            )
+            alerts.alert_error(
+                "VALIDATION FAILURE",
+                f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
+            )
+            decisions["buy_candidates"] = []
+            decisions["position_decisions"] = []
+
+    logger.info(f"Market: {decisions.get('market_summary', '')}")
+    decision_log.log_decisions(decisions, mode, executed_symbols)
+    audit_log.log_ai_decision(
+        decisions.get("market_summary", ""),
+        len(decisions.get("buy_candidates", [])),
+        sum(1 for d in decisions.get("position_decisions", []) if d.get("action") == "SELL"),
+    )
+    _selected_syms = {b["symbol"] for b in decisions.get("buy_candidates", [])}
+    _ranked = sorted(db.filtered_candidates, key=stock_scanner.score_candidate, reverse=True)
+    audit_log.log_event(
+        "CANDIDATE_SELECTION",
+        {
+            "prefiltered_count": len(db.filtered_candidates),
+            "claude_buy_count": len(decisions.get("buy_candidates", [])),
+            "selected": [
+                {
+                    "symbol": b["symbol"],
+                    "confidence": b.get("confidence"),
+                    "deterministic_rank": next(
+                        (i + 1 for i, c in enumerate(_ranked) if c["symbol"] == b["symbol"]),
+                        None,
+                    ),
+                }
+                for b in decisions.get("buy_candidates", [])
+            ],
+            "not_selected": [
+                {
+                    "symbol": c["symbol"],
+                    "deterministic_score": stock_scanner.score_candidate(c),
+                    "matched_signals": c.get("matched_signals", []),
+                }
+                for c in db.filtered_candidates
+                if c["symbol"] not in _selected_syms
+            ],
+        },
+    )
+    return decisions
+
+
+def _execute_sell_phase(
+    client,
+    snap: PositionSnapshot,
+    decisions: dict,
+    all_trades: list,
+    executed_symbols: set,
+    dry_run: bool,
+    _live_shadow: bool,
+) -> None:
+    """Execute AI sell decisions, stale-long exits, rule-based stops, and stale short covers."""
+    symbols_to_sell = {
+        d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
+    }
+    symbols_to_sell |= {
+        sym for sym in snap.stale if sym in snap.held_symbols and sym not in snap.open_shorts_db
+    }
+    symbols_to_sell |= _check_rule_based_stops(
+        snap.open_positions, snap.position_ages, snap.atr_by_symbol
+    )
+    # Exclude any short positions from the sell set (handled separately below)
+    symbols_to_sell -= snap.open_shorts_db
+
+    symbols_to_cover = {sym for sym in snap.stale if sym in snap.open_shorts_db}
+
+    for symbol in symbols_to_sell:
+        decision = next(
+            (d for d in decisions.get("position_decisions", []) if d["symbol"] == symbol), None
+        )
+        if decision:
+            reason = decision["reasoning"]
+        else:
+            signal = trader.get_position_meta(symbol).get("signal", "unknown")
+            limit = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
+            reason = f"Time-based exit (≥{limit} days for {signal} signal)"
+        logger.info(f"  SELL {symbol} — {reason}")
+        if not dry_run:
+            pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
+            result = trader.close_position(client, symbol)
+            if result.is_success:
+                if pos:
+                    meta = trader.get_position_meta(symbol)
+                    performance.record_trade_outcome(
+                        meta["signal"],
+                        pos["unrealized_plpc"],
+                        regime=meta["regime"],
+                        confidence=meta["confidence"],
+                        sector=sector_data.get_sector(symbol),
+                        hold_days=snap.position_ages.get(symbol, 1),
+                        symbol=symbol,
+                        entry_date=meta.get("entry_date"),
+                        entry_price=meta.get("entry_price"),
+                        exit_reason="ai_sell" if decision else "time_exit",
+                    )
+                    audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
+                trader.record_sell(symbol)
+                executed_symbols.add(symbol)
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "detail": reason,
+                        "decision_type": "sell" if decision else "rule_based",
+                        "confidence": decision.get("confidence") if decision else None,
+                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                    }
+                )
+            else:
+                fail_detail = result.rejection_reason or "close failed after retries"
+                logger.error(f"  SELL FAILED {symbol} — {fail_detail}. Manual review required.")
+                alerts.alert_error("SELL FAILED", f"{symbol}: {fail_detail}")
+        else:
+            if _live_shadow:
+                audit_log.log_event("WOULD_SELL", {"symbol": symbol, "reason": reason[:80]})
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "WOULD_SELL",
+                        "detail": reason,
+                        "decision_type": "sell" if decision else "rule_based",
+                        "confidence": decision.get("confidence") if decision else None,
+                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                    }
+                )
+            else:
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "SELL",
+                        "detail": "dry run",
+                        "decision_type": "sell" if decision else "rule_based",
+                        "confidence": decision.get("confidence") if decision else None,
+                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                    }
+                )
+            executed_symbols.add(symbol)
+
+    # ── Cover stale short positions ───────────────────────────────────────────
+    for symbol in symbols_to_cover:
+        reason = f"Time-based cover (≥{config.MAX_SHORT_HOLD_DAYS} days short)"
+        logger.info(f"  COVER {symbol} — {reason}")
+        if not dry_run:
+            pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
+            result = trader.close_position(client, symbol)
+            if result.is_success:
+                audit_log.log_position_closed(
+                    symbol, reason[:50], -(pos["unrealized_plpc"]) if pos else 0.0
+                )
+                trader.record_cover(symbol)
+                executed_symbols.add(symbol)
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": "COVER",
+                        "detail": reason,
+                        "decision_type": "rule_based",
+                        "confidence": None,
+                        "reasoning": reason,
+                    }
+                )
+            else:
+                fail_detail = result.rejection_reason or "cover failed"
+                logger.error(f"  COVER FAILED {symbol} — {fail_detail}. Manual review required.")
+                alerts.alert_error("COVER FAILED", f"{symbol}: {fail_detail}")
+        else:
+            all_trades.append(
+                {
+                    "symbol": symbol,
+                    "action": "COVER",
+                    "detail": "dry run",
+                    "decision_type": "rule_based",
+                    "confidence": None,
+                    "reasoning": reason,
+                }
+            )
+            executed_symbols.add(symbol)
+
+
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 
@@ -1197,232 +1442,16 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     if db is None:
         return
 
-    # ── AI analysis ──────────────────────────────────────────────────────────
-    track_record = portfolio_tracker.get_track_record(10)
+    # ── AI analysis + validation + decision logging ───────────────────────────
     account_now = trader.get_account_info(client)
-    logger.info("Running AI analysis...")
-    decisions = ai_analyst.get_trading_decisions(
-        snapshots=db.ai_snapshots,
-        current_positions=snap.open_positions,
-        available_cash=account_now["cash"],
-        portfolio_value=account_now["portfolio_value"],
-        news_by_symbol=db.news,
-        track_record=track_record,
-        market_regime=mc.regime,
-        position_ages=snap.position_ages,
-        stale_positions=snap.stale,
-        vix=mc.vix,
-        sector_performance=mc.sector_perf,
-        sentiment=db.sentiment,
-        earnings_risk={sym: str(ed) for sym, ed in snap.earnings_risk.items()},
-        macro_risk=mc.macro,
-        leading_sectors=mc.leading_sectors,
-        options_signals=db.options_sigs,
-        lessons=mc.lessons,
-        run_id=run_id,
-    )
-
-    if not decisions:
-        logger.error("AI analysis failed. Aborting.")
+    decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols)
+    if decisions is None:
         return
 
-    # ── Validate AI response before acting ───────────────────────────────────
-    ai_known_symbols = {s["symbol"] for s in db.ai_snapshots}
-    is_valid, validation_errors = validate_ai_response(
-        decisions, ai_known_symbols, held_symbols=snap.held_symbols
-    )
-    if not is_valid:
-        audit_log.log_validation_failure(validation_errors)
-        buy_domain_only = validation_errors and all(
-            e.startswith("BUY candidate '") or e.startswith("buy_candidates")
-            for e in validation_errors
-        )
-        if buy_domain_only:
-            # BUY domain errors (out-of-universe, already-held) only taint buy decisions.
-            # Sell decisions are independent and must still execute.
-            logger.warning(
-                f"AI response has {len(validation_errors)} BUY domain error(s) — "
-                f"blocking buys only, preserving sell decisions: {validation_errors}"
-            )
-            decisions["buy_candidates"] = []
-        else:
-            # Structural/schema errors: the whole response is untrustworthy.
-            logger.error(
-                f"AI response validation failed ({len(validation_errors)} structural error(s)) — "
-                f"blocking all Claude-driven decisions: {validation_errors}"
-            )
-            alerts.alert_error(
-                "VALIDATION FAILURE",
-                f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
-            )
-            decisions["buy_candidates"] = []
-            decisions["position_decisions"] = []
-
-    logger.info(f"Market: {decisions.get('market_summary', '')}")
-    decision_log.log_decisions(decisions, mode, executed_symbols)
-    audit_log.log_ai_decision(
-        decisions.get("market_summary", ""),
-        len(decisions.get("buy_candidates", [])),
-        sum(1 for d in decisions.get("position_decisions", []) if d.get("action") == "SELL"),
-    )
-    _selected_syms = {b["symbol"] for b in decisions.get("buy_candidates", [])}
-    _ranked = sorted(db.filtered_candidates, key=stock_scanner.score_candidate, reverse=True)
-    audit_log.log_event(
-        "CANDIDATE_SELECTION",
-        {
-            "prefiltered_count": len(db.filtered_candidates),
-            "claude_buy_count": len(decisions.get("buy_candidates", [])),
-            "selected": [
-                {
-                    "symbol": b["symbol"],
-                    "confidence": b.get("confidence"),
-                    "deterministic_rank": next(
-                        (i + 1 for i, c in enumerate(_ranked) if c["symbol"] == b["symbol"]),
-                        None,
-                    ),
-                }
-                for b in decisions.get("buy_candidates", [])
-            ],
-            "not_selected": [
-                {
-                    "symbol": c["symbol"],
-                    "deterministic_score": stock_scanner.score_candidate(c),
-                    "matched_signals": c.get("matched_signals", []),
-                }
-                for c in db.filtered_candidates
-                if c["symbol"] not in _selected_syms
-            ],
-        },
-    )
-
     # ── Execute sells / covers ────────────────────────────────────────────────
-    # Longs: AI SELL decisions + stale longs + rule-based stops
-    # Shorts: stale shorts only (AI doesn't manage short positions)
-    symbols_to_sell = {
-        d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
-    }
-    symbols_to_sell |= {
-        sym for sym in snap.stale if sym in snap.held_symbols and sym not in snap.open_shorts_db
-    }
-    symbols_to_sell |= _check_rule_based_stops(
-        snap.open_positions, snap.position_ages, snap.atr_by_symbol
+    _execute_sell_phase(
+        client, snap, decisions, all_trades, executed_symbols, dry_run, _live_shadow
     )
-    # Exclude any short positions from the sell set (handled separately below)
-    symbols_to_sell -= snap.open_shorts_db
-
-    symbols_to_cover = {sym for sym in snap.stale if sym in snap.open_shorts_db}
-
-    for symbol in symbols_to_sell:
-        decision = next(
-            (d for d in decisions.get("position_decisions", []) if d["symbol"] == symbol), None
-        )
-        if decision:
-            reason = decision["reasoning"]
-        else:
-            signal = trader.get_position_meta(symbol).get("signal", "unknown")
-            limit = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
-            reason = f"Time-based exit (≥{limit} days for {signal} signal)"
-        logger.info(f"  SELL {symbol} — {reason}")
-        if not dry_run:
-            pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
-            result = trader.close_position(client, symbol)
-            if result.is_success:
-                if pos:
-                    meta = trader.get_position_meta(symbol)
-                    performance.record_trade_outcome(
-                        meta["signal"],
-                        pos["unrealized_plpc"],
-                        regime=meta["regime"],
-                        confidence=meta["confidence"],
-                        sector=sector_data.get_sector(symbol),
-                        hold_days=snap.position_ages.get(symbol, 1),
-                        symbol=symbol,
-                        entry_date=meta.get("entry_date"),
-                        entry_price=meta.get("entry_price"),
-                        exit_reason="ai_sell" if decision else "time_exit",
-                    )
-                    audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
-                trader.record_sell(symbol)
-                executed_symbols.add(symbol)
-                all_trades.append(
-                    {
-                        "symbol": symbol,
-                        "action": "SELL",
-                        "detail": reason,
-                        "decision_type": "sell" if decision else "rule_based",
-                        "confidence": decision.get("confidence") if decision else None,
-                        "reasoning": decision.get("reasoning", "") if decision else reason,
-                    }
-                )
-            else:
-                fail_detail = result.rejection_reason or "close failed after retries"
-                logger.error(f"  SELL FAILED {symbol} — {fail_detail}. Manual review required.")
-                alerts.alert_error("SELL FAILED", f"{symbol}: {fail_detail}")
-        else:
-            if _live_shadow:
-                audit_log.log_event("WOULD_SELL", {"symbol": symbol, "reason": reason[:80]})
-                all_trades.append(
-                    {
-                        "symbol": symbol,
-                        "action": "WOULD_SELL",
-                        "detail": reason,
-                        "decision_type": "sell" if decision else "rule_based",
-                        "confidence": decision.get("confidence") if decision else None,
-                        "reasoning": decision.get("reasoning", "") if decision else reason,
-                    }
-                )
-            else:
-                all_trades.append(
-                    {
-                        "symbol": symbol,
-                        "action": "SELL",
-                        "detail": "dry run",
-                        "decision_type": "sell" if decision else "rule_based",
-                        "confidence": decision.get("confidence") if decision else None,
-                        "reasoning": decision.get("reasoning", "") if decision else reason,
-                    }
-                )
-            executed_symbols.add(symbol)
-
-    # ── Cover stale short positions ───────────────────────────────────────────
-    for symbol in symbols_to_cover:
-        reason = f"Time-based cover (≥{config.MAX_SHORT_HOLD_DAYS} days short)"
-        logger.info(f"  COVER {symbol} — {reason}")
-        if not dry_run:
-            pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
-            result = trader.close_position(client, symbol)
-            if result.is_success:
-                audit_log.log_position_closed(
-                    symbol, reason[:50], -(pos["unrealized_plpc"]) if pos else 0.0
-                )
-                trader.record_cover(symbol)
-                executed_symbols.add(symbol)
-                all_trades.append(
-                    {
-                        "symbol": symbol,
-                        "action": "COVER",
-                        "detail": reason,
-                        "decision_type": "rule_based",
-                        "confidence": None,
-                        "reasoning": reason,
-                    }
-                )
-            else:
-                fail_detail = result.rejection_reason or "cover failed"
-                logger.error(f"  COVER FAILED {symbol} — {fail_detail}. Manual review required.")
-                alerts.alert_error("COVER FAILED", f"{symbol}: {fail_detail}")
-        else:
-            all_trades.append(
-                {
-                    "symbol": symbol,
-                    "action": "COVER",
-                    "detail": "dry run",
-                    "decision_type": "rule_based",
-                    "confidence": None,
-                    "reasoning": reason,
-                }
-            )
-            executed_symbols.add(symbol)
 
     # ── Execute buys (open + midday modes; close/open_sells are exits only) ────
     # midday is now eligible for buys because intraday signals (VWAP, ORB,
