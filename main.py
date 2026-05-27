@@ -41,6 +41,7 @@ from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
 from models import (
     BrokerStateUnavailable,
+    DataBundle,
     MarketContext,
     OrderLedgerUnavailable,
     OrderResult,
@@ -804,6 +805,127 @@ def _fetch_market_context() -> MarketContext:
     )
 
 
+def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> DataBundle | None:
+    """Fetch, enrich, and pre-filter market data. Returns None if no snapshots available."""
+    logger.info("Scanning for top movers...")
+    top_movers = stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
+    scan_symbols = list(set(build_scan_universe(client)) | snap.held_symbols | set(top_movers))
+    logger.info(f"Scanning {len(scan_symbols)} symbols")
+
+    logger.info("Fetching market data...")
+    snapshots = market_data.get_market_snapshots(scan_symbols, config.LOOKBACK_DAYS)
+    if not snapshots:
+        logger.error("No market data. Aborting.")
+        return None
+
+    # ── Intraday enrichment (VWAP, ORB, gap, intraday momentum) ─────────────
+    intraday = market_data.get_intraday_data([s["symbol"] for s in snapshots])
+    if intraday:  # pragma: no branch
+        for s in snapshots:  # pragma: no cover
+            if s["symbol"] in intraday:
+                s.update(intraday[s["symbol"]])
+
+    # ── Insider activity (SEC EDGAR Form 4 — open-market cluster purchases) ──
+    logger.info("Fetching insider activity...")
+    insider_data = insider_feed.get_insider_activity([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        if s["symbol"] in insider_data:
+            s.update(insider_data[s["symbol"]])
+
+    # ── News sentiment (Alpha Vantage structured scores) ─────────────────────
+    logger.info("Fetching AV news sentiment...")
+    av_data = av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        if s["symbol"] in av_data:
+            s.update(av_data[s["symbol"]])
+
+    # ── PEAD (Post-Earnings Announcement Drift) candidates ───────────────────
+    logger.info("Fetching earnings surprise data...")
+    pead_data = earnings_surprise.get_earnings_surprise([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        if s["symbol"] in pead_data:
+            s.update(pead_data[s["symbol"]])
+
+    # ── Pre-filter buy candidates ─────────────────────────────────────────────
+    held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]
+    candidate_snaps = [s for s in snapshots if s["symbol"] not in snap.held_symbols]
+
+    # Small-account universe price filter — restricts to names where one whole share
+    # can be stop-protected within the per-order cap.
+    if config.MIN_PRICE_USD > 0 or config.MAX_PRICE_USD > 0:
+        before_price_filter = len(candidate_snaps)
+        candidate_snaps = [
+            s
+            for s in candidate_snaps
+            if (config.MIN_PRICE_USD == 0 or s.get("current_price", 0) >= config.MIN_PRICE_USD)
+            and (config.MAX_PRICE_USD == 0 or s.get("current_price", 0) <= config.MAX_PRICE_USD)
+        ]
+        logger.info(
+            f"Price filter (${config.MIN_PRICE_USD:.0f}–${config.MAX_PRICE_USD:.0f}): "
+            f"{before_price_filter} → {len(candidate_snaps)} candidates"
+        )
+
+    filtered_candidates = stock_scanner.prefilter_candidates(
+        candidate_snaps, regime=mc.regime.get("regime")
+    )
+    ai_snapshots = held_snaps + filtered_candidates
+    logger.info(
+        f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
+    )
+    _filtered_syms = {c["symbol"] for c in filtered_candidates}
+    audit_log.log_event(
+        "PREFILTER_CANDIDATES",
+        {
+            "total_candidates": len(candidate_snaps),
+            "passed": len(filtered_candidates),
+            "candidates": [
+                {
+                    "symbol": c["symbol"],
+                    "matched_signals": c.get("matched_signals", []),
+                    "rsi_14": c.get("rsi_14"),
+                    "vol_ratio": c.get("vol_ratio"),
+                    "ret_5d_pct": c.get("ret_5d_pct"),
+                }
+                for c in filtered_candidates
+            ],
+            "rejected_symbols": [
+                s["symbol"] for s in candidate_snaps if s["symbol"] not in _filtered_syms
+            ],
+        },
+    )
+
+    # Symbols the AI actually received — used as the validation universe.
+    # Broader known_symbols (all fetched) would allow hallucinated tickers from
+    # top_movers that never made it through the pre-filter.
+    ai_known_symbols = {s["symbol"] for s in ai_snapshots}
+
+    # ── Options flow ──────────────────────────────────────────────────────────
+    options_syms = [s["symbol"] for s in filtered_candidates]
+    options_sigs = options_scanner.get_options_signals(options_syms) if options_syms else {}
+    if options_sigs:
+        logger.info(f"Options signals fetched for: {list(options_sigs.keys())}")
+
+    # ── News (sanitized against prompt injection) ─────────────────────────────
+    # Restrict to symbols the AI actually received snapshots for — sending news
+    # for prefilter-rejected top movers causes the AI to recommend them despite
+    # having no snapshot data, producing validator rejections on every run.
+    logger.info("Fetching news and sentiment...")
+    news_symbols = list(ai_known_symbols)
+    raw_news = news_fetcher.fetch_news(news_symbols)
+    news = sanitize_headlines(raw_news)
+
+    sent = sentiment_module.get_sentiment(list(snap.held_symbols) + top_movers[:10])
+
+    return DataBundle(
+        snapshots=snapshots,
+        ai_snapshots=ai_snapshots,
+        filtered_candidates=filtered_candidates,
+        options_sigs=options_sigs,
+        news=news,
+        sentiment=sent,
+    )
+
+
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 
@@ -1070,138 +1192,32 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     _manage_existing_positions(client, dry_run, all_trades, snap)
     snap = _get_position_snapshot(client)  # refresh after exits
 
-    # ── Scan universe ─────────────────────────────────────────────────────────
-    logger.info("Scanning for top movers...")
-    top_movers = stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
-    scan_symbols = list(set(build_scan_universe(client)) | snap.held_symbols | set(top_movers))
-    logger.info(f"Scanning {len(scan_symbols)} symbols")
-
-    # ── Market data (parallel) ────────────────────────────────────────────────
-    logger.info("Fetching market data...")
-    snapshots = market_data.get_market_snapshots(scan_symbols, config.LOOKBACK_DAYS)
-    if not snapshots:
-        logger.error("No market data. Aborting.")
+    # ── Fetch + enrich market data, pre-filter candidates ────────────────────
+    db = _build_data_bundle(client, snap, mc)
+    if db is None:
         return
-
-    # ── Intraday enrichment (VWAP, ORB, gap, intraday momentum) ─────────────
-    intraday = market_data.get_intraday_data([s["symbol"] for s in snapshots])
-    if intraday:  # pragma: no branch
-        for s in snapshots:  # pragma: no cover
-            if s["symbol"] in intraday:
-                s.update(intraday[s["symbol"]])
-
-    # ── Insider activity (SEC EDGAR Form 4 — open-market cluster purchases) ──
-    logger.info("Fetching insider activity...")
-    insider_data = insider_feed.get_insider_activity([s["symbol"] for s in snapshots])
-    for s in snapshots:
-        if s["symbol"] in insider_data:
-            s.update(insider_data[s["symbol"]])
-
-    # ── News sentiment (Alpha Vantage structured scores) ─────────────────────
-    logger.info("Fetching AV news sentiment...")
-    av_data = av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])
-    for s in snapshots:
-        if s["symbol"] in av_data:
-            s.update(av_data[s["symbol"]])
-
-    # ── PEAD (Post-Earnings Announcement Drift) candidates ───────────────────
-    logger.info("Fetching earnings surprise data...")
-    pead_data = earnings_surprise.get_earnings_surprise([s["symbol"] for s in snapshots])
-    for s in snapshots:
-        if s["symbol"] in pead_data:
-            s.update(pead_data[s["symbol"]])
-
-    # ── Pre-filter buy candidates ─────────────────────────────────────────────
-    held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]
-    candidate_snaps = [s for s in snapshots if s["symbol"] not in snap.held_symbols]
-
-    # Small-account universe price filter — restricts to names where one whole share
-    # can be stop-protected within the per-order cap.
-    if config.MIN_PRICE_USD > 0 or config.MAX_PRICE_USD > 0:
-        before_price_filter = len(candidate_snaps)
-        candidate_snaps = [
-            s
-            for s in candidate_snaps
-            if (config.MIN_PRICE_USD == 0 or s.get("current_price", 0) >= config.MIN_PRICE_USD)
-            and (config.MAX_PRICE_USD == 0 or s.get("current_price", 0) <= config.MAX_PRICE_USD)
-        ]
-        logger.info(
-            f"Price filter (${config.MIN_PRICE_USD:.0f}–${config.MAX_PRICE_USD:.0f}): "
-            f"{before_price_filter} → {len(candidate_snaps)} candidates"
-        )
-
-    filtered_candidates = stock_scanner.prefilter_candidates(
-        candidate_snaps, regime=mc.regime.get("regime")
-    )
-    ai_snapshots = held_snaps + filtered_candidates
-    logger.info(
-        f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
-    )
-    _filtered_syms = {c["symbol"] for c in filtered_candidates}
-    audit_log.log_event(
-        "PREFILTER_CANDIDATES",
-        {
-            "total_candidates": len(candidate_snaps),
-            "passed": len(filtered_candidates),
-            "candidates": [
-                {
-                    "symbol": c["symbol"],
-                    "matched_signals": c.get("matched_signals", []),
-                    "rsi_14": c.get("rsi_14"),
-                    "vol_ratio": c.get("vol_ratio"),
-                    "ret_5d_pct": c.get("ret_5d_pct"),
-                }
-                for c in filtered_candidates
-            ],
-            "rejected_symbols": [
-                s["symbol"] for s in candidate_snaps if s["symbol"] not in _filtered_syms
-            ],
-        },
-    )
-
-    # Symbols the AI actually received — used as the validation universe.
-    # Broader known_symbols (all fetched) would allow hallucinated tickers from
-    # top_movers that never made it through the pre-filter.
-    ai_known_symbols = {s["symbol"] for s in ai_snapshots}
-
-    # ── Options flow ──────────────────────────────────────────────────────────
-    options_syms = [s["symbol"] for s in filtered_candidates]
-    options_sigs = options_scanner.get_options_signals(options_syms) if options_syms else {}
-    if options_sigs:
-        logger.info(f"Options signals fetched for: {list(options_sigs.keys())}")
-
-    # ── News (sanitized against prompt injection) ─────────────────────────────
-    # Restrict to symbols the AI actually received snapshots for — sending news
-    # for prefilter-rejected top movers causes the AI to recommend them despite
-    # having no snapshot data, producing validator rejections on every run.
-    logger.info("Fetching news and sentiment...")
-    news_symbols = list(ai_known_symbols)
-    raw_news = news_fetcher.fetch_news(news_symbols)
-    news = sanitize_headlines(raw_news)
-
-    sent = sentiment_module.get_sentiment(list(snap.held_symbols) + top_movers[:10])
 
     # ── AI analysis ──────────────────────────────────────────────────────────
     track_record = portfolio_tracker.get_track_record(10)
     account_now = trader.get_account_info(client)
     logger.info("Running AI analysis...")
     decisions = ai_analyst.get_trading_decisions(
-        snapshots=ai_snapshots,
+        snapshots=db.ai_snapshots,
         current_positions=snap.open_positions,
         available_cash=account_now["cash"],
         portfolio_value=account_now["portfolio_value"],
-        news_by_symbol=news,
+        news_by_symbol=db.news,
         track_record=track_record,
         market_regime=mc.regime,
         position_ages=snap.position_ages,
         stale_positions=snap.stale,
         vix=mc.vix,
         sector_performance=mc.sector_perf,
-        sentiment=sent,
+        sentiment=db.sentiment,
         earnings_risk={sym: str(ed) for sym, ed in snap.earnings_risk.items()},
         macro_risk=mc.macro,
         leading_sectors=mc.leading_sectors,
-        options_signals=options_sigs,
+        options_signals=db.options_sigs,
         lessons=mc.lessons,
         run_id=run_id,
     )
@@ -1211,6 +1227,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         return
 
     # ── Validate AI response before acting ───────────────────────────────────
+    ai_known_symbols = {s["symbol"] for s in db.ai_snapshots}
     is_valid, validation_errors = validate_ai_response(
         decisions, ai_known_symbols, held_symbols=snap.held_symbols
     )
@@ -1249,11 +1266,11 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         sum(1 for d in decisions.get("position_decisions", []) if d.get("action") == "SELL"),
     )
     _selected_syms = {b["symbol"] for b in decisions.get("buy_candidates", [])}
-    _ranked = sorted(filtered_candidates, key=stock_scanner.score_candidate, reverse=True)
+    _ranked = sorted(db.filtered_candidates, key=stock_scanner.score_candidate, reverse=True)
     audit_log.log_event(
         "CANDIDATE_SELECTION",
         {
-            "prefiltered_count": len(filtered_candidates),
+            "prefiltered_count": len(db.filtered_candidates),
             "claude_buy_count": len(decisions.get("buy_candidates", [])),
             "selected": [
                 {
@@ -1272,7 +1289,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                     "deterministic_score": stock_scanner.score_candidate(c),
                     "matched_signals": c.get("matched_signals", []),
                 }
-                for c in filtered_candidates
+                for c in db.filtered_candidates
                 if c["symbol"] not in _selected_syms
             ],
         },
@@ -1611,7 +1628,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         break
 
                 sym_snap = next(
-                    (s for s in snapshots if s["symbol"] == symbol),
+                    (s for s in db.snapshots if s["symbol"] == symbol),
                     None,  # type: ignore[arg-type]
                 )
                 if notional >= 1.0:
@@ -1787,7 +1804,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # ── Execute shorts ────────────────────────────────────────────────────────
     _execute_shorts(
         client=client,
-        snapshots=snapshots,
+        snapshots=db.snapshots,
         regime=mc.regime,
         open_positions=open_positions,
         account_now=account_now,
