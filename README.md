@@ -199,7 +199,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (1813 tests, 94% coverage)
+├── tests/             Unit test suite (2485 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -802,6 +802,14 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.51h — May 2026 — Option B complete: `_run_inner` fully modularised
+
+- **`_run_inner` refactored into a clean 12-phase pipeline.** All inline business logic extracted into typed module-level helper functions. `_run_inner` is now a sequence of named calls with no embedded logic: `_evaluate_risk_limits` → `_fetch_market_context` → `_get_position_snapshot` → `_manage_existing_positions` → `_build_data_bundle` → `_run_ai_phase` → `_execute_sell_phase` → `_execute_buy_phase` → `_execute_shorts` → `_reconcile_late_fills` → `_finalise`. Each helper has a typed signature and returns a result type (or `None` as an early-exit signal).
+- **New phase helpers added across v1.51a–h:** `MarketContext`, `PositionSnapshot`, `DataBundle`, `RiskFlags` dataclasses in `models.py`; `_fetch_market_context`, `_get_position_snapshot`, `_manage_existing_positions`, `_build_data_bundle`, `_run_ai_phase`, `_execute_sell_phase`, `_execute_buy_phase`, `_reconcile_late_fills`, `_finalise`, `_evaluate_risk_limits` in `main.py`.
+- **0 new tests** (pure refactor — all behaviour preserved); **2485 passing, 100% coverage.**
+
+---
 
 ### 1.48 — May 2026 — adopt 8 parameter wins from full stretch test
 
