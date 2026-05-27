@@ -39,7 +39,13 @@ from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.universe import build_scan_universe
-from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult, OrderStatus
+from models import (
+    BrokerStateUnavailable,
+    MarketContext,
+    OrderLedgerUnavailable,
+    OrderResult,
+    OrderStatus,
+)
 from notifications import alerts, emailer
 from risk import (
     correlation,
@@ -684,6 +690,33 @@ def _execute_shorts(
             executed_symbols.add(symbol)
 
 
+# ── Pipeline phase helpers ────────────────────────────────────────────────────
+
+
+def _fetch_market_context() -> MarketContext:
+    """Fetch market-wide context: VIX, regime, macro, sector, lessons."""
+    logger.info("Fetching market context...")
+    vix = market_data.get_vix()
+    regime = stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=vix)
+    macro = macro_calendar.get_macro_risk()
+    sector_perf = sector_data.get_sector_performance()
+    leading_sectors = sector_data.get_leading_sectors(top_n=3)
+    lessons = get_latest_review()
+    if vix:
+        logger.info(f"VIX: {vix}  Regime: {regime.get('regime', 'UNKNOWN')}")
+    if macro["is_high_risk"]:
+        logger.warning(f"Macro risk: {macro['event']}")
+        audit_log.log_macro_skip(macro["event"])
+    return MarketContext(
+        vix=vix,
+        regime=regime,
+        macro=macro,
+        sector_perf=sector_perf,
+        leading_sectors=leading_sectors,
+        lessons=lessons,
+    )
+
+
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 
@@ -943,19 +976,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     executed_symbols: set[str] = set()
 
     # ── Market context ────────────────────────────────────────────────────────
-    logger.info("Fetching market context...")
-    vix = market_data.get_vix()
-    regime = stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=vix)
-    macro = macro_calendar.get_macro_risk()
-    sector_perf = sector_data.get_sector_performance()
-    leading_sectors = sector_data.get_leading_sectors(top_n=3)
-    lessons = get_latest_review()
-
-    if vix:
-        logger.info(f"VIX: {vix}  Regime: {regime.get('regime', 'UNKNOWN')}")
-    if macro["is_high_risk"]:
-        logger.warning(f"Macro risk: {macro['event']}")
-        audit_log.log_macro_skip(macro["event"])
+    mc = _fetch_market_context()
 
     # ── Open positions & earnings guard ──────────────────────────────────────
     open_positions = trader.get_open_positions(client)
@@ -1096,7 +1117,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         )
 
     filtered_candidates = stock_scanner.prefilter_candidates(
-        candidate_snaps, regime=regime.get("regime")
+        candidate_snaps, regime=mc.regime.get("regime")
     )
     ai_snapshots = held_snaps + filtered_candidates
     logger.info(
@@ -1157,17 +1178,17 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         portfolio_value=account_now["portfolio_value"],
         news_by_symbol=news,
         track_record=track_record,
-        market_regime=regime,
+        market_regime=mc.regime,
         position_ages=position_ages,
         stale_positions=stale,
-        vix=vix,
-        sector_performance=sector_perf,
+        vix=mc.vix,
+        sector_performance=mc.sector_perf,
         sentiment=sent,
         earnings_risk={sym: str(ed) for sym, ed in earnings_risk.items()},
-        macro_risk=macro,
-        leading_sectors=leading_sectors,
+        macro_risk=mc.macro,
+        leading_sectors=mc.leading_sectors,
         options_signals=options_sigs,
-        lessons=lessons,
+        lessons=mc.lessons,
         run_id=run_id,
     )
 
@@ -1374,8 +1395,8 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     skip_buys = (
         mode in ("close", "open_sells")
         or cb_triggered
-        or regime.get("is_bearish")
-        or macro.get("is_high_risk")
+        or mc.regime.get("is_bearish")
+        or mc.macro.get("is_high_risk")
         or health.status in (HealthStatus.RED, HealthStatus.YELLOW)
         or _exp_drawdown_triggered
     )
@@ -1385,10 +1406,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             reasons.append("close mode")
         if cb_triggered:
             reasons.append("circuit breaker")
-        if regime.get("is_bearish"):
+        if mc.regime.get("is_bearish"):
             reasons.append("bear market filter")
-        if macro.get("is_high_risk"):
-            reasons.append(f"macro event: {macro.get('event')}")
+        if mc.macro.get("is_high_risk"):
+            reasons.append(f"macro event: {mc.macro.get('event')}")
         if health.status in (HealthStatus.RED, HealthStatus.YELLOW):
             reasons.append(f"startup health {health.status}")
         if _exp_drawdown_triggered:
@@ -1407,13 +1428,13 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         logger.info(f"Position slots: {len(long_positions)}/{max_positions}")
 
         if slots > 0:
-            regime_name = regime.get("regime", "UNKNOWN")
+            regime_name = mc.regime.get("regime", "UNKNOWN")
             regime_policy = get_regime_policy(regime_name)
             effective_max_orders = min(config.MAX_ORDERS_PER_RUN, regime_policy.max_orders_per_run)
             regime_conf_bump = regime_policy.min_confidence_bump
 
             min_confidence = (
-                config.MIN_CONFIDENCE + regime_conf_bump + (1 if vix and vix > 25 else 0)
+                config.MIN_CONFIDENCE + regime_conf_bump + (1 if mc.vix and mc.vix > 25 else 0)
             )
             if regime_conf_bump:
                 logger.info(
@@ -1433,11 +1454,11 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             valid_candidates = valid_candidates[:slots]
 
             # VIX-adjusted trail percent — wider stops in high-vol regimes
-            vix_trail_pct = risk_manager.check_vix_stop_adjustment(vix)
+            vix_trail_pct = risk_manager.check_vix_stop_adjustment(mc.vix)
             if abs(vix_trail_pct - config.TRAILING_STOP_PCT) > 0.01:
                 logger.info(
                     f"VIX-adjusted trail: {config.TRAILING_STOP_PCT}% → {vix_trail_pct}% "
-                    f"(VIX={vix})"
+                    f"(VIX={mc.vix})"
                 )
 
             orders_placed = 0
@@ -1504,7 +1525,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                             account_now["portfolio_value"],
                             confidence,
                             signal=candidate.get("key_signal", "unknown"),
-                            regime=regime.get("regime", "UNKNOWN"),
+                            regime=mc.regime.get("regime", "UNKNOWN"),
                         )
                         * _dd_scalar,
                         available_cash,
@@ -1594,7 +1615,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                 symbol,
                                 entry_price,
                                 signal=candidate.get("key_signal", "unknown"),
-                                regime=regime.get("regime", "UNKNOWN"),
+                                regime=mc.regime.get("regime", "UNKNOWN"),
                                 confidence=confidence,
                             )
                             audit_log.log_order_placed(
@@ -1707,7 +1728,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                                     "notional": round(notional, 2),
                                     "confidence": confidence,
                                     "signal": candidate.get("key_signal"),
-                                    "regime": regime.get("regime"),
+                                    "regime": mc.regime.get("regime"),
                                     "sizing": "small_account"
                                     if config.SMALL_ACCOUNT_MODE
                                     else "risk_budget",
@@ -1746,7 +1767,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     _execute_shorts(
         client=client,
         snapshots=snapshots,
-        regime=regime,
+        regime=mc.regime,
         open_positions=open_positions,
         account_now=account_now,
         all_trades=all_trades,
@@ -1815,7 +1836,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
                         sym,
                         entry_price,
                         signal=signal,
-                        regime=regime.get("regime", "UNKNOWN"),
+                        regime=mc.regime.get("regime", "UNKNOWN"),
                         confidence=confidence,
                     )
                     executed_symbols.add(sym)
