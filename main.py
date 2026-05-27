@@ -1638,6 +1638,151 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
         _current_lock_fd = None
 
 
+def _reconcile_late_fills(
+    client,
+    today: str,
+    mode: str,
+    mc: MarketContext,
+    decisions: dict,
+    executed_symbols: set,
+    all_trades: list,
+    dry_run: bool,
+) -> None:
+    """Attach missing stops and reconcile buy orders that filled after wait_for_fill timed out."""
+    if not dry_run:
+        trader.ensure_stops_attached(client)
+
+    if not dry_run:
+        try:
+            from utils.order_ledger import (
+                get_unresolved_intents,
+            )
+            from utils.order_ledger import (
+                log_order_event as _log_oe,
+            )
+            from utils.order_ledger import (
+                update_intent as _update_intent,
+            )
+
+            timeout_intents = [
+                i for i in get_unresolved_intents(trade_date=today) if i["status"] == "timeout"
+            ]
+            if timeout_intents:
+                current_live = trader.get_open_positions(client)
+                live_pos_map = {p["symbol"]: p for p in current_live}
+                for intent in timeout_intents:
+                    sym = intent["symbol"]
+                    if sym not in live_pos_map:
+                        continue
+                    if sym in executed_symbols:
+                        continue
+                    pos = live_pos_map[sym]
+                    entry_price = pos["avg_entry_price"]
+                    candidate = next(
+                        (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
+                        {},
+                    )
+                    signal = candidate.get("key_signal") or trader.get_position_meta(sym).get(
+                        "signal", "unknown"
+                    )
+                    confidence = candidate.get("confidence") or trader.get_position_meta(sym).get(
+                        "confidence", 0
+                    )
+                    logger.info(
+                        f"Late-fill reconciliation: {sym} found in broker positions "
+                        f"@ ${entry_price:.4f} — recording buy (mode={mode})"
+                    )
+                    _update_intent(intent["client_order_id"], "filled")
+                    _log_oe(
+                        intent["client_order_id"],
+                        "ORDER_LATE_FILL_RECONCILED",
+                        {"entry_price": round(entry_price, 4), "run_mode": mode},
+                        broker_order_id=intent.get("broker_order_id"),
+                    )
+                    trader.record_buy(
+                        sym,
+                        entry_price,
+                        signal=signal,
+                        regime=mc.regime.get("regime", "UNKNOWN"),
+                        confidence=confidence,
+                    )
+                    executed_symbols.add(sym)
+                    all_trades.append(
+                        {
+                            "symbol": sym,
+                            "action": "BUY",
+                            "detail": (
+                                f"late-fill @ ${entry_price:.2f} | "
+                                f"{signal} | conf={confidence} | mode={mode}"
+                            ),
+                        }
+                    )
+                    audit_log.log_event(
+                        "ORDER_LATE_FILL_RECONCILED",
+                        {
+                            "symbol": sym,
+                            "entry_price": round(entry_price, 4),
+                            "signal": signal,
+                            "confidence": confidence,
+                            "run_mode": mode,
+                        },
+                    )
+        except Exception as e:
+            logger.warning(f"Late-fill reconciliation failed: {e}")
+
+
+def _finalise(
+    client,
+    today: str,
+    mode: str,
+    account_before: dict,
+    decisions: dict,
+    all_trades: list,
+    run_id: str,
+    dry_run: bool,
+    _live_shadow: bool,
+) -> None:
+    """Save run record, print summary, generate dashboard, send close-mode email."""
+    account_after = trader.get_account_info(client)
+    save_date = today if mode == "open" else f"{today}-{mode}"
+    record = portfolio_tracker.save_daily_run(
+        date=save_date,
+        account_before=account_before,
+        account_after=account_after,
+        ai_decisions=decisions,
+        trades_executed=all_trades,
+        stop_losses_triggered=[],
+        run_id=run_id,
+    )
+    if _live_shadow:
+        would_buys = [t for t in all_trades if t["action"] == "WOULD_BUY"]
+        would_sells = [t for t in all_trades if t["action"] == "WOULD_SELL"]
+        audit_log.log_event(
+            "LIVE_SHADOW_COMPLETE",
+            {
+                "mode": mode,
+                "would_buy_count": len(would_buys),
+                "would_sell_count": len(would_sells),
+                "would_buys": [t["detail"] for t in would_buys],
+                "would_sells": [t["symbol"] for t in would_sells],
+            },
+        )
+        logger.info(
+            f"[LIVE SHADOW] Complete — {len(would_buys)} WOULD_BUY, "
+            f"{len(would_sells)} WOULD_SELL (no orders placed)"
+        )
+
+    portfolio_tracker.print_summary(record)
+    performance.generate_dashboard(portfolio_tracker.load_history())
+    audit_log.log_run_end(
+        mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"]
+    )
+    if mode == "close" and not dry_run:
+        day_summary = get_day_summary(today)
+        if day_summary:
+            emailer.send_summary(day_summary)
+
+
 def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
     run_id = str(uuid.uuid4())
     audit_log.set_run_id(run_id)
@@ -1884,132 +2029,13 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         _live_shadow=_live_shadow,
     )
 
-    # ── Attach any missing stops (catches fills that arrived after wait_for_fill timed out,
-    #    and re-covers positions whose stops were cancelled by a failed-sell cycle) ──
-    if not dry_run:
-        trader.ensure_stops_attached(client)
-
-    # ── Late-fill reconciliation ─────────────────────────────────────────────
-    # Detect buy orders that filled after wait_for_fill timed out (e.g. pre-market
-    # orders queued until market open). Uses the order-ledger as source — works in
-    # all run modes so midday/close can pick up fills from the morning open run.
-    if not dry_run:
-        try:
-            from utils.order_ledger import (
-                get_unresolved_intents,
-            )
-            from utils.order_ledger import (
-                log_order_event as _log_oe,
-            )
-            from utils.order_ledger import (
-                update_intent as _update_intent,
-            )
-
-            timeout_intents = [
-                i for i in get_unresolved_intents(trade_date=today) if i["status"] == "timeout"
-            ]
-            if timeout_intents:
-                current_live = trader.get_open_positions(client)
-                live_pos_map = {p["symbol"]: p for p in current_live}
-                for intent in timeout_intents:
-                    sym = intent["symbol"]
-                    if sym not in live_pos_map:
-                        continue
-                    if sym in executed_symbols:
-                        continue
-                    pos = live_pos_map[sym]
-                    entry_price = pos["avg_entry_price"]
-                    candidate = next(
-                        (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
-                        {},
-                    )
-                    signal = candidate.get("key_signal") or trader.get_position_meta(sym).get(
-                        "signal", "unknown"
-                    )
-                    confidence = candidate.get("confidence") or trader.get_position_meta(sym).get(
-                        "confidence", 0
-                    )
-                    logger.info(
-                        f"Late-fill reconciliation: {sym} found in broker positions "
-                        f"@ ${entry_price:.4f} — recording buy (mode={mode})"
-                    )
-                    _update_intent(intent["client_order_id"], "filled")
-                    _log_oe(
-                        intent["client_order_id"],
-                        "ORDER_LATE_FILL_RECONCILED",
-                        {"entry_price": round(entry_price, 4), "run_mode": mode},
-                        broker_order_id=intent.get("broker_order_id"),
-                    )
-                    trader.record_buy(
-                        sym,
-                        entry_price,
-                        signal=signal,
-                        regime=mc.regime.get("regime", "UNKNOWN"),
-                        confidence=confidence,
-                    )
-                    executed_symbols.add(sym)
-                    all_trades.append(
-                        {
-                            "symbol": sym,
-                            "action": "BUY",
-                            "detail": (
-                                f"late-fill @ ${entry_price:.2f} | "
-                                f"{signal} | conf={confidence} | mode={mode}"
-                            ),
-                        }
-                    )
-                    audit_log.log_event(
-                        "ORDER_LATE_FILL_RECONCILED",
-                        {
-                            "symbol": sym,
-                            "entry_price": round(entry_price, 4),
-                            "signal": signal,
-                            "confidence": confidence,
-                            "run_mode": mode,
-                        },
-                    )
-        except Exception as e:
-            logger.warning(f"Late-fill reconciliation failed: {e}")
+    # ── Attach stops + late-fill reconciliation ──────────────────────────────
+    _reconcile_late_fills(client, today, mode, mc, decisions, executed_symbols, all_trades, dry_run)
 
     # ── Finalise ──────────────────────────────────────────────────────────────
-    account_after = trader.get_account_info(client)
-    save_date = today if mode == "open" else f"{today}-{mode}"
-    record = portfolio_tracker.save_daily_run(
-        date=save_date,
-        account_before=account_before,
-        account_after=account_after,
-        ai_decisions=decisions,
-        trades_executed=all_trades,
-        stop_losses_triggered=[],
-        run_id=run_id,
+    _finalise(
+        client, today, mode, account_before, decisions, all_trades, run_id, dry_run, _live_shadow
     )
-    if _live_shadow:
-        would_buys = [t for t in all_trades if t["action"] == "WOULD_BUY"]
-        would_sells = [t for t in all_trades if t["action"] == "WOULD_SELL"]
-        audit_log.log_event(
-            "LIVE_SHADOW_COMPLETE",
-            {
-                "mode": mode,
-                "would_buy_count": len(would_buys),
-                "would_sell_count": len(would_sells),
-                "would_buys": [t["detail"] for t in would_buys],
-                "would_sells": [t["symbol"] for t in would_sells],
-            },
-        )
-        logger.info(
-            f"[LIVE SHADOW] Complete — {len(would_buys)} WOULD_BUY, "
-            f"{len(would_sells)} WOULD_SELL (no orders placed)"
-        )
-
-    portfolio_tracker.print_summary(record)
-    performance.generate_dashboard(portfolio_tracker.load_history())
-    audit_log.log_run_end(
-        mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"]
-    )
-    if mode == "close" and not dry_run:
-        day_summary = get_day_summary(today)
-        if day_summary:
-            emailer.send_summary(day_summary)
 
 
 if __name__ == "__main__":  # pragma: no cover
