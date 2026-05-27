@@ -154,3 +154,25 @@ def log_config_override_rejected(key: str, value, reason: str) -> None:
 def log_event(event_type: str, payload: dict) -> None:
     """Generic structured audit event for cases not covered by a specific helper."""
     _write(event_type, payload)
+
+
+# ── Same-day open guard ───────────────────────────────────────────────────────
+
+
+def log_open_buys_locked(today: str) -> None:
+    _write("OPEN_BUYS_LOCKED", {"date": today})
+
+
+def has_open_buys_run_today(today: str) -> bool:
+    """True if the open-mode buy phase has already been entered today (non-dry-run)."""
+    try:
+        from utils.db import get_db
+
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM audit_events WHERE event='OPEN_BUYS_LOCKED' AND ts LIKE ? LIMIT 1",
+                (f"{today}%",),
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return False

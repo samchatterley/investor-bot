@@ -870,6 +870,8 @@ class RunInnerBase(unittest.TestCase):
             "main.insider_feed.get_insider_activity": {},
             "main.av_sentiment.get_av_sentiment": {},
             "main.earnings_surprise.get_earnings_surprise": {},
+            "main.audit_log.has_open_buys_run_today": False,
+            "main.audit_log.log_open_buys_locked": None,
         }
         # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
         if "main.run_startup_health_check" not in overrides:
@@ -3898,6 +3900,71 @@ class TestRunInnerCoverShorts(RunInnerBase):
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15")
         alert_mock.assert_called()
+
+
+class TestSameDayOpenGuard(RunInnerBase):
+    """Same-day open guard: only one buy phase per calendar day in open mode."""
+
+    def test_second_open_run_skips_buys(self):
+        buy_mock = MagicMock()
+        lock_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.trader.place_buy_order": buy_mock,
+                "main.audit_log.has_open_buys_run_today": True,
+                "main.audit_log.log_open_buys_locked": lock_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+        lock_mock.assert_not_called()
+
+    def test_first_open_run_locks_and_buys(self):
+        buy_result = OrderResult(
+            status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+        )
+        lock_mock = MagicMock()
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.trader.place_buy_order": MagicMock(return_value=buy_result),
+                "main.trader.get_open_positions": [],
+                "main.trader.get_account_info": _account(100_000, 50_000),
+                "main.position_sizer.get_max_positions": 5,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.audit_log.has_open_buys_run_today": False,
+                "main.audit_log.log_open_buys_locked": lock_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        lock_mock.assert_called_once_with("2026-01-15")
+
+    def test_dry_run_does_not_check_or_set_guard(self):
+        check_mock = MagicMock()
+        lock_mock = MagicMock()
+        stack, mocks = self._patch_all(
+            **{
+                "main.audit_log.has_open_buys_run_today": check_mock,
+                "main.audit_log.log_open_buys_locked": lock_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+        check_mock.assert_not_called()
+        lock_mock.assert_not_called()
 
 
 if __name__ == "__main__":  # pragma: no cover

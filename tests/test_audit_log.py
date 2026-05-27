@@ -230,3 +230,51 @@ class TestConfigOverrideLogs(AuditLogBase):
         events = self._read_events()
         self.assertEqual(events[0]["event"], "CONFIG_OVERRIDE_REJECTED")
         self.assertEqual(events[0]["reason"], "not in allowlist")
+
+
+class TestLogEvent(AuditLogBase):
+    def test_log_event_writes_generic_event(self):
+        from utils.audit_log import log_event
+
+        with patch("utils.db.get_db", side_effect=RuntimeError("db off")):
+            log_event("CUSTOM_EVENT", {"key": "value"})
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "CUSTOM_EVENT")
+        self.assertEqual(events[0]["key"], "value")
+
+
+class TestOpenBuysGuard(AuditLogBase):
+    def test_log_open_buys_locked_writes_event(self):
+        from utils.audit_log import log_open_buys_locked
+
+        with patch("utils.db.get_db", side_effect=RuntimeError("db off")):
+            log_open_buys_locked("2026-05-27")
+        events = self._read_events()
+        self.assertEqual(events[0]["event"], "OPEN_BUYS_LOCKED")
+        self.assertEqual(events[0]["date"], "2026-05-27")
+
+    def test_has_open_buys_run_today_returns_true_when_row_found(self):
+        from unittest.mock import MagicMock
+
+        from utils.audit_log import has_open_buys_run_today
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value.execute.return_value.fetchone.return_value = (1,)
+        with patch("utils.db.get_db", return_value=mock_conn):
+            self.assertTrue(has_open_buys_run_today("2026-05-27"))
+
+    def test_has_open_buys_run_today_returns_false_when_no_row(self):
+        from unittest.mock import MagicMock
+
+        from utils.audit_log import has_open_buys_run_today
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value.execute.return_value.fetchone.return_value = None
+        with patch("utils.db.get_db", return_value=mock_conn):
+            self.assertFalse(has_open_buys_run_today("2026-05-27"))
+
+    def test_has_open_buys_run_today_returns_false_on_db_error(self):
+        from utils.audit_log import has_open_buys_run_today
+
+        with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
+            self.assertFalse(has_open_buys_run_today("2026-05-27"))

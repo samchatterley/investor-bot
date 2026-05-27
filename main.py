@@ -1195,6 +1195,18 @@ def _execute_buy_phase(
     # Initialised from the post-exit snapshot; overwritten with a fresher fetch
     # inside the else branch when buys are not skipped.
     open_positions = snap.open_positions
+
+    # Same-day open guard: only one buy phase per calendar day in open mode.
+    # Prevents duplicate buys when the bot is restarted mid-session or triggered
+    # more than once by launchd/manual invocation.
+    if mode == "open" and not dry_run:
+        if audit_log.has_open_buys_run_today(today):
+            logger.warning(
+                "Same-day open guard: open buys already executed today — skipping buy phase."
+            )
+            return open_positions, account_now
+        audit_log.log_open_buys_locked(today)
+
     daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
     skip_buys = (
         mode in ("close", "open_sells")
