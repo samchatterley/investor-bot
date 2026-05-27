@@ -95,8 +95,8 @@ The scheduler fires four times on every trading day (all times America/New_York)
 | Time | Mode | What happens |
 |------|------|-------------|
 | 09:31 | `open_sells` | Earnings exits and AI sell decisions — no new buys into open noise |
-| 10:00 | `open` | Full cycle: market context → Claude → validate → risk gate → orders |
-| 12:00 | `midday` | Partial profit exits and stop checks |
+| 10:00 | `open` | Full cycle: market context → Claude → validate → risk gate → long buys + short hedges |
+| 12:00 | `midday` | Partial profit exits, stop checks; intraday-signal buys if setups present |
 | 15:30 | `close` | Final position review before market close |
 | 15:00 Sun | `weekly_review` | AI self-review, parameter proposals, diagnostics email |
 
@@ -112,21 +112,25 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 | Signal | Entry conditions | Hold limit |
 |--------|-----------------|------------|
-| `mean_reversion` | RSI < 38 + BB < 0.30 + vol spike | 2 days |
+| `mean_reversion` | RSI < 38 + BB < 0.30 + vol spike; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 2 days |
 | `rsi_oversold` | RSI < 30 sharp bounce | 2 days |
 | `news_catalyst` | Company-specific news + volume | 2 days |
-| `macd_crossover` | MACD line crosses above signal line + volume | 4 days |
+| `macd_crossover` | MACD line crosses above signal line + volume; blocked in NEUTRAL_CHOP | 4 days |
 | `bb_squeeze` | Bollinger bandwidth at 20th percentile of last 20 bars → coiling; directional confirmation + volume | 4 days |
-| `inside_day_breakout` | Prior candle's full range contains today's; breaks with directional confirmation + volume | 3 days |
-| `trend_pullback` | EMA9 > EMA21, price 0.5–3% below EMA21, RSI 40–58 — buying the dip in a healthy trend | 3 days |
-| `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume | 5 days |
+| `inside_day_breakout` | Prior candle's full range contains today's; breaks with directional confirmation + volume; blocked in NEUTRAL_CHOP | 3 days |
+| `trend_pullback` | EMA9 > EMA21, price 0.5–3% below EMA21, RSI 40–58 — buying the dip in a healthy trend; blocked in DEFENSIVE_DOWNTREND | 3 days |
+| `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume; blocked in DEFENSIVE_DOWNTREND | 5 days |
 | `trend_continuation` | AI-classified continuation of an established trend | 5 days |
-| `breakout_52w` | Within 3% of 52-week high + above-average volume + weekly trend intact | 5 days |
-| `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment — sustained market leader | 5 days |
-| `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; blocked on BEAR_DAY and CHOPPY | 5 days |
+| `breakout_52w` | Within 3% of 52-week high + above-average volume + weekly trend intact; blocked in DEFENSIVE_DOWNTREND | 5 days |
+| `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment; **blocked in BULL_TREND** (its primary regime) — no live edge detected; effectively inactive | 5 days |
+| `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; blocked in BULL_TREND, DEFENSIVE_DOWNTREND, and stress regimes | 5 days |
+| `gap_and_go` | Intraday gap ≥ threshold + volume; blocked in DEFENSIVE_DOWNTREND | 5 days |
+| `vix_fear_reversion` | VIX spike above threshold + vol filter — mean-reversion buy after volatility shock; blocked in non-stress regimes | 3 days |
+| `rsi_divergence` | Price lower than 5 days ago but RSI recovering (bullish structural divergence); ADX < 25, RSI < 45; blocked in BULL_TREND and stress regimes | 3 days |
+| `range_reversion` | ADX < 20 (confirmed range-bound) + BB < 0.10 + RSI < 30; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 3 days |
 | `insider_buying` | ≥2 distinct corporate insiders made open-market Form 4 purchases (SEC EDGAR) within 10 days; bypasses weekly trend filter | 5 days |
 | `pead` | Post-Earnings Announcement Drift: EPS beat ≥5% within 30 days + price still drifting up (ret_5d > 0); bypasses weekly trend filter | 3 days |
-| `iv_compression` | Historical volatility rank in bottom 20th percentile of its 52-week range + directional confirmation (EMA or MACD) + volume — coiling for expansion | 4 days |
+| `iv_compression` | Historical volatility rank in bottom 20th percentile of its 52-week range + directional confirmation (EMA or MACD) + volume; blocked in NEUTRAL_CHOP | 4 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
 **Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
@@ -139,7 +143,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`, `rsi_divergence`, `range_reversion`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`, `vix_fear_reversion`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`, `gap_and_go`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
 
 ---
 
@@ -259,7 +263,7 @@ Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [
 After validation, position-level risk checks are applied independently of Claude's recommendations:
 
 - **Risk-budget sizing** — position size is set at 0.25% of equity risked per trade (`RISK_PER_TRADE_PCT`), hard-capped at 5% of portfolio per position (`MAX_POSITION_WEIGHT`). Kelly is tracked as secondary telemetry but does not drive order sizes
-- **Hard position limits** — up to 5 positions (scaled to 3–4 for smaller accounts), capped at 5% of portfolio per position, 10% cash reserve always maintained
+- **Hard position limits** — up to 5 positions (2 in small-account mode), capped at 5% of portfolio per position, 10% cash reserve always maintained
 - **Fat-finger guard** — single orders above `MAX_SINGLE_ORDER_USD` (default $50,000; $55 in small-account mode) are rejected regardless of instruction
 - **Daily notional cap** — total new deployment above `MAX_DAILY_NOTIONAL_USD` (default $150,000; $75 in small-account mode) in one day halts buying
 - **Sector concentration** — maximum 2 positions in any sector
@@ -268,8 +272,10 @@ After validation, position-level risk checks are applied independently of Claude
 - **Earnings guard** — positions with earnings within 2 calendar days are exited pre-emptively
 - **Circuit breaker** — new buys halted when the portfolio drops 12% from its 5-day peak
 - **Daily loss limit** — all positions closed and halt file created when the portfolio loses 5% from the session open; requires manual `python cli.py resume`
-- **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8%; the remaining half runs with the trailing stop
-- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, RSI oversold, news catalyst (2 days); inside-day breakout, trend pullback (3 days); MACD crossover, BB squeeze (4 days); momentum, trend continuation, 52-week breakout, RS leader (5 days)
+- **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8% (15% in small-account mode); the remaining half runs with the trailing stop
+- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, RSI oversold, news catalyst, vix_fear_reversion (2 days); inside-day breakout, trend pullback, rsi_divergence, range_reversion (3 days); MACD crossover, BB squeeze, iv_compression (4 days); momentum, trend continuation, 52-week breakout, RS leader, gap_and_go, momentum_12_1 (5 days)
+- **Short hedge** — after long buys each open run, bottom-quartile RS stocks are scanned for short positions (max 3 concurrent; capped at 0.5× long notional; sized at 0.5× standard long size); regime-gated to BULL_TREND and NEUTRAL_CHOP only
+- **Same-day open guard** — only one buy phase executes per calendar day in `open` mode; subsequent open runs (e.g. from scheduler restarts) skip buys entirely
 
 ### Constrained parameter recommendation engine
 
@@ -281,10 +287,11 @@ The weekly self-review enables Claude to propose adjustments to four operating p
 
 | Parameter | Allowed range |
 |-----------|---------------|
-| `MIN_CONFIDENCE` | 6 – 9 |
-| `TRAILING_STOP_PCT` | 2.0% – 8.0% |
-| `PARTIAL_PROFIT_PCT` | 5.0% – 20.0% |
-| `MAX_HOLD_DAYS` | 2 – 7 days |
+| `MIN_CONFIDENCE` | 7 – 10 |
+| `TRAILING_STOP_PCT` | 2.0% – 10.0% |
+| `PARTIAL_PROFIT_PCT` | 3.0% – 20.0% |
+| `MAX_HOLD_DAYS` | 1 – 10 days |
+| `MAX_ORDERS_PER_RUN` | 1 – 5 |
 
 Values outside bounds are logged and rejected. The runtime config file is loaded at startup alongside `config.py` — source is never modified by the system. See [ADR-005](docs/adr/ADR-005-bounded-parameter-updates.md) for full rationale.
 
@@ -720,7 +727,7 @@ All six were diagnosed from logs alone without needing to reproduce locally. The
 
 The current system deliberately keeps deployment local and execution synchronous. The natural next steps, in priority order:
 
-1. **Live paper-trading evidence** — currently running a full week of live paper trading (w/c 28 April 2026) before committing real capital. The Sunday weekly review will produce an automated performance analysis and parameter adjustment. The backtest is signal evidence; paper trading is execution evidence.
+1. **Live paper-trading evidence** — running continuous paper trading since April 2026. The backtest is signal evidence; paper trading is execution evidence. Next step: move to a small live experiment after sustained paper performance.
 2. **Drawdown-based position sizing** — reduce Kelly fraction automatically when the portfolio is in a drawdown, not just when individual signals are weak.
 3. ~~Post-earnings momentum (PEAD)~~ — implemented in v1.20.
 4. **Centralised logging** — move from local SQLite to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
@@ -759,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **1691 tests, 96% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **2485 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
