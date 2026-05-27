@@ -47,6 +47,7 @@ from models import (
     OrderResult,
     OrderStatus,
     PositionSnapshot,
+    RiskFlags,
 )
 from notifications import alerts, emailer
 from risk import (
@@ -1177,7 +1178,7 @@ def _execute_buy_phase(
     db: DataBundle,
     mc: MarketContext,
     decisions: dict,
-    health,
+    health_status: HealthStatus,
     cb_triggered: bool,
     _exp_drawdown_triggered: bool,
     _dd_scalar: float,
@@ -1200,7 +1201,7 @@ def _execute_buy_phase(
         or cb_triggered
         or mc.regime.get("is_bearish")
         or mc.macro.get("is_high_risk")
-        or health.status in (HealthStatus.RED, HealthStatus.YELLOW)
+        or health_status in (HealthStatus.RED, HealthStatus.YELLOW)
         or _exp_drawdown_triggered
     )
     if skip_buys:
@@ -1213,8 +1214,8 @@ def _execute_buy_phase(
             reasons.append("bear market filter")
         if mc.macro.get("is_high_risk"):
             reasons.append(f"macro event: {mc.macro.get('event')}")
-        if health.status in (HealthStatus.RED, HealthStatus.YELLOW):
-            reasons.append(f"startup health {health.status}")
+        if health_status in (HealthStatus.RED, HealthStatus.YELLOW):
+            reasons.append(f"startup health {health_status}")
         if _exp_drawdown_triggered:
             reasons.append("experiment drawdown cap reached")
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
@@ -1783,6 +1784,111 @@ def _finalise(
             emailer.send_summary(day_summary)
 
 
+def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFlags | None:
+    """Run startup health, circuit breaker, daily loss, and experiment drawdown checks.
+
+    Returns None when the daily loss limit is hit (positions are closed inside this function;
+    the caller must immediately return so no further trading occurs).
+    """
+    health = run_startup_health_check(client)
+    health.log()
+    audit_log.log_event(
+        "STARTUP_HEALTH",
+        {"status": health.status, "issues": health.issues, "metrics": health.metrics},
+    )
+    if health.status == HealthStatus.RED:
+        logger.critical(
+            f"Startup health check RED ({len(health.issues)} issue(s)) — "
+            "new buys suspended this run. Resolve issues and restart."
+        )
+        alerts.alert_error(
+            "STARTUP HEALTH RED",
+            f"{len(health.issues)} safety issue(s) at startup: " + "; ".join(health.issues[:3]),
+        )
+        # In live non-dry-run mode a RED health is fatal for buys; we continue
+        # to allow sells/exits so existing positions can be managed.
+    elif health.status == HealthStatus.YELLOW:
+        logger.warning(
+            f"Startup health check YELLOW ({len(health.issues)} issue(s)) — "
+            "new buys suspended this run."
+        )
+
+    # ── Circuit breaker ───────────────────────────────────────────────────────
+    history = portfolio_tracker.load_history()
+    _dd_scalar = position_sizer.drawdown_scalar(history)
+    cb_triggered, cb_drawdown = risk_manager.check_circuit_breaker(history)
+    if cb_triggered:
+        audit_log.log_circuit_breaker(cb_drawdown)
+        alerts.alert_circuit_breaker(cb_drawdown)
+        logger.warning("Circuit breaker active — no new buys today.")
+
+    # ── Daily loss check ───────────────────────────────────────────────────────
+    _baseline = portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
+    dl_triggered, dl_pct = risk_manager.check_daily_loss(
+        _baseline, account_before["portfolio_value"]
+    )
+    # Dollar-denominated daily loss cap (active when MAX_DAILY_LOSS_USD > 0)
+    if not dl_triggered and config.MAX_DAILY_LOSS_USD > 0:
+        daily_loss_usd = _baseline - account_before["portfolio_value"]
+        if daily_loss_usd >= config.MAX_DAILY_LOSS_USD:
+            dl_triggered = True
+            dl_pct = (account_before["portfolio_value"] / _baseline - 1) * 100
+            logger.warning(
+                f"Dollar daily loss limit hit: ${daily_loss_usd:.2f} >= "
+                f"${config.MAX_DAILY_LOSS_USD:.2f}"
+            )
+    if dl_triggered:
+        audit_log.log_daily_loss_limit(dl_pct)
+        alerts.alert_daily_loss(dl_pct)
+        logger.warning("Daily loss limit hit — closing all positions.")
+        if not dry_run:
+            for pos in trader.get_open_positions(client):
+                trader.close_position(client, pos["symbol"])
+                audit_log.log_position_closed(
+                    pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
+                )
+                trader.record_sell(pos["symbol"])
+        return None
+
+    # ── Experiment drawdown cap ───────────────────────────────────────────────
+    _exp_drawdown_triggered = False
+    if config.MAX_EXPERIMENT_DRAWDOWN_USD > 0:
+        _exp_baseline = load_experiment_baseline()
+        if _exp_baseline is not None:
+            _exp_loss = _exp_baseline - account_before["portfolio_value"]
+            if _exp_loss >= config.MAX_EXPERIMENT_DRAWDOWN_USD:
+                _exp_drawdown_triggered = True
+                logger.critical(
+                    f"Experiment drawdown cap reached: lost ${_exp_loss:.2f} of "
+                    f"${_exp_baseline:.2f} start equity "
+                    f"(limit ${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f}) — "
+                    "new buys blocked for remainder of experiment."
+                )
+                audit_log.log_event(
+                    "EXPERIMENT_DRAWDOWN_CAP",
+                    {
+                        "start_equity": _exp_baseline,
+                        "current_equity": account_before["portfolio_value"],
+                        "loss_usd": round(_exp_loss, 2),
+                        "limit_usd": config.MAX_EXPERIMENT_DRAWDOWN_USD,
+                    },
+                )
+                alerts.alert_error(
+                    "EXPERIMENT DRAWDOWN CAP",
+                    f"Total experiment loss ${_exp_loss:.2f} >= "
+                    f"${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f} limit — no new buys.",
+                )
+
+    return RiskFlags(
+        health_status=health.status,
+        dd_scalar=_dd_scalar,
+        cb_triggered=cb_triggered,
+        daily_loss_triggered=False,
+        daily_loss_pct=dl_pct,
+        exp_drawdown_triggered=_exp_drawdown_triggered,
+    )
+
+
 def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
     run_id = str(uuid.uuid4())
     audit_log.set_run_id(run_id)
@@ -1876,97 +1982,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         )
         sys.exit(1)
 
-    # ── Startup health check ──────────────────────────────────────────────────
-    health = run_startup_health_check(client)
-    health.log()
-    audit_log.log_event(
-        "STARTUP_HEALTH",
-        {"status": health.status, "issues": health.issues, "metrics": health.metrics},
-    )
-    if health.status == HealthStatus.RED:
-        logger.critical(
-            f"Startup health check RED ({len(health.issues)} issue(s)) — "
-            "new buys suspended this run. Resolve issues and restart."
-        )
-        alerts.alert_error(
-            "STARTUP HEALTH RED",
-            f"{len(health.issues)} safety issue(s) at startup: " + "; ".join(health.issues[:3]),
-        )
-        # In live non-dry-run mode a RED health is fatal for buys; we continue
-        # to allow sells/exits so existing positions can be managed.
-    elif health.status == HealthStatus.YELLOW:
-        logger.warning(
-            f"Startup health check YELLOW ({len(health.issues)} issue(s)) — "
-            "new buys suspended this run."
-        )
-
-    # ── Circuit breaker ───────────────────────────────────────────────────────
-    history = portfolio_tracker.load_history()
-    _dd_scalar = position_sizer.drawdown_scalar(history)
-    cb_triggered, cb_drawdown = risk_manager.check_circuit_breaker(history)
-    if cb_triggered:
-        audit_log.log_circuit_breaker(cb_drawdown)
-        alerts.alert_circuit_breaker(cb_drawdown)
-        logger.warning("Circuit breaker active — no new buys today.")
-
-    # ── Daily loss check ──────────────────────────────────────────────────────
-    _baseline = portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
-    dl_triggered, dl_pct = risk_manager.check_daily_loss(
-        _baseline, account_before["portfolio_value"]
-    )
-    # Dollar-denominated daily loss cap (active when MAX_DAILY_LOSS_USD > 0)
-    if not dl_triggered and config.MAX_DAILY_LOSS_USD > 0:
-        daily_loss_usd = _baseline - account_before["portfolio_value"]
-        if daily_loss_usd >= config.MAX_DAILY_LOSS_USD:
-            dl_triggered = True
-            dl_pct = (account_before["portfolio_value"] / _baseline - 1) * 100
-            logger.warning(
-                f"Dollar daily loss limit hit: ${daily_loss_usd:.2f} >= "
-                f"${config.MAX_DAILY_LOSS_USD:.2f}"
-            )
-    if dl_triggered:
-        audit_log.log_daily_loss_limit(dl_pct)
-        alerts.alert_daily_loss(dl_pct)
-        logger.warning("Daily loss limit hit — closing all positions.")
-        if not dry_run:
-            for pos in trader.get_open_positions(client):
-                trader.close_position(client, pos["symbol"])
-                audit_log.log_position_closed(
-                    pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
-                )
-                trader.record_sell(pos["symbol"])
+    # ── Risk limits (health, circuit breaker, daily loss, experiment drawdown) ─
+    flags = _evaluate_risk_limits(client, account_before, dry_run)
+    if flags is None:
         return
-
-    # ── Experiment drawdown cap ───────────────────────────────────────────────
-    # Active when MAX_EXPERIMENT_DRAWDOWN_USD > 0 and a baseline has been set.
-    # Blocks new buys (but allows sells/exits) once total experiment loss is reached.
-    _exp_drawdown_triggered = False
-    if config.MAX_EXPERIMENT_DRAWDOWN_USD > 0:
-        _exp_baseline = load_experiment_baseline()
-        if _exp_baseline is not None:
-            _exp_loss = _exp_baseline - account_before["portfolio_value"]
-            if _exp_loss >= config.MAX_EXPERIMENT_DRAWDOWN_USD:
-                _exp_drawdown_triggered = True
-                logger.critical(
-                    f"Experiment drawdown cap reached: lost ${_exp_loss:.2f} of "
-                    f"${_exp_baseline:.2f} start equity "
-                    f"(limit ${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f}) — "
-                    "new buys blocked for remainder of experiment."
-                )
-                audit_log.log_event(
-                    "EXPERIMENT_DRAWDOWN_CAP",
-                    {
-                        "start_equity": _exp_baseline,
-                        "current_equity": account_before["portfolio_value"],
-                        "loss_usd": round(_exp_loss, 2),
-                        "limit_usd": config.MAX_EXPERIMENT_DRAWDOWN_USD,
-                    },
-                )
-                alerts.alert_error(
-                    "EXPERIMENT DRAWDOWN CAP",
-                    f"Total experiment loss ${_exp_loss:.2f} >= "
-                    f"${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f} limit — no new buys.",
-                )
 
     all_trades: list = []
     executed_symbols: set[str] = set()
@@ -2002,10 +2021,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         db=db,
         mc=mc,
         decisions=decisions,
-        health=health,
-        cb_triggered=cb_triggered,
-        _exp_drawdown_triggered=_exp_drawdown_triggered,
-        _dd_scalar=_dd_scalar,
+        health_status=flags.health_status,
+        cb_triggered=flags.cb_triggered,
+        _exp_drawdown_triggered=flags.exp_drawdown_triggered,
+        _dd_scalar=flags.dd_scalar,
         account_now=account_now,
         should_run_live_gates=should_run_live_gates,
         today=today,
