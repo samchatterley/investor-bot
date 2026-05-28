@@ -751,7 +751,8 @@ def cancel_open_orders(client: TradingClient, symbol: str):
             pos = client.get_open_position(symbol)
             available = float(pos.qty_available)
             total = float(pos.qty)
-            if available >= total - 0.000001:
+            # Use abs() — short positions have negative qty, so signed >= fails.
+            if abs(available) >= abs(total) - 0.000001:
                 return  # nothing held — no cancellations needed
         except Exception:
             return  # position gone or unreadable
@@ -774,7 +775,7 @@ def cancel_open_orders(client: TradingClient, symbol: str):
                 pos = client.get_open_position(symbol)
                 total = float(pos.qty)
                 available = float(pos.qty_available)
-                if available >= total - 0.000001:
+                if abs(available) >= abs(total) - 0.000001:
                     logger.info(f"cancel_open_orders({symbol}): all shares freed")
                     return
             except Exception:
