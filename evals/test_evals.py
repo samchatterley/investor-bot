@@ -185,10 +185,9 @@ class TestMalformedResponses:
         universe = {"AAPL", "MSFT", "NVDA"}
         is_valid, errors = validate_ai_response(case["response"], universe)
 
-        if case["expected_valid"] is False:
-            assert not is_valid or len(errors) > 0, (
-                f"Case '{case['description']}' should have been rejected but passed"
-            )
+        assert not is_valid or len(errors) > 0, (
+            f"Case '{case['description']}' should have been rejected but passed"
+        )
 
 
 # ── Earnings risk ─────────────────────────────────────────────────────────────
