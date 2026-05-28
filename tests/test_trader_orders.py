@@ -1206,6 +1206,17 @@ class TestReconcilePositionsMissingSymbol(unittest.TestCase):
         # Placeholder entry created — entry_date must be present
         self.assertIn("entry_date", meta)
         self.assertEqual(meta["signal"], "unknown")
+        self.assertEqual(meta["side"], "long")
+
+    def test_placeholder_for_short_position_has_side_short(self):
+        """Broker position with negative qty must be recorded as side='short'."""
+        from execution.trader import get_position_meta, reconcile_positions
+
+        client = MagicMock()
+        client.get_all_positions.return_value = [_mock_position("NVDA", -10)]
+        reconcile_positions(client)
+        meta = get_position_meta("NVDA")
+        self.assertEqual(meta["side"], "short")
 
     def test_reconcile_db_exception_does_not_crash(self):
         """Lines 364-365: db exception inside the inner block is caught."""

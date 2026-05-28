@@ -586,23 +586,26 @@ def reconcile_positions(client: TradingClient) -> set[str]:
     except Exception as e:
         logger.error(f"reconcile_positions: could not fetch positions — {e}")
         return set()
-    actual = {p.symbol for p in positions}
+    actual = {p.symbol: ("short" if float(p.qty) < 0 else "long") for p in positions}
     unexpected: set[str] = set()
     try:
         with _db() as conn:
             stored = {row["symbol"] for row in conn.execute("SELECT symbol FROM positions")}
 
-            for sym in stored - actual:
+            for sym in stored - actual.keys():
                 logger.info(f"Reconcile: removing stale metadata for {sym}")
                 conn.execute("DELETE FROM positions WHERE symbol=?", (sym,))
 
-            for sym in actual - stored:
+            for sym in actual.keys() - stored:
                 unexpected.add(sym)
-                logger.warning(f"Reconcile: unexpected broker position {sym} — adding placeholder")
+                side = actual[sym]
+                logger.warning(
+                    f"Reconcile: unexpected broker position {sym} ({side}) — adding placeholder"
+                )
                 conn.execute(
-                    "INSERT OR IGNORE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (sym, today_et().isoformat(), 0.0, "unknown", "UNKNOWN", 0),
+                    "INSERT OR IGNORE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence, side) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (sym, today_et().isoformat(), 0.0, "unknown", "UNKNOWN", 0, side),
                 )
     except Exception as e:
         logger.error(f"reconcile_positions: database error — {e}")
