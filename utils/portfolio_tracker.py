@@ -173,6 +173,18 @@ def print_summary(record: dict):
     print(f"  Portfolio value: ${record['account_after']['portfolio_value']:.2f}")
     print(f"  Cash:            ${record['account_after']['cash']:.2f}")
     print(f"  Daily P&L:       {pnl_sign}${pnl:.2f}")
+
+    try:
+        from execution.trader import _load_all_positions
+
+        all_pos = _load_all_positions()
+        n_long = sum(1 for m in all_pos.values() if m.get("side", "long") == "long")
+        n_short = sum(1 for m in all_pos.values() if m.get("side") == "short")
+        print(f"  Long positions:  {n_long}")
+        print(f"  Short positions: {n_short}")
+    except Exception:
+        pass
+
     print()
 
     # Aggregate trades and stop losses across all runs for this calendar day.

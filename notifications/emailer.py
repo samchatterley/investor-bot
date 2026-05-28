@@ -392,44 +392,14 @@ def _get_live_positions() -> dict:
         return {}
 
 
-def _build_positions_section(record: dict) -> str:
-    """All currently open positions from live Alpaca data."""
-    all_positions = _get_live_positions()
-
-    # Build index of today's HOLD decisions (for P&L and hold summaries)
-    hold_decisions: dict[str, dict] = {}
-    for d in record.get("position_decisions", []):
-        sym = d.get("symbol", "")
-        if sym and d.get("action", "").upper() == "HOLD":
-            hold_decisions.setdefault(sym, d)
-
-    # Determine symbol list — live positions first, fall back to HOLD decisions
-    if all_positions:
-        symbols = sorted(all_positions.keys())
-    else:
-        seen: set[str] = set()
-        symbols = []
-        for d in reversed(record.get("position_decisions", [])):
-            sym = d.get("symbol", "")
-            if sym and sym not in seen and d.get("action", "").upper() == "HOLD":
-                seen.add(sym)
-                symbols.append(sym)
-        symbols.reverse()
-
-    if not symbols:
-        return ""
-
-    # "Why opened" — buy_candidates > decisions (for positions opened today)
-    buy_reasons: dict[str, str] = {}
-    for b in record.get("buy_candidates", []):
-        sym = b.get("symbol", "")
-        if sym:
-            buy_reasons[sym] = b.get("summary") or b.get("reasoning", "")
-    for d in record.get("decisions", []):
-        sym = d.get("symbol", "")
-        if sym and d.get("decision_type", "").upper() == "BUY" and sym not in buy_reasons:
-            buy_reasons[sym] = d.get("summary") or d.get("reasoning", "")
-
+def _build_position_rows(
+    symbols: list[str],
+    all_positions: dict,
+    hold_decisions: dict,
+    buy_reasons: dict,
+    record: dict,
+    is_short: bool,
+) -> str:
     rows = ""
     for sym in symbols:
         pos_meta = all_positions.get(sym, {})
@@ -441,10 +411,11 @@ def _build_positions_section(record: dict) -> str:
 
         signal_key = pos_meta.get("signal", "")
         if not signal_key:
+            dec_type = "short" if is_short else "buy"
             for dec in record.get("decisions", []):
                 if (
                     dec.get("symbol") == sym
-                    and dec.get("decision_type") == "buy"
+                    and dec.get("decision_type") == dec_type
                     and dec.get("key_signal")
                 ):
                     signal_key = dec["key_signal"]
@@ -466,7 +437,9 @@ def _build_positions_section(record: dict) -> str:
 
         pct_html = ""
         if pct is not None:
-            colour = "#2e7d32" if pct >= 0 else "#c62828"
+            # For shorts, price rising is a loss — invert the colour signal
+            profit = pct if not is_short else -pct
+            colour = "#2e7d32" if profit >= 0 else "#c62828"
             sign = "+" if pct >= 0 else ""
             pct_html = f'<span style="font-weight:bold;color:{colour}">{sign}{pct:.2f}%</span>'
 
@@ -498,11 +471,72 @@ def _build_positions_section(record: dict) -> str:
   </td>
 </tr>
 """
+    return rows
 
-    return f"""<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#333;margin:24px 0 14px 0">Open positions ({len(symbols)})</p>
-<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;margin-bottom:8px">
-{rows}</table>
-"""
+
+def _build_positions_section(record: dict, all_positions: dict | None = None) -> str:
+    """Open positions split into long and short tables."""
+    if all_positions is None:
+        all_positions = _get_live_positions()
+
+    # Build index of today's HOLD decisions (for P&L and hold summaries)
+    hold_decisions: dict[str, dict] = {}
+    for d in record.get("position_decisions", []):
+        sym = d.get("symbol", "")
+        if sym and d.get("action", "").upper() == "HOLD":
+            hold_decisions.setdefault(sym, d)
+
+    # Determine symbol list — live positions first, fall back to HOLD decisions
+    if all_positions:
+        all_symbols = sorted(all_positions.keys())
+    else:
+        seen: set[str] = set()
+        all_symbols = []
+        for d in reversed(record.get("position_decisions", [])):
+            sym = d.get("symbol", "")
+            if sym and sym not in seen and d.get("action", "").upper() == "HOLD":
+                seen.add(sym)
+                all_symbols.append(sym)
+        all_symbols.reverse()
+
+    if not all_symbols:
+        return ""
+
+    long_symbols = [
+        s for s in all_symbols if all_positions.get(s, {}).get("side", "long") == "long"
+    ]
+    short_symbols = [s for s in all_symbols if all_positions.get(s, {}).get("side") == "short"]
+
+    # "Why opened" — buy_candidates > decisions (for positions opened today)
+    buy_reasons: dict[str, str] = {}
+    for b in record.get("buy_candidates", []):
+        sym = b.get("symbol", "")
+        if sym:
+            buy_reasons[sym] = b.get("summary") or b.get("reasoning", "")
+    for d in record.get("decisions", []):
+        sym = d.get("symbol", "")
+        if sym and d.get("decision_type", "").upper() == "BUY" and sym not in buy_reasons:
+            buy_reasons[sym] = d.get("summary") or d.get("reasoning", "")
+
+    html = ""
+
+    if long_symbols:
+        rows = _build_position_rows(
+            long_symbols, all_positions, hold_decisions, buy_reasons, record, is_short=False
+        )
+        html += f"""<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#2e7d32;margin:24px 0 14px 0">Long positions ({len(long_symbols)})</p>
+<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #c8e6c9;border-radius:8px;overflow:hidden;margin-bottom:8px">
+{rows}</table>"""
+
+    if short_symbols:
+        rows = _build_position_rows(
+            short_symbols, all_positions, hold_decisions, buy_reasons, record, is_short=True
+        )
+        html += f"""<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:600;color:#e65100;margin:24px 0 14px 0">Short positions ({len(short_symbols)})</p>
+<table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #ffe0b2;border-radius:8px;overflow:hidden;margin-bottom:8px">
+{rows}</table>"""
+
+    return html
 
 
 def _build_html(record: dict, name: str = "there") -> str:
@@ -525,7 +559,11 @@ def _build_html(record: dict, name: str = "there") -> str:
     mode_label = "Paper trading" if IS_PAPER else "Live trading"
     mode_colour = "#999999" if IS_PAPER else "#e65100"
 
-    positions_section = _build_positions_section(record)
+    all_live_positions = _get_live_positions()
+    n_long = sum(1 for m in all_live_positions.values() if m.get("side", "long") == "long")
+    n_short = sum(1 for m in all_live_positions.values() if m.get("side") == "short")
+
+    positions_section = _build_positions_section(record, all_live_positions)
     trade_cards = _build_trade_cards(record)
     closed_section = _build_closed_section(record)
 
@@ -564,7 +602,7 @@ def _build_html(record: dict, name: str = "there") -> str:
               <p style="font-family:Arial,Helvetica,sans-serif;font-size:44px;font-weight:bold;color:{pnl_colour};line-height:1;margin:0">{pnl_str}</p>
               <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:600;color:{pnl_colour};margin:6px 0 20px">{day_return_str}</p>
 
-              <!-- Stats 2×2 -->
+              <!-- Stats 2x3 -->
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
                   <td width="50%" style="text-align:center;padding:0 8px 14px 0;border-right:1px solid #dddddd">
@@ -574,6 +612,16 @@ def _build_html(record: dict, name: str = "there") -> str:
                   <td width="50%" style="text-align:center;padding:0 0 14px 8px">
                     <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 4px 0">Closing Portfolio</p>
                     <p style="font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:600;color:#333;margin:0">${closing_portfolio:,.2f}</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td width="50%" style="text-align:center;padding:14px 8px 14px 0;border-right:1px solid #dddddd;border-top:1px solid #dddddd">
+                    <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 4px 0">Long Positions</p>
+                    <p style="font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:600;color:#2e7d32;margin:0">{n_long}</p>
+                  </td>
+                  <td width="50%" style="text-align:center;padding:14px 0 14px 8px;border-top:1px solid #dddddd">
+                    <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 4px 0">Short Positions</p>
+                    <p style="font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:600;color:#e65100;margin:0">{n_short}</p>
                   </td>
                 </tr>
                 <tr>

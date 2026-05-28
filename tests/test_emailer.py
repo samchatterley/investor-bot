@@ -768,7 +768,7 @@ class TestBuildPositionsSection(unittest.TestCase):
         with patch("notifications.emailer._get_live_positions", return_value=live):
             html = _build_positions_section(record)
         self.assertIn("NVDA", html)
-        self.assertIn("Open positions", html)
+        self.assertIn("Long positions", html)
 
     def test_fallback_to_hold_decisions_when_no_live_positions(self):
         """Lines 404-407: all_positions empty → fall back to HOLD decisions."""
@@ -776,7 +776,53 @@ class TestBuildPositionsSection(unittest.TestCase):
         with patch("notifications.emailer._get_live_positions", return_value={}):
             html = _build_positions_section(record)
         self.assertIn("MSFT", html)
-        self.assertIn("Open positions", html)
+        self.assertIn("Long positions", html)
+
+    def test_short_positions_shown_with_orange_border(self):
+        """Short positions use orange border and 'Short positions' heading."""
+        live = {"TSLA": {"signal": "rs_short", "entry_date": "2026-05-01", "side": "short"}}
+        record = self._record_with_hold(["TSLA"])
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("Short positions", html)
+        self.assertIn("#ffe0b2", html)
+        self.assertIn("#e65100", html)
+
+    def test_short_pnl_colour_inverted_positive_pct_shows_red(self):
+        """For short positions a positive pct means the price rose → loss → red colour."""
+        live = {"AAPL": {"signal": "", "entry_date": "", "side": "short"}}
+        record = {
+            "trades_executed": [],
+            "stop_losses_triggered": [],
+            "buy_candidates": [],
+            "position_decisions": [
+                {
+                    "symbol": "AAPL",
+                    "action": "HOLD",
+                    "reasoning": "+3.0% unrealized",
+                    "summary": "",
+                }
+            ],
+            "decisions": [],
+        }
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        # For a short, +3% price move is a loss — colour must be red
+        self.assertIn("#c62828", html)
+
+    def test_mixed_long_and_short_positions_both_shown(self):
+        """Both long and short tables rendered when positions exist for each."""
+        live = {
+            "AAPL": {"signal": "momentum", "entry_date": "", "side": "long"},
+            "TSLA": {"signal": "rs_short", "entry_date": "", "side": "short"},
+        }
+        record = self._record_with_hold(["AAPL", "TSLA"])
+        with patch("notifications.emailer._get_live_positions", return_value=live):
+            html = _build_positions_section(record)
+        self.assertIn("Long positions", html)
+        self.assertIn("Short positions", html)
+        self.assertIn("AAPL", html)
+        self.assertIn("TSLA", html)
 
     def test_returns_empty_string_when_no_symbols(self):
         """Returns '' when no live positions and no HOLD decisions."""

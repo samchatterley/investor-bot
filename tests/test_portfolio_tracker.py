@@ -193,6 +193,54 @@ class TestPrintSummary(PortfolioTrackerBase):
             sys.stdout = sys.__stdout__
         self.assertIn("No trades", captured.getvalue())
 
+    def test_print_summary_position_load_exception_silenced(self):
+        """Lines 185-186: exception from _load_all_positions is silenced."""
+        import io
+        import sys
+        from unittest.mock import patch
+
+        from utils.portfolio_tracker import print_summary
+
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            with patch(
+                "execution.trader._load_all_positions",
+                side_effect=RuntimeError("db offline"),
+            ):
+                print_summary(self._record())
+        finally:
+            sys.stdout = sys.__stdout__
+        # Should not raise; summary still printed
+        self.assertIn("2026-01-15", captured.getvalue())
+
+    def test_print_summary_shows_long_short_counts(self):
+        """Lines 181-184: long/short position counts displayed when available."""
+        import io
+        import sys
+        from unittest.mock import patch
+
+        from utils.portfolio_tracker import print_summary
+
+        positions = {
+            "AAPL": {"side": "long"},
+            "TSLA": {"side": "short"},
+            "NVDA": {"side": "long"},
+        }
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            with patch(
+                "execution.trader._load_all_positions",
+                return_value=positions,
+            ):
+                print_summary(self._record())
+        finally:
+            sys.stdout = sys.__stdout__
+        output = captured.getvalue()
+        self.assertIn("Long positions:  2", output)
+        self.assertIn("Short positions: 1", output)
+
 
 class TestGetTrackRecord(PortfolioTrackerBase):
     def test_returns_last_n_days(self):
