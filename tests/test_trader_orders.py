@@ -6,13 +6,17 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from alpaca.trading.enums import OrderStatus as AlpacaOrderStatus
+
 from models import OrderResult, OrderStatus
+
+_STATUS_STR_TO_ENUM = {s.value: s for s in AlpacaOrderStatus}
 
 
 def _make_trailing_stop_order(symbol, status="new"):  # pragma: no cover
     o = MagicMock()
     o.symbol = symbol
-    o.status = status
+    o.status = _STATUS_STR_TO_ENUM.get(status, status) if isinstance(status, str) else status
     o.id = f"stop-{symbol}"
     return o
 
@@ -20,7 +24,7 @@ def _make_trailing_stop_order(symbol, status="new"):  # pragma: no cover
 def _mock_order(order_id="order-123", status="new", filled_qty=None, filled_avg_price="0.0"):
     o = MagicMock()
     o.id = order_id
-    o.status = status
+    o.status = _STATUS_STR_TO_ENUM.get(status, status) if isinstance(status, str) else status
     o.filled_qty = filled_qty
     o.filled_avg_price = filled_avg_price
     return o
@@ -206,7 +210,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-abc")
         final_order = MagicMock()
-        final_order.status = "pending_new"
+        final_order.status = AlpacaOrderStatus.PENDING_NEW
         final_order.filled_qty = None
         client.get_order_by_id.return_value = final_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -221,7 +225,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-partial")
         partial = MagicMock()
-        partial.status = "partially_filled"
+        partial.status = AlpacaOrderStatus.PARTIALLY_FILLED
         partial.filled_qty = 5.0
         client.get_order_by_id.return_value = partial
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -239,7 +243,7 @@ class TestPlaceBuyOrder(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-late")
         final_order = MagicMock()
-        final_order.status = "filled"
+        final_order.status = AlpacaOrderStatus.FILLED
         final_order.filled_qty = 23.5
         final_order.filled_avg_price = 420.69
         client.get_order_by_id.return_value = final_order
@@ -376,7 +380,7 @@ class TestWaitForFill(unittest.TestCase):
         from execution.trader import wait_for_fill
 
         client = MagicMock()
-        client.get_order_by_id.return_value = _mock_order(status="cancelled", filled_qty=None)
+        client.get_order_by_id.return_value = _mock_order(status="canceled", filled_qty=None)
         with patch("execution.trader.time.sleep"):
             result = wait_for_fill(client, "order-123", max_wait=30)
         self.assertIsNone(result)
@@ -428,7 +432,7 @@ def _mock_filled_order(order_id, filled_qty=10.0, filled_avg_price=0.0):
     """Return a mock order in terminal 'filled' state for use with wait_for_fill."""
     o = MagicMock()
     o.id = order_id
-    o.status = "filled"
+    o.status = AlpacaOrderStatus.FILLED
     o.filled_qty = str(filled_qty)
     o.filled_avg_price = str(filled_avg_price)
     return o
@@ -463,7 +467,7 @@ class TestPlaceSellOrder(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("sell-late")
         final_order = MagicMock()
-        final_order.status = "filled"
+        final_order.status = AlpacaOrderStatus.FILLED
         final_order.filled_qty = "12.5"
         final_order.filled_avg_price = "150.0"
         client.get_order_by_id.return_value = final_order
@@ -808,7 +812,7 @@ class TestPlacePartialSell(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = MagicMock(id="partial-late")
         final_order = MagicMock()
-        final_order.status = "filled"
+        final_order.status = AlpacaOrderStatus.FILLED
         final_order.filled_qty = "3.0"
         final_order.filled_avg_price = "200.0"
         client.get_order_by_id.return_value = final_order
@@ -835,7 +839,7 @@ def _seq(*statuses_and_qtys):
     orders = []
     for status, qty in statuses_and_qtys:
         o = MagicMock()
-        o.status = status
+        o.status = _STATUS_STR_TO_ENUM.get(status, status) if isinstance(status, str) else status
         o.filled_qty = str(qty) if qty is not None else None
         o.filled_avg_price = "0.0"
         orders.append(o)
@@ -882,7 +886,7 @@ class TestClosePositionTerminalStates(unittest.TestCase):
         client.close_position.return_value = submitted
         client.get_orders.return_value = []
         partial_order = MagicMock()
-        partial_order.status = "partially_filled"
+        partial_order.status = AlpacaOrderStatus.PARTIALLY_FILLED
         partial_order.filled_qty = "7.0"
         client.get_order_by_id.return_value = partial_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -897,7 +901,7 @@ class TestClosePositionTerminalStates(unittest.TestCase):
         self.assertEqual(result.status, OrderStatus.TIMEOUT)
 
     def test_cancelled_is_not_success(self):
-        result = self._close(_seq(("cancelled", None)))
+        result = self._close(_seq(("canceled", None)))
         self.assertFalse(result.is_success)
 
     def test_expired_is_not_success(self):
@@ -949,7 +953,7 @@ class TestPlaceSellOrderTerminalStates(unittest.TestCase):
         submitted.id = "sell-001"
         client.submit_order.return_value = submitted
         partial_order = MagicMock()
-        partial_order.status = "partially_filled"
+        partial_order.status = AlpacaOrderStatus.PARTIALLY_FILLED
         partial_order.filled_qty = "4.0"
         client.get_order_by_id.return_value = partial_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -963,7 +967,7 @@ class TestPlaceSellOrderTerminalStates(unittest.TestCase):
         self.assertFalse(result.is_success)
 
     def test_cancelled_is_not_success(self):
-        result = self._sell(_seq(("cancelled", None)))
+        result = self._sell(_seq(("canceled", None)))
         self.assertFalse(result.is_success)
 
     def test_expired_is_not_success(self):
@@ -1031,7 +1035,7 @@ class TestPlacePartialSellTerminalStates(unittest.TestCase):
         submitted.id = "psell-001"
         client.submit_order.return_value = submitted
         partial_order = MagicMock()
-        partial_order.status = "partially_filled"
+        partial_order.status = AlpacaOrderStatus.PARTIALLY_FILLED
         partial_order.filled_qty = "3.0"
         client.get_order_by_id.return_value = partial_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -1045,7 +1049,7 @@ class TestPlacePartialSellTerminalStates(unittest.TestCase):
         self.assertFalse(result.is_success)
 
     def test_cancelled_is_not_success(self):
-        result = self._partial_sell(_seq(("cancelled", None)))
+        result = self._partial_sell(_seq(("canceled", None)))
         self.assertFalse(result.is_success)
 
     def test_expired_is_not_success(self):
@@ -1609,7 +1613,7 @@ class TestClosePositionLateFilledOnFinalCheck(unittest.TestCase):
         client = MagicMock()
         client.close_position.return_value = _mock_order("close-late", status="new")
         final = MagicMock()
-        final.status = "filled"
+        final.status = AlpacaOrderStatus.FILLED
         final.filled_qty = 8.0
         client.get_order_by_id.return_value = final
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -1769,7 +1773,7 @@ class TestCloseFinalOrderPendingStatus(unittest.TestCase):
         client.close_position.return_value = submitted
         client.get_orders.return_value = []
         pending_order = MagicMock()
-        pending_order.status = "pending"
+        pending_order.status = AlpacaOrderStatus.PENDING_NEW
         pending_order.filled_qty = None
         client.get_order_by_id.return_value = pending_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -1784,10 +1788,10 @@ class TestCloseFinalOrderPendingStatus(unittest.TestCase):
         client.close_position.return_value = submitted
         client.get_orders.return_value = []
         pending_order = MagicMock()
-        pending_order.status = "pending"
+        pending_order.status = AlpacaOrderStatus.PENDING_NEW
         pending_order.filled_qty = None
         poll_order = MagicMock()
-        poll_order.status = "rejected"
+        poll_order.status = AlpacaOrderStatus.REJECTED
         poll_order.filled_qty = None
         client.get_order_by_id.side_effect = [poll_order, pending_order]
         with patch("execution.trader.time.sleep"):
@@ -1809,7 +1813,7 @@ class TestSellFinalOrderPendingStatus(unittest.TestCase):
         submitted.id = "sell-001"
         client.submit_order.return_value = submitted
         pending_order = MagicMock()
-        pending_order.status = "pending"
+        pending_order.status = AlpacaOrderStatus.PENDING_NEW
         pending_order.filled_qty = None
         client.get_order_by_id.return_value = pending_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -1825,10 +1829,10 @@ class TestSellFinalOrderPendingStatus(unittest.TestCase):
         submitted.id = "sell-001"
         client.submit_order.return_value = submitted
         poll_order = MagicMock()
-        poll_order.status = "rejected"
+        poll_order.status = AlpacaOrderStatus.REJECTED
         poll_order.filled_qty = None
         pending_order = MagicMock()
-        pending_order.status = "pending"
+        pending_order.status = AlpacaOrderStatus.PENDING_NEW
         pending_order.filled_qty = None
         client.get_order_by_id.side_effect = [poll_order, pending_order]
         with patch("execution.trader.time.sleep"):
@@ -1848,7 +1852,7 @@ class TestPartialSellFinalOrderPendingStatus(unittest.TestCase):
         submitted.id = "psell-001"
         client.submit_order.return_value = submitted
         pending_order = MagicMock()
-        pending_order.status = "pending"
+        pending_order.status = AlpacaOrderStatus.PENDING_NEW
         pending_order.filled_qty = None
         client.get_order_by_id.return_value = pending_order
         with patch("execution.trader.wait_for_fill", return_value=None):
@@ -1864,10 +1868,10 @@ class TestPartialSellFinalOrderPendingStatus(unittest.TestCase):
         submitted.id = "psell-001"
         client.submit_order.return_value = submitted
         poll_order = MagicMock()
-        poll_order.status = "rejected"
+        poll_order.status = AlpacaOrderStatus.REJECTED
         poll_order.filled_qty = None
         pending_order = MagicMock()
-        pending_order.status = "pending"
+        pending_order.status = AlpacaOrderStatus.PENDING_NEW
         pending_order.filled_qty = None
         client.get_order_by_id.side_effect = [poll_order, pending_order]
         with patch("execution.trader.time.sleep"):
@@ -1885,7 +1889,7 @@ class TestPlaceBuyOrderNoLedgerLatePaths(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-nolg")
         final = MagicMock()
-        final.status = "filled"
+        final.status = AlpacaOrderStatus.FILLED
         final.filled_qty = 8.0
         final.filled_avg_price = 150.0
         client.get_order_by_id.return_value = final
@@ -1905,7 +1909,7 @@ class TestPlaceBuyOrderNoLedgerLatePaths(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-nolg2")
         final = MagicMock()
-        final.status = "partially_filled"
+        final.status = AlpacaOrderStatus.PARTIALLY_FILLED
         final.filled_qty = 4.0
         client.get_order_by_id.return_value = final
         with (
@@ -1924,7 +1928,7 @@ class TestPlaceBuyOrderNoLedgerLatePaths(unittest.TestCase):
         client = MagicMock()
         client.submit_order.return_value = _mock_order("order-nolg3")
         final = MagicMock()
-        final.status = "pending"
+        final.status = AlpacaOrderStatus.PENDING_NEW
         final.filled_qty = None
         client.get_order_by_id.return_value = final
         with (

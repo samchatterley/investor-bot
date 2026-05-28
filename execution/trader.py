@@ -76,7 +76,7 @@ def has_pending_buy(client: TradingClient, symbol: str) -> bool:
             if (
                 o.symbol == symbol
                 and o.side == OrderSide.BUY
-                and str(o.status)
+                and o.status.value
                 in (
                     "new",
                     "accepted",
@@ -171,7 +171,7 @@ def place_buy_order(
             )
         try:
             final = client.get_order_by_id(order_id)
-            final_status = str(final.status)
+            final_status = final.status.value
             if final_status == "filled" and final.filled_qty:
                 # Order filled after wait_for_fill gave up — treat as a normal fill.
                 late_qty = float(final.filled_qty)
@@ -227,7 +227,7 @@ def place_buy_order(
         return OrderResult(status=OrderStatus.REJECTED, symbol=symbol, rejection_reason=str(e))
 
 
-_TERMINAL_FAIL_STATUSES = frozenset({"rejected", "cancelled", "expired", "done_for_day", "stopped"})
+_TERMINAL_FAIL_STATUSES = frozenset({"rejected", "canceled", "expired", "done_for_day", "stopped"})
 
 
 def wait_for_fill(
@@ -242,7 +242,7 @@ def wait_for_fill(
     for _ in range(max_wait):
         try:
             o = client.get_order_by_id(order_id)
-            status_str = str(o.status)
+            status_str = o.status.value
             if status_str == "filled" and o.filled_qty:
                 return float(o.filled_qty), float(o.filled_avg_price or 0.0)
             if status_str in _TERMINAL_FAIL_STATUSES:
@@ -379,7 +379,7 @@ def place_sell_order(client: TradingClient, symbol: str, qty: float) -> OrderRes
             )
         try:
             final = client.get_order_by_id(order_id)
-            final_status = str(final.status)
+            final_status = final.status.value
             if final_status == "filled" and final.filled_qty:
                 late_qty = float(final.filled_qty)
                 logger.info(
@@ -429,7 +429,7 @@ def close_position(client: TradingClient, symbol: str) -> OrderResult:
             )
         try:
             final = client.get_order_by_id(order_id)
-            final_status = str(final.status)
+            final_status = final.status.value
             if final_status == "filled" and final.filled_qty:
                 # Filled after the poll window closed — treat as success
                 return OrderResult(
@@ -715,7 +715,7 @@ def get_total_open_exposure(client: TradingClient) -> float:
         for o in orders:
             if (
                 o.side == OrderSide.BUY
-                and str(o.status) in ("new", "accepted", "pending_new")
+                and o.status.value in ("new", "accepted", "pending_new")
                 and o.symbol not in filled_symbols
                 and o.notional
             ):
@@ -813,7 +813,7 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderR
             )
         try:
             final = client.get_order_by_id(order_id)
-            final_status = str(final.status)
+            final_status = final.status.value
             if final_status == "filled" and final.filled_qty:
                 late_qty = float(final.filled_qty)
                 logger.info(f"Partial sell for {symbol} filled on final check: {late_qty}")
