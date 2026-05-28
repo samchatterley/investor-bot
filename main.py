@@ -556,9 +556,12 @@ def _execute_shorts(
         return
 
     long_notional = trader.get_long_notional(client)
+    if long_notional == 0:
+        logger.info("No long positions — skipping short scan (shorts are hedges only)")
+        return
     short_notional = trader.get_short_notional(client)
     hedge_cap = long_notional * config.MAX_SHORT_HEDGE_RATIO
-    if short_notional >= hedge_cap and long_notional > 0:
+    if short_notional >= hedge_cap:
         logger.info(
             f"Short hedge cap reached: ${short_notional:.0f} >= ${hedge_cap:.0f} "
             f"({config.MAX_SHORT_HEDGE_RATIO:.0%} of long book)"
@@ -605,7 +608,7 @@ def _execute_shorts(
 
         # Hedge cap check per-order
         order_notional = qty_shares * current_price
-        if short_notional + order_notional > hedge_cap and long_notional > 0:
+        if short_notional + order_notional > hedge_cap:
             logger.info(f"  Short skip {symbol}: would breach hedge cap")
             continue
 
@@ -616,9 +619,12 @@ def _execute_shorts(
 
         if not dry_run and not _live_shadow:
             short_result = trader.place_short_order(client, symbol, qty_shares)
-            if short_result and short_result.is_success:
+            if short_result and short_result.broker_order_id:
+                # Order reached the broker — consume the slot regardless of fill confirmation.
+                # Timeout orders will be reconciled by _reconcile_late_fills on the next run.
                 shorts_placed += 1
                 short_notional += order_notional
+            if short_result and short_result.is_success:
                 entry_price = short_result.filled_avg_price or current_price
                 trader.record_short(
                     symbol,
@@ -1701,9 +1707,11 @@ def _reconcile_late_fills(
                     confidence = candidate.get("confidence") or trader.get_position_meta(sym).get(
                         "confidence", 0
                     )
+                    is_short = intent.get("side", "BUY") == "SHORT"
+                    action_label = "SHORT" if is_short else "BUY"
                     logger.info(
                         f"Late-fill reconciliation: {sym} found in broker positions "
-                        f"@ ${entry_price:.4f} — recording buy (mode={mode})"
+                        f"@ ${entry_price:.4f} — recording {action_label} (mode={mode})"
                     )
                     _update_intent(intent["client_order_id"], "filled")
                     _log_oe(
@@ -1712,18 +1720,26 @@ def _reconcile_late_fills(
                         {"entry_price": round(entry_price, 4), "run_mode": mode},
                         broker_order_id=intent.get("broker_order_id"),
                     )
-                    trader.record_buy(
-                        sym,
-                        entry_price,
-                        signal=signal,
-                        regime=mc.regime.get("regime", "UNKNOWN"),
-                        confidence=confidence,
-                    )
+                    if is_short:
+                        trader.record_short(
+                            sym,
+                            entry_price,
+                            signal=signal,
+                            regime=mc.regime.get("regime", "UNKNOWN"),
+                        )
+                    else:
+                        trader.record_buy(
+                            sym,
+                            entry_price,
+                            signal=signal,
+                            regime=mc.regime.get("regime", "UNKNOWN"),
+                            confidence=confidence,
+                        )
                     executed_symbols.add(sym)
                     all_trades.append(
                         {
                             "symbol": sym,
-                            "action": "BUY",
+                            "action": action_label,
                             "detail": (
                                 f"late-fill @ ${entry_price:.2f} | "
                                 f"{signal} | conf={confidence} | mode={mode}"
