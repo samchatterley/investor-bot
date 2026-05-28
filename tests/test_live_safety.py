@@ -17,7 +17,11 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from alpaca.trading.enums import OrderStatus as AlpacaOrderStatus
+
 from models import OrderResult, OrderStatus
+
+_STATUS_STR_TO_ENUM = {s.value: s for s in AlpacaOrderStatus}
 
 # ── Capital containment tests ─────────────────────────────────────────────────
 
@@ -216,7 +220,7 @@ class TestHasPendingBuy(unittest.TestCase):
         o = MagicMock()
         o.symbol = symbol
         o.side = OrderSide.BUY if side_buy else MagicMock()
-        o.status = status
+        o.status = _STATUS_STR_TO_ENUM.get(status, status) if isinstance(status, str) else status
         return o
 
     def test_detects_new_buy_order(self):
@@ -271,7 +275,7 @@ class TestHasPendingBuy(unittest.TestCase):
         o = MagicMock()
         o.symbol = "SOFI"
         o.side = OrderSide.SELL
-        o.status = "new"
+        o.status = AlpacaOrderStatus.NEW
         client = MagicMock()
         client.get_orders.return_value = [o]
         self.assertFalse(has_pending_buy(client, "SOFI"))
@@ -661,7 +665,7 @@ class TestGetTotalOpenExposureIncludesPending(unittest.TestCase):
         o = MagicMock()
         o.symbol = symbol
         o.side = OrderSide.BUY
-        o.status = status
+        o.status = _STATUS_STR_TO_ENUM.get(status, status) if isinstance(status, str) else status
         o.notional = str(notional)
         return o
 
@@ -692,7 +696,7 @@ class TestGetTotalOpenExposureIncludesPending(unittest.TestCase):
         client.get_all_positions.return_value = []
         client.get_orders.return_value = [
             self._make_pending_order("SOFI", 45.0, status="filled"),
-            self._make_pending_order("RKLB", 45.0, status="cancelled"),
+            self._make_pending_order("RKLB", 45.0, status="canceled"),
         ]
         result = get_total_open_exposure(client)
         self.assertAlmostEqual(result, 0.0, places=1)
