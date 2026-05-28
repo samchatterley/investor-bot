@@ -32,8 +32,8 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = [
-    "analysis", "backtest", "config", "data",
-    "execution", "notifications", "risk", "utils",
+    "analysis", "backtest", "config", "core", "data",
+    "execution", "notifications", "pipeline", "risk", "utils",
 ]
 
 # ── Mypy ─────────────────────────────────────────────────────────────────────
