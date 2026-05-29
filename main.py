@@ -34,6 +34,7 @@ from data import (
     news_fetcher,
     options_scanner,
     sector_data,
+    short_interest,
 )
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
@@ -874,6 +875,13 @@ def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> Dat
     for s in snapshots:
         if s["symbol"] in miss_data:
             s.update(miss_data[s["symbol"]])
+
+    # ── Short interest (live-only — not backtestable) ─────────────────────────
+    logger.info("Fetching short interest data...")
+    si_data = short_interest.get_short_interest([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        if s["symbol"] in si_data:
+            s.update(si_data[s["symbol"]])
 
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]

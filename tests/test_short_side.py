@@ -656,6 +656,42 @@ class TestEvaluateShortSignals(unittest.TestCase):
             evaluate_short_signals(snap, params={"loser_mom_threshold": -2.0}),
         )
 
+    def test_high_short_interest_fires_when_flag_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"high_short_interest": True}
+        self.assertIn("high_short_interest", evaluate_short_signals(snap))
+
+    def test_high_short_interest_not_fire_without_flag(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertNotIn("high_short_interest", evaluate_short_signals({}))
+
+    def test_high_short_interest_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"high_short_interest": True}
+        self.assertNotIn(
+            "high_short_interest",
+            evaluate_short_signals(snap, blocked=frozenset({"high_short_interest"})),
+        )
+
+    def test_priority_order_earnings_miss_before_short_interest(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"earnings_miss_candidate": True, "high_short_interest": True}
+        result = evaluate_short_signals(snap)
+        self.assertEqual(result[0], "earnings_miss")
+        self.assertEqual(result[1], "high_short_interest")
+
+    def test_priority_order_short_interest_before_loser_momentum(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"high_short_interest": True, "rel_strength_20d": -8.0}
+        result = evaluate_short_signals(snap)
+        self.assertEqual(result[0], "high_short_interest")
+        self.assertEqual(result[1], "loser_momentum")
+
 
 # ── DB migration 5: side column ───────────────────────────────────────────────
 

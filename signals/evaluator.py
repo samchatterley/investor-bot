@@ -141,8 +141,9 @@ _BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"}
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
-    "loser_momentum": 1,  # Persistent RS underperformance vs market
-    "ema_breakdown": 2,  # Structural downtrend confirmed by price + EMA slope
+    "high_short_interest": 1,  # Crowded short + low lendable supply (live-only, not backtestable)
+    "loser_momentum": 2,  # Persistent RS underperformance vs market
+    "ema_breakdown": 3,  # Structural downtrend confirmed by price + EMA slope
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -178,6 +179,9 @@ def evaluate_short_signals(
 
     if "earnings_miss" not in blocked and snapshot.get("earnings_miss_candidate"):
         matched.append("earnings_miss")
+
+    if "high_short_interest" not in blocked and snapshot.get("high_short_interest"):
+        matched.append("high_short_interest")
 
     rel_20d = snapshot.get("rel_strength_20d")
     if (

@@ -871,6 +871,7 @@ class RunInnerBase(unittest.TestCase):
             "main.av_sentiment.get_av_sentiment": {},
             "main.earnings_surprise.get_earnings_surprise": {},
             "main.earnings_surprise.get_earnings_miss": {},
+            "main.short_interest.get_short_interest": {},
             "main.audit_log.has_open_buys_run_today": False,
             "main.audit_log.log_open_buys_locked": None,
         }
@@ -3520,7 +3521,7 @@ class TestCheckRuleBasedStops(unittest.TestCase):
 class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
     """Lines 877, 884, 891, 925: snap.update() for insider, av, pead, and miss data."""
 
-    def test_snap_updated_with_insider_av_pead_and_miss_data(self):
+    def test_snap_updated_with_insider_av_pead_miss_and_short_interest_data(self):
         stack, mocks = self._patch_all(
             **{
                 "main.market_data.get_market_snapshots": [
@@ -3531,6 +3532,9 @@ class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
                 "main.earnings_surprise.get_earnings_surprise": {"AAPL": {"pead_candidate": True}},
                 "main.earnings_surprise.get_earnings_miss": {
                     "AAPL": {"earnings_miss_candidate": True}
+                },
+                "main.short_interest.get_short_interest": {
+                    "AAPL": {"short_ratio": 7.5, "high_short_interest": True}
                 },
             }
         )
