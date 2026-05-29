@@ -455,6 +455,94 @@ class TestEntrySignalIntraday(unittest.TestCase):
         self.assertEqual(_entry_signal(_make_row(), intraday=id_data), "orb_breakout")
 
 
+class TestSignalClassification(unittest.TestCase):
+    """INTRADAY_SIGNALS / MULTIDAY_SIGNALS frozensets are correctly defined."""
+
+    def test_intraday_signals_defined(self):
+        from signals.evaluator import INTRADAY_SIGNALS
+
+        self.assertIn("orb_breakout", INTRADAY_SIGNALS)
+        self.assertIn("vwap_reclaim", INTRADAY_SIGNALS)
+        self.assertIn("intraday_momentum", INTRADAY_SIGNALS)
+
+    def test_multiday_signals_excludes_intraday(self):
+        from signals.evaluator import INTRADAY_SIGNALS, MULTIDAY_SIGNALS
+
+        self.assertTrue(INTRADAY_SIGNALS.isdisjoint(MULTIDAY_SIGNALS))
+
+    def test_multiday_signals_contains_known_daily_signals(self):
+        from signals.evaluator import MULTIDAY_SIGNALS
+
+        for sig in ("mean_reversion", "momentum", "pead", "vix_fear_reversion", "breakout_52w"):
+            self.assertIn(sig, MULTIDAY_SIGNALS)
+
+    def test_intraday_signals_all_registered_in_priority(self):
+        from signals.evaluator import INTRADAY_SIGNALS, SIGNAL_PRIORITY
+
+        for sig in INTRADAY_SIGNALS:
+            self.assertIn(sig, SIGNAL_PRIORITY)
+
+    def test_evaluate_signals_with_intraday_blocked_returns_no_intraday(self):
+        from signals.evaluator import INTRADAY_SIGNALS, evaluate_signals
+
+        snap = {
+            "orb_breakout_up": True,
+            "price_above_vwap": True,
+            "intraday_change_pct": 2.5,
+            "pct_vs_vwap": 1.0,
+            "intraday_rsi": 60.0,
+        }
+        result = evaluate_signals(snap, blocked=INTRADAY_SIGNALS)
+        for sig in result:
+            self.assertNotIn(sig, INTRADAY_SIGNALS)
+
+    def test_run_simulation_never_produces_intraday_signals(self):
+        """_run_simulation() must block all INTRADAY_SIGNALS even when intraday_data is passed."""
+        from signals.evaluator import INTRADAY_SIGNALS
+
+        # Build a minimal indicators dict with a strong ORB breakout setup
+        idx = pd.bdate_range("2024-01-02", periods=30)
+        prices = [100.0 + i * 0.1 for i in range(30)]
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p * 1.01 for p in prices],
+                "Low": [p * 0.99 for p in prices],
+                "Volume": [2_000_000] * 30,
+            },
+            index=idx,
+        )
+        from backtest.engine import _compute_indicators
+
+        indicators = {"AAPL": _compute_indicators(df)}
+        trading_dates = pd.bdate_range("2024-01-02", periods=30)
+
+        # Provide intraday data that would fire orb_breakout
+        intraday_data = {
+            "AAPL": {
+                d.strftime("%Y-%m-%d"): {
+                    "orb_breakout_up": True,
+                    "intraday_change_pct": 3.0,
+                    "price_above_vwap": True,
+                    "pct_vs_vwap": 1.0,
+                    "intraday_rsi": 60.0,
+                }
+                for d in trading_dates
+            }
+        }
+
+        result = _run_simulation(
+            indicators=indicators,
+            trading_dates=trading_dates,
+            initial_capital=10_000.0,
+            max_positions=1,
+            intraday_data=intraday_data,
+        )
+        intraday_trades = [t for t in result["trades"] if t.get("signal") in INTRADAY_SIGNALS]
+        self.assertEqual(intraday_trades, [])
+
+
 class TestEntrySignalNewFeatures(unittest.TestCase):
     """ADX gate, regime blocking, gap_and_go, vix_fear_reversion."""
 

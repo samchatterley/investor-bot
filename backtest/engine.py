@@ -56,6 +56,7 @@ from data.universe_history import get_universe_for_date
 from risk.risk_config import RiskConfig
 from signals.evaluator import (
     DEFAULT_SIGNAL_PARAMS,
+    INTRADAY_SIGNALS,
     REGIME_BLOCKED,
     SHORT_SIGNAL_PRIORITY,
     SIGNAL_PRIORITY,
@@ -685,6 +686,9 @@ def _run_simulation(
     rc = risk_config or RiskConfig.from_config()
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
     _sp_bps_override = spread_bps  # None → liquidity-scaled per trade
+    # Always block intraday signals from the multi-day track — they require same-day
+    # Alpaca minute bars and an Open→Close exit that this simulation does not model.
+    disabled_signals = (disabled_signals or frozenset()) | INTRADAY_SIGNALS
     cash = initial_capital
     positions: dict[str, dict] = {}
     trades: list[dict] = []

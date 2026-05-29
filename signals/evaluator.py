@@ -35,6 +35,19 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "intraday_momentum": 18,
 }
 
+# Signals that require Alpaca minute bars and must execute same-day (Open→Close).
+# These must never fire in the multi-day backtest track (daily bars, overnight holds).
+INTRADAY_SIGNALS: frozenset[str] = frozenset(
+    {
+        "orb_breakout",
+        "vwap_reclaim",
+        "intraday_momentum",
+    }
+)
+
+# All long signals that belong to the multi-day track (daily bars, overnight holds).
+MULTIDAY_SIGNALS: frozenset[str] = frozenset(SIGNAL_PRIORITY.keys()) - INTRADAY_SIGNALS
+
 # Canonical default thresholds — used when no walk-forward params are supplied.
 # These are the source of truth; backtest/engine.py imports them.
 DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
