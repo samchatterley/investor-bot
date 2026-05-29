@@ -4772,9 +4772,7 @@ class TestShortEntrySignal(unittest.TestCase):
         row = self._make_row()
         # Ensure price is not above EMA21 (would block ema_breakdown but not earnings_miss)
         fund = {"earnings_miss_active": True}
-        result = _short_entry_signal(
-            row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=fund
-        )
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=fund)
         if result is not None:
             self.assertIn("earnings_miss", result)
 
@@ -4809,9 +4807,7 @@ class TestRunShortSimulation(unittest.TestCase):
     def test_returns_result_dict_with_expected_keys(self):
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         for key in ("total_trades", "win_rate_pct", "by_signal", "equity_curve", "trades"):
             self.assertIn(key, result)
 
@@ -4819,9 +4815,7 @@ class TestRunShortSimulation(unittest.TestCase):
         """A declining stock with RS < 25 should produce profitable short trades."""
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         closed = [t for t in result["trades"] if t["action"] == "COVER" and "pnl_pct" in t]
         if closed:
             avg_pnl = sum(t["pnl_pct"] for t in closed) / len(closed)
@@ -4843,9 +4837,7 @@ class TestRunShortSimulation(unittest.TestCase):
         """Short exits should appear as COVER actions."""
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         cover_trades = [t for t in result["trades"] if t["action"] == "COVER"]
         short_trades = [t for t in result["trades"] if t["action"] == "SHORT"]
         # Every entered short should be covered (time_exit or end_of_backtest)
@@ -4855,26 +4847,20 @@ class TestRunShortSimulation(unittest.TestCase):
     def test_equity_curve_length_matches_trading_dates(self):
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertEqual(len(result["equity_curve"]), len(dates))
 
     def test_signals_tested_lists_short_signals(self):
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         for sig in ("earnings_miss", "loser_momentum", "ema_breakdown"):
             self.assertIn(sig, result["signals_tested"])
 
     def test_validation_scope_is_rule_proxy_only(self):
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertEqual(result["validation_scope"], "rule_proxy_only")
 
     def test_gap_through_stop_on_rising_open(self):
@@ -4906,9 +4892,7 @@ class TestRunShortSimulation(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-02", "2025-02-21")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         stop_trades = [t for t in result["trades"] if t.get("reason") == "stop_loss"]
         # Verify structure even if 0 stop trades (price path may not trigger stop)
         self.assertIsInstance(stop_trades, list)
@@ -5041,9 +5025,7 @@ class TestRunShortSignalAnalysis(unittest.TestCase):
         with (
             patch("backtest.engine.yf.download", return_value=raw_mock),
             patch("backtest.engine._assert_pre_holdout"),
-            patch(
-                "backtest.engine.prefetch_earnings_history", return_value={}
-            ) as mock_prefetch,
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_prefetch,
         ):
             run_short_signal_analysis(
                 ["AAPL"],
@@ -5111,9 +5093,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-03-14")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_stop_loss_triggers_when_price_rises(self):
@@ -5142,9 +5122,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-03-14")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_gap_through_stop_on_open(self):
@@ -5176,9 +5154,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-03-14")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_slots_full_skips_new_entries(self):
@@ -5223,9 +5199,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_exception_in_equity_update_falls_back(self):
@@ -5237,9 +5211,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         # simulation doesn't crash when indicators have a gap in the date range.
         # Use truncated indicators so some dates are missing from the index.
         truncated = {k: v.iloc[:10] for k, v in indicators.items()}
-        result = _run_short_simulation(
-            truncated, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(truncated, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_end_of_backtest_exception_fallback(self):
@@ -5276,9 +5248,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-03-14")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_outer_exception_in_entry_continues(self):
@@ -5305,9 +5275,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertEqual(result["total_trades"], 0)
 
     def test_notional_exceeds_cash_skips_entry(self):
@@ -5360,9 +5328,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         # Set simulation start to the very first row in indicators → today_loc == 0
         first_date = ind.index[0]
         dates = pd.DatetimeIndex([first_date])
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertEqual(result["total_trades"], 0)
 
     def test_prev_ts_not_in_spy_index(self):
@@ -5385,9 +5351,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("total_trades", result)
 
     def test_equity_exception_handler(self):
@@ -5411,9 +5375,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         )
         spy_ind = _compute_indicators(spy_df)
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
-        result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
-        )
+        result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
         self.assertIn("equity_curve", result)
 
     def test_end_of_backtest_exception_handler(self):
