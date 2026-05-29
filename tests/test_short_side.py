@@ -570,7 +570,6 @@ class TestScanShortCandidates(unittest.TestCase):
 
 
 class TestEvaluateShortSignals(unittest.TestCase):
-
     def test_ema_breakdown_fires_when_solidly_below_and_slope_down(self):
         from signals.evaluator import evaluate_short_signals
 
