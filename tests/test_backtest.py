@@ -4766,11 +4766,12 @@ class TestShortEntrySignal(unittest.TestCase):
     def test_loser_momentum_fires_when_large_negative_rs(self):
         """Explicitly set rel_strength_20d via spy_ret_20d to force loser_momentum."""
         row = self._make_row()
-        # Stock ret_20d is very negative; spy_ret_20d is 0 → rel_strength_20d << -5%
-        row["ret_20d"] = -15.0  # stock down 15% in 20 days
+        # Stock ret_20d is very negative; spy_ret_20d is 0 → rel_strength_20d << -8%
+        row["ret_20d"] = -15.0  # stock down 15% in 20 days → rel_strength = -15%
+        row["ret_5d"] = -3.0  # persistence filter: still declining
         result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
-        if result is not None:
-            self.assertIn("loser_momentum", result)
+        self.assertIsNotNone(result)
+        self.assertIn("loser_momentum", result)
 
     def test_earnings_miss_fires_from_fundamentals(self):
         """earnings_miss_candidate=True in fundamentals → earnings_miss in signals."""
@@ -5590,19 +5591,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         ):
             self.assertIn(key, result, f"Missing key: {key}")
 
-    def test_shorts_suppressed_in_bull_regime(self):
-        indicators, spy_ind, rs_ranks = self._make_indicators()
-        dates = pd.bdate_range("2025-01-15", "2025-03-14")
-        result = _run_combined_simulation(
-            indicators,
-            dates,
-            spy_indicators=spy_ind,
-            rs_ranks=rs_ranks,
-            regime_by_date=self._bull_regime(),
-        )
-        self.assertEqual(result["short_trades"], 0)
-
-    def test_shorts_allowed_in_bearish_regime(self):
+    def test_shorts_suppressed_in_bearish_regime(self):
         indicators, spy_ind, rs_ranks = self._make_indicators()
         dates = pd.bdate_range("2025-01-15", "2025-03-14")
         result = _run_combined_simulation(
@@ -5612,15 +5601,27 @@ class TestRunCombinedSimulation(unittest.TestCase):
             rs_ranks=rs_ranks,
             regime_by_date=self._bearish_regime(),
         )
+        self.assertEqual(result["short_trades"], 0)
+
+    def test_shorts_allowed_in_bull_regime(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-03-14")
+        result = _run_combined_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=self._bull_regime(),
+        )
         self.assertGreaterEqual(result["short_trades"], 0)
 
     def test_short_allowed_regimes_constant(self):
-        """_SHORT_ALLOWED_REGIMES contains exactly the three bearish regimes."""
-        self.assertIn("DEFENSIVE_DOWNTREND", _SHORT_ALLOWED_REGIMES)
-        self.assertIn("HIGH_VOL_DOWNTREND", _SHORT_ALLOWED_REGIMES)
-        self.assertIn("STRESS_RISK_OFF", _SHORT_ALLOWED_REGIMES)
-        self.assertNotIn("BULL_TREND", _SHORT_ALLOWED_REGIMES)
-        self.assertNotIn("NEUTRAL_CHOP", _SHORT_ALLOWED_REGIMES)
+        """_SHORT_ALLOWED_REGIMES contains exactly the two bull/chop regimes."""
+        self.assertIn("BULL_TREND", _SHORT_ALLOWED_REGIMES)
+        self.assertIn("NEUTRAL_CHOP", _SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("DEFENSIVE_DOWNTREND", _SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("HIGH_VOL_DOWNTREND", _SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("STRESS_RISK_OFF", _SHORT_ALLOWED_REGIMES)
 
     def test_regime_distribution_populated(self):
         indicators, spy_ind, rs_ranks = self._make_indicators()
@@ -5702,7 +5703,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         open_vals[4] = 115.0
         ind = self._make_short_ind(idx, close_vals=close_vals, open_vals=open_vals)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -5741,7 +5742,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         # position entered on day 1; MTM runs on day 2 with corrupt Close
         ind.iloc[2, ind.columns.get_loc("Close")] = "crash"
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -5779,7 +5780,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         ind = ind.astype(object)
         ind.iloc[4, ind.columns.get_loc("Close")] = "crash"
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -5813,7 +5814,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -5851,7 +5852,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         ind = ind.astype(object)
         ind.iloc[-1, ind.columns.get_loc("Close")] = "corrupt"
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -5954,7 +5955,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6047,7 +6048,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         open_vals[4] = 105.0
         ind = self._make_short_ind(idx, close_vals=close_vals, open_vals=open_vals)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6073,7 +6074,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         close_vals = [100.0, 99.5, 99.0, 98.5, 75.0, 74.5, 74.0, 73.5]
         ind = self._make_short_ind(idx, close_vals=close_vals)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6091,7 +6092,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx,  # idx[0] triggers today_loc==0 continue in short scan
@@ -6109,7 +6110,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6132,7 +6133,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         )
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],  # prev_ts = idx[0] = 2025-01-02, not in spy_idx
@@ -6150,7 +6151,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6168,7 +6169,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx).drop(columns=["Open"])
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6185,7 +6186,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         idx = pd.bdate_range("2025-01-02", periods=n)
         ind = self._make_short_ind(idx)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
@@ -6207,7 +6208,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         # → outer except Exception: continue
         ind.iloc[1, ind.columns.get_loc("Open")] = "crash"
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        regime = {ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in idx}
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],

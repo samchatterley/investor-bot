@@ -147,7 +147,7 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
-    "loser_mom_threshold": -5.0,  # rel_strength_20d must be <= this (SPY-relative)
+    "loser_mom_threshold": -8.0,  # rel_strength_20d must be <= this (SPY-relative)
     "ema_breakdown_threshold": -2.0,  # price_vs_ema21_pct must be <= this
 }
 
@@ -163,7 +163,7 @@ def evaluate_short_signals(
     ----------
     snapshot : dict
         Technical snapshot in scanner / market_data format.  Expected keys:
-        rel_strength_20d, price_vs_ema21_pct, ema9_above_ema21, earnings_miss_candidate.
+        rel_strength_20d, ret_5d_pct, price_vs_ema21_pct, ema9_above_ema21, earnings_miss_candidate.
     params : dict | None
         Override DEFAULT_SHORT_SIGNAL_PARAMS thresholds.
     blocked : frozenset[str]
@@ -188,6 +188,7 @@ def evaluate_short_signals(
         "loser_momentum" not in blocked
         and rel_20d is not None
         and rel_20d <= p["loser_mom_threshold"]
+        and snapshot.get("ret_5d_pct", 0.0) < 0
     ):
         matched.append("loser_momentum")
 

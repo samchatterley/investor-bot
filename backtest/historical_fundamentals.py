@@ -129,7 +129,7 @@ def earnings_miss_active_on_date(
     sym: str,
     sim_date: date,
     earnings_history: dict[str, list[dict]],
-    lookback_days: int = 30,
+    lookback_days: int = 10,
     max_miss: float = _MISS_MAX_SURPRISE,
 ) -> bool:
     """Return True if sym had a qualifying EPS miss in the window

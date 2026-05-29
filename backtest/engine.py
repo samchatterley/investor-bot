@@ -93,8 +93,8 @@ _MIN_TRAIN_TRADES = 20
 _SHORT_MAX_HOLD_DAYS = 5  # shorts tend to play out over a slightly longer window
 _SHORT_RS_RANK_GATE = 25.0  # must be in weakest quartile of the universe
 
-# Regimes in which short entries are permitted — suppressed in bull/chop
-_SHORT_ALLOWED_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "HIGH_VOL_DOWNTREND", "STRESS_RISK_OFF"})
+# Regimes in which short entries are permitted — laggard shorts in bull/chop markets
+_SHORT_ALLOWED_REGIMES = frozenset({"BULL_TREND", "NEUTRAL_CHOP"})
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:

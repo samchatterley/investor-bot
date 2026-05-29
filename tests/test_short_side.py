@@ -507,8 +507,8 @@ class TestScanShortCandidates(unittest.TestCase):
 
         snaps = [
             _snap(symbol="W1", rs_rank_pct=3.0, price_vs_ema21_pct=-2.0),
-            _snap(symbol="W2", rs_rank_pct=12.0, price_vs_ema21_pct=-1.0),
-            _snap(symbol="W3", rs_rank_pct=24.9, price_vs_ema21_pct=-0.5),
+            _snap(symbol="W2", rs_rank_pct=12.0, price_vs_ema21_pct=-2.0),
+            _snap(symbol="W3", rs_rank_pct=24.9, price_vs_ema21_pct=-2.0),
         ]
         result = scan_short_candidates(snaps, "NEUTRAL_CHOP", set())
         self.assertEqual(len(result), 3)
@@ -573,13 +573,19 @@ class TestEvaluateShortSignals(unittest.TestCase):
     def test_loser_momentum_fires_on_weak_rel_strength(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = {"rel_strength_20d": -6.0}
+        snap = {"rel_strength_20d": -9.0, "ret_5d_pct": -3.0}
         self.assertIn("loser_momentum", evaluate_short_signals(snap))
 
     def test_loser_momentum_not_fire_on_moderate_underperformance(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = {"rel_strength_20d": -3.0}
+        snap = {"rel_strength_20d": -3.0, "ret_5d_pct": -2.0}  # above -8% threshold
+        self.assertNotIn("loser_momentum", evaluate_short_signals(snap))
+
+    def test_loser_momentum_not_fire_when_5d_positive(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rel_strength_20d": -9.0, "ret_5d_pct": 1.0}  # threshold met, but stock bouncing
         self.assertNotIn("loser_momentum", evaluate_short_signals(snap))
 
     def test_loser_momentum_absent_when_rel_strength_missing(self):
@@ -650,7 +656,7 @@ class TestEvaluateShortSignals(unittest.TestCase):
     def test_custom_params_override_threshold(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = {"rel_strength_20d": -3.0}
+        snap = {"rel_strength_20d": -3.0, "ret_5d_pct": -1.0}
         self.assertIn(
             "loser_momentum",
             evaluate_short_signals(snap, params={"loser_mom_threshold": -2.0}),
@@ -687,7 +693,7 @@ class TestEvaluateShortSignals(unittest.TestCase):
     def test_priority_order_short_interest_before_loser_momentum(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = {"high_short_interest": True, "rel_strength_20d": -8.0}
+        snap = {"high_short_interest": True, "rel_strength_20d": -8.0, "ret_5d_pct": -2.0}
         result = evaluate_short_signals(snap)
         self.assertEqual(result[0], "high_short_interest")
         self.assertEqual(result[1], "loser_momentum")
