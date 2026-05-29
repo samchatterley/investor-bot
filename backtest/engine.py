@@ -37,6 +37,7 @@ from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
 from backtest.historical_fundamentals import (
+    earnings_miss_active_on_date,
     insider_state_on_date,
     pead_active_on_date,
     prefetch_earnings_history,
@@ -56,7 +57,9 @@ from risk.risk_config import RiskConfig
 from signals.evaluator import (
     DEFAULT_SIGNAL_PARAMS,
     REGIME_BLOCKED,
+    SHORT_SIGNAL_PRIORITY,
     SIGNAL_PRIORITY,
+    evaluate_short_signals,
     evaluate_signals,
 )
 
@@ -85,6 +88,10 @@ _DEFAULT_PARAM_GRID: dict[str, list] = {
 
 # Minimum trades in the train window for a param set to be considered valid
 _MIN_TRAIN_TRADES = 20
+
+# Short-side simulation constants
+_SHORT_MAX_HOLD_DAYS = 5  # shorts tend to play out over a slightly longer window
+_SHORT_RS_RANK_GATE = 25.0  # must be in weakest quartile of the universe
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -251,6 +258,39 @@ def _entry_signal(
         spy_ret_10d=spy_ret_10d,
     )
     return signals[0] if signals else None
+
+
+def _short_entry_signal(
+    row: pd.Series,
+    rs_rank_pct: float | None,
+    spy_ret_20d: float | None,
+    fundamentals: dict | None = None,
+) -> list[str] | None:
+    """Return matched bearish signals if this row qualifies as a short entry, else None.
+
+    Hard gates:
+    - rs_rank_pct must be < _SHORT_RS_RANK_GATE (weakest quartile of universe)
+    - At least one bearish signal must fire from evaluate_short_signals()
+
+    ``spy_ret_20d`` is the SPY 20-day return on the same bar; used to compute
+    ``rel_strength_20d = stock_ret_20d - spy_ret_20d`` for the loser_momentum signal.
+    """
+    if rs_rank_pct is None or rs_rank_pct >= _SHORT_RS_RANK_GATE:
+        return None
+
+    snap = _row_to_snapshot(row)
+
+    # Enrich with relative 20d strength for loser_momentum signal
+    row_ret_20d = float(row.get("ret_20d", 0))
+    if spy_ret_20d is not None:
+        snap["rel_strength_20d"] = row_ret_20d - spy_ret_20d
+
+    # Enrich with earnings miss for earnings_miss signal
+    if fundamentals:
+        snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
+
+    signals = evaluate_short_signals(snap)
+    return signals if signals else None
 
 
 def _compute_intraday_day(date_str: str, timed_bars: list) -> dict | None:
@@ -1009,6 +1049,323 @@ def _run_simulation(
         "validation_scope": "rule_proxy_only",
         "signals_tested": signals_tested,
         "signals_not_tested": signals_not_tested,
+    }
+
+
+def _run_short_simulation(
+    indicators: dict[str, pd.DataFrame],
+    trading_dates: pd.DatetimeIndex,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    spy_indicators: pd.DataFrame | None = None,
+    regime_by_date: dict[str, str] | None = None,
+    earnings_history: dict[str, list[dict]] | None = None,
+    risk_config: RiskConfig | None = None,
+    rs_ranks: dict[str, dict[str, float]] | None = None,
+) -> dict:
+    """Short-side simulation — mirrors _run_simulation() but enters short positions.
+
+    Entry criteria (T-1 bar evaluated, enter at T open):
+    - rs_rank_pct < _SHORT_RS_RANK_GATE (weakest quartile)
+    - At least one bearish signal fires from evaluate_short_signals()
+
+    Cash model:
+    - Entry: lock up ``notional`` from capital (cash -= notional)
+    - Exit: return capital + PnL (cash += notional + shares * (entry_price - cover_px))
+    - PnL% = (entry_price - cover_px) / entry_price * 100  (positive when price falls)
+
+    Slippage: entry fill = market * sell_factor (receive less), cover fill = market * buy_factor
+    (pay more), mirroring the double-sided cost model used for longs.
+    """
+    rc = risk_config or RiskConfig.from_config()
+    s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
+    _sp_bps_override = spread_bps
+
+    cash = initial_capital
+    positions: dict[str, dict] = {}
+    trades: list[dict] = []
+    equity_curve: list[tuple[str, float]] = []
+
+    for today in trading_dates:
+        today_str = today.strftime("%Y-%m-%d")
+
+        # Mark-to-market equity: cash + unrealized PnL from all open short positions
+        portfolio_value = cash
+        for sym, pos in positions.items():
+            try:
+                px = (
+                    float(indicators[sym].loc[today, "Close"])
+                    if today in indicators[sym].index
+                    else pos["entry_price"]
+                )
+                portfolio_value += pos["notional"] + pos["shares"] * (pos["entry_price"] - px)
+            except Exception:
+                portfolio_value += pos["notional"]
+        equity_curve.append((today_str, round(portfolio_value, 4)))
+
+        # Check exits for open short positions
+        to_close = []
+        for sym, pos in positions.items():
+            try:
+                row_today = indicators[sym].loc[today]
+                px = float(row_today["Close"])
+            except Exception:
+                continue
+            trading_days_held = sum(1 for _ in pd.bdate_range(pos["entry_date"], today)) - 1
+
+            # Stop-loss for shorts: price RISES above entry * (1 + stop_loss_pct)
+            stop_price = pos["entry_price"] * (1 + rc.stop_loss_pct)
+            open_px = float(row_today.get("Open", px))
+            reason = None
+            fill_base = px
+
+            # Gap-through-stop: open already at or above stop → fill at open
+            if open_px >= stop_price and trading_days_held > 0:
+                reason = "stop_loss"
+                fill_base = open_px
+            else:
+                pnl_pct = (pos["entry_price"] - px) / pos["entry_price"]
+                if pnl_pct <= -rc.stop_loss_pct:
+                    reason = "stop_loss"
+                elif pnl_pct >= rc.take_profit_pct:
+                    reason = "take_profit"
+                elif trading_days_held >= max_hold_days:
+                    reason = "time_exit"
+
+            if reason:
+                df_sym = indicators[sym]
+                avg_vol_20 = float(
+                    df_sym.loc[today, "avg_volume_20"] if "avg_volume_20" in df_sym.columns else 0
+                )
+                adv_usd = avg_vol_20 * fill_base
+                sp = (
+                    _sp_bps_override
+                    if _sp_bps_override is not None
+                    else _liquidity_spread_bps(adv_usd)
+                )
+                cover_notional = pos["shares"] * fill_base
+                impact = _market_impact_bps(cover_notional, adv_usd)
+                buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
+                cover_px = fill_base * buy_factor
+
+                pnl = pos["shares"] * (pos["entry_price"] - cover_px)
+                cash += pos["notional"] + pnl
+
+                pnl_pct_final = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100
+                trades.append(
+                    {
+                        "date": today_str,
+                        "symbol": sym,
+                        "action": "COVER",
+                        "reason": reason,
+                        "entry_price": pos["entry_price"],
+                        "exit_price": cover_px,
+                        "pnl_pct": round(pnl_pct_final, 2),
+                        "signal": pos["signal"],
+                        "signals": pos.get("signals", [pos["signal"]]),
+                        "entry_date": pos["entry_date"].strftime("%Y-%m-%d"),
+                        "entry_regime": pos.get("entry_regime"),
+                        "days_held": trading_days_held,
+                    }
+                )
+                to_close.append(sym)
+
+        for sym in to_close:
+            del positions[sym]
+
+        # Look for short entries (signal from bar T-1, enter at bar T — no lookahead)
+        slots = max_positions - len(positions)
+        if slots <= 0:
+            continue
+
+        candidates = []
+        for sym, df in indicators.items():
+            if sym in positions or today not in df.index:
+                continue
+            today_loc = df.index.get_loc(today)
+            if today_loc == 0:
+                continue
+            prev_row = df.iloc[today_loc - 1]
+            prev_date_str = df.index[today_loc - 1].strftime("%Y-%m-%d")
+
+            # SPY 20d return for T-1 (for loser_momentum relative strength)
+            spy_ret_20d = None
+            if spy_indicators is not None:
+                prev_ts = df.index[today_loc - 1]
+                if prev_ts in spy_indicators.index:
+                    spy_ret_20d = spy_indicators.loc[prev_ts].get("ret_20d")
+
+            # RS rank gate
+            rs_rank_pct = rs_ranks.get(sym, {}).get(prev_date_str) if rs_ranks else None
+
+            regime = regime_by_date.get(prev_date_str) if regime_by_date else None
+
+            # Point-in-time earnings miss
+            fundamentals: dict | None = None
+            if earnings_history is not None:
+                prev_date = df.index[today_loc - 1].date()
+                fund: dict = {}
+                fund["earnings_miss_active"] = earnings_miss_active_on_date(
+                    sym, prev_date, earnings_history
+                )
+                fundamentals = fund
+
+            signals = _short_entry_signal(
+                prev_row,
+                rs_rank_pct=rs_rank_pct,
+                spy_ret_20d=spy_ret_20d,
+                fundamentals=fundamentals,
+            )
+            if signals:
+                key_signal = signals[0]
+                candidates.append((sym, key_signal, signals, rs_rank_pct or 0.0))
+
+        # Sort: most signals first (highest conviction), then lowest RS rank (weakest stock)
+        candidates.sort(key=lambda item: (-len(item[2]), item[3]))
+
+        for sym, key_signal, signals, _rank in candidates[:slots]:
+            try:
+                try:
+                    entry_px = float(indicators[sym].loc[today, "Open"])
+                except (KeyError, TypeError):
+                    entry_px = float(indicators[sym].loc[today, "Close"])
+
+                df_sym = indicators[sym]
+                avg_vol_20 = float(
+                    df_sym.loc[today, "avg_volume_20"] if "avg_volume_20" in df_sym.columns else 0
+                )
+                notional = (cash / slots) * 0.9
+                adv_usd = avg_vol_20 * entry_px
+                sp = (
+                    _sp_bps_override
+                    if _sp_bps_override is not None
+                    else _liquidity_spread_bps(adv_usd)
+                )
+                impact = _market_impact_bps(notional, adv_usd)
+                sell_factor = 1.0 - (s_bps + sp / 2 + impact) / 10_000
+                fill_px = entry_px * sell_factor  # receive less for short sale
+                shares = notional / fill_px
+                if notional > cash or notional < 0.5:
+                    continue
+                cash -= notional
+
+                regime = regime_by_date.get(today_str) if regime_by_date else None
+                positions[sym] = {
+                    "entry_price": fill_px,
+                    "entry_date": today,
+                    "shares": shares,
+                    "notional": notional,
+                    "signal": key_signal,
+                    "signals": signals,
+                    "entry_regime": regime,
+                }
+                trades.append(
+                    {
+                        "date": today_str,
+                        "symbol": sym,
+                        "action": "SHORT",
+                        "price": fill_px,
+                        "signal": key_signal,
+                        "signals": signals,
+                    }
+                )
+            except Exception:
+                continue
+
+    # Close remaining positions at end of window
+    last_date = trading_dates[-1] if len(trading_dates) else None
+    for sym, pos in positions.items():
+        try:
+            last_row = indicators[sym].iloc[-1]
+            px = float(last_row["Close"])
+            avg_vol_20 = float(last_row.get("avg_volume_20", 0))
+            adv_usd = avg_vol_20 * px
+            sp = (
+                _sp_bps_override if _sp_bps_override is not None else _liquidity_spread_bps(adv_usd)
+            )
+            cover_notional = pos["shares"] * px
+            impact = _market_impact_bps(cover_notional, adv_usd)
+            buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
+            cover_px = px * buy_factor
+
+            pnl = pos["shares"] * (pos["entry_price"] - cover_px)
+            cash += pos["notional"] + pnl
+
+            pnl_pct = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100
+            days_held = (
+                sum(1 for _ in pd.bdate_range(pos["entry_date"], last_date)) - 1
+                if last_date is not None
+                else 0
+            )
+            trades.append(
+                {
+                    "date": "end",
+                    "symbol": sym,
+                    "action": "COVER",
+                    "reason": "end_of_backtest",
+                    "pnl_pct": round(pnl_pct, 2),
+                    "signal": pos["signal"],
+                    "signals": pos.get("signals", [pos["signal"]]),
+                    "entry_date": pos["entry_date"].strftime("%Y-%m-%d"),
+                    "entry_regime": pos.get("entry_regime"),
+                    "days_held": days_held,
+                }
+            )
+        except Exception:
+            cash += pos["notional"]
+
+    # Compute metrics
+    final_value = cash
+    total_return = (final_value / initial_capital - 1) * 100
+    closed_trades = [t for t in trades if t["action"] == "COVER" and "pnl_pct" in t]
+    wins = [t for t in closed_trades if t["pnl_pct"] > 0]
+    win_rate = len(wins) / len(closed_trades) * 100 if closed_trades else 0
+    avg_return = (
+        sum(t["pnl_pct"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
+    )
+
+    eq_values = [v for _, v in equity_curve]
+    peak = eq_values[0] if eq_values else initial_capital
+    max_dd = 0.0
+    for v in eq_values:
+        if v > peak:
+            peak = v
+        dd = (v - peak) / peak * 100 if peak > 0 else 0
+        if dd < max_dd:
+            max_dd = dd
+
+    by_signal: dict[str, dict] = {}
+    for t in closed_trades:
+        s = t.get("signal", "unknown")
+        by_signal.setdefault(s, {"wins": 0, "losses": 0, "total_return": 0.0})
+        by_signal[s]["total_return"] += t["pnl_pct"]
+        if t["pnl_pct"] > 0:
+            by_signal[s]["wins"] += 1
+        else:
+            by_signal[s]["losses"] += 1
+
+    daily_rets = pd.Series(eq_values).pct_change().dropna()
+    sharpe = (
+        float(daily_rets.mean() / daily_rets.std() * (252**0.5)) if daily_rets.std() > 0 else 0.0
+    )
+
+    return {
+        "initial_capital": initial_capital,
+        "final_value": round(final_value, 2),
+        "total_return_pct": round(total_return, 2),
+        "total_trades": len(closed_trades),
+        "win_rate_pct": round(win_rate, 1),
+        "avg_return_per_trade_pct": round(avg_return, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "sharpe_ratio": round(sharpe, 2),
+        "by_signal": by_signal,
+        "equity_curve": equity_curve,
+        "trades": trades,
+        "validation_scope": "rule_proxy_only",
+        "signals_tested": sorted(SHORT_SIGNAL_PRIORITY.keys()),
     }
 
 
@@ -2036,6 +2393,140 @@ def run_signal_analysis(
     return out
 
 
+def run_short_signal_analysis(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    use_earnings_history: bool = True,
+) -> dict:
+    """Backtest the three bearish signals (earnings_miss, loser_momentum, ema_breakdown)
+    on historical data.
+
+    Signal coverage:
+    - earnings_miss   — EPS miss ≤ −5% within 30 days (backtestable via yfinance earnings_dates)
+    - loser_momentum  — 20d relative strength vs SPY ≤ −5% (backtestable via OHLCV)
+    - ema_breakdown   — price ≤ −2% below EMA21 AND EMA9 slope down (backtestable via OHLCV)
+
+    NOT backtestable (live-only signals, yfinance lacks time-series data):
+    - high_short_interest  — requires point-in-time short interest history
+
+    Returns::
+
+        {
+            "total_trades":           int,
+            "win_rate_pct":           float,
+            "avg_return_per_trade_pct": float,
+            "total_return_pct":       float,
+            "sharpe_ratio":           float,
+            "max_drawdown_pct":       float,
+            "by_signal":              {signal: {wins, losses, total_return}},
+            "equity_curve":           [(date_str, value), ...],
+            "trades":                 [...],
+            "validation_scope":       "rule_proxy_only",
+            "signals_tested":         [...],
+            "start":                  str,
+            "end":                    str,
+        }
+    """
+    _assert_pre_holdout(end_date)
+
+    logger.info(
+        f"Short signal analysis: {start_date} → {end_date} | {len(symbols)} symbols"
+        + (" | earnings=ON" if use_earnings_history else "")
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched for short signal analysis")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    # SPY for rel_strength_20d (loser_momentum signal)
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]
+                spy_df = pd.DataFrame({"Close": spy_close, "Volume": spy_vol}).dropna()
+                spy_indicators = _compute_indicators(spy_df)
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed — loser_momentum signal disabled: {exc}")
+
+    # Regime map (not used for entry gating but stored on trades for analysis)
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        _spy_df_regime = pd.DataFrame({"Close": spy_indicators["Close"].astype(float)}).dropna()
+        _spy_df_regime.index = pd.DatetimeIndex(_spy_df_regime.index).tz_localize(None)
+        _trading_dates_str = [ts.strftime("%Y-%m-%d") for ts in spy_indicators.index]
+        regime_by_date = compute_regime_series(_spy_df_regime, None, _trading_dates_str)
+
+    # Historical earnings for earnings_miss signal
+    earnings_history: dict[str, list[dict]] | None = None
+    if use_earnings_history:
+        logger.info("Short signal analysis: pre-fetching earnings history…")
+        earnings_history = prefetch_earnings_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+
+    results = _run_short_simulation(
+        indicators,
+        trading_dates,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        max_hold_days=max_hold_days,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+        spy_indicators=spy_indicators,
+        regime_by_date=regime_by_date or None,
+        earnings_history=earnings_history,
+        rs_ranks=rs_ranks,
+    )
+    results["start"] = start_date
+    results["end"] = end_date
+
+    _print_short_signal_results(results, start_date, end_date)
+    return results
+
+
+def _print_short_signal_results(r: dict, start_date: str, end_date: str) -> None:
+    print("\n" + "=" * 60)
+    print("  SHORT SIGNAL ANALYSIS")
+    print(f"  {start_date} → {end_date}")
+    print("  NOTE: Rule proxy only — no Claude judgment, news, or macro context.")
+    print("=" * 60)
+    print(f"  Total return:      {r['total_return_pct']:+.2f}%")
+    print(f"  Total trades:      {r['total_trades']}")
+    print(f"  Win rate:          {r['win_rate_pct']:.1f}%")
+    print(f"  Avg trade return:  {r['avg_return_per_trade_pct']:+.2f}%")
+    print(f"  Max drawdown:      {r['max_drawdown_pct']:.1f}%")
+    print(f"  Sharpe ratio:      {r['sharpe_ratio']:.2f}")
+    print()
+    print("  By signal:")
+    for sig, data in r["by_signal"].items():
+        total = data["wins"] + data["losses"]
+        wr = data["wins"] / total * 100 if total else 0
+        avg = data["total_return"] / total if total else 0
+        print(f"    {sig:<25} {total:>3} trades  WR {wr:.0f}%  avg {avg:+.2f}%")
+    print("=" * 60 + "\n")
+
+
 _INTRADAY_SIGNALS = {"vwap_reclaim", "orb_breakout", "intraday_momentum"}
 _LOW_CONFIDENCE_N = 30
 
@@ -2578,6 +3069,11 @@ if __name__ == "__main__":  # pragma: no cover
         help="Regime-stratified breakdown + hold-period decay for each signal",
     )
     parser.add_argument(
+        "--short-signals",
+        action="store_true",
+        help="Backtest bearish signals (earnings_miss, loser_momentum, ema_breakdown)",
+    )
+    parser.add_argument(
         "--walk-forward",
         action="store_true",
         help="Walk-forward optimised backtest (genuine OOS validation)",
@@ -2625,6 +3121,14 @@ if __name__ == "__main__":  # pragma: no cover
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
             disabled_signals=_disabled,
+        )
+    elif args.short_signals:
+        run_short_signal_analysis(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            use_earnings_history=True,
         )
     elif args.walk_forward:
         result = run_walk_forward_optimized(

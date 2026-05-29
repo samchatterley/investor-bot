@@ -44,6 +44,7 @@ from data.insider_feed import _get_cik_map, _parse_form4, _recent_form4_filings
 logger = logging.getLogger(__name__)
 
 _PEAD_MIN_SURPRISE = 5.0  # EPS beat threshold (%) — mirrors data/earnings_surprise.py
+_MISS_MAX_SURPRISE = -5.0  # EPS miss threshold (%) — mirrors data/earnings_surprise.py
 _YF_DELAY = 0.05  # yfinance is not key-gated; modest courtesy delay
 
 
@@ -120,6 +121,33 @@ def pead_active_on_date(
         if ed >= sim_date:
             break  # sorted oldest-first; no further events can be in-window
         if event["surprise_pct"] >= min_surprise:
+            return True
+    return False
+
+
+def earnings_miss_active_on_date(
+    sym: str,
+    sim_date: date,
+    earnings_history: dict[str, list[dict]],
+    lookback_days: int = 30,
+    max_miss: float = _MISS_MAX_SURPRISE,
+) -> bool:
+    """Return True if sym had a qualifying EPS miss in the window
+    ``[sim_date - lookback_days, sim_date)``.
+
+    Point-in-time safe: only considers events strictly before sim_date.
+    """
+    events = earnings_history.get(sym, [])
+    if not events:
+        return False
+    cutoff = sim_date - timedelta(days=lookback_days)
+    for event in events:
+        ed = event["date"]
+        if ed < cutoff:
+            continue
+        if ed >= sim_date:
+            break  # sorted oldest-first; no further events can be in-window
+        if event["surprise_pct"] <= max_miss:
             return True
     return False
 
