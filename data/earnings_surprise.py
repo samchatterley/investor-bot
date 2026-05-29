@@ -99,3 +99,72 @@ def get_earnings_surprise(
 
     logger.info(f"PEAD: {len(result)}/{len(symbols)} symbols with qualifying surprise")
     return result
+
+
+_MAX_MISS_PCT = -5.0  # EPS miss threshold — surprise must be at most this negative
+
+
+def get_earnings_miss(
+    symbols: list[str],
+    lookback_days: int = _PEAD_WINDOW_DAYS,
+    max_miss: float = _MAX_MISS_PCT,
+) -> dict[str, dict]:
+    """Return negative-PEAD candidate data for each symbol that missed recent estimates.
+
+    Result schema per symbol::
+
+        {
+            "earnings_miss_pct":       float,  # EPS miss percentage (e.g. -8.2)
+            "earnings_miss_date":      str,     # ISO date of the miss
+            "earnings_miss_days_ago":  int,     # calendar days since the report
+            "earnings_miss_candidate": bool,    # always True when present
+        }
+
+    Symbols with no recent qualifying miss are omitted.
+    All network errors are caught and logged; callers always receive a plain dict.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
+    result: dict[str, dict] = {}
+
+    for sym in symbols:
+        if sym in ETF_SYMBOLS:
+            continue
+        try:
+            time.sleep(_REQ_DELAY)
+            df: pd.DataFrame | None = yf.Ticker(sym).earnings_dates
+        except Exception as exc:
+            logger.debug(f"earnings_dates fetch failed for {sym}: {exc}")
+            continue
+
+        if df is None or df.empty:
+            continue
+
+        df = df.dropna(subset=["Reported EPS", "Surprise(%)"])
+        if df.empty:
+            continue
+
+        df = df[df.index >= pd.Timestamp(cutoff)]
+        if df.empty:
+            continue
+
+        row = df.iloc[0]
+        surprise_pct = float(row["Surprise(%)"])
+        if surprise_pct > max_miss:
+            continue
+
+        earnings_ts = row.name
+        earnings_date_str = earnings_ts.date().isoformat()
+        days_ago = (datetime.now(UTC) - earnings_ts.to_pydatetime()).days
+
+        result[sym] = {
+            "earnings_miss_pct": round(surprise_pct, 2),
+            "earnings_miss_date": earnings_date_str,
+            "earnings_miss_days_ago": days_ago,
+            "earnings_miss_candidate": True,
+        }
+        logger.debug(
+            f"Neg-PEAD {sym}: {surprise_pct:.1f}% miss on {earnings_date_str} ({days_ago}d ago)"
+        )
+
+    logger.info(f"Neg-PEAD: {len(result)}/{len(symbols)} symbols with qualifying miss")
+    return result

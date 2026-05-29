@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from data.earnings_surprise import get_earnings_surprise
+from data.earnings_surprise import get_earnings_miss, get_earnings_surprise
 
 _TODAY = datetime.now(UTC)
 
@@ -223,3 +223,120 @@ class TestGetEarningsSurprise(unittest.TestCase):
             mock_ticker.return_value.earnings_dates = df
             result = get_earnings_surprise(["AAPL"])
         self.assertNotIn("AAPL", result)
+
+
+class TestGetEarningsMiss(unittest.TestCase):
+    def test_returns_miss_below_threshold(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(5), "estimate": 1.50, "reported": 1.35, "surprise": -10.0}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_miss(["AAPL"])
+        self.assertIn("AAPL", result)
+        self.assertAlmostEqual(result["AAPL"]["earnings_miss_pct"], -10.0)
+        self.assertTrue(result["AAPL"]["earnings_miss_candidate"])
+
+    def test_excludes_miss_above_threshold(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(5), "estimate": 1.50, "reported": 1.47, "surprise": -2.0}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_miss(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_excludes_outside_lookback_window(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(45), "estimate": 1.50, "reported": 1.35, "surprise": -10.0}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_miss(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_excludes_positive_surprise(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(5), "estimate": 1.50, "reported": 1.65, "surprise": 10.0}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_miss(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_returns_days_ago_and_date_fields(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(7), "estimate": 1.50, "reported": 1.35, "surprise": -10.0}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_miss(["AAPL"])
+        self.assertIn("earnings_miss_days_ago", result["AAPL"])
+        self.assertIn("earnings_miss_date", result["AAPL"])
+        self.assertAlmostEqual(result["AAPL"]["earnings_miss_days_ago"], 7, delta=1)
+
+    def test_returns_empty_when_no_earnings_data(self):
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = None
+            result = get_earnings_miss(["AAPL"])
+        self.assertEqual(result, {})
+
+    def test_returns_empty_on_network_failure(self):
+        with (
+            patch(
+                "data.earnings_surprise.yf.Ticker",
+                side_effect=Exception("network error"),
+            ),
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            result = get_earnings_miss(["AAPL"])
+        self.assertEqual(result, {})
+
+    def test_skips_etf(self):
+        with patch("data.earnings_surprise.time.sleep"):
+            result = get_earnings_miss(["SPY"])
+        self.assertEqual(result, {})
+
+    def test_skips_null_reported_eps(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(5), "estimate": 1.50, "reported": None, "surprise": None}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result = get_earnings_miss(["AAPL"])
+        self.assertNotIn("AAPL", result)
+
+    def test_custom_max_miss_threshold(self):
+        df = _make_earnings_df(
+            [{"date": _recent_date(5), "estimate": 1.50, "reported": 1.43, "surprise": -4.67}]
+        )
+        with (
+            patch("data.earnings_surprise.yf.Ticker") as mock_ticker,
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            mock_ticker.return_value.earnings_dates = df
+            result_excluded = get_earnings_miss(["AAPL"])  # default -5% threshold
+            result_included = get_earnings_miss(["AAPL"], max_miss=-3.0)
+        self.assertNotIn("AAPL", result_excluded)
+        self.assertIn("AAPL", result_included)

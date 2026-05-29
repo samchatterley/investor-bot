@@ -591,11 +591,15 @@ def _execute_shorts(
         if not current_price:
             continue
 
+        key_signal = candidate.get("key_signal", "rs_short")
+        confidence = candidate.get("confidence", 0)
+        matched_signals = candidate.get("matched_signals", [])
+
         # Size: SHORT_SIZE_SCALE × standard long notional → whole shares
         base_notional = position_sizer.risk_budget_size(
             portfolio_value,
-            confidence=5,
-            signal="rs_short",
+            confidence=confidence,
+            signal=key_signal,
             regime=regime_name,
         )
         target_notional = base_notional * config.SHORT_SIZE_SCALE
@@ -612,10 +616,14 @@ def _execute_shorts(
             logger.info(f"  Short skip {symbol}: would breach hedge cap")
             continue
 
+        signals_str = ", ".join(matched_signals) if matched_signals else key_signal
         logger.info(
             f"  SHORT {symbol}: {qty_shares} shares @ ~${current_price:.2f} "
-            f"(${order_notional:.0f}) rs_rank={candidate.get('rs_rank_pct'):.1f}%"
+            f"(${order_notional:.0f}) [{signals_str}] conf={confidence} "
+            f"rs_rank={candidate.get('rs_rank_pct'):.1f}%"
         )
+
+        reasoning = f"{signals_str} (RS rank {candidate.get('rs_rank_pct'):.1f}%) in {regime_name}"
 
         if not dry_run and not _live_shadow:
             short_result = trader.place_short_order(client, symbol, qty_shares)
@@ -629,8 +637,9 @@ def _execute_shorts(
                 trader.record_short(
                     symbol,
                     entry_price,
-                    signal="rs_short",
+                    signal=key_signal,
                     regime=regime_name,
+                    confidence=confidence,
                 )
                 audit_log.log_order_placed(
                     symbol, "SHORT", order_notional, short_result.broker_order_id or ""
@@ -652,11 +661,15 @@ def _execute_shorts(
                     {
                         "symbol": symbol,
                         "action": "SHORT",
-                        "detail": f"{qty_shares} shares @ ~${current_price:.2f} | rs_rank={candidate.get('rs_rank_pct'):.1f}%",
+                        "detail": (
+                            f"{qty_shares} shares @ ~${current_price:.2f} | "
+                            f"{key_signal} | conf={confidence} | "
+                            f"rs_rank={candidate.get('rs_rank_pct'):.1f}%"
+                        ),
                         "decision_type": "short",
-                        "confidence": None,
-                        "key_signal": "rs_short",
-                        "reasoning": f"Bottom-quartile RS ({candidate.get('rs_rank_pct'):.1f}%) in {regime_name}",
+                        "confidence": confidence,
+                        "key_signal": key_signal,
+                        "reasoning": reasoning,
                     }
                 )
         elif _live_shadow:
@@ -667,6 +680,8 @@ def _execute_shorts(
                     "qty_shares": qty_shares,
                     "notional": round(order_notional, 2),
                     "rs_rank_pct": candidate.get("rs_rank_pct"),
+                    "key_signal": key_signal,
+                    "confidence": confidence,
                     "regime": regime_name,
                 },
             )
@@ -676,9 +691,9 @@ def _execute_shorts(
                     "action": "WOULD_SHORT",
                     "detail": f"shadow {qty_shares} shares @ ~${current_price:.2f}",
                     "decision_type": "short",
-                    "confidence": None,
-                    "key_signal": "rs_short",
-                    "reasoning": f"Bottom-quartile RS ({candidate.get('rs_rank_pct'):.1f}%) in {regime_name}",
+                    "confidence": confidence,
+                    "key_signal": key_signal,
+                    "reasoning": reasoning,
                 }
             )
             shorts_placed += 1
@@ -690,9 +705,9 @@ def _execute_shorts(
                     "action": "SHORT",
                     "detail": f"dry run {qty_shares} shares",
                     "decision_type": "short",
-                    "confidence": None,
-                    "key_signal": "rs_short",
-                    "reasoning": f"Bottom-quartile RS ({candidate.get('rs_rank_pct'):.1f}%) in {regime_name}",
+                    "confidence": confidence,
+                    "key_signal": key_signal,
+                    "reasoning": reasoning,
                 }
             )
             shorts_placed += 1
@@ -852,6 +867,13 @@ def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> Dat
     for s in snapshots:
         if s["symbol"] in pead_data:
             s.update(pead_data[s["symbol"]])
+
+    # ── Negative PEAD (earnings miss) — bearish short signal ─────────────────
+    logger.info("Fetching earnings miss data...")
+    miss_data = earnings_surprise.get_earnings_miss([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        if s["symbol"] in miss_data:
+            s.update(miss_data[s["symbol"]])
 
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]
@@ -1697,17 +1719,22 @@ def _reconcile_late_fills(
                         continue
                     pos = live_pos_map[sym]
                     entry_price = pos["avg_entry_price"]
-                    candidate = next(
-                        (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
-                        {},
-                    )
-                    signal = candidate.get("key_signal") or trader.get_position_meta(sym).get(
-                        "signal", "unknown"
-                    )
-                    confidence = candidate.get("confidence") or trader.get_position_meta(sym).get(
-                        "confidence", 0
-                    )
                     is_short = intent.get("side", "BUY") == "SHORT"
+                    if is_short:
+                        stored = trader.get_position_meta(sym)
+                        signal = stored.get("signal") or "rs_short"
+                        confidence = stored.get("confidence", 0)
+                    else:
+                        candidate = next(
+                            (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
+                            {},
+                        )
+                        signal = candidate.get("key_signal") or trader.get_position_meta(sym).get(
+                            "signal", "unknown"
+                        )
+                        confidence = candidate.get("confidence") or trader.get_position_meta(
+                            sym
+                        ).get("confidence", 0)
                     action_label = "SHORT" if is_short else "BUY"
                     logger.info(
                         f"Late-fill reconciliation: {sym} found in broker positions "
@@ -1726,6 +1753,7 @@ def _reconcile_late_fills(
                             entry_price,
                             signal=signal,
                             regime=mc.regime.get("regime", "UNKNOWN"),
+                            confidence=confidence,
                         )
                     else:
                         trader.record_buy(

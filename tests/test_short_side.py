@@ -35,6 +35,8 @@ def _snap(**kwargs):
         "current_price": 50.0,
         "rs_rank_pct": 10.0,
         "price_vs_ema21_pct": -3.0,
+        "ema9_above_ema21": False,
+        "rel_strength_20d": -7.0,
         "avg_volume": 1_000_000,
     }
     defaults.update(kwargs)
@@ -510,6 +512,149 @@ class TestScanShortCandidates(unittest.TestCase):
         ]
         result = scan_short_candidates(snaps, "NEUTRAL_CHOP", set())
         self.assertEqual(len(result), 3)
+
+    def test_requires_at_least_one_bearish_signal(self):
+        """Stock with no signals is excluded even when it passes all hard gates."""
+        from execution.stock_scanner import scan_short_candidates
+
+        snaps = [
+            _snap(
+                rs_rank_pct=10.0,
+                price_vs_ema21_pct=-1.0,
+                ema9_above_ema21=True,  # EMA slope up — no ema_breakdown
+                rel_strength_20d=-2.0,  # not weak enough — no loser_momentum
+                earnings_miss_candidate=False,
+            )
+        ]
+        result = scan_short_candidates(snaps, "BULL_TREND", set())
+        self.assertEqual(result, [])
+
+    def test_candidate_carries_signal_metadata(self):
+        """Result candidates include key_signal, matched_signals, and confidence."""
+        from execution.stock_scanner import scan_short_candidates
+
+        snaps = [_snap()]
+        result = scan_short_candidates(snaps, "BULL_TREND", set())
+        self.assertEqual(len(result), 1)
+        c = result[0]
+        self.assertIn("key_signal", c)
+        self.assertIn("matched_signals", c)
+        self.assertIn("confidence", c)
+        self.assertIsInstance(c["matched_signals"], list)
+        self.assertGreater(len(c["matched_signals"]), 0)
+        self.assertGreaterEqual(c["confidence"], 0)
+
+    def test_sorted_by_signal_count_then_rs(self):
+        """More signals = higher priority; equal signals sorted by weakest RS."""
+        from execution.stock_scanner import scan_short_candidates
+
+        strong = _snap(
+            symbol="STRONG",
+            rs_rank_pct=5.0,
+            price_vs_ema21_pct=-3.0,
+            ema9_above_ema21=False,
+            rel_strength_20d=-8.0,
+        )
+        weak_only = _snap(
+            symbol="WEAK_RS",
+            rs_rank_pct=15.0,
+            price_vs_ema21_pct=-1.0,
+            ema9_above_ema21=True,
+            rel_strength_20d=-6.0,
+        )
+        result = scan_short_candidates([weak_only, strong], "BULL_TREND", set())
+        self.assertEqual(result[0]["symbol"], "STRONG")
+
+
+# ── evaluate_short_signals ────────────────────────────────────────────────────
+
+
+class TestEvaluateShortSignals(unittest.TestCase):
+    def test_loser_momentum_fires_on_weak_rel_strength(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rel_strength_20d": -6.0}
+        self.assertIn("loser_momentum", evaluate_short_signals(snap))
+
+    def test_loser_momentum_not_fire_on_moderate_underperformance(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rel_strength_20d": -3.0}
+        self.assertNotIn("loser_momentum", evaluate_short_signals(snap))
+
+    def test_loser_momentum_absent_when_rel_strength_missing(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertNotIn("loser_momentum", evaluate_short_signals({}))
+
+    def test_ema_breakdown_fires_when_solidly_below_and_slope_down(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"price_vs_ema21_pct": -3.0, "ema9_above_ema21": False}
+        self.assertIn("ema_breakdown", evaluate_short_signals(snap))
+
+    def test_ema_breakdown_not_fire_when_barely_below(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"price_vs_ema21_pct": -1.0, "ema9_above_ema21": False}
+        self.assertNotIn("ema_breakdown", evaluate_short_signals(snap))
+
+    def test_ema_breakdown_not_fire_when_ema_slope_up(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"price_vs_ema21_pct": -3.0, "ema9_above_ema21": True}
+        self.assertNotIn("ema_breakdown", evaluate_short_signals(snap))
+
+    def test_earnings_miss_fires_on_candidate(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"earnings_miss_candidate": True}
+        self.assertIn("earnings_miss", evaluate_short_signals(snap))
+
+    def test_earnings_miss_not_fire_without_flag(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertNotIn("earnings_miss", evaluate_short_signals({}))
+
+    def test_returns_empty_when_no_signals(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {
+            "rel_strength_20d": -2.0,
+            "price_vs_ema21_pct": -1.0,
+            "ema9_above_ema21": True,
+        }
+        self.assertEqual(evaluate_short_signals(snap), [])
+
+    def test_sorted_by_priority_earnings_miss_first(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {
+            "earnings_miss_candidate": True,
+            "rel_strength_20d": -8.0,
+            "price_vs_ema21_pct": -3.0,
+            "ema9_above_ema21": False,
+        }
+        result = evaluate_short_signals(snap)
+        self.assertEqual(result[0], "earnings_miss")
+
+    def test_blocked_signal_excluded(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rel_strength_20d": -8.0}
+        self.assertNotIn(
+            "loser_momentum",
+            evaluate_short_signals(snap, blocked=frozenset({"loser_momentum"})),
+        )
+
+    def test_custom_params_override_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rel_strength_20d": -3.0}
+        self.assertIn(
+            "loser_momentum",
+            evaluate_short_signals(snap, params={"loser_mom_threshold": -2.0}),
+        )
 
 
 # ── DB migration 5: side column ───────────────────────────────────────────────

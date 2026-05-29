@@ -301,16 +301,24 @@ def scan_short_candidates(
 ) -> list[dict]:
     """Return bottom-quartile RS candidates suitable for shorting.
 
-    Gates applied in order:
+    Hard gates applied in order:
     - Regime must be BULL_TREND or NEUTRAL_CHOP (short squeezes most violent elsewhere)
     - rs_rank_pct < 25 (bottom quartile by 20-day relative strength)
-    - Price below EMA21 (structural downtrend)
+    - Price below EMA21 (structural downtrend context)
     - Not already held (long or short)
     - Not an ETF (borrow risk and index rebalancing squeezes)
     - Minimum volume filter
 
-    Returns candidates sorted by rs_rank_pct ascending (weakest first).
+    Signal gate (must fire at least one):
+    - loser_momentum: rel_strength_20d <= -5 (persistent RS underperformance)
+    - ema_breakdown: price solidly below EMA21 with EMA slope confirmed down
+    - earnings_miss: negative EPS surprise within 30 days
+
+    Returns candidates sorted by signal count descending, then rs_rank_pct ascending.
+    Each candidate carries matched_signals, key_signal, and confidence fields.
     """
+    from signals.evaluator import SHORT_SIGNAL_PRIORITY, evaluate_short_signals
+
     if regime not in _SHORT_ALLOWED_REGIMES:
         return []
 
@@ -326,9 +334,24 @@ def scan_short_candidates(
         rs_rank = s.get("rs_rank_pct")
         if rs_rank is None or rs_rank >= 25.0:
             continue
-        # Price must be below EMA21 — confirms structural downtrend.
         if s.get("price_vs_ema21_pct", 0.0) >= 0:
             continue
-        candidates.append(s)
 
-    return sorted(candidates, key=lambda x: x.get("rs_rank_pct", 0.0))
+        short_signals = evaluate_short_signals(s)
+        if not short_signals:
+            continue
+
+        confidence = int(len(short_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
+        candidates.append(
+            {
+                **s,
+                "matched_signals": short_signals,
+                "key_signal": short_signals[0],
+                "confidence": confidence,
+            }
+        )
+
+    return sorted(
+        candidates,
+        key=lambda x: (-len(x.get("matched_signals", [])), x.get("rs_rank_pct", 0.0)),
+    )

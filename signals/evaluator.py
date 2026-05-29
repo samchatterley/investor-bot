@@ -137,6 +137,67 @@ _NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion", "iv_co
 # rsi_divergence: divergence setups in uptrends are consolidations, not reversals worth buying.
 _BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"})
 
+# ── Short-side signal constants ───────────────────────────────────────────────
+
+SHORT_SIGNAL_PRIORITY: dict[str, int] = {
+    "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
+    "loser_momentum": 1,  # Persistent RS underperformance vs market
+    "ema_breakdown": 2,  # Structural downtrend confirmed by price + EMA slope
+}
+
+DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
+    "loser_mom_threshold": -5.0,  # rel_strength_20d must be <= this (SPY-relative)
+    "ema_breakdown_threshold": -2.0,  # price_vs_ema21_pct must be <= this
+}
+
+
+def evaluate_short_signals(
+    snapshot: dict,
+    params: dict[str, float] | None = None,
+    blocked: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Return all matching bearish signal names for snapshot, sorted by SHORT_SIGNAL_PRIORITY.
+
+    Parameters
+    ----------
+    snapshot : dict
+        Technical snapshot in scanner / market_data format.  Expected keys:
+        rel_strength_20d, price_vs_ema21_pct, ema9_above_ema21, earnings_miss_candidate.
+    params : dict | None
+        Override DEFAULT_SHORT_SIGNAL_PARAMS thresholds.
+    blocked : frozenset[str]
+        Signal names to suppress.
+
+    Returns
+    -------
+    list[str]
+        All bearish signals that fired, sorted ascending by SHORT_SIGNAL_PRIORITY.
+    """
+    p = DEFAULT_SHORT_SIGNAL_PARAMS if params is None else {**DEFAULT_SHORT_SIGNAL_PARAMS, **params}
+    matched: list[str] = []
+
+    if "earnings_miss" not in blocked and snapshot.get("earnings_miss_candidate"):
+        matched.append("earnings_miss")
+
+    rel_20d = snapshot.get("rel_strength_20d")
+    if (
+        "loser_momentum" not in blocked
+        and rel_20d is not None
+        and rel_20d <= p["loser_mom_threshold"]
+    ):
+        matched.append("loser_momentum")
+
+    if (
+        "ema_breakdown" not in blocked
+        and snapshot.get("price_vs_ema21_pct", 0.0) <= p["ema_breakdown_threshold"]
+        and not snapshot.get("ema9_above_ema21", True)
+    ):
+        matched.append("ema_breakdown")
+
+    matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
+    return matched
+
+
 REGIME_BLOCKED: dict[str, frozenset[str]] = {
     # Legacy names (kept for backward compatibility)
     "BEAR_DAY": _BEAR_DAY_BLOCKED,

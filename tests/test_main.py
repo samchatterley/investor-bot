@@ -870,6 +870,7 @@ class RunInnerBase(unittest.TestCase):
             "main.insider_feed.get_insider_activity": {},
             "main.av_sentiment.get_av_sentiment": {},
             "main.earnings_surprise.get_earnings_surprise": {},
+            "main.earnings_surprise.get_earnings_miss": {},
             "main.audit_log.has_open_buys_run_today": False,
             "main.audit_log.log_open_buys_locked": None,
         }
@@ -2203,6 +2204,58 @@ class TestLateFilledOrderReconciliation(RunInnerBase):
         self.assertNotIn("ORDER_LATE_FILL_RECONCILED", audit_events)
         record_buy_mock.assert_not_called()
 
+    def test_short_late_fill_calls_record_short_not_record_buy(self):
+        """SHORT intents reconcile via record_short with signal from stored position meta."""
+        audit_events = []
+
+        def _capture_event(name, payload=None):
+            audit_events.append(name)
+
+        record_short_mock = MagicMock()
+        record_buy_mock = MagicMock()
+        short_pos = {
+            "symbol": "SOXS",
+            "qty": -10.0,
+            "avg_entry_price": 6.5,
+            "current_price": 6.8,
+            "unrealized_pl": -3.0,
+            "unrealized_plpc": -0.46,
+            "market_value": -68.0,
+        }
+        short_intent = {
+            "symbol": "SOXS",
+            "side": "SHORT",
+            "status": "timeout",
+            "client_order_id": "ib-SOXS-SHORT-2026-01-15",
+            "broker_order_id": "broker-soxs",
+            "trade_date": "2026-01-15",
+        }
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [short_pos],
+                "main.trader.record_short": record_short_mock,
+                "main.trader.record_buy": record_buy_mock,
+                "main.trader.get_position_meta": MagicMock(
+                    return_value={"signal": "loser_momentum", "confidence": 3}
+                ),
+                "utils.order_ledger.get_unresolved_intents": [short_intent],
+                "utils.order_ledger.update_intent": None,
+                "utils.order_ledger.log_order_event": None,
+                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+
+        self.assertIn("ORDER_LATE_FILL_RECONCILED", audit_events)
+        record_short_mock.assert_called_once()
+        record_buy_mock.assert_not_called()
+        call_kwargs = record_short_mock.call_args[1]
+        self.assertEqual(call_kwargs.get("signal"), "loser_momentum")
+        self.assertEqual(call_kwargs.get("confidence"), 3)
+
 
 class TestUnexpectedBrokerPositionsHalt(RunInnerBase):
     """Unexpected broker positions (not in local DB) must halt in live mode."""
@@ -3465,10 +3518,9 @@ class TestCheckRuleBasedStops(unittest.TestCase):
 
 
 class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
-    """Lines 877, 884, 891: snap.update() for insider, av, and pead data."""
+    """Lines 877, 884, 891, 925: snap.update() for insider, av, pead, and miss data."""
 
-    def test_snap_updated_with_insider_av_and_pead_data(self):
-        # All three dicts contain "AAPL" → the snap.update() calls on lines 877, 884, 891 all fire
+    def test_snap_updated_with_insider_av_pead_and_miss_data(self):
         stack, mocks = self._patch_all(
             **{
                 "main.market_data.get_market_snapshots": [
@@ -3477,10 +3529,11 @@ class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
                 "main.insider_feed.get_insider_activity": {"AAPL": {"insider_cluster": True}},
                 "main.av_sentiment.get_av_sentiment": {"AAPL": {"av_sentiment_score": 0.5}},
                 "main.earnings_surprise.get_earnings_surprise": {"AAPL": {"pead_candidate": True}},
+                "main.earnings_surprise.get_earnings_miss": {
+                    "AAPL": {"earnings_miss_candidate": True}
+                },
             }
         )
-        # Should complete without error — the snap.update() calls fire but are not observable
-        # from the outside without hooking into internals; we verify the run completes.
         with stack:
             from main import _run_inner
 
@@ -3817,6 +3870,12 @@ class TestExecuteShorts(unittest.TestCase):
         )
         mocks["main.trader.place_short_cover_stop"].assert_not_called()
         self.assertIn("WEAK", executed)
+
+    def test_no_long_positions_skips_shorts(self):
+        # long_notional == 0 → returns early, no orders placed
+        all_trades, _, mocks = self._run(**{"main.trader.get_long_notional": 0.0})
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
 
 
 class TestRunInnerCoverShorts(RunInnerBase):
