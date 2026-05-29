@@ -33,14 +33,18 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from data.intraday_fetcher import fetch_intraday_bars
-from signals.evaluator import SIGNAL_PRIORITY, evaluate_signals
+from signals.evaluator import (
+    INTRADAY_SHORT_SIGNALS,
+    INTRADAY_SIGNALS,
+    SIGNAL_PRIORITY,
+    evaluate_signals,
+)
 
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
 
-_INTRADAY_SIGNALS = frozenset({"orb_breakout", "vwap_reclaim", "intraday_momentum"})
-_BLOCKED = frozenset(s for s in SIGNAL_PRIORITY if s not in _INTRADAY_SIGNALS)
+_BLOCKED = frozenset(s for s in SIGNAL_PRIORITY if s not in INTRADAY_SIGNALS)
 
 # Minimum bars in ORB window before range is considered valid
 _ORB_MIN_BARS = 5
@@ -126,6 +130,7 @@ def _replay_day(
     eod_close_dt = _parse_eod(date_str, _EOD_CLOSE_TIME)
     eod_no_entry_dt = _parse_eod(date_str, _EOD_NO_ENTRY_TIME)
     orb_cutoff_dt = _parse_eod(date_str, "10:00")
+    gap_fail_cutoff_dt = _parse_eod(date_str, "10:30")
 
     # Running state
     highs: list[float] = []
@@ -138,22 +143,28 @@ def _replay_day(
     bar_count = 0
 
     orb_high: float | None = None
+    orb_low: float | None = None
     orb_computed = False
     avg_bar_vol = 1.0
 
     # Signal-fire tracking (one entry per signal per day)
     signals_fired: set[str] = set()
 
-    # Position state
+    # Position state — direction tracks "long" or "short"
     in_position = False
+    position_direction = ""
     entry_price = 0.0
     entry_time: datetime | None = None
     entry_signal = ""
     stop = 0.0
     target = 0.0
-    pending_entry: str | None = None  # signal name queued for next bar's open
+    # pending_entry: (signal_name, direction) queued for next bar's open
+    pending_entry: tuple[str, str] | None = None
 
-    was_below_vwap = False  # for vwap_reclaim detection
+    # Setup trackers for intraday short signal conditions
+    was_below_vwap = False  # for vwap_reclaim (long)
+    was_above_vwap = False  # for vwap_rejection (short)
+    gap_up_flagged = False  # first bar was bullish — enables gap_up_failure detection
 
     trades: list[dict] = []
 
@@ -170,12 +181,18 @@ def _replay_day(
         # Execute pending entry at this bar's open
         if pending_entry and not in_position:  # pragma: no branch
             if bar_time <= eod_no_entry_dt:  # pragma: no branch
+                sig_name, direction = pending_entry
                 entry_price = b_open
-                stop = entry_price * (1 - stop_loss_pct / 100)
-                target = entry_price * (1 + target_pct / 100)
+                if direction == "long":
+                    stop = entry_price * (1 - stop_loss_pct / 100)
+                    target = entry_price * (1 + target_pct / 100)
+                else:  # short
+                    stop = entry_price * (1 + stop_loss_pct / 100)
+                    target = entry_price * (1 - target_pct / 100)
                 in_position = True
+                position_direction = direction
                 entry_time = bar_time
-                entry_signal = pending_entry
+                entry_signal = sig_name
             pending_entry = None
 
         # Update running OHLCV
@@ -189,11 +206,16 @@ def _replay_day(
         if bar_count % 5 == 0:
             closes_5m.append(b_close)
 
+        # Mark first bar as bullish for gap_up_failure detection
+        if bar_count == 1 and b_close > b_open * 1.005:
+            gap_up_flagged = True
+
         # Compute ORB range once the 10:00 window closes
         if not orb_computed and bar_time >= orb_cutoff_dt:
             orb_idxs = [i for i, t in enumerate(times) if t < orb_cutoff_dt]
             if len(orb_idxs) >= _ORB_MIN_BARS:  # pragma: no branch
                 orb_high = max(highs[i] for i in orb_idxs)
+                orb_low = min(lows[i] for i in orb_idxs)
                 avg_bar_vol = sum(vols[i] for i in orb_idxs) / len(orb_idxs)
             orb_computed = True
 
@@ -202,23 +224,33 @@ def _replay_day(
             exit_price: float | None = None
             exit_reason = ""
 
-            # Gap-through-stop: bar opened below stop
-            if b_open <= stop:
-                exit_price = b_open
-                exit_reason = "stop_gap_through"
-            elif b_low <= stop:
-                exit_price = stop
-                exit_reason = "stop"
-            elif b_high >= target:
-                exit_price = target
-                exit_reason = "target"
-            elif bar_time >= eod_close_dt:
-                exit_price = b_close
-                exit_reason = "eod"
+            if position_direction == "long":
+                # Gap-through-stop: bar opened below stop
+                if b_open <= stop:
+                    exit_price, exit_reason = b_open, "stop_gap_through"
+                elif b_low <= stop:
+                    exit_price, exit_reason = stop, "stop"
+                elif b_high >= target:
+                    exit_price, exit_reason = target, "target"
+                elif bar_time >= eod_close_dt:
+                    exit_price, exit_reason = b_close, "eod"
+            else:  # short
+                # Gap-through-stop: bar opened above stop
+                if b_open >= stop:
+                    exit_price, exit_reason = b_open, "stop_gap_through"
+                elif b_high >= stop:
+                    exit_price, exit_reason = stop, "stop"
+                elif b_low <= target:
+                    exit_price, exit_reason = target, "target"
+                elif bar_time >= eod_close_dt:
+                    exit_price, exit_reason = b_close, "eod"
 
             if exit_price is not None:
                 cost_pct = _trade_cost_pct(position_size_usd, adv_usd)
-                gross_pnl = (exit_price / entry_price - 1) * 100
+                if position_direction == "long":
+                    gross_pnl = (exit_price / entry_price - 1) * 100
+                else:
+                    gross_pnl = (entry_price / exit_price - 1) * 100
                 net_pnl = gross_pnl - cost_pct
                 assert entry_time is not None
                 trades.append(
@@ -226,6 +258,7 @@ def _replay_day(
                         "symbol": sym,
                         "date": date_str,
                         "signal": entry_signal,
+                        "direction": position_direction,
                         "entry_price": round(entry_price, 4),
                         "exit_price": round(exit_price, 4),
                         "entry_time": entry_time.strftime("%H:%M"),
@@ -237,13 +270,12 @@ def _replay_day(
                     }
                 )
                 in_position = False
+                position_direction = ""
                 entry_signal = ""
                 continue
 
         # Evaluate signals (only after ORB window, only when flat)
-        if in_position or pending_entry or bar_time >= eod_no_entry_dt:
-            if bar_time < orb_cutoff_dt:
-                pass
+        if in_position or pending_entry or not orb_computed or bar_time >= eod_no_entry_dt:
             continue
 
         vwap = _compute_running_vwap(highs, lows, closes, vols)
@@ -251,9 +283,11 @@ def _replay_day(
         price_above_vwap = b_close > vwap
         pct_vs_vwap = (b_close / vwap - 1) * 100 if vwap > 0 else 0.0
 
-        # Track VWAP reclaim setup
+        # Track VWAP position for reclaim (long) and rejection (short) setups
         if not price_above_vwap:
             was_below_vwap = True
+        if price_above_vwap:
+            was_above_vwap = True
 
         intraday_rsi = _compute_intraday_rsi(closes_5m)
 
@@ -261,7 +295,7 @@ def _replay_day(
         if orb_high is not None and b_vol > avg_bar_vol:
             orb_breakout_up = b_close > orb_high
 
-        # Build snapshot for canonical evaluator (daily fields set to neutral defaults)
+        # ── Long signal evaluation (via canonical evaluator) ─────────────────
         snapshot = {
             "intraday_change_pct": intraday_change,
             "price_above_vwap": price_above_vwap,
@@ -289,14 +323,48 @@ def _replay_day(
             if sig == "vwap_reclaim" and not was_below_vwap:
                 continue
             signals_fired.add(sig)
-            pending_entry = sig
+            pending_entry = (sig, "long")
             break  # one entry per bar
+
+        if pending_entry:
+            continue  # long signal already queued; skip short evaluation
+
+        # ── Intraday short signal detection ──────────────────────────────────
+        # orb_breakdown: close breaks below ORB low with above-avg volume
+        if (
+            "orb_breakdown" not in signals_fired
+            and orb_low is not None
+            and b_vol > avg_bar_vol
+            and b_close < orb_low
+        ):
+            signals_fired.add("orb_breakdown")
+            pending_entry = ("orb_breakdown", "short")
+            continue
+
+        # gap_up_failure: bullish first bar, then price falls below day open by 10:30
+        if (
+            "gap_up_failure" not in signals_fired
+            and gap_up_flagged
+            and bar_time < gap_fail_cutoff_dt
+            and intraday_change < -0.5
+        ):
+            signals_fired.add("gap_up_failure")
+            pending_entry = ("gap_up_failure", "short")
+            continue
+
+        # vwap_rejection: price was above VWAP, now crosses back below (first time only)
+        if "vwap_rejection" not in signals_fired and was_above_vwap and not price_above_vwap:
+            signals_fired.add("vwap_rejection")
+            pending_entry = ("vwap_rejection", "short")
 
     # Force-close any position still open (should have been caught by eod_close_dt above,
     # but guard in case last bar is before 15:55)
     if in_position and closes:
         cost_pct = _trade_cost_pct(position_size_usd, adv_usd)
-        gross_pnl = (closes[-1] / entry_price - 1) * 100
+        if position_direction == "long":
+            gross_pnl = (closes[-1] / entry_price - 1) * 100
+        else:
+            gross_pnl = (entry_price / closes[-1] - 1) * 100
         net_pnl = gross_pnl - cost_pct
         assert entry_time is not None
         trades.append(
@@ -304,6 +372,7 @@ def _replay_day(
                 "symbol": sym,
                 "date": date_str,
                 "signal": entry_signal,
+                "direction": position_direction,
                 "entry_price": round(entry_price, 4),
                 "exit_price": round(closes[-1], 4),
                 "entry_time": entry_time.strftime("%H:%M"),
@@ -448,8 +517,8 @@ def run_intraday_backtest(
     )
 
     signals_fired_set = {t["signal"] for t in closed}
-    all_intraday = sorted(_INTRADAY_SIGNALS)
-    signals_not_tested = sorted(_INTRADAY_SIGNALS - signals_fired_set)
+    all_intraday = sorted(INTRADAY_SIGNALS | INTRADAY_SHORT_SIGNALS)
+    signals_not_tested = sorted((INTRADAY_SIGNALS | INTRADAY_SHORT_SIGNALS) - signals_fired_set)
 
     return {
         "initial_capital": initial_capital,

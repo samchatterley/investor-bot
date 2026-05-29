@@ -2019,6 +2019,44 @@ def _build_indicators(
     return indicators
 
 
+def _run_intraday_simulation(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    stop_loss_pct: float = 1.0,
+    target_pct: float = 2.0,
+    cache_dir: str | None = None,
+    bars: dict | None = None,
+) -> dict:
+    """Intraday-track simulation — thin wrapper around run_intraday_backtest().
+
+    Entry/exit: same-day Open→Close replay of Alpaca minute bars.
+    Signals: INTRADAY_SIGNALS ∪ INTRADAY_SHORT_SIGNALS.
+    Returns the same result schema as _run_simulation() so callers can compare
+    both tracks side-by-side.
+    """
+    _assert_pre_holdout(end_date)
+    logger.info(
+        f"Intraday backtest: {start_date} → {end_date} | {len(symbols)} symbols"
+        f" | ${initial_capital:.0f} capital | stop={stop_loss_pct}% target={target_pct}%"
+    )
+    from backtest.intraday_engine import run_intraday_backtest
+
+    return run_intraday_backtest(
+        symbols=symbols,
+        start_date=start_date,
+        end_date=end_date,
+        stop_loss_pct=stop_loss_pct,
+        target_pct=target_pct,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        cache_dir=cache_dir,
+        bars=bars,
+    )
+
+
 def run_backtest(
     symbols: list[str],
     start_date: str,

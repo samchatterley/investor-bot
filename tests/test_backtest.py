@@ -6615,3 +6615,59 @@ class TestPrintCombinedResults(unittest.TestCase):
         self.assertIn("Regime distribution", output)
         self.assertIn("BULL_TREND", output)
         self.assertIn("[shorts active]", output)
+
+
+class TestRunIntradaySimulation(unittest.TestCase):
+    """_run_intraday_simulation: engine-level wrapper around run_intraday_backtest."""
+
+    def test_result_schema(self):
+        """Result must contain all keys from the standard backtest schema."""
+        from backtest.engine import _run_intraday_simulation
+
+        result = _run_intraday_simulation(["AAPL"], "2025-01-06", "2025-01-10", bars={})
+        required = {
+            "initial_capital",
+            "final_value",
+            "total_return_pct",
+            "total_trades",
+            "win_rate_pct",
+            "avg_return_per_trade_pct",
+            "max_drawdown_pct",
+            "sharpe_ratio",
+            "by_signal",
+            "equity_curve",
+            "trades",
+            "validation_scope",
+            "signals_tested",
+            "signals_not_tested",
+        }
+        self.assertEqual(required, required & result.keys())
+
+    def test_validation_scope(self):
+        from backtest.engine import _run_intraday_simulation
+
+        result = _run_intraday_simulation(["AAPL"], "2025-01-06", "2025-01-06", bars={})
+        self.assertEqual(result["validation_scope"], "intraday_rule_proxy")
+
+    def test_signals_tested_intraday_only(self):
+        from backtest.engine import _run_intraday_simulation
+        from signals.evaluator import INTRADAY_SHORT_SIGNALS, INTRADAY_SIGNALS
+
+        result = _run_intraday_simulation(["AAPL"], "2025-01-06", "2025-01-06", bars={})
+        self.assertEqual(set(result["signals_tested"]), INTRADAY_SIGNALS | INTRADAY_SHORT_SIGNALS)
+
+    def test_empty_bars_zero_trades(self):
+        from backtest.engine import _run_intraday_simulation
+
+        result = _run_intraday_simulation(["AAPL"], "2025-01-06", "2025-01-10", bars={})
+        self.assertEqual(result["total_trades"], 0)
+
+    def test_holdout_guard_logs_warning(self):
+        """Dates reaching into the holdout period trigger a warning log."""
+        import logging
+
+        from backtest.engine import _run_intraday_simulation
+
+        with self.assertLogs("backtest.engine", level=logging.WARNING) as cm:
+            _run_intraday_simulation(["AAPL"], "2024-01-01", "2024-12-31", bars={})
+        self.assertTrue(any("HOLDOUT" in line for line in cm.output))

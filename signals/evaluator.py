@@ -45,6 +45,16 @@ INTRADAY_SIGNALS: frozenset[str] = frozenset(
     }
 )
 
+# Intraday short signals — detected bar-by-bar from minute data (not via evaluate_signals).
+# Classification constant only; actual detection is in backtest/intraday_engine.py.
+INTRADAY_SHORT_SIGNALS: frozenset[str] = frozenset(
+    {
+        "orb_breakdown",  # Break below ORB low with above-avg volume
+        "gap_up_failure",  # Gap-up open fails to hold; price reverses through open
+        "vwap_rejection",  # Price touches VWAP from above and rejects back down
+    }
+)
+
 # All long signals that belong to the multi-day track (daily bars, overnight holds).
 MULTIDAY_SIGNALS: frozenset[str] = frozenset(SIGNAL_PRIORITY.keys()) - INTRADAY_SIGNALS
 

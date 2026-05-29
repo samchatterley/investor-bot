@@ -42,6 +42,70 @@ def _make_orb_breakout_day(date_str: str) -> list[tuple]:
     return result
 
 
+def _make_orb_breakdown_day(date_str: str) -> list[tuple]:
+    """ORB window builds range, then price breaks below it with above-avg volume."""
+    from datetime import timedelta
+
+    base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+    result = []
+    # Same ORB window as _make_orb_breakout_day (orb_low ≈ 99.9, avg_bar_vol = 100_000)
+    for i in range(30):
+        px = 100.0 + (i % 5) * 0.2
+        bar = _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000)
+        result.append((base + timedelta(minutes=i), bar))
+    # Post-ORB: break below ORB low (~99.9) with high volume → orb_breakdown fires
+    for i in range(30, 120):
+        px = 98.0 - (i - 30) * 0.05
+        bar = _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=250_000)
+        result.append((base + timedelta(minutes=i), bar))
+    return result
+
+
+def _make_gap_up_failure_day(date_str: str) -> list[tuple]:
+    """First bar is bullish; after ORB, price falls below day open before 10:30."""
+    from datetime import timedelta
+
+    base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+    result = []
+    # Bar 0: bullish (close > open * 1.005) → gap_up_flagged = True
+    result.append((base, _Bar(open=100.0, high=101.0, low=99.8, close=100.8, volume=200_000)))
+    # ORB window (09:31-09:59): stable prices around 100
+    for i in range(1, 30):
+        px = 100.0 + (i % 5) * 0.2
+        bar = _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000)
+        result.append((base + timedelta(minutes=i), bar))
+    # Post-ORB (10:00+): price drops to 99.0 (intraday_change ≈ -1%) → gap_up_failure fires
+    # Volume = avg_bar_vol (≈ 103_333 from bar0=200k + 29 bars at 100k) to avoid orb_breakdown
+    for i in range(30, 120):
+        px = 99.0 - (i - 30) * 0.02
+        bar = _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000)
+        result.append((base + timedelta(minutes=i), bar))
+    return result
+
+
+def _make_vwap_rejection_day(date_str: str) -> list[tuple]:
+    """After ORB, price rises above VWAP then crosses back below it."""
+    from datetime import timedelta
+
+    base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+    result = []
+    # ORB window: price at ~100.4 avg, avg_bar_vol = 100_000
+    for i in range(30):
+        px = 100.0 + (i % 5) * 0.2
+        bar = _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000)
+        result.append((base + timedelta(minutes=i), bar))
+    # Post-ORB: rise above VWAP (~100.4) at vol = avg (no orb_breakout due to not > avg)
+    for i in range(30, 45):
+        bar = _Bar(open=100.5, high=100.7, low=100.3, close=100.5, volume=100_000)
+        result.append((base + timedelta(minutes=i), bar))
+    # Drop below VWAP at vol = avg (no orb_breakdown since vol not strictly > avg)
+    for i in range(45, 150):
+        px = 99.0 - (i - 45) * 0.02
+        bar = _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000)
+        result.append((base + timedelta(minutes=i), bar))
+    return result
+
+
 class TestSpreadAndImpact(unittest.TestCase):
     """Cost model helpers."""
 
@@ -193,6 +257,7 @@ class TestReplayDay(unittest.TestCase):
             "symbol",
             "date",
             "signal",
+            "direction",
             "entry_price",
             "exit_price",
             "entry_time",
@@ -292,10 +357,11 @@ class TestRunIntradayBacktest(unittest.TestCase):
         self.assertEqual(result["validation_scope"], "intraday_rule_proxy")
 
     def test_signals_tested_only_intraday(self):
-        from backtest.intraday_engine import _INTRADAY_SIGNALS, run_intraday_backtest
+        from backtest.intraday_engine import run_intraday_backtest
+        from signals.evaluator import INTRADAY_SHORT_SIGNALS, INTRADAY_SIGNALS
 
         result = run_intraday_backtest(["AAPL"], "2025-01-06", "2025-01-06", bars={})
-        self.assertEqual(set(result["signals_tested"]), _INTRADAY_SIGNALS)
+        self.assertEqual(set(result["signals_tested"]), INTRADAY_SIGNALS | INTRADAY_SHORT_SIGNALS)
 
     def test_equity_starts_at_capital(self):
         from backtest.intraday_engine import run_intraday_backtest
@@ -679,3 +745,252 @@ class TestIntradayFetcherCacheLogic(unittest.TestCase):
 
     def test_module_importable(self):
         import data.intraday_fetcher  # noqa: F401
+
+
+class TestOrbBreakdownSignal(unittest.TestCase):
+    """orb_breakdown: price closes below ORB low with above-avg volume → short entry."""
+
+    def test_orb_breakdown_creates_short_trade(self):
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_orb_breakdown_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        orb_bd = [t for t in trades if t["signal"] == "orb_breakdown"]
+        self.assertTrue(len(orb_bd) > 0, "Expected orb_breakdown short trade")
+
+    def test_orb_breakdown_direction_is_short(self):
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_orb_breakdown_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        for t in trades:
+            if t["signal"] == "orb_breakdown":
+                self.assertEqual(t["direction"], "short")
+
+    def test_orb_breakdown_not_fired_in_breakout_day(self):
+        """ORB breakout (long) day should not produce orb_breakdown trades."""
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_orb_breakout_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        self.assertEqual([t for t in trades if t["signal"] == "orb_breakdown"], [])
+
+    def test_orb_breakdown_no_fire_during_orb_window(self):
+        """Short signals must not fire before ORB is computed (before 10:00)."""
+        from datetime import timedelta
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        # All bars during ORB window with price well below any ORB low
+        bars = [
+            (
+                base + timedelta(minutes=i),
+                _Bar(open=98.0, high=98.5, low=97.5, close=98.0, volume=250_000),
+            )
+            for i in range(29)
+        ]
+        trades = _replay_day("AAPL", date_str, bars, 1.0, 2.0, 10_000_000, 20_000)
+        self.assertEqual(trades, [])
+
+
+class TestGapUpFailureSignal(unittest.TestCase):
+    """gap_up_failure: bullish first bar, price falls back through open before 10:30."""
+
+    def test_gap_up_failure_creates_short_trade(self):
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_gap_up_failure_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        guf = [t for t in trades if t["signal"] == "gap_up_failure"]
+        self.assertTrue(len(guf) > 0, "Expected gap_up_failure short trade")
+
+    def test_gap_up_failure_direction_is_short(self):
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_gap_up_failure_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        for t in trades:
+            if t["signal"] == "gap_up_failure":
+                self.assertEqual(t["direction"], "short")
+
+    def test_gap_up_failure_no_flag_without_bullish_first_bar(self):
+        """If first bar is bearish, gap_up_flagged stays False → no gap_up_failure."""
+        from datetime import timedelta
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        bars = []
+        # First bar: bearish (close < open)
+        bars.append((base, _Bar(open=100.0, high=100.5, low=99.0, close=99.2, volume=100_000)))
+        for i in range(1, 30):
+            px = 100.0 + (i % 5) * 0.2
+            bars.append(
+                (
+                    base + timedelta(minutes=i),
+                    _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000),
+                )
+            )
+        # Post-ORB: prices drop
+        for i in range(30, 80):
+            px = 99.0 - (i - 30) * 0.02
+            bars.append(
+                (
+                    base + timedelta(minutes=i),
+                    _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000),
+                )
+            )
+        trades = _replay_day("AAPL", date_str, bars, 1.0, 2.0, 10_000_000, 20_000)
+        self.assertEqual([t for t in trades if t["signal"] == "gap_up_failure"], [])
+
+
+class TestVwapRejectionSignal(unittest.TestCase):
+    """vwap_rejection: price was above VWAP then crosses back below it."""
+
+    def test_vwap_rejection_creates_short_trade(self):
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_vwap_rejection_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        vr = [t for t in trades if t["signal"] == "vwap_rejection"]
+        self.assertTrue(len(vr) > 0, "Expected vwap_rejection short trade")
+
+    def test_vwap_rejection_direction_is_short(self):
+        from backtest.intraday_engine import _replay_day
+
+        bars = _make_vwap_rejection_day("2025-01-06")
+        trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
+        for t in trades:
+            if t["signal"] == "vwap_rejection":
+                self.assertEqual(t["direction"], "short")
+
+    def test_vwap_rejection_no_fire_when_never_above_vwap(self):
+        """If price never exceeds VWAP after ORB, was_above_vwap stays False → no rejection."""
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        base = datetime.strptime(f"{date_str} 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        bars = []
+        for i in range(30):
+            px = 100.0 + (i % 5) * 0.2
+            bars.append(
+                (
+                    base + timedelta(minutes=i),
+                    _Bar(open=px, high=px + 0.1, low=px - 0.1, close=px, volume=100_000),
+                )
+            )
+        # Post-ORB: price always below VWAP (~100.4) at vol = avg (prevents orb_breakdown)
+        for i in range(30, 120):
+            px = 99.5
+            bars.append(
+                (
+                    base + timedelta(minutes=i),
+                    _Bar(open=px, high=px + 0.05, low=px - 0.05, close=px, volume=100_000),
+                )
+            )
+        # Force evaluate_signals to return nothing so only short checks run
+        with patch("backtest.intraday_engine.evaluate_signals", return_value=[]):
+            trades = _replay_day("AAPL", date_str, bars, 1.0, 2.0, 10_000_000, 20_000)
+        self.assertEqual([t for t in trades if t["signal"] == "vwap_rejection"], [])
+
+
+class TestShortPositionExits(unittest.TestCase):
+    """Short position stop, target, and gap-through mechanics."""
+
+    def test_short_target_hit(self):
+        """b_low <= target → exit at target price for short position."""
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        # Use first 32 bars to get an entry, then a deep bar to hit target
+        bars = list(_make_orb_breakdown_day(date_str)[:32])
+        bar_time = datetime.strptime(f"{date_str} 10:35", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        # entry ~98.0, target = entry * 0.98 ≈ 96.04; b_low = 94.0 hits target
+        bars.append((bar_time, _Bar(open=97.0, high=97.5, low=94.0, close=94.5, volume=150_000)))
+        trades = _replay_day("AAPL", date_str, bars, 1.0, 2.0, 10_000_000, 20_000)
+        target_trades = [
+            t for t in trades if t["exit_reason"] == "target" and t["direction"] == "short"
+        ]
+        self.assertTrue(len(target_trades) > 0, "Expected short target exit")
+        for t in target_trades:
+            self.assertAlmostEqual(t["exit_price"], t["entry_price"] * 0.98, places=2)
+
+    def test_short_stop_hit_within_bar(self):
+        """b_open < stop but b_high >= stop → regular stop (not gap-through) for short."""
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        bars = list(_make_orb_breakdown_day(date_str)[:40])
+        bar_time = datetime.strptime(f"{date_str} 10:35", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        # entry ~98.0, stop = entry * 1.01 ≈ 98.98; bar opens below stop but high exceeds it
+        bars.append((bar_time, _Bar(open=97.0, high=99.5, low=96.5, close=99.0, volume=100_000)))
+        trades = _replay_day("AAPL", date_str, bars, 1.0, 5.0, 10_000_000, 20_000)
+        stop_trades = [
+            t for t in trades if t["exit_reason"] == "stop" and t["direction"] == "short"
+        ]
+        for t in stop_trades:
+            self.assertAlmostEqual(t["exit_price"], t["entry_price"] * 1.01, places=2)
+
+    def test_short_stop_gap_through(self):
+        """b_open >= stop → stop_gap_through at open price for short position."""
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        bars = list(_make_orb_breakdown_day(date_str)[:32])
+        bar_time = datetime.strptime(f"{date_str} 10:35", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        # entry ~98.0, stop = entry * 1.01 ≈ 98.98; open at 103.0 gaps through stop
+        bars.append(
+            (bar_time, _Bar(open=103.0, high=104.0, low=102.5, close=103.5, volume=300_000))
+        )
+        trades = _replay_day("AAPL", date_str, bars, 1.0, 2.0, 10_000_000, 20_000)
+        gap_trades = [
+            t
+            for t in trades
+            if t["exit_reason"] == "stop_gap_through" and t["direction"] == "short"
+        ]
+        self.assertTrue(len(gap_trades) > 0, "Expected short stop_gap_through")
+        for t in gap_trades:
+            self.assertAlmostEqual(t["exit_price"], 103.0, places=2)
+
+    def test_short_eod_fallback_close(self):
+        """Short position open when bars end → force-closed via eod_fallback."""
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        bars = _make_orb_breakdown_day(date_str)
+        # Wide stop (5%) and target (20%) so neither fires within the 120 bars
+        trades = _replay_day("AAPL", date_str, bars, 5.0, 20.0, 10_000_000, 20_000)
+        fallback = [
+            t for t in trades if t["exit_reason"] == "eod_fallback" and t["direction"] == "short"
+        ]
+        self.assertTrue(len(fallback) > 0, "Expected short eod_fallback exit")
+
+    def test_short_eod_exit_in_loop(self):
+        """Short position still open at 15:55 bar → exit_reason='eod' inside the loop."""
+        from datetime import timedelta
+
+        from backtest.intraday_engine import _replay_day
+
+        date_str = "2025-01-06"
+        bars = _make_orb_breakdown_day(date_str)
+        # Extend bars to 15:55 at a price between entry and target (wide enough to not hit)
+        base = datetime.strptime(f"{date_str} 11:30", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        eod = datetime.strptime(f"{date_str} 15:55", "%Y-%m-%d %H:%M").replace(tzinfo=_ET)
+        t = base
+        while t <= eod:
+            # px=97.0: below short entry (~98), above wide target, below wide stop
+            bars.append((t, _Bar(open=97.0, high=97.1, low=96.9, close=97.0, volume=100_000)))
+            t += timedelta(minutes=1)
+        # stop=5% above entry ~103, target=20% below entry ~78.4 — neither fires
+        trades = _replay_day("AAPL", date_str, bars, 5.0, 20.0, 10_000_000, 20_000)
+        eod_trades = [t for t in trades if t["exit_reason"] == "eod" and t["direction"] == "short"]
+        self.assertTrue(len(eod_trades) > 0, "Expected short 'eod' exit at 15:55")
