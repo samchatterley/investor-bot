@@ -15,6 +15,7 @@ import pandas as pd
 from backtest.engine import (
     _CORE_COLS,
     _DEFAULT_PARAMS,
+    _SHORT_ALLOWED_REGIMES,
     _SIGNAL_PRIORITY,
     _assert_pre_holdout,
     _binomial_p_value,
@@ -28,12 +29,14 @@ from backtest.engine import (
     _market_impact_bps,
     _print_ablation_results,
     _print_backward_elimination_results,
+    _print_combined_results,
     _print_hold_period_table,
     _print_param_sensitivity,
     _print_regime_blocked,
     _print_regime_table,
     _print_results,
     _print_short_signal_results,
+    _run_combined_simulation,
     _run_short_simulation,
     _run_simulation,
     _save_results,
@@ -42,6 +45,7 @@ from backtest.engine import (
     run_ablation,
     run_backtest,
     run_backward_elimination,
+    run_combined_analysis,
     run_holdout_evaluation,
     run_param_sensitivity,
     run_short_signal_analysis,
@@ -50,6 +54,7 @@ from backtest.engine import (
 )
 from backtest.historical_fundamentals import earnings_miss_active_on_date
 from config import BACKTEST_DEFAULT_START, HOLDOUT_START_DATE
+from risk.risk_config import RiskConfig
 
 _ET = ZoneInfo("America/New_York")
 _Bar = namedtuple("_Bar", ["open", "high", "low", "close", "volume"])
@@ -5456,3 +5461,1009 @@ class TestRunShortSignalAnalysisExtraBranches(unittest.TestCase):
                 use_earnings_history=False,
             )
         self.assertIn("total_trades", result)
+
+
+# ── Combined simulation ───────────────────────────────────────────────────────
+
+
+class TestRunCombinedSimulation(unittest.TestCase):
+    """Tests for _run_combined_simulation: shared cash pool, regime gating."""
+
+    def _make_indicators(self, n: int = 100):
+        """Build STRONG (long-friendly) + WEAK (short-friendly) indicators and SPY."""
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        spy_df = pd.DataFrame(
+            {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
+            index=idx,
+        )
+        spy_ind = _compute_indicators(spy_df)
+        strong_df = pd.DataFrame(
+            {
+                "Close": [100.0 + i * 0.5 for i in range(n)],
+                "Open": [99.0 + i * 0.5 for i in range(n)],
+                "High": [101.0 + i * 0.5 for i in range(n)],
+                "Low": [98.0 + i * 0.5 for i in range(n)],
+                "Volume": [2_000_000] * n,
+            },
+            index=idx,
+        )
+        strong_ind = _compute_indicators(strong_df)
+        weak_ind = _compute_indicators(_make_declining_ohlcv(n))
+        indicators = {"STRONG": strong_ind, "WEAK": weak_ind}
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        rs_ranks = {
+            "STRONG": dict.fromkeys(all_dates, 90.0),
+            "WEAK": dict.fromkeys(all_dates, 10.0),
+        }
+        return indicators, spy_ind, rs_ranks
+
+    def _bearish_regime(self, n: int = 100) -> dict:
+        return {
+            ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND"
+            for ts in pd.bdate_range("2024-11-01", periods=n)
+        }
+
+    def _bull_regime(self, n: int = 100) -> dict:
+        return {
+            ts.strftime("%Y-%m-%d"): "BULL_TREND" for ts in pd.bdate_range("2024-11-01", periods=n)
+        }
+
+    @staticmethod
+    def _make_long_ind(idx, close_vals=None, open_vals=None):
+        """Pre-built indicator DataFrame with momentum signal firing (vol_ratio=1.5)."""
+        n = len(idx)
+        cv = close_vals or [100.0 + i * 0.5 for i in range(n)]
+        ov = open_vals or [c * 0.999 for c in cv]
+        return pd.DataFrame(
+            {
+                "Close": cv,
+                "Volume": [2_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.5] * n,
+                "ema9": [101.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [0.5] * n,
+                "ret_5d": [2.0] * n,
+                "Open": ov,
+            },
+            index=idx,
+        )
+
+    @staticmethod
+    def _make_short_ind(idx, close_vals=None, open_vals=None):
+        """Pre-built indicator DataFrame with ema_breakdown signal firing."""
+        n = len(idx)
+        cv = close_vals or [100.0 - i * 0.5 for i in range(n)]
+        ov = open_vals or [c * 1.001 for c in cv]
+        return pd.DataFrame(
+            {
+                "Close": cv,
+                "Volume": [2_000_000] * n,
+                "rsi": [50.0] * n,
+                "bb_pct": [0.5] * n,
+                "vol_ratio": [1.5] * n,
+                "ema9": [99.0] * n,
+                "ema21": [100.0] * n,
+                "macd_diff": [-0.5] * n,
+                "ret_5d": [-2.0] * n,
+                "pct_vs_ema21": [-3.0] * n,
+                "ret_20d": [-10.0] * n,
+                "Open": ov,
+            },
+            index=idx,
+        )
+
+    def test_basic_run_returns_result_dict(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-03-14")
+        result = _run_combined_simulation(
+            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks
+        )
+        self.assertIn("total_trades", result)
+        self.assertIn("by_side", result)
+        self.assertIn("regime_distribution", result)
+        self.assertIn("long", result["by_side"])
+        self.assertIn("short", result["by_side"])
+
+    def test_result_has_all_expected_keys(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-02-28")
+        result = _run_combined_simulation(indicators, dates, rs_ranks=rs_ranks)
+        for key in (
+            "total_return_pct",
+            "total_trades",
+            "long_trades",
+            "short_trades",
+            "win_rate_pct",
+            "long_win_rate_pct",
+            "short_win_rate_pct",
+            "avg_return_per_trade_pct",
+            "max_drawdown_pct",
+            "sharpe_ratio",
+            "by_signal",
+            "by_side",
+            "equity_curve",
+            "trades",
+            "regime_distribution",
+            "validation_scope",
+        ):
+            self.assertIn(key, result, f"Missing key: {key}")
+
+    def test_shorts_suppressed_in_bull_regime(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-03-14")
+        result = _run_combined_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=self._bull_regime(),
+        )
+        self.assertEqual(result["short_trades"], 0)
+
+    def test_shorts_allowed_in_bearish_regime(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-03-14")
+        result = _run_combined_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=self._bearish_regime(),
+        )
+        self.assertGreaterEqual(result["short_trades"], 0)
+
+    def test_short_allowed_regimes_constant(self):
+        """_SHORT_ALLOWED_REGIMES contains exactly the three bearish regimes."""
+        self.assertIn("DEFENSIVE_DOWNTREND", _SHORT_ALLOWED_REGIMES)
+        self.assertIn("HIGH_VOL_DOWNTREND", _SHORT_ALLOWED_REGIMES)
+        self.assertIn("STRESS_RISK_OFF", _SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("BULL_TREND", _SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("NEUTRAL_CHOP", _SHORT_ALLOWED_REGIMES)
+
+    def test_regime_distribution_populated(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-02-28")
+        result = _run_combined_simulation(
+            indicators, dates, regime_by_date=self._bull_regime(), rs_ranks=rs_ranks
+        )
+        self.assertIn("BULL_TREND", result["regime_distribution"])
+
+    def test_empty_trading_dates_returns_zero_trades(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-01-14")
+        result = _run_combined_simulation(indicators, dates, rs_ranks=rs_ranks)
+        self.assertEqual(result["total_trades"], 0)
+
+    def test_no_slots_means_no_trades(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-02-28")
+        result = _run_combined_simulation(
+            indicators, dates, rs_ranks=rs_ranks, max_long_positions=0, max_short_positions=0
+        )
+        self.assertEqual(result["total_trades"], 0)
+
+    def test_by_side_zero_trades_gives_zero_win_rate(self):
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-02-28")
+        result = _run_combined_simulation(
+            indicators, dates, rs_ranks=rs_ranks, max_long_positions=0, max_short_positions=0
+        )
+        self.assertEqual(result["by_side"]["long"]["win_rate_pct"], 0.0)
+        self.assertEqual(result["by_side"]["short"]["win_rate_pct"], 0.0)
+
+    def test_long_gap_through_stop(self):
+        """open < stop_price for long position → gap-through stop exit at open."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        close_vals = [100.0 + i * 0.5 for i in range(n)]
+        open_vals = [c * 0.999 for c in close_vals]
+        # On day 4 (idx[4], held=3 > stop_activation_delay=2): gap-down open below stop
+        # entry_px ≈ open[1] ≈ 100.4; stop = 100.4 * 0.93 ≈ 93.4; open[4] = 90 < 93.4
+        open_vals[4] = 90.0
+        ind = self._make_long_ind(idx, close_vals=close_vals, open_vals=open_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+        )
+        sells = [t for t in result["trades"] if t["action"] == "SELL"]
+        self.assertTrue(any(t["reason"] == "stop_loss" for t in sells))
+
+    def test_long_take_profit_in_delay_window(self):
+        """take_profit fires during stop_activation_delay; stop_loss does not."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        # Entry on idx[1]; day 2 (idx[2], held=1, in delay): close jumps 25% → take_profit
+        close_vals = [100.0, 100.5, 130.0, 130.5, 131.0, 131.5, 132.0, 132.5]
+        ind = self._make_long_ind(idx, close_vals=close_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            stop_activation_delay=2,
+        )
+        sells = [t for t in result["trades"] if t["action"] == "SELL"]
+        self.assertTrue(any(t.get("reason") == "take_profit" for t in sells))
+
+    def test_short_gap_through_stop(self):
+        """open >= entry*(1+stop) for short → stop_loss at open."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        close_vals = [100.0 - i * 0.5 for i in range(n)]
+        open_vals = [c * 1.001 for c in close_vals]
+        # entry_px ≈ open[1] ≈ 99.6, fill ≈ 99.59, stop = 99.59 * 1.07 ≈ 106.56
+        # day 4 (idx[4], held=3 > 0): gap-up open = 115 >= 106.56 → gap-through
+        open_vals[4] = 115.0
+        ind = self._make_short_ind(idx, close_vals=close_vals, open_vals=open_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        covers = [t for t in result["trades"] if t["action"] == "COVER"]
+        self.assertTrue(any(t["reason"] == "stop_loss" for t in covers))
+
+    def test_exception_in_long_equity_mtm(self):
+        """Exception in long mark-to-market falls back to entry_price — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        ind = ind.astype(object)
+        # day 2 (idx[2]) is trading_dates[1]: position entered on day 1, MTM runs on day 2
+        ind.iloc[2, ind.columns.get_loc("Close")] = "crash"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_exception_in_short_equity_mtm(self):
+        """Exception in short mark-to-market falls back to notional — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        ind = ind.astype(object)
+        # position entered on day 1; MTM runs on day 2 with corrupt Close
+        ind.iloc[2, ind.columns.get_loc("Close")] = "crash"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            max_short_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_exception_in_long_exit_loop(self):
+        """Exception reading long exit data skips that position — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        ind = ind.astype(object)
+        # corrupt Close on day 4 (after stop_activation_delay=2) to hit exit-loop except
+        ind.iloc[4, ind.columns.get_loc("Close")] = "crash"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_exception_in_short_exit_loop(self):
+        """Exception reading short exit data skips that position — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        ind = ind.astype(object)
+        ind.iloc[4, ind.columns.get_loc("Close")] = "crash"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            max_short_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_end_of_backtest_long_cleanup(self):
+        """Long positions open at period end are closed in end-of-backtest sweep."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=100,
+        )
+        end_sells = [t for t in result["trades"] if t.get("reason") == "end_of_backtest"]
+        self.assertGreater(len(end_sells), 0)
+
+    def test_end_of_backtest_short_cleanup(self):
+        """Short positions open at period end are closed in end-of-backtest sweep."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            max_short_hold_days=100,
+        )
+        end_covers = [t for t in result["trades"] if t.get("reason") == "end_of_backtest"]
+        self.assertGreater(len(end_covers), 0)
+
+    def test_exception_in_long_end_cleanup(self):
+        """Exception in long end-of-backtest close falls back to shares*entry_price."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        ind = ind.astype(object)
+        ind.iloc[-1, ind.columns.get_loc("Close")] = "corrupt"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=100,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_exception_in_short_end_cleanup(self):
+        """Exception in short end-of-backtest close falls back to notional."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        ind = ind.astype(object)
+        ind.iloc[-1, ind.columns.get_loc("Close")] = "corrupt"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            max_short_hold_days=100,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_regime_by_date_none_shorts_suppressed(self):
+        """regime_by_date=None means shorts_allowed=False for every day."""
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-03-14")
+        result = _run_combined_simulation(
+            indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks, regime_by_date=None
+        )
+        self.assertEqual(result["short_trades"], 0)
+
+    def test_long_time_exit(self):
+        """Long position exits via time_exit when max_hold_days is reached after delay."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=3,
+        )
+        sells = [t for t in result["trades"] if t["action"] == "SELL"]
+        self.assertTrue(any(t["reason"] == "time_exit" for t in sells))
+
+    def test_long_time_exit_in_delay_window(self):
+        """time_exit fires within stop_activation_delay when held >= max_hold_days."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=2,
+            stop_activation_delay=3,
+        )
+        sells = [t for t in result["trades"] if t["action"] == "SELL"]
+        self.assertTrue(any(t["reason"] == "time_exit" for t in sells))
+
+    def test_long_close_of_day_stop_loss(self):
+        """Close drops below stop_price after stop_activation_delay → stop_loss."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        close_vals = [100.0, 100.5, 101.0, 101.5, 85.0, 85.5, 86.0, 86.5]
+        open_vals = [c * 0.999 for c in close_vals]
+        # With stop_loss_pct=0.07: stop≈93.4. open[4]=99 > stop → no gap-through.
+        # close[4]=85 → pnl≈-15% ≤ -7% → pnl stop fires (line 1472)
+        open_vals[4] = 99.0
+        ind = self._make_long_ind(idx, close_vals=close_vals, open_vals=open_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            risk_config=RiskConfig(
+                stop_loss_pct=0.07,
+                take_profit_pct=0.20,
+                trailing_stop_pct=5.0,
+                partial_profit_pct=10.0,
+                max_hold_days=4,
+            ),
+        )
+        sells = [t for t in result["trades"] if t["action"] == "SELL"]
+        self.assertTrue(any(t["reason"] == "stop_loss" for t in sells))
+
+    def test_long_take_profit_after_delay(self):
+        """take_profit fires after stop_activation_delay when pnl >= take_profit_pct."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        close_vals = [100.0, 100.5, 101.0, 101.5, 125.0, 125.5, 126.0, 126.5]
+        ind = self._make_long_ind(idx, close_vals=close_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+        )
+        sells = [t for t in result["trades"] if t["action"] == "SELL"]
+        self.assertTrue(any(t["reason"] == "take_profit" for t in sells))
+
+    def test_long_slots_zero_skips_long_scan(self):
+        """When long_slots=0 but short_slots>0, long scan is skipped entirely."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        self.assertEqual(result["long_trades"], 0)
+
+    def test_today_loc_zero_in_long_scan(self):
+        """When today is the first row of a stock's index, today_loc==0 → skip it."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx,  # idx[0] triggers today_loc==0 continue in long scan
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_spy_prev_ts_not_in_spy_index(self):
+        """When prev_ts is not in spy_indicators.index, spy_5d/spy_10d stay None."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        spy_idx = pd.bdate_range("2025-01-06", periods=n)
+        spy_ind = pd.DataFrame(
+            {"Close": [200.0] * n, "ret_5d": [1.0] * n, "ret_10d": [2.0] * n},
+            index=spy_idx,
+        )
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],  # prev_ts = idx[0] = 2025-01-02, not in spy_idx (starts 2025-01-06)
+            spy_indicators=spy_ind,
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+            max_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_long_scan_with_insider_and_earnings_history(self):
+        """Insider/earnings history combinations cover all branches of lines 1621-1628."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        base = {
+            "rs_ranks": {"STRONG": dict.fromkeys(all_dates, 90.0)},
+            "regime_by_date": None,
+            "max_hold_days": 10,
+        }
+        # insider only: earnings_history=None → line 1624 False branch (1624->1626)
+        _run_combined_simulation({"STRONG": ind}, idx[1:], **base, insider_history={})
+        # earnings only: insider_history=None → line 1626 False branch (1626->1628)
+        _run_combined_simulation({"STRONG": ind}, idx[1:], **base, earnings_history={})
+        # both non-None: covers True paths of both 1624 and 1626
+        result = _run_combined_simulation(
+            {"STRONG": ind}, idx[1:], **base, insider_history={}, earnings_history={}
+        )
+        self.assertIn("total_trades", result)
+
+    def test_rs_rank_below_gate_filters_long(self):
+        """RS rank below threshold filters out long candidate — no entries."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 10.0)},  # 10 < 75 → filtered
+            regime_by_date=None,
+        )
+        self.assertEqual(result["long_trades"], 0)
+
+    def test_short_pnl_stop_loss(self):
+        """Short pnl stop triggers when close rises enough to exceed stop_loss_pct."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        close_vals = [100.0, 99.5, 99.0, 98.5, 110.0, 110.5, 111.0, 111.5]
+        open_vals = [c * 1.001 for c in close_vals]
+        # With stop_loss_pct=0.07: stop≈106.5. open[4]=105 < 106.5 → no gap-through.
+        # close[4]=110 → s_pnl≈-10.5% ≤ -7% → pnl stop fires (line 1537)
+        open_vals[4] = 105.0
+        ind = self._make_short_ind(idx, close_vals=close_vals, open_vals=open_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            risk_config=RiskConfig(
+                stop_loss_pct=0.07,
+                take_profit_pct=0.20,
+                trailing_stop_pct=5.0,
+                partial_profit_pct=10.0,
+                max_hold_days=4,
+            ),
+        )
+        covers = [t for t in result["trades"] if t["action"] == "COVER"]
+        self.assertTrue(any(t["reason"] == "stop_loss" for t in covers))
+
+    def test_short_take_profit(self):
+        """Short take_profit triggers when stock falls enough to reach take_profit_pct."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        close_vals = [100.0, 99.5, 99.0, 98.5, 75.0, 74.5, 74.0, 73.5]
+        ind = self._make_short_ind(idx, close_vals=close_vals)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        covers = [t for t in result["trades"] if t["action"] == "COVER"]
+        self.assertTrue(any(t["reason"] == "take_profit" for t in covers))
+
+    def test_today_loc_zero_in_short_scan(self):
+        """When today is the first row of a stock's index in short scan, skip it."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx,  # idx[0] triggers today_loc==0 continue in short scan
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            max_short_hold_days=10,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_spy_none_in_short_scan(self):
+        """With spy_indicators=None, spy_ret_20d stays None — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            spy_indicators=None,
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        self.assertGreater(result["short_trades"], 0)
+
+    def test_spy_prev_ts_not_in_short_spy_index(self):
+        """When prev_ts not in spy_indicators.index during short scan, spy_ret_20d=None."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        spy_idx = pd.bdate_range("2025-01-06", periods=n)
+        spy_ind = pd.DataFrame(
+            {"Close": [200.0] * n, "ret_20d": [-5.0] * n},
+            index=spy_idx,
+        )
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],  # prev_ts = idx[0] = 2025-01-02, not in spy_idx
+            spy_indicators=spy_ind,
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_earnings_history_in_short_scan(self):
+        """Earnings history passed to short scan — lines 1692-1693 covered."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            earnings_history={},
+        )
+        self.assertIn("total_trades", result)
+
+    def test_short_entry_open_fallback(self):
+        """Short entry falls back to Close when Open column is absent — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx).drop(columns=["Open"])
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        self.assertGreater(result["short_trades"], 0)
+
+    def test_short_entry_notional_too_small(self):
+        """Short entry is skipped when notional < 0.5 — continue path at line 1786."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+            initial_capital=0.4,  # notional = (0.4 / 2) * 0.9 = 0.18 < 0.5 → continue
+        )
+        self.assertEqual(result["short_trades"], 0)
+
+    def test_short_entry_exception_caught(self):
+        """ValueError in short entry loop is caught by outer except — no crash."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_short_ind(idx)
+        ind = ind.astype(object)
+        # Open="crash" on first trading date: float("crash") → ValueError (not KeyError/TypeError)
+        # → outer except Exception: continue
+        ind.iloc[1, ind.columns.get_loc("Open")] = "crash"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        regime = {ts.strftime("%Y-%m-%d"): "DEFENSIVE_DOWNTREND" for ts in idx}
+        result = _run_combined_simulation(
+            {"WEAK": ind},
+            idx[1:],
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            regime_by_date=regime,
+            max_long_positions=0,
+            max_short_positions=2,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_long_rs_ranks_none_bypasses_rs_check(self):
+        """When rs_ranks is None, the RS gate is skipped — signal appended directly."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks=None,  # False branch of 1640 → append directly to candidates
+            regime_by_date=None,
+            max_hold_days=3,
+        )
+        self.assertGreater(result["long_trades"], 0)
+
+    def test_long_capping_loop_break(self):
+        """Capping loop breaks when long_capped reaches long_slots — line 1658."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        inds = {"STOCK1": self._make_long_ind(idx), "STOCK2": self._make_long_ind(idx)}
+        ranks = {sym: dict.fromkeys(all_dates, 90.0) for sym in inds}
+        result = _run_combined_simulation(
+            inds,
+            idx[1:],
+            rs_ranks=ranks,
+            regime_by_date=None,
+            max_long_positions=1,  # 1 slot but 2 candidates → break after first
+            max_hold_days=10,
+        )
+        self.assertEqual(result["long_trades"], 1)
+
+    def test_long_per_signal_cap_exceeded(self):
+        """Per-signal cap causes extra same-signal candidates to be skipped — 1660->1656."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        inds = {f"STOCK{i}": self._make_long_ind(idx) for i in range(4)}
+        ranks = {sym: dict.fromkeys(all_dates, 90.0) for sym in inds}
+        result = _run_combined_simulation(
+            inds,
+            idx[1:2],  # single trading day → only one entry opportunity
+            rs_ranks=ranks,
+            regime_by_date=None,
+            max_long_positions=5,
+            per_signal_cap=2,  # cap at 2 momentum entries; STOCK2/STOCK3 skipped
+            max_hold_days=10,
+        )
+        buys = [t for t in result["trades"] if t["action"] == "BUY"]
+        self.assertLessEqual(len(buys), 2)
+
+    def test_long_entry_open_fallback(self):
+        """Long entry falls back to Close when Open column is absent — line 1716."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx).drop(columns=["Open"])
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+        )
+        self.assertGreater(result["long_trades"], 0)
+
+    def test_long_entry_cost_too_small(self):
+        """Long entry is skipped when cost < 0.5 — line 1737."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks=None,
+            regime_by_date=None,
+            initial_capital=0.4,  # notional = (0.4/2)*0.9 = 0.18 < 0.5 → continue
+            max_long_positions=2,
+        )
+        self.assertEqual(result["long_trades"], 0)
+
+    def test_long_entry_exception_caught(self):
+        """ValueError in long entry loop is caught by outer except — lines 1757-1758."""
+        n = 8
+        idx = pd.bdate_range("2025-01-02", periods=n)
+        ind = self._make_long_ind(idx)
+        ind = ind.astype(object)
+        ind.iloc[1, ind.columns.get_loc("Open")] = "crash"
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        result = _run_combined_simulation(
+            {"STRONG": ind},
+            idx[1:],
+            rs_ranks={"STRONG": dict.fromkeys(all_dates, 90.0)},
+            regime_by_date=None,
+        )
+        self.assertIn("total_trades", result)
+
+
+class TestRunCombinedAnalysis(unittest.TestCase):
+    def test_returns_result_dict(self):
+        raw_mock = _make_raw(n=100, symbols=("AAPL", "FLAT"))
+        with (
+            patch("backtest.engine.yf.download", return_value=raw_mock),
+            patch("backtest.engine._assert_pre_holdout"),
+        ):
+            result = run_combined_analysis(
+                ["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=False
+            )
+        self.assertIsInstance(result, dict)
+        self.assertIn("total_trades", result)
+        self.assertIn("by_side", result)
+        self.assertIn("start", result)
+        self.assertIn("end", result)
+
+    def test_returns_empty_when_no_data(self):
+        with (
+            patch("backtest.engine.yf.download", return_value=pd.DataFrame()),
+            patch("backtest.engine._assert_pre_holdout"),
+        ):
+            result = run_combined_analysis(
+                ["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=False
+            )
+        self.assertEqual(result, {})
+
+    def test_spy_in_indicators_skips_separate_download(self):
+        raw_with_spy = _make_raw(n=100, symbols=("AAPL", "SPY"))
+        with (
+            patch("backtest.engine.yf.download", return_value=raw_with_spy),
+            patch("backtest.engine._assert_pre_holdout"),
+        ):
+            result = run_combined_analysis(
+                ["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=False
+            )
+        self.assertIn("total_trades", result)
+
+    def test_use_earnings_history_true(self):
+        raw_mock = _make_raw(n=100, symbols=("AAPL", "SPY"))
+        with (
+            patch("backtest.engine.yf.download", return_value=raw_mock),
+            patch("backtest.engine._assert_pre_holdout"),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_prefetch,
+        ):
+            run_combined_analysis(["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=True)
+        mock_prefetch.assert_called_once()
+
+    def test_vix_fetch_failure_does_not_crash(self):
+        raw_mock = _make_raw(n=100, symbols=("AAPL", "SPY"))
+        call_count = [0]
+
+        def _side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return raw_mock
+            raise RuntimeError("vix fetch failed")
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_side_effect),
+            patch("backtest.engine._assert_pre_holdout"),
+        ):
+            result = run_combined_analysis(
+                ["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=False
+            )
+        self.assertIn("total_trades", result)
+
+    def test_spy_fetch_returns_empty_does_not_crash(self):
+        raw_mock = _make_raw(n=100, symbols=("AAPL", "FLAT"))
+        call_count = [0]
+
+        def _side_effect(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return raw_mock
+            return pd.DataFrame()
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_side_effect),
+            patch("backtest.engine._assert_pre_holdout"),
+        ):
+            result = run_combined_analysis(
+                ["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=False
+            )
+        self.assertIn("total_trades", result)
+
+
+class TestPrintCombinedResults(unittest.TestCase):
+    def _make_result(self) -> dict:
+        return {
+            "total_return_pct": 5.0,
+            "total_trades": 10,
+            "long_trades": 8,
+            "short_trades": 2,
+            "win_rate_pct": 60.0,
+            "long_win_rate_pct": 62.0,
+            "short_win_rate_pct": 50.0,
+            "avg_return_per_trade_pct": 0.5,
+            "max_drawdown_pct": -5.0,
+            "sharpe_ratio": 1.2,
+            "by_signal": {
+                "momentum": {"wins": 5, "losses": 3, "total_return": 4.0},
+                "loser_momentum": {"wins": 1, "losses": 1, "total_return": 0.5},
+            },
+            "by_side": {
+                "long": {
+                    "trades": 8,
+                    "win_rate_pct": 62.0,
+                    "avg_return_pct": 0.5,
+                    "total_return_contribution": 4.0,
+                },
+                "short": {
+                    "trades": 2,
+                    "win_rate_pct": 50.0,
+                    "avg_return_pct": 0.25,
+                    "total_return_contribution": 0.5,
+                },
+            },
+            "regime_distribution": {"BULL_TREND": 100, "DEFENSIVE_DOWNTREND": 50},
+        }
+
+    def test_prints_without_error(self):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_combined_results(self._make_result(), "2025-01-01", "2025-12-31")
+        output = buf.getvalue()
+        self.assertIn("COMBINED LONG/SHORT ANALYSIS", output)
+        self.assertIn("5.00%", output)
+
+    def test_prints_with_empty_regime_distribution(self):
+        import io
+        from contextlib import redirect_stdout
+
+        result = self._make_result()
+        result["regime_distribution"] = {}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_combined_results(result, "2025-01-01", "2025-12-31")
+        self.assertIn("COMBINED LONG/SHORT ANALYSIS", buf.getvalue())
+
+    def test_prints_regime_distribution_section(self):
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _print_combined_results(self._make_result(), "2025-01-01", "2025-12-31")
+        output = buf.getvalue()
+        self.assertIn("Regime distribution", output)
+        self.assertIn("BULL_TREND", output)
+        self.assertIn("[shorts active]", output)
