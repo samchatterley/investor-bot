@@ -522,7 +522,7 @@ class TestScanShortCandidates(unittest.TestCase):
                 rs_rank_pct=10.0,
                 price_vs_ema21_pct=-1.0,
                 ema9_above_ema21=True,  # EMA slope up — no ema_breakdown
-                rel_strength_20d=-2.0,  # not weak enough — no loser_momentum
+                rel_strength_20d=-2.0,
                 earnings_miss_candidate=False,
             )
         ]
@@ -570,28 +570,6 @@ class TestScanShortCandidates(unittest.TestCase):
 
 
 class TestEvaluateShortSignals(unittest.TestCase):
-    def test_loser_momentum_fires_on_weak_rel_strength(self):
-        from signals.evaluator import evaluate_short_signals
-
-        snap = {"rel_strength_20d": -9.0, "ret_5d_pct": -3.0}
-        self.assertIn("loser_momentum", evaluate_short_signals(snap))
-
-    def test_loser_momentum_not_fire_on_moderate_underperformance(self):
-        from signals.evaluator import evaluate_short_signals
-
-        snap = {"rel_strength_20d": -3.0, "ret_5d_pct": -2.0}  # above -8% threshold
-        self.assertNotIn("loser_momentum", evaluate_short_signals(snap))
-
-    def test_loser_momentum_not_fire_when_5d_positive(self):
-        from signals.evaluator import evaluate_short_signals
-
-        snap = {"rel_strength_20d": -9.0, "ret_5d_pct": 1.0}  # threshold met, but stock bouncing
-        self.assertNotIn("loser_momentum", evaluate_short_signals(snap))
-
-    def test_loser_momentum_absent_when_rel_strength_missing(self):
-        from signals.evaluator import evaluate_short_signals
-
-        self.assertNotIn("loser_momentum", evaluate_short_signals({}))
 
     def test_ema_breakdown_fires_when_solidly_below_and_slope_down(self):
         from signals.evaluator import evaluate_short_signals
@@ -647,19 +625,10 @@ class TestEvaluateShortSignals(unittest.TestCase):
     def test_blocked_signal_excluded(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = {"rel_strength_20d": -8.0}
+        snap = {"price_vs_ema21_pct": -3.0, "ema9_above_ema21": False}
         self.assertNotIn(
-            "loser_momentum",
-            evaluate_short_signals(snap, blocked=frozenset({"loser_momentum"})),
-        )
-
-    def test_custom_params_override_threshold(self):
-        from signals.evaluator import evaluate_short_signals
-
-        snap = {"rel_strength_20d": -3.0, "ret_5d_pct": -1.0}
-        self.assertIn(
-            "loser_momentum",
-            evaluate_short_signals(snap, params={"loser_mom_threshold": -2.0}),
+            "ema_breakdown",
+            evaluate_short_signals(snap, blocked=frozenset({"ema_breakdown"})),
         )
 
     def test_high_short_interest_fires_when_flag_set(self):
@@ -690,13 +659,13 @@ class TestEvaluateShortSignals(unittest.TestCase):
         self.assertEqual(result[0], "earnings_miss")
         self.assertEqual(result[1], "high_short_interest")
 
-    def test_priority_order_short_interest_before_loser_momentum(self):
+    def test_priority_order_short_interest_before_ema_breakdown(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = {"high_short_interest": True, "rel_strength_20d": -8.0, "ret_5d_pct": -2.0}
+        snap = {"high_short_interest": True, "price_vs_ema21_pct": -3.0, "ema9_above_ema21": False}
         result = evaluate_short_signals(snap)
         self.assertEqual(result[0], "high_short_interest")
-        self.assertEqual(result[1], "loser_momentum")
+        self.assertEqual(result[1], "ema_breakdown")
 
 
 # ── DB migration 5: side column ───────────────────────────────────────────────

@@ -93,8 +93,8 @@ _MIN_TRAIN_TRADES = 20
 _SHORT_MAX_HOLD_DAYS = 5  # shorts tend to play out over a slightly longer window
 _SHORT_RS_RANK_GATE = 25.0  # must be in weakest quartile of the universe
 
-# Regimes in which short entries are permitted — laggard shorts in bull/chop markets
-_SHORT_ALLOWED_REGIMES = frozenset({"BULL_TREND", "NEUTRAL_CHOP"})
+# Regimes in which short entries are permitted — suppressed in bull/chop
+_SHORT_ALLOWED_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "HIGH_VOL_DOWNTREND", "STRESS_RISK_OFF"})
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -3257,7 +3257,7 @@ def _print_combined_results(r: dict, start_date: str, end_date: str) -> None:
     print("  COMBINED LONG/SHORT ANALYSIS")
     print(f"  {start_date} → {end_date}")
     print("  NOTE: Rule proxy only — no Claude judgment, news, or macro context.")
-    print("  Shorts gated to bearish regimes (DEFENSIVE/HIGH_VOL/STRESS) only.")
+    print("  Shorts: earnings_miss + ema_breakdown in DEFENSIVE/HIGH_VOL/STRESS only.")
     print("  BIAS: Universe from current tradable listings — survivorship risk.")
     print("=" * 65)
     print(f"  Total return:      {r['total_return_pct']:+.2f}%")

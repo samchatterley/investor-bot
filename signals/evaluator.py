@@ -142,12 +142,10 @@ _BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"}
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
     "high_short_interest": 1,  # Crowded short + low lendable supply (live-only, not backtestable)
-    "loser_momentum": 2,  # Persistent RS underperformance vs market
-    "ema_breakdown": 3,  # Structural downtrend confirmed by price + EMA slope
+    "ema_breakdown": 2,  # Structural downtrend confirmed by price + EMA slope
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
-    "loser_mom_threshold": -8.0,  # rel_strength_20d must be <= this (SPY-relative)
     "ema_breakdown_threshold": -2.0,  # price_vs_ema21_pct must be <= this
 }
 
@@ -163,7 +161,7 @@ def evaluate_short_signals(
     ----------
     snapshot : dict
         Technical snapshot in scanner / market_data format.  Expected keys:
-        rel_strength_20d, ret_5d_pct, price_vs_ema21_pct, ema9_above_ema21, earnings_miss_candidate.
+        price_vs_ema21_pct, ema9_above_ema21, earnings_miss_candidate.
     params : dict | None
         Override DEFAULT_SHORT_SIGNAL_PARAMS thresholds.
     blocked : frozenset[str]
@@ -182,15 +180,6 @@ def evaluate_short_signals(
 
     if "high_short_interest" not in blocked and snapshot.get("high_short_interest"):
         matched.append("high_short_interest")
-
-    rel_20d = snapshot.get("rel_strength_20d")
-    if (
-        "loser_momentum" not in blocked
-        and rel_20d is not None
-        and rel_20d <= p["loser_mom_threshold"]
-        and snapshot.get("ret_5d_pct", 0.0) < 0
-    ):
-        matched.append("loser_momentum")
 
     if (
         "ema_breakdown" not in blocked
