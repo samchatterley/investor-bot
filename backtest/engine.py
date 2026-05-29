@@ -93,6 +93,7 @@ _MIN_TRAIN_TRADES = 20
 # Short-side simulation constants
 _SHORT_MAX_HOLD_DAYS = 5  # shorts tend to play out over a slightly longer window
 _SHORT_RS_RANK_GATE = 25.0  # must be in weakest quartile of the universe
+_WINNER_REVERSAL_RS_GATE = 75.0  # winner_reversal requires top quartile (inverted gate)
 
 # Regimes in which short entries are permitted — suppressed in bull/chop
 _SHORT_ALLOWED_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "HIGH_VOL_DOWNTREND", "STRESS_RISK_OFF"})
@@ -272,28 +273,33 @@ def _short_entry_signal(
 ) -> list[str] | None:
     """Return matched bearish signals if this row qualifies as a short entry, else None.
 
-    Hard gates:
-    - rs_rank_pct must be < _SHORT_RS_RANK_GATE (weakest quartile of universe)
-    - At least one bearish signal must fire from evaluate_short_signals()
+    Two RS gates:
+    - winner_reversal: rs_rank_pct >= _WINNER_REVERSAL_RS_GATE (top quartile = exhausted winner)
+    - all other signals: rs_rank_pct < _SHORT_RS_RANK_GATE (weakest quartile)
 
-    ``spy_ret_20d`` is the SPY 20-day return on the same bar; used to compute
-    ``rel_strength_20d = stock_ret_20d - spy_ret_20d`` for the loser_momentum signal.
+    A stock in the middle quartiles (25–75%) produces no short signal.
     """
+    snap = _row_to_snapshot(row)
+
+    # winner_reversal path — inverted RS gate, top-quartile exhaustion play
+    if rs_rank_pct is not None and rs_rank_pct >= _WINNER_REVERSAL_RS_GATE:
+        if fundamentals:
+            snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
+        wr_sigs = evaluate_short_signals(
+            snap,
+            blocked=frozenset({"earnings_miss", "high_short_interest", "ema_breakdown"}),
+        )
+        if wr_sigs:
+            return wr_sigs
+
+    # Standard weak-RS path — bottom-quartile structural short signals
     if rs_rank_pct is None or rs_rank_pct >= _SHORT_RS_RANK_GATE:
         return None
 
-    snap = _row_to_snapshot(row)
-
-    # Enrich with relative 20d strength for loser_momentum signal
-    row_ret_20d = float(row.get("ret_20d", 0))
-    if spy_ret_20d is not None:
-        snap["rel_strength_20d"] = row_ret_20d - spy_ret_20d
-
-    # Enrich with earnings miss for earnings_miss signal
     if fundamentals:
         snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
 
-    signals = evaluate_short_signals(snap)
+    signals = evaluate_short_signals(snap, blocked=frozenset({"winner_reversal"}))
     return signals if signals else None
 
 

@@ -666,6 +666,49 @@ class TestEvaluateShortSignals(unittest.TestCase):
         self.assertEqual(result[0], "high_short_interest")
         self.assertEqual(result[1], "ema_breakdown")
 
+    def test_winner_reversal_fires_on_overbought_extended_reverting(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rsi_14": 75.0, "price_vs_ema21_pct": 5.0, "ret_5d_pct": -1.0}
+        result = evaluate_short_signals(snap)
+        self.assertIn("winner_reversal", result)
+
+    def test_winner_reversal_blocked_by_low_rsi(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rsi_14": 65.0, "price_vs_ema21_pct": 5.0, "ret_5d_pct": -1.0}
+        result = evaluate_short_signals(snap)
+        self.assertNotIn("winner_reversal", result)
+
+    def test_winner_reversal_blocked_by_small_ema21_gap(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rsi_14": 75.0, "price_vs_ema21_pct": 2.0, "ret_5d_pct": -1.0}
+        result = evaluate_short_signals(snap)
+        self.assertNotIn("winner_reversal", result)
+
+    def test_winner_reversal_blocked_by_positive_ret5d(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rsi_14": 75.0, "price_vs_ema21_pct": 5.0, "ret_5d_pct": 0.5}
+        result = evaluate_short_signals(snap)
+        self.assertNotIn("winner_reversal", result)
+
+    def test_winner_reversal_priority_after_ema_breakdown(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertGreater(
+            SHORT_SIGNAL_PRIORITY["winner_reversal"],
+            SHORT_SIGNAL_PRIORITY["ema_breakdown"],
+        )
+
+    def test_winner_reversal_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rsi_14": 75.0, "price_vs_ema21_pct": 5.0, "ret_5d_pct": -1.0}
+        result = evaluate_short_signals(snap, blocked=frozenset({"winner_reversal"}))
+        self.assertNotIn("winner_reversal", result)
+
 
 # ── DB migration 5: side column ───────────────────────────────────────────────
 

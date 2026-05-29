@@ -17,6 +17,7 @@ from backtest.engine import (
     _DEFAULT_PARAMS,
     _SHORT_ALLOWED_REGIMES,
     _SIGNAL_PRIORITY,
+    _WINNER_REVERSAL_RS_GATE,
     _assert_pre_holdout,
     _binomial_p_value,
     _bootstrap_cell_ci,
@@ -4878,6 +4879,77 @@ class TestShortEntrySignal(unittest.TestCase):
         row["ret_20d"] = 10.0  # strong positive return
         result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
         # With strong rising trend: ema9>ema21, price>ema21 → no breakdown
+        self.assertIsNone(result)
+
+    def test_winner_reversal_fires_via_inverted_rs_gate(self):
+        """rs_rank_pct >= 75 + overbought/extended/reverting → winner_reversal signal."""
+        row = self._make_row()
+        row["rsi"] = 75.0
+        row["pct_vs_ema21"] = 5.0
+        row["ret_5d"] = -1.0
+        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0)
+        self.assertIsNotNone(result)
+        self.assertIn("winner_reversal", result)
+
+    def test_winner_reversal_blocked_in_middle_rs_range(self):
+        """25 <= rs_rank_pct < 75 → no signal from either RS gate."""
+        row = self._make_row()
+        row["rsi"] = 75.0
+        row["pct_vs_ema21"] = 5.0
+        row["ret_5d"] = -1.0
+        for rank in (30.0, 50.0, 74.9):
+            self.assertIsNone(
+                _short_entry_signal(row, rs_rank_pct=rank, spy_ret_20d=0.0),
+                msg=f"Expected None for rs_rank_pct={rank}",
+            )
+
+    def test_winner_reversal_not_in_weak_rs_path(self):
+        """rs_rank_pct < 25 → winner_reversal blocked; only standard short signals fire."""
+        row = self._make_row()
+        row["rsi"] = 75.0
+        row["pct_vs_ema21"] = 5.0
+        row["ret_5d"] = -1.0
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
+        if result is not None:
+            self.assertNotIn("winner_reversal", result)
+
+    def test_winner_reversal_gate_value(self):
+        """_WINNER_REVERSAL_RS_GATE is set to 75.0."""
+        self.assertEqual(_WINNER_REVERSAL_RS_GATE, 75.0)
+
+    def test_winner_reversal_with_fundamentals_none(self):
+        """winner_reversal path with fundamentals=None does not crash."""
+        row = self._make_row()
+        row["rsi"] = 75.0
+        row["pct_vs_ema21"] = 5.0
+        row["ret_5d"] = -1.0
+        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0, fundamentals=None)
+        self.assertIsNotNone(result)
+        self.assertIn("winner_reversal", result)
+
+    def test_winner_reversal_with_fundamentals_dict(self):
+        """winner_reversal path with non-None fundamentals enriches snapshot without crash."""
+        row = self._make_row()
+        row["rsi"] = 75.0
+        row["pct_vs_ema21"] = 5.0
+        row["ret_5d"] = -1.0
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=80.0,
+            spy_ret_20d=0.0,
+            fundamentals={"earnings_miss_active": False},
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("winner_reversal", result)
+
+    def test_winner_reversal_no_fire_when_conditions_not_met_at_high_rank(self):
+        """rs_rank_pct >= 75 but conditions not met → falls through to weak-RS gate → None."""
+        row = self._make_row()
+        # rsi too low for winner_reversal; price below EMA so no ema_breakdown either
+        row["rsi"] = 50.0
+        row["pct_vs_ema21"] = 1.0
+        row["ret_5d"] = 1.0
+        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0)
         self.assertIsNone(result)
 
 

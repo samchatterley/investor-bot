@@ -156,10 +156,13 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
     "high_short_interest": 1,  # Crowded short + low lendable supply (live-only, not backtestable)
     "ema_breakdown": 2,  # Structural downtrend confirmed by price + EMA slope
+    "winner_reversal": 3,  # Top-quartile winner showing exhaustion (inverted RS gate)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     "ema_breakdown_threshold": -2.0,  # price_vs_ema21_pct must be <= this
+    "wr_rsi_min": 70.0,  # winner_reversal: RSI must be above this (overbought)
+    "wr_ema21_min": 3.0,  # winner_reversal: price_vs_ema21_pct must be above this (extended)
 }
 
 
@@ -200,6 +203,14 @@ def evaluate_short_signals(
         and not snapshot.get("ema9_above_ema21", True)
     ):
         matched.append("ema_breakdown")
+
+    if (
+        "winner_reversal" not in blocked
+        and snapshot.get("rsi_14", 50.0) > p["wr_rsi_min"]
+        and snapshot.get("price_vs_ema21_pct", 0.0) > p["wr_ema21_min"]
+        and snapshot.get("ret_5d_pct", 0.0) < 0.0
+    ):
+        matched.append("winner_reversal")
 
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched
