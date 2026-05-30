@@ -182,7 +182,9 @@ SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset(
 #   ema_breakdown:   WR 37-41%, avg -0.78 to -1.04% across all param sweeps; Sharpe -1.22.
 #                    Fires after a stock has already broken down — too late; no predictive edge.
 #   winner_reversal: RSI>70 + extended + ret_5d<0 is self-contradictory; barely fires.
-SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset({"ema_breakdown", "winner_reversal"})
+SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
+    {"ema_breakdown", "winner_reversal", "failed_breakout", "high_vol_reversal", "earnings_miss"}
+)
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental

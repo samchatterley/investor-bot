@@ -44,13 +44,14 @@ def _snap(**kwargs):
         "vol_ratio": 1.0,
         "rsi_14": 50.0,
         "ret_5d_pct": 0.0,
+        "high_short_interest": True,
     }
     defaults.update(kwargs)
     return defaults
 
 
 def _reversal_snap(**kwargs):
-    """Snap for the reversal path (rs_rank >= 65, failed_breakout or high_vol_reversal)."""
+    """Snap for the reversal path (rs_rank >= 65, high_short_interest)."""
     defaults = {
         "symbol": "EXTENDED",
         "current_price": 120.0,
@@ -64,6 +65,7 @@ def _reversal_snap(**kwargs):
         "close_pct_of_range": 0.5,
         "ret_5d_pct": 3.0,
         "earnings_miss_candidate": False,
+        "high_short_interest": True,
     }
     defaults.update(kwargs)
     return defaults
@@ -476,22 +478,23 @@ class TestScanShortCandidates(unittest.TestCase):
         result = scan_short_candidates(snaps, "HIGH_VOL_DOWNTREND", set())
         self.assertEqual(len(result), 1)
 
-    def test_returns_reversal_candidate_via_failed_breakout(self):
-        """Reversal path: rs_rank >= 65, failed_breakout_flag → returns candidate."""
+    def test_returns_reversal_candidate_via_high_short_interest(self):
+        """Reversal path: rs_rank >= 65, high_short_interest=True → returns candidate."""
         from execution.stock_scanner import scan_short_candidates
 
-        snaps = [_reversal_snap(failed_breakout_flag=True, vol_ratio=1.5, rsi_14=62.0)]
+        snaps = [_reversal_snap(high_short_interest=True)]
         result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
         self.assertEqual(len(result), 1)
-        self.assertIn("failed_breakout", result[0]["matched_signals"])
+        self.assertIn("high_short_interest", result[0]["matched_signals"])
 
-    def test_returns_reversal_candidate_via_high_vol_reversal(self):
-        """Reversal path: rs_rank >= 65, high vol reversal bar → returns candidate."""
+    def test_reversal_path_all_signals_disabled_returns_empty(self):
+        """Reversal path: rs_rank >= 65 but all signals disabled and no hsi → empty."""
         from execution.stock_scanner import scan_short_candidates
 
         snaps = [
             _reversal_snap(
-                failed_breakout_flag=False,
+                high_short_interest=False,
+                failed_breakout_flag=True,
                 vol_ratio=2.5,
                 close_pct_of_range=0.1,
                 rsi_14=65.0,
@@ -499,8 +502,7 @@ class TestScanShortCandidates(unittest.TestCase):
             )
         ]
         result = scan_short_candidates(snaps, "DEFENSIVE_DOWNTREND", set())
-        self.assertEqual(len(result), 1)
-        self.assertIn("high_vol_reversal", result[0]["matched_signals"])
+        self.assertEqual(result, [])
 
     def test_excludes_held_symbols(self):
         from execution.stock_scanner import scan_short_candidates
@@ -554,20 +556,28 @@ class TestScanShortCandidates(unittest.TestCase):
         result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
         self.assertEqual(result, [])
 
-    def test_fundamental_path_requires_earnings_miss_signal(self):
-        """Bottom-quartile stock with no earnings miss signal → excluded."""
+    def test_fundamental_path_requires_active_signal(self):
+        """Bottom-quartile stock with no live signals → excluded."""
         from execution.stock_scanner import scan_short_candidates
 
-        snaps = [_snap(rs_rank_pct=10.0, price_vs_ema21_pct=-2.0, earnings_miss_candidate=False)]
+        snaps = [
+            _snap(
+                rs_rank_pct=10.0,
+                price_vs_ema21_pct=-2.0,
+                earnings_miss_candidate=False,
+                high_short_interest=False,
+            )
+        ]
         result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
         self.assertEqual(result, [])
 
     def test_reversal_path_requires_reversal_signal(self):
-        """High-RS stock with no reversal signals → excluded."""
+        """High-RS stock with no live signals → excluded."""
         from execution.stock_scanner import scan_short_candidates
 
         snaps = [
             _reversal_snap(
+                high_short_interest=False,
                 failed_breakout_flag=False,
                 vol_ratio=1.0,
                 close_pct_of_range=0.6,
@@ -635,22 +645,26 @@ class TestEvaluateShortSignals(unittest.TestCase):
         snap = {"rsi_14": 80.0, "price_vs_ema21_pct": 5.0, "ret_5d_pct": -1.0}
         self.assertNotIn("winner_reversal", evaluate_short_signals(snap))
 
-    def test_earnings_miss_fires_on_candidate(self):
-        from signals.evaluator import evaluate_short_signals
+    def test_earnings_miss_globally_disabled(self):
+        """earnings_miss is in SHORT_GLOBALLY_DISABLED — never fires."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED, evaluate_short_signals
 
+        self.assertIn("earnings_miss", SHORT_GLOBALLY_DISABLED)
         snap = {"earnings_miss_candidate": True}
-        self.assertIn("earnings_miss", evaluate_short_signals(snap))
+        self.assertNotIn("earnings_miss", evaluate_short_signals(snap))
 
     def test_earnings_miss_not_fire_without_flag(self):
         from signals.evaluator import evaluate_short_signals
 
         self.assertNotIn("earnings_miss", evaluate_short_signals({}))
 
-    def test_failed_breakout_fires_when_flag_and_conditions_met(self):
-        from signals.evaluator import evaluate_short_signals
+    def test_failed_breakout_globally_disabled(self):
+        """failed_breakout is in SHORT_GLOBALLY_DISABLED — never fires."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED, evaluate_short_signals
 
+        self.assertIn("failed_breakout", SHORT_GLOBALLY_DISABLED)
         snap = {"failed_breakout_flag": True, "vol_ratio": 1.5, "rsi_14": 62.0}
-        self.assertIn("failed_breakout", evaluate_short_signals(snap))
+        self.assertNotIn("failed_breakout", evaluate_short_signals(snap))
 
     def test_failed_breakout_blocked_when_flag_false(self):
         from signals.evaluator import evaluate_short_signals
@@ -670,11 +684,13 @@ class TestEvaluateShortSignals(unittest.TestCase):
         snap = {"failed_breakout_flag": True, "vol_ratio": 1.5, "rsi_14": 90.0}
         self.assertNotIn("failed_breakout", evaluate_short_signals(snap))
 
-    def test_high_vol_reversal_fires_when_all_conditions_met(self):
-        from signals.evaluator import evaluate_short_signals
+    def test_high_vol_reversal_globally_disabled(self):
+        """high_vol_reversal is in SHORT_GLOBALLY_DISABLED — never fires."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED, evaluate_short_signals
 
+        self.assertIn("high_vol_reversal", SHORT_GLOBALLY_DISABLED)
         snap = {"vol_ratio": 2.5, "close_pct_of_range": 0.1, "rsi_14": 65.0, "ret_5d_pct": 3.0}
-        self.assertIn("high_vol_reversal", evaluate_short_signals(snap))
+        self.assertNotIn("high_vol_reversal", evaluate_short_signals(snap))
 
     def test_high_vol_reversal_blocked_by_low_volume(self):
         from signals.evaluator import evaluate_short_signals
@@ -706,7 +722,8 @@ class TestEvaluateShortSignals(unittest.TestCase):
         snap = {"price_vs_ema21_pct": -1.0, "rsi_14": 50.0}
         self.assertEqual(evaluate_short_signals(snap), [])
 
-    def test_sorted_by_priority_earnings_miss_first(self):
+    def test_high_short_interest_fires_as_only_live_signal(self):
+        """With all other signals disabled, high_short_interest is the only live signal."""
         from signals.evaluator import evaluate_short_signals
 
         snap = {
@@ -714,9 +731,10 @@ class TestEvaluateShortSignals(unittest.TestCase):
             "failed_breakout_flag": True,
             "vol_ratio": 1.5,
             "rsi_14": 62.0,
+            "high_short_interest": True,
         }
         result = evaluate_short_signals(snap)
-        self.assertEqual(result[0], "earnings_miss")
+        self.assertEqual(result, ["high_short_interest"])
 
     def test_high_short_interest_fires_when_flag_set(self):
         from signals.evaluator import evaluate_short_signals
@@ -738,7 +756,8 @@ class TestEvaluateShortSignals(unittest.TestCase):
             evaluate_short_signals(snap, blocked=frozenset({"high_short_interest"})),
         )
 
-    def test_priority_order_earnings_miss_before_failed_breakout(self):
+    def test_all_disabled_signals_produce_empty_result(self):
+        """All signals in SHORT_GLOBALLY_DISABLED produce empty result even when conditions met."""
         from signals.evaluator import evaluate_short_signals
 
         snap = {
@@ -748,7 +767,7 @@ class TestEvaluateShortSignals(unittest.TestCase):
             "rsi_14": 62.0,
         }
         result = evaluate_short_signals(snap)
-        self.assertEqual(result[0], "earnings_miss")
+        self.assertEqual(result, [])
 
     def test_priority_order_failed_breakout_before_high_vol_reversal(self):
         from signals.evaluator import SHORT_SIGNAL_PRIORITY

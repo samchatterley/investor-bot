@@ -332,9 +332,7 @@ def scan_short_candidates(
 
         # Path A: reversal — recently strong, now showing exhaustion
         if rs_rank is not None and rs_rank >= 65.0:
-            rev_signals = evaluate_short_signals(
-                s, blocked=frozenset({"earnings_miss", "high_short_interest"})
-            )
+            rev_signals = evaluate_short_signals(s, blocked=frozenset({"earnings_miss"}))
             if rev_signals:
                 confidence = int(len(rev_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
                 candidates.append(
@@ -353,7 +351,7 @@ def scan_short_candidates(
         if s.get("price_vs_ema21_pct", 0.0) >= 0:
             continue
         fund_signals = evaluate_short_signals(
-            s, blocked=frozenset({"failed_breakout", "high_vol_reversal", "high_short_interest"})
+            s, blocked=frozenset({"failed_breakout", "high_vol_reversal"})
         )
         if fund_signals:
             confidence = int(len(fund_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)

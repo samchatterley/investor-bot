@@ -225,6 +225,7 @@ def _row_to_snapshot(
         "rsi_divergence": bool(row.get("rsi_divergence", False)),
         "failed_breakout_flag": bool(row.get("failed_breakout_flag", False)),
         "close_pct_of_range": float(row.get("close_pct_of_range", 0.5)),
+        "high_short_interest": bool(row.get("high_short_interest", False)),
         "spy_ret_5d": spy_ret_5d,
         "spy_ret_10d": spy_ret_10d,
     }
@@ -320,7 +321,7 @@ def _short_entry_signal(
         rev_sigs = evaluate_short_signals(
             snap,
             params=short_params,
-            blocked=frozenset({"earnings_miss", "high_short_interest"}),
+            blocked=frozenset({"earnings_miss"}),
         )
         if rev_sigs:
             return rev_sigs
@@ -335,7 +336,7 @@ def _short_entry_signal(
     signals = evaluate_short_signals(
         snap,
         params=short_params,
-        blocked=frozenset({"failed_breakout", "high_vol_reversal", "high_short_interest"}),
+        blocked=frozenset({"failed_breakout", "high_vol_reversal"}),
     )
     return signals if signals else None
 
@@ -3872,6 +3873,168 @@ def run_short_param_sensitivity(
     return out
 
 
+def run_short_walk_forward(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    short_params: dict | None = None,
+    fold_days: int = 252,
+    initial_capital: float = 25_000.0,
+    max_positions: int = 2,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+) -> dict:
+    """Walk-forward stability check for a fixed set of short signal parameters.
+
+    No train phase — params are held constant across all folds.  Use this to
+    check whether a parameter set identified via run_short_param_sensitivity
+    holds up fold-by-fold, or whether the edge was concentrated in one period.
+
+    Parameters
+    ----------
+    short_params : dict | None
+        Fixed short signal params for every fold.  Defaults to
+        DEFAULT_SHORT_SIGNAL_PARAMS.
+    fold_days : int
+        Trading days per fold.  Default 252 (~1 year) to get enough
+        STRESS_RISK_OFF sessions per fold for meaningful stats.
+    """
+    _params = short_params or DEFAULT_SHORT_SIGNAL_PARAMS
+
+    _assert_pre_holdout(end_date)
+
+    logger.info(
+        f"Short walk-forward: {start_date} → {end_date} | fold={fold_days}d | params={_params}"
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_swf: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_swf = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_swf.index = pd.DatetimeIndex(_vix_df_swf.index).tz_localize(None)
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_swf)
+
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+
+    if len(trading_dates) < fold_days:
+        logger.error(f"Not enough trading days ({len(trading_dates)}) for one {fold_days}-day fold")
+        return {}
+
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "spy_indicators": spy_indicators,
+        "regime_by_date": regime_by_date or None,
+        "rs_ranks": rs_ranks,
+        "short_params": _params,
+    }
+
+    fold_results = []
+    i = 0
+    while i + fold_days <= len(trading_dates):
+        fold_dates = trading_dates[i : i + fold_days]
+        fold_start = fold_dates[0].strftime("%Y-%m-%d")
+        fold_end = fold_dates[-1].strftime("%Y-%m-%d")
+
+        result = _run_short_simulation(indicators, fold_dates, **sim_kwargs)
+        fold_results.append(
+            {
+                "fold_start": fold_start,
+                "fold_end": fold_end,
+                "sharpe": result["sharpe_ratio"],
+                "total_return_pct": result["total_return_pct"],
+                "win_rate_pct": result["win_rate_pct"],
+                "avg_trade_pct": result.get("avg_return_per_trade_pct", 0.0),
+                "total_trades": result["total_trades"],
+            }
+        )
+        logger.info(
+            f"  Fold {fold_start}–{fold_end}: Sharpe={result['sharpe_ratio']:+.3f} "
+            f"Return={result['total_return_pct']:+.1f}% WR={result['win_rate_pct']:.0f}% "
+            f"trades={result['total_trades']}"
+        )
+        i += fold_days
+
+    if not fold_results:
+        return {"folds": [], "summary": {}}
+
+    n = len(fold_results)
+    profitable = sum(1 for f in fold_results if f["total_return_pct"] > 0)
+    mean_sharpe = round(sum(f["sharpe"] for f in fold_results) / n, 3)
+    mean_return = round(sum(f["total_return_pct"] for f in fold_results) / n, 2)
+    mean_wr = round(sum(f["win_rate_pct"] for f in fold_results) / n, 1)
+    total_trades = sum(f["total_trades"] for f in fold_results)
+
+    print(
+        f"\n{'=' * 72}\n"
+        f"  SHORT WALK-FORWARD  {start_date} → {end_date}  "
+        f"fold={fold_days}d  params={_params}\n"
+        f"{'=' * 72}"
+    )
+    header = (
+        f"  {'Fold':>22}   {'WR%':>5}  {'Avg/tr':>8}  {'Sharpe':>7}  {'Ret%':>7}  {'Trades':>6}"
+    )
+    print(header)
+    print("  " + "-" * 68)
+    for f in fold_results:
+        mark = " ✓" if f["total_return_pct"] > 0 else "  "
+        print(
+            f"  {f['fold_start']} – {f['fold_end']}{mark}  "
+            f"{f['win_rate_pct']:>4.0f}%  "
+            f"{f['avg_trade_pct']:>+7.2f}%  "
+            f"{f['sharpe']:>+7.3f}  "
+            f"{f['total_return_pct']:>+6.1f}%  "
+            f"{f['total_trades']:>6}"
+        )
+    print("  " + "-" * 68)
+    print(
+        f"  {'MEAN':>22}    "
+        f"{mean_wr:>4.0f}%           "
+        f"{mean_sharpe:>+7.3f}  "
+        f"{mean_return:>+6.1f}%  "
+        f"{total_trades:>6}"
+    )
+    print(
+        f"\n  Profitable folds: {profitable}/{n}  |  Mean Sharpe: {mean_sharpe:+.3f}  "
+        f"|  Total trades across all folds: {total_trades}"
+    )
+    print(f"{'=' * 72}\n")
+
+    summary = {
+        "n_folds": n,
+        "profitable_folds": profitable,
+        "mean_sharpe": mean_sharpe,
+        "mean_return_pct": mean_return,
+        "mean_win_rate_pct": mean_wr,
+        "total_trades": total_trades,
+        "params": _params,
+    }
+    return {"folds": fold_results, "summary": summary}
+
+
 def run_holdout_evaluation(
     frozen_params: dict,
     version: str,
@@ -4095,6 +4258,17 @@ if __name__ == "__main__":  # pragma: no cover
         help="One-at-a-time parameter sweep for short signal thresholds",
     )
     parser.add_argument(
+        "--short-walk-forward",
+        action="store_true",
+        help="Walk-forward stability check for short signals with fixed params",
+    )
+    parser.add_argument(
+        "--short-fb-vol-min",
+        type=float,
+        default=None,
+        help="Override fb_vol_min for --short-walk-forward (default: use DEFAULT_SHORT_SIGNAL_PARAMS)",
+    )
+    parser.add_argument(
         "--combined",
         action="store_true",
         help="Combined long/short backtest — shared capital, regime-gated short entries",
@@ -4163,6 +4337,17 @@ if __name__ == "__main__":  # pragma: no cover
             args.end,
             initial_capital=args.capital,
             use_earnings_only=args.use_earnings_only,
+        )
+    elif args.short_walk_forward:
+        _swf_params = {**DEFAULT_SHORT_SIGNAL_PARAMS}
+        if args.short_fb_vol_min is not None:
+            _swf_params["fb_vol_min"] = args.short_fb_vol_min
+        run_short_walk_forward(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            short_params=_swf_params,
+            initial_capital=args.capital,
         )
     elif args.combined:
         run_combined_analysis(

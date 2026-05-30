@@ -4744,6 +4744,7 @@ def _make_short_indicators(
     # Weak stock: declining fast → low RS rank, below EMA21, negative rel_strength_20d
     weak_df = _make_declining_ohlcv(n)
     weak_ind = _compute_indicators(weak_df)
+    weak_ind["high_short_interest"] = True
 
     return {"WEAK": weak_ind}, spy_ind
 
@@ -4883,60 +4884,51 @@ class TestShortEntrySignal(unittest.TestCase):
 
     def test_regime_gate_allows_in_stress_risk_off(self):
         """Shorts allowed in STRESS_RISK_OFF; signal logic then decides."""
-        row = self._make_weak_row()
-        fund = {"earnings_miss_active": True}
+        row = self._make_weak_row(high_short_interest=True)
         result = _short_entry_signal(
-            row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime="STRESS_RISK_OFF", fundamentals=fund
+            row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime="STRESS_RISK_OFF"
         )
-        # With earnings miss active, should fire
         self.assertIsNotNone(result)
-        self.assertIn("earnings_miss", result)
+        self.assertIn("high_short_interest", result)
 
     def test_regime_none_does_not_block(self):
         """regime=None skips the regime gate (backtest rows without regime context)."""
-        row = self._make_weak_row()
-        fund = {"earnings_miss_active": True}
-        result = _short_entry_signal(
-            row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime=None, fundamentals=fund
-        )
+        row = self._make_weak_row(high_short_interest=True)
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime=None)
         self.assertIsNotNone(result)
 
-    def test_earnings_miss_fires_on_fundamental_path(self):
-        """rs_rank < 25 + earnings_miss_active → earnings_miss signal fires."""
-        row = self._make_weak_row()
-        fund = {"earnings_miss_active": True}
-        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=fund)
+    def test_high_short_interest_fires_on_fundamental_path(self):
+        """rs_rank < 25 + high_short_interest → signal fires on fundamental path."""
+        row = self._make_weak_row(high_short_interest=True)
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
         self.assertIsNotNone(result)
-        self.assertIn("earnings_miss", result)
+        self.assertIn("high_short_interest", result)
 
     def test_no_signals_returns_none_on_fundamental_path(self):
-        """rs_rank < 25 but no earnings miss and no signal → None."""
-        row = self._make_weak_row()
+        """rs_rank < 25 but no live signals → None."""
+        row = self._make_weak_row(high_short_interest=False)
         result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=None)
         self.assertIsNone(result)
 
-    def test_reversal_path_fires_failed_breakout(self):
-        """rs_rank >= 65 + failed_breakout_flag → failed_breakout signal fires."""
-        row = self._make_extended_row(
-            failed_breakout_flag=True,
-            vol_ratio=1.5,
-            rsi=62.0,
-        )
+    def test_reversal_path_fires_high_short_interest(self):
+        """rs_rank >= 65 + high_short_interest → signal fires on reversal path."""
+        row = self._make_extended_row(high_short_interest=True)
         result = _short_entry_signal(row, rs_rank_pct=70.0, spy_ret_20d=0.0)
         self.assertIsNotNone(result)
-        self.assertIn("failed_breakout", result)
+        self.assertIn("high_short_interest", result)
 
-    def test_reversal_path_fires_high_vol_reversal(self):
-        """rs_rank >= 65 + high vol + close in bottom of range → high_vol_reversal fires."""
+    def test_reversal_path_no_live_signals_returns_none(self):
+        """rs_rank >= 65 but all reversal signals are globally disabled and no hsi → None."""
         row = self._make_extended_row(
+            failed_breakout_flag=True,
             vol_ratio=2.5,
             close_pct_of_range=0.1,
             rsi=65.0,
             ret_5d=3.5,
+            high_short_interest=False,
         )
         result = _short_entry_signal(row, rs_rank_pct=70.0, spy_ret_20d=0.0)
-        self.assertIsNotNone(result)
-        self.assertIn("high_vol_reversal", result)
+        self.assertIsNone(result)
 
     def test_reversal_path_blocked_below_65(self):
         """rs_rank < 65 → reversal path skipped; fundamental path needs earnings_miss."""
@@ -4964,8 +4956,8 @@ class TestShortEntrySignal(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_fundamentals_none_on_reversal_path_does_not_crash(self):
-        """reversal path with fundamentals=None does not raise."""
-        row = self._make_extended_row(failed_breakout_flag=True, vol_ratio=1.5, rsi=62.0)
+        """reversal path with fundamentals=None and high_short_interest → does not raise."""
+        row = self._make_extended_row(high_short_interest=True)
         result = _short_entry_signal(row, rs_rank_pct=70.0, spy_ret_20d=0.0, fundamentals=None)
         self.assertIsNotNone(result)
 
@@ -4995,6 +4987,7 @@ class TestRunShortSimulation(unittest.TestCase):
             index=idx,
         )
         weak_ind = _compute_indicators(weak_df)
+        weak_ind["high_short_interest"] = True
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         # Use rs_rank=70 → reversal path (_REVERSAL_SHORT_RS_GATE=65)
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
@@ -5277,6 +5270,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind = _compute_indicators(df)
         if ind.empty:  # pragma: no cover
             return
+        ind["high_short_interest"] = True
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
@@ -5306,6 +5300,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind = _compute_indicators(df)
         if ind.empty:  # pragma: no cover
             return
+        ind["high_short_interest"] = True
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
@@ -5341,6 +5336,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind = _compute_indicators(df)
         if ind.empty:  # pragma: no cover
             return
+        ind["high_short_interest"] = True
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
@@ -5396,6 +5392,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind = _compute_indicators(df)
         if ind.empty:  # pragma: no cover
             return
+        ind["high_short_interest"] = True
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
@@ -5443,6 +5440,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind = _compute_indicators(df)
         if ind.empty:
             return
+        ind["high_short_interest"] = True
         # Make a copy that only has the first 30 rows — so exit days will raise KeyError
         short_ind = ind.iloc[:30]
         indicators = {"WEAK": short_ind}
@@ -5546,6 +5544,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind = _compute_indicators(df)
         if ind.empty:  # pragma: no cover
             return
+        ind["high_short_interest"] = True
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
@@ -5567,6 +5566,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         prices = [100.0 - i * 0.5 for i in range(n)]
         df = pd.DataFrame({"Close": prices, "Volume": [2_000_000] * n}, index=idx)
         ind = _compute_indicators(df).copy().astype(object)
+        ind["high_short_interest"] = True
         # Corrupt Close values for simulation dates so equity update raises ValueError
         sim_dates = pd.bdate_range("2025-01-20", "2025-02-28")
         for d in sim_dates:
@@ -5591,6 +5591,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         prices = [100.0 - i * 0.5 for i in range(n)]
         df = pd.DataFrame({"Close": prices, "Volume": [2_000_000] * n}, index=idx)
         ind = _compute_indicators(df).copy().astype(object)
+        ind["high_short_interest"] = True
         # Corrupt only the LAST row's Close (for end-of-backtest) while leaving earlier rows intact
         # Use max_hold_days very large so position stays open through end
         last_date = ind.index[-1]
@@ -5733,11 +5734,13 @@ class TestRunCombinedSimulation(unittest.TestCase):
 
     @staticmethod
     def _make_short_ind(idx, close_vals=None, open_vals=None):
-        """Pre-built indicator DataFrame that fires failed_breakout (reversal path).
+        """Pre-built indicator DataFrame for short-entry testing (reversal path).
 
         Uses rs_rank=70 in test setups so the reversal path (_REVERSAL_SHORT_RS_GATE=65)
-        is selected. failed_breakout_flag=True + vol_ratio=1.5 + rsi in [45,85] triggers
-        the signal. regime must be in SHORT_ALLOWED_REGIMES for entries to happen.
+        is selected. high_short_interest=True triggers the signal (the only live short
+        signal while ema_breakdown, winner_reversal, failed_breakout, high_vol_reversal,
+        and earnings_miss are all in SHORT_GLOBALLY_DISABLED).
+        regime must be in SHORT_ALLOWED_REGIMES for entries to happen.
         """
         n = len(idx)
         cv = close_vals or [100.0 - i * 0.5 for i in range(n)]
@@ -5757,6 +5760,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
                 "ret_20d": [-10.0] * n,
                 "failed_breakout_flag": [True] * n,
                 "close_pct_of_range": [0.5] * n,
+                "high_short_interest": [True] * n,
                 "Open": ov,
             },
             index=idx,

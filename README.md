@@ -810,6 +810,16 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.55 — May 2026 — Disable all short signals; add short walk-forward; research new signal candidates
+
+- **All short signals permanently disabled** via `SHORT_GLOBALLY_DISABLED`: `ema_breakdown`, `winner_reversal`, `failed_breakout`, `high_vol_reversal`, `earnings_miss`. Walk-forward confirmed no edge: 1/11 profitable folds, mean Sharpe −0.201, 21 trades across 11 years at `fb_vol_min=2.0`. System runs long-only until a genuinely better short signal design is built.
+- **`high_short_interest` unblocked on both scan paths.** Previously blocked in both reversal path and fundamental path in `scan_short_candidates` and `_short_entry_signal`. Now the only live short signal — provides an entry point for when real short-interest data (FINRA, Quandl) is added. Zero trades in practice until data is wired.
+- **`high_short_interest` added to `_row_to_snapshot`** in `backtest/engine.py` — backtest can read the field from indicator DataFrames.
+- **`run_short_walk_forward()` (new function in `backtest/engine.py`).** Runs `_run_short_simulation` across non-overlapping date folds with fixed short params. No train phase — designed to diagnose whether a parameter set found via sensitivity sweep holds fold-by-fold, or was concentrated in a single period. Exposed as `--short-walk-forward` CLI flag; optional `--short-fb-vol-min` override.
+- **0 net new tests** (all 24 test changes were renames/rewrites to reflect disabled signals; test count stable); **2737 passing, 100% coverage.**
+
+---
+
 ### 1.54 — May 2026 — Replace short signals: failed_breakout + high_vol_reversal, two-path RS architecture
 
 - **`ema_breakdown` and `winner_reversal` permanently disabled** via new `SHORT_GLOBALLY_DISABLED` frozenset in `signals/evaluator.py`. Both signals were net-negative across all parameter combinations (best Sharpe −1.20 at ema_breakdown sweep). Replacing with hypothesis-driven signals that fire earlier in the reversal cycle.
