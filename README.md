@@ -819,7 +819,7 @@ Additional live-mode safety gates active in all modes:
 - **`SHORT_ALLOWED_REGIMES` exported from `signals/evaluator.py` as canonical source.** Both `backtest/engine.py` and `execution/stock_scanner.py` now import this set. Fixed critical inconsistency: live scanner was allowing shorts in `BULL_TREND`/`NEUTRAL_CHOP` (the opposite of correct) while backtest allowed them in bearish regimes. Both now gate on `STRESS_RISK_OFF`, `HIGH_VOL_DOWNTREND`, `DEFENSIVE_DOWNTREND`.
 - **Regime pass-through bug fixed in `_run_short_simulation`.** The `regime` value was computed per-row but never passed to `_short_entry_signal` — shorts fired in all regimes during isolated backtest runs. Now passed explicitly.
 - **`failed_breakout_flag` and `close_pct_of_range` computed in all three data paths**: `backtest/engine.py` (`_compute_indicators`), `data/market_data.py` (`_get_ticker_data` + `summarise_for_ai`), and `execution/stock_scanner.py` live scan.
-- **592 tests passing (backtest + short_side), 100% coverage.**
+- **7 net new tests; 2737 passing, 100% coverage.**
 
 ---
 
