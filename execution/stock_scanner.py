@@ -5,7 +5,7 @@ import yfinance as yf
 from config import ETF_SYMBOLS, MIN_VOLUME
 from data.market_regime import fetch_spy_vix_history, load_regime_state, save_regime_state
 from data.market_regime import get_market_regime as _compute_regime
-from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+from signals.evaluator import REGIME_BLOCKED, SHORT_ALLOWED_REGIMES, evaluate_signals
 
 logger = logging.getLogger(__name__)
 
@@ -291,35 +291,31 @@ def get_top_movers(n: int = 10) -> list[str]:
         return []
 
 
-_SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset({"BULL_TREND", "NEUTRAL_CHOP"})
-
-
 def scan_short_candidates(
     snapshots: list[dict],
     regime: str | None,
     held_symbols: set[str],
 ) -> list[dict]:
-    """Return bottom-quartile RS candidates suitable for shorting.
+    """Return short candidates via two distinct paths.
 
-    Hard gates applied in order:
-    - Regime must be BULL_TREND or NEUTRAL_CHOP (short squeezes most violent elsewhere)
-    - rs_rank_pct < 25 (bottom quartile by 20-day relative strength)
-    - Price below EMA21 (structural downtrend context)
-    - Not already held (long or short)
-    - Not an ETF (borrow risk and index rebalancing squeezes)
-    - Minimum volume filter
+    Regime gate: only runs in SHORT_ALLOWED_REGIMES (stress/downtrend regimes).
 
-    Signal gate (must fire at least one):
-    - loser_momentum: rel_strength_20d <= -5 (persistent RS underperformance)
-    - ema_breakdown: price solidly below EMA21 with EMA slope confirmed down
-    - earnings_miss: negative EPS surprise within 30 days
+    Path A — Reversal (rs_rank_pct >= 65): recently-strong stocks showing exhaustion.
+      Gate: not ETF, min volume, rs_rank >= 65.
+      Signals checked: failed_breakout, high_vol_reversal.
 
-    Returns candidates sorted by signal count descending, then rs_rank_pct ascending.
-    Each candidate carries matched_signals, key_signal, and confidence fields.
+    Path B — Fundamental deterioration (rs_rank_pct < 25): bottom-quartile laggards
+      with an earnings-miss catalyst. No technical overlap with reversal setup.
+      Gate: not ETF, min volume, rs_rank < 25, price below EMA21.
+      Signals checked: earnings_miss.
+
+    Returns candidates sorted by signal count descending, then rs_rank_pct ascending
+    (for path A: highest RS first; for path B: lowest RS first — both handled by the
+    sort key which puts most-signals first regardless of direction).
     """
     from signals.evaluator import SHORT_SIGNAL_PRIORITY, evaluate_short_signals
 
-    if regime not in _SHORT_ALLOWED_REGIMES:
+    if regime not in SHORT_ALLOWED_REGIMES:
         return []
 
     candidates = []
@@ -331,25 +327,44 @@ def scan_short_candidates(
             continue
         if s.get("avg_volume", 0) < MIN_VOLUME:
             continue
+
         rs_rank = s.get("rs_rank_pct")
+
+        # Path A: reversal — recently strong, now showing exhaustion
+        if rs_rank is not None and rs_rank >= 65.0:
+            rev_signals = evaluate_short_signals(
+                s, blocked=frozenset({"earnings_miss", "high_short_interest"})
+            )
+            if rev_signals:
+                confidence = int(len(rev_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
+                candidates.append(
+                    {
+                        **s,
+                        "matched_signals": rev_signals,
+                        "key_signal": rev_signals[0],
+                        "confidence": confidence,
+                    }
+                )
+            continue
+
+        # Path B: fundamental — bottom-quartile laggard with earnings miss catalyst
         if rs_rank is None or rs_rank >= 25.0:
             continue
         if s.get("price_vs_ema21_pct", 0.0) >= 0:
             continue
-
-        short_signals = evaluate_short_signals(s)
-        if not short_signals:
-            continue
-
-        confidence = int(len(short_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
-        candidates.append(
-            {
-                **s,
-                "matched_signals": short_signals,
-                "key_signal": short_signals[0],
-                "confidence": confidence,
-            }
+        fund_signals = evaluate_short_signals(
+            s, blocked=frozenset({"failed_breakout", "high_vol_reversal", "high_short_interest"})
         )
+        if fund_signals:
+            confidence = int(len(fund_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
+            candidates.append(
+                {
+                    **s,
+                    "matched_signals": fund_signals,
+                    "key_signal": fund_signals[0],
+                    "confidence": confidence,
+                }
+            )
 
     return sorted(
         candidates,

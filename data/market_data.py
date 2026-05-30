@@ -127,6 +127,18 @@ def fetch_stock_data(
         # Inside day: today's entire range is contained within the previous day's range
         df["is_inside_day"] = (df["High"] < df["High"].shift(1)) & (df["Low"] > df["Low"].shift(1))
 
+        # failed_breakout: hit new 20-day high yesterday, failed back below it today.
+        high_20d_lag2 = close.rolling(20, min_periods=10).max().shift(2)
+        df["failed_breakout_flag"] = (
+            (close.shift(1) > high_20d_lag2) & (close <= high_20d_lag2)
+        ).fillna(False)
+
+        # close_pct_of_range: where close sits in the day's High–Low range (0=low, 1=high).
+        daily_range = df["High"] - df["Low"]
+        df["close_pct_of_range"] = (
+            (close - df["Low"]) / daily_range.where(daily_range > 0)
+        ).fillna(0.5)
+
         # RSI divergence: price lower than 5 days ago but RSI recovering (bullish structural divergence)
         df["rsi_divergence"] = ((close < close.shift(5)) & (df["rsi"] > df["rsi"].shift(5))).fillna(
             False
@@ -213,6 +225,12 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "rsi_divergence": bool(latest.get("rsi_divergence", False))
         if pd.notna(latest.get("rsi_divergence", False))
         else False,
+        "failed_breakout_flag": bool(latest.get("failed_breakout_flag", False))
+        if pd.notna(latest.get("failed_breakout_flag", False))
+        else False,
+        "close_pct_of_range": round(float(_cpr), 2)
+        if (_cpr := latest.get("close_pct_of_range")) is not None and pd.notna(_cpr)
+        else 0.5,
     }
 
 

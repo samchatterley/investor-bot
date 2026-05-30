@@ -169,17 +169,38 @@ GLOBALLY_DISABLED: frozenset[str] = frozenset({"rsi_divergence", "breakout_52w"}
 
 # ── Short-side signal constants ───────────────────────────────────────────────
 
+# Regimes where short entries are permitted — canonical source used by both
+# backtest/engine.py and execution/stock_scanner.py.
+# Shorts only make sense when the market is already under stress; entering
+# short in BULL_TREND or NEUTRAL_CHOP means fighting the prevailing tide.
+SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset(
+    {"STRESS_RISK_OFF", "HIGH_VOL_DOWNTREND", "DEFENSIVE_DOWNTREND"}
+)
+
+# Signals removed after producing negative expectancy in every isolated and
+# combined backtest run (Jan 2023 – May 2026):
+#   ema_breakdown:   WR 37-41%, avg -0.78 to -1.04% across all param sweeps; Sharpe -1.22.
+#                    Fires after a stock has already broken down — too late; no predictive edge.
+#   winner_reversal: RSI>70 + extended + ret_5d<0 is self-contradictory; barely fires.
+SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset({"ema_breakdown", "winner_reversal"})
+
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
-    "high_short_interest": 1,  # Crowded short + low lendable supply (live-only, not backtestable)
-    "ema_breakdown": 2,  # Structural downtrend confirmed by price + EMA slope
-    "winner_reversal": 3,  # Top-quartile winner showing exhaustion (inverted RS gate)
+    "failed_breakout": 1,  # Bull trap: broke 20d high yesterday, failed back below today
+    "high_vol_reversal": 2,  # Distribution bar: 2× volume, close in bottom of range, extended
+    "high_short_interest": 3,  # Crowded short + low lendable supply (live-only, not backtestable)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
-    "ema_breakdown_threshold": -2.0,  # price_vs_ema21_pct must be <= this
-    "wr_rsi_min": 70.0,  # winner_reversal: RSI must be above this (overbought)
-    "wr_ema21_min": 3.0,  # winner_reversal: price_vs_ema21_pct must be above this (extended)
+    # failed_breakout thresholds
+    "fb_vol_min": 1.0,  # volume confirmation on the failure day (vol_ratio)
+    "fb_rsi_min": 45.0,  # RSI floor — stock must have come from elevated levels
+    "fb_rsi_max": 85.0,  # RSI ceiling — filter out extreme blow-off tops that may squeeze
+    # high_vol_reversal thresholds
+    "hvr_vol_min": 2.0,  # vol_ratio floor — must be 2× 20d average (clear distribution signal)
+    "hvr_range_max": 0.3,  # close must be in bottom 30% of day's High–Low range
+    "hvr_rsi_min": 55.0,  # came from overbought territory
+    "hvr_ret5d_min": 2.0,  # was extended upward (5d return > 2%)
 }
 
 
@@ -194,7 +215,8 @@ def evaluate_short_signals(
     ----------
     snapshot : dict
         Technical snapshot in scanner / market_data format.  Expected keys:
-        price_vs_ema21_pct, ema9_above_ema21, earnings_miss_candidate.
+        failed_breakout_flag, close_pct_of_range, vol_ratio, rsi_14,
+        ret_5d_pct, earnings_miss_candidate.
     params : dict | None
         Override DEFAULT_SHORT_SIGNAL_PARAMS thresholds.
     blocked : frozenset[str]
@@ -205,29 +227,39 @@ def evaluate_short_signals(
     list[str]
         All bearish signals that fired, sorted ascending by SHORT_SIGNAL_PRIORITY.
     """
+    blocked = blocked | SHORT_GLOBALLY_DISABLED
     p = DEFAULT_SHORT_SIGNAL_PARAMS if params is None else {**DEFAULT_SHORT_SIGNAL_PARAMS, **params}
     matched: list[str] = []
 
     if "earnings_miss" not in blocked and snapshot.get("earnings_miss_candidate"):
         matched.append("earnings_miss")
 
+    # failed_breakout: stock hit a new 20-day high yesterday, closed back below it today.
+    # Hypothesis: trapped longs from the breakout attempt become sellers; the failed breakout
+    # level provides a natural stop for the short (stop above yesterday's high).
+    if (
+        "failed_breakout" not in blocked
+        and snapshot.get("failed_breakout_flag", False)
+        and snapshot.get("vol_ratio", 0.0) >= p["fb_vol_min"]
+        and snapshot.get("rsi_14", 50.0) >= p["fb_rsi_min"]
+        and snapshot.get("rsi_14", 50.0) <= p["fb_rsi_max"]
+    ):
+        matched.append("failed_breakout")
+
+    # high_vol_reversal: high-volume day where price closes in the bottom of its range
+    # after an extended run. Hypothesis: institutional distribution — smart money selling
+    # into retail buying on high volume; the rejection candle signals exhaustion.
+    if (
+        "high_vol_reversal" not in blocked
+        and snapshot.get("vol_ratio", 0.0) >= p["hvr_vol_min"]
+        and snapshot.get("close_pct_of_range", 0.5) <= p["hvr_range_max"]
+        and snapshot.get("rsi_14", 50.0) >= p["hvr_rsi_min"]
+        and snapshot.get("ret_5d_pct", 0.0) >= p["hvr_ret5d_min"]
+    ):
+        matched.append("high_vol_reversal")
+
     if "high_short_interest" not in blocked and snapshot.get("high_short_interest"):
         matched.append("high_short_interest")
-
-    if (
-        "ema_breakdown" not in blocked
-        and snapshot.get("price_vs_ema21_pct", 0.0) <= p["ema_breakdown_threshold"]
-        and not snapshot.get("ema9_above_ema21", True)
-    ):
-        matched.append("ema_breakdown")
-
-    if (
-        "winner_reversal" not in blocked
-        and snapshot.get("rsi_14", 50.0) > p["wr_rsi_min"]
-        and snapshot.get("price_vs_ema21_pct", 0.0) > p["wr_ema21_min"]
-        and snapshot.get("ret_5d_pct", 0.0) < 0.0
-    ):
-        matched.append("winner_reversal")
 
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched

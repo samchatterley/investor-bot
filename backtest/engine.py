@@ -59,6 +59,7 @@ from signals.evaluator import (
     DEFAULT_SIGNAL_PARAMS,
     INTRADAY_SIGNALS,
     REGIME_BLOCKED,
+    SHORT_ALLOWED_REGIMES,
     SHORT_SIGNAL_PRIORITY,
     SIGNAL_PRIORITY,
     evaluate_short_signals,
@@ -92,12 +93,11 @@ _DEFAULT_PARAM_GRID: dict[str, list] = {
 _MIN_TRAIN_TRADES = 20
 
 # Short-side simulation constants
-_SHORT_MAX_HOLD_DAYS = 5  # shorts tend to play out over a slightly longer window
-_SHORT_RS_RANK_GATE = 25.0  # must be in weakest quartile of the universe
-_WINNER_REVERSAL_RS_GATE = 75.0  # winner_reversal requires top quartile (inverted gate)
-
-# Regimes in which short entries are permitted — suppressed in bull/chop
-_SHORT_ALLOWED_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "HIGH_VOL_DOWNTREND", "STRESS_RISK_OFF"})
+_SHORT_MAX_HOLD_DAYS = 5
+_SHORT_RS_RANK_GATE = 25.0  # earnings_miss: must be in weakest quartile
+# failed_breakout / high_vol_reversal target extended stocks (recently strong), not already-broken ones.
+# Gate at top ~35% RS rank to avoid catching dead-cat bounces in true laggards.
+_REVERSAL_SHORT_RS_GATE = 65.0
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -174,6 +174,23 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         False
     )
 
+    # failed_breakout: stock hit a new 20-day closing high yesterday, failed back below it today.
+    # high_20d_lag2 = the 20d rolling max as of 2 days ago — this is the resistance level
+    # that was in place BEFORE yesterday's attempted breakout.
+    high_20d_lag2 = close.rolling(20, min_periods=10).max().shift(2)
+    df["failed_breakout_flag"] = (
+        (close.shift(1) > high_20d_lag2) & (close <= high_20d_lag2)
+    ).fillna(False)
+
+    # close_pct_of_range: where today's close sits within the day's High–Low range.
+    # 0 = closed at the low (bearish rejection), 1 = closed at the high (bullish).
+    # Used by high_vol_reversal to detect distribution candles.
+    if "High" in df.columns and "Low" in df.columns:
+        daily_range = df["High"] - df["Low"]
+        df["close_pct_of_range"] = (
+            (close - df["Low"]) / daily_range.where(daily_range > 0)
+        ).fillna(0.5)
+
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
 
@@ -206,6 +223,8 @@ def _row_to_snapshot(
         "gap_pct": float(row.get("gap_pct", 0)),
         "close_above_open": bool(row.get("close_above_open", False)),
         "rsi_divergence": bool(row.get("rsi_divergence", False)),
+        "failed_breakout_flag": bool(row.get("failed_breakout_flag", False)),
+        "close_pct_of_range": float(row.get("close_pct_of_range", 0.5)),
         "spy_ret_5d": spy_ret_5d,
         "spy_ret_10d": spy_ret_10d,
     }
@@ -270,32 +289,43 @@ def _short_entry_signal(
     row: pd.Series,
     rs_rank_pct: float | None,
     spy_ret_20d: float | None,
+    regime: str | None = None,
     fundamentals: dict | None = None,
     short_params: dict | None = None,
 ) -> list[str] | None:
     """Return matched bearish signals if this row qualifies as a short entry, else None.
 
-    Two RS gates:
-    - winner_reversal: rs_rank_pct >= _WINNER_REVERSAL_RS_GATE (top quartile = exhausted winner)
-    - all other signals: rs_rank_pct < _SHORT_RS_RANK_GATE (weakest quartile)
+    Regime gate: only enters in SHORT_ALLOWED_REGIMES.
 
-    A stock in the middle quartiles (25–75%) produces no short signal.
+    Two RS-rank paths:
+    - Reversal path (rs_rank_pct >= _REVERSAL_SHORT_RS_GATE): recently-strong stocks showing
+      exhaustion. Checks failed_breakout and high_vol_reversal. A stock that just hit a
+      new 20d high then failed has clearly-defined risk; an extended stock printing a
+      distribution bar on 2× volume signals institutional selling.
+    - Fundamental path (rs_rank_pct < _SHORT_RS_RANK_GATE): bottom-quartile laggards with an
+      earnings miss catalyst. Avoids entering structural shorts on already-broken stocks with
+      no near-term catalyst.
+
+    Stocks in the middle band (25–65%) produce no short signal — no clear archetype.
     """
+    if regime is not None and regime not in SHORT_ALLOWED_REGIMES:
+        return None
+
     snap = _row_to_snapshot(row)
 
-    # winner_reversal path — inverted RS gate, top-quartile exhaustion play
-    if rs_rank_pct is not None and rs_rank_pct >= _WINNER_REVERSAL_RS_GATE:
+    # Reversal path — extended/recently-strong stocks caught in a trap
+    if rs_rank_pct is not None and rs_rank_pct >= _REVERSAL_SHORT_RS_GATE:
         if fundamentals:
             snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
-        wr_sigs = evaluate_short_signals(
+        rev_sigs = evaluate_short_signals(
             snap,
             params=short_params,
-            blocked=frozenset({"earnings_miss", "high_short_interest", "ema_breakdown"}),
+            blocked=frozenset({"earnings_miss", "high_short_interest"}),
         )
-        if wr_sigs:
-            return wr_sigs
+        if rev_sigs:
+            return rev_sigs
 
-    # Standard weak-RS path — bottom-quartile structural short signals
+    # Fundamental path — bottom-quartile laggards with an earnings miss catalyst
     if rs_rank_pct is None or rs_rank_pct >= _SHORT_RS_RANK_GATE:
         return None
 
@@ -303,7 +333,9 @@ def _short_entry_signal(
         snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
 
     signals = evaluate_short_signals(
-        snap, params=short_params, blocked=frozenset({"winner_reversal"})
+        snap,
+        params=short_params,
+        blocked=frozenset({"failed_breakout", "high_vol_reversal", "high_short_interest"}),
     )
     return signals if signals else None
 
@@ -1236,6 +1268,7 @@ def _run_short_simulation(
                 prev_row,
                 rs_rank_pct=rs_rank_pct,
                 spy_ret_20d=spy_ret_20d,
+                regime=regime,
                 fundamentals=fundamentals,
                 short_params=short_params,
             )
@@ -1415,7 +1448,7 @@ def _run_combined_simulation(
 
     Longs: same entry/exit logic as _run_simulation().
     Shorts: same entry/exit logic as _run_short_simulation().
-    Regime gate: shorts only enter in _SHORT_ALLOWED_REGIMES; longs follow
+    Regime gate: shorts only enter in SHORT_ALLOWED_REGIMES; longs follow
     the existing REGIME_BLOCKED rules. Each side has its own position count
     cap; sizing is proportional to remaining total slots across both sides.
     Equity curve: cash + long_unrealised_pnl + short_unrealised_pnl.
@@ -1605,7 +1638,7 @@ def _run_combined_simulation(
             continue
 
         today_regime = regime_by_date.get(today_str) if regime_by_date else None
-        shorts_allowed = today_regime in _SHORT_ALLOWED_REGIMES if today_regime else False
+        shorts_allowed = today_regime in SHORT_ALLOWED_REGIMES if today_regime else False
 
         # Long candidates
         long_candidates: list[tuple] = []
@@ -1717,6 +1750,7 @@ def _run_combined_simulation(
                     prev_row,
                     rs_rank_pct=rs_rank_pct,
                     spy_ret_20d=spy_ret_20d,
+                    regime=today_regime,
                     fundamentals=fund_s,
                 )
                 if signals:
@@ -3367,7 +3401,7 @@ def _print_combined_results(r: dict, start_date: str, end_date: str) -> None:
             if reg not in dist:
                 continue
             pct = dist[reg] / total_days * 100
-            short_flag = "  [shorts active]" if reg in _SHORT_ALLOWED_REGIMES else ""
+            short_flag = "  [shorts active]" if reg in SHORT_ALLOWED_REGIMES else ""
             print(f"    {reg:<25} {pct:>4.0f}%{short_flag}")
     print("=" * 65 + "\n")
 
@@ -3756,9 +3790,12 @@ def run_short_param_sensitivity(
     """
     if param_ranges is None:
         param_ranges = {
-            "ema_breakdown_threshold": [-1.0, -1.5, -2.0, -2.5, -3.0, -4.0, -5.0],
-            "wr_rsi_min": [60.0, 65.0, 70.0, 75.0, 80.0],
-            "wr_ema21_min": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "fb_vol_min": [0.8, 1.0, 1.2, 1.5, 2.0],
+            "fb_rsi_min": [40.0, 45.0, 50.0, 55.0, 60.0],
+            "hvr_vol_min": [1.5, 2.0, 2.5, 3.0],
+            "hvr_range_max": [0.2, 0.3, 0.4],
+            "hvr_rsi_min": [50.0, 55.0, 60.0, 65.0],
+            "hvr_ret5d_min": [1.0, 2.0, 3.0, 4.0],
         }
 
     _assert_pre_holdout(end_date)

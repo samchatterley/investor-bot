@@ -810,6 +810,19 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.54 — May 2026 — Replace short signals: failed_breakout + high_vol_reversal, two-path RS architecture
+
+- **`ema_breakdown` and `winner_reversal` permanently disabled** via new `SHORT_GLOBALLY_DISABLED` frozenset in `signals/evaluator.py`. Both signals were net-negative across all parameter combinations (best Sharpe −1.20 at ema_breakdown sweep). Replacing with hypothesis-driven signals that fire earlier in the reversal cycle.
+- **`failed_breakout` signal (new).** Bull-trap pattern: stock closed above its 20-day high yesterday, failed back below it today. Fires on the breakout failure bar — traps longs become sellers. Computed as `(close.shift(1) > high_20d_lag2) & (close <= high_20d_lag2)`. Gates: `vol_ratio >= fb_vol_min (1.0)`, `rsi in [fb_rsi_min=45, fb_rsi_max=85]`. Reversal path only (rs_rank >= 65).
+- **`high_vol_reversal` signal (new).** Distribution/exhaustion bar: high volume, close in the bottom 30% of the day's range, RSI already elevated, 5-day return shows prior strength. Computed as `close_pct_of_range = (close − Low) / (High − Low)`. Gates: `vol_ratio >= hvr_vol_min (2.0)`, `close_pct_of_range <= hvr_range_max (0.3)`, `rsi >= hvr_rsi_min (55.0)`, `ret_5d_pct >= hvr_ret5d_min (2.0)`. Reversal path only (rs_rank >= 65).
+- **Two-path RS architecture for short entries.** Reversal path (rs_rank >= 65): recently-strong stocks showing exhaustion — checks `failed_breakout` + `high_vol_reversal`, blocks `earnings_miss`. Fundamental path (rs_rank < 25): bottom-quartile laggards with catalyst — checks `earnings_miss` only, requires `price_vs_ema21_pct < 0`. Middle band (25–64%) produces no signal.
+- **`SHORT_ALLOWED_REGIMES` exported from `signals/evaluator.py` as canonical source.** Both `backtest/engine.py` and `execution/stock_scanner.py` now import this set. Fixed critical inconsistency: live scanner was allowing shorts in `BULL_TREND`/`NEUTRAL_CHOP` (the opposite of correct) while backtest allowed them in bearish regimes. Both now gate on `STRESS_RISK_OFF`, `HIGH_VOL_DOWNTREND`, `DEFENSIVE_DOWNTREND`.
+- **Regime pass-through bug fixed in `_run_short_simulation`.** The `regime` value was computed per-row but never passed to `_short_entry_signal` — shorts fired in all regimes during isolated backtest runs. Now passed explicitly.
+- **`failed_breakout_flag` and `close_pct_of_range` computed in all three data paths**: `backtest/engine.py` (`_compute_indicators`), `data/market_data.py` (`_get_ticker_data` + `summarise_for_ai`), and `execution/stock_scanner.py` live scan.
+- **592 tests passing (backtest + short_side), 100% coverage.**
+
+---
+
 ### 1.53 — May 2026 — Phase 5: disable drag signals + short parameter sweep framework
 
 - **`GLOBALLY_DISABLED` frozenset added to `signals/evaluator.py`.** Signals listed here are permanently blocked in both the live evaluation path and all backtest simulations. Merged into `evaluate_signals()` at function entry — no call-site changes needed. Initial members: `rsi_divergence` (Sharpe drag in every backtest run; WR 48%, avg −0.9% in NEUTRAL_CHOP which accounts for 75% of its trades) and `breakout_52w` (WR 35%, avg −1.5% in BULL_TREND, its only firing regime; consistently negative across all walk-forward folds).

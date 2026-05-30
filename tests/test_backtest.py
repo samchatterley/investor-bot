@@ -15,9 +15,8 @@ import pandas as pd
 from backtest.engine import (
     _CORE_COLS,
     _DEFAULT_PARAMS,
-    _SHORT_ALLOWED_REGIMES,
+    _REVERSAL_SHORT_RS_GATE,
     _SIGNAL_PRIORITY,
-    _WINNER_REVERSAL_RS_GATE,
     _assert_pre_holdout,
     _binomial_p_value,
     _bootstrap_cell_ci,
@@ -4821,150 +4820,185 @@ class TestEarningsMissActiveOnDate(unittest.TestCase):
 
 
 class TestShortEntrySignal(unittest.TestCase):
-    def _make_row(self, **overrides) -> pd.Series:
-        """Build a minimal indicator row that fires ema_breakdown by default."""
-        indicators, spy_ind = _make_short_indicators(n=80)
+    def _make_weak_row(self, **overrides) -> pd.Series:
+        """Build a minimal declining-stock indicator row (fundamental path)."""
+        indicators, _ = _make_short_indicators(n=80)
         ind = indicators["WEAK"]
         if ind.empty:  # pragma: no cover
             raise ValueError("Indicators empty — need more data")
         row = ind.iloc[-1].copy()
-        for k, v in overrides.items():  # pragma: no cover
+        for k, v in overrides.items():
             row[k] = v
         return row
 
-    def _spy_ret_20d(self) -> float:  # pragma: no cover
-        _, spy_ind = _make_short_indicators(n=80)
-        return float(spy_ind.iloc[-1].get("ret_20d", 0))
-
-    def test_rs_gate_blocks_high_rank(self):
-        """rs_rank_pct >= 25 → None regardless of signals."""
-        row = self._make_row()
-        result = _short_entry_signal(row, rs_rank_pct=50.0, spy_ret_20d=0.0)
-        self.assertIsNone(result)
-
-    def test_rs_gate_blocks_none_rank(self):
-        """rs_rank_pct=None → None."""
-        row = self._make_row()
-        result = _short_entry_signal(row, rs_rank_pct=None, spy_ret_20d=0.0)
-        self.assertIsNone(result)
-
-    def test_passes_rs_gate_returns_signals(self):
-        """rs_rank_pct < 25 + bearish indicators → returns non-empty list."""
-        row = self._make_row()
-        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
-        # ema_breakdown fires when price is well below EMA21 and EMA9<EMA21
-        # Accept either non-None (signals fired) or None (thresholds not met for this row)
-        if result is not None:  # pragma: no cover
-            self.assertIsInstance(result, list)
-            self.assertGreater(len(result), 0)
-
-    def test_earnings_miss_fires_from_fundamentals(self):
-        """earnings_miss_candidate=True in fundamentals → earnings_miss in signals."""
-        row = self._make_row()
-        # Ensure price is not above EMA21 (would block ema_breakdown but not earnings_miss)
-        fund = {"earnings_miss_active": True}
-        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=fund)
-        if result is not None:  # pragma: no cover
-            self.assertIn("earnings_miss", result)
-
-    def test_no_signals_returns_none(self):
-        """Row that passes RS gate but has no bearish signals returns None."""
-        # Build a rising-price row: price > EMA21, EMA9 > EMA21, positive rel_strength
-        indicators, spy_ind = _make_short_indicators(n=80)
-        # Use an OHLCV that's rising
-        idx = pd.bdate_range("2024-11-01", periods=80)
-        prices = [50.0 + i * 1.0 for i in range(80)]
-        rising_df = pd.DataFrame(
-            {"Close": prices, "Open": prices, "Volume": [1_000_000] * 80},
+    def _make_extended_row(self, **overrides) -> pd.Series:
+        """Build an extended/strong-stock indicator row for reversal path testing."""
+        n = 80
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        prices = [100.0 + i * 1.5 for i in range(n)]
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p + 0.5 for p in prices],
+                "Low": [p - 0.5 for p in prices],
+                "Volume": [1_000_000] * n,
+            },
             index=idx,
         )
-        rising_ind = _compute_indicators(rising_df)
-        if rising_ind.empty:  # pragma: no cover
-            return
-        row = rising_ind.iloc[-1].copy()
-        row["ret_20d"] = 10.0  # strong positive return
-        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
-        # With strong rising trend: ema9>ema21, price>ema21 → no breakdown
-        self.assertIsNone(result)
+        ind = _compute_indicators(df)
+        if ind.empty:  # pragma: no cover
+            raise ValueError("Indicators empty")
+        row = ind.iloc[-1].copy()
+        for k, v in overrides.items():
+            row[k] = v
+        return row
 
-    def test_winner_reversal_fires_via_inverted_rs_gate(self):
-        """rs_rank_pct >= 75 + overbought/extended/reverting → winner_reversal signal."""
-        row = self._make_row()
-        row["rsi"] = 75.0
-        row["pct_vs_ema21"] = 5.0
-        row["ret_5d"] = -1.0
-        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0)
-        self.assertIsNotNone(result)
-        self.assertIn("winner_reversal", result)
-
-    def test_winner_reversal_blocked_in_middle_rs_range(self):
-        """25 <= rs_rank_pct < 75 → no signal from either RS gate."""
-        row = self._make_row()
-        row["rsi"] = 75.0
-        row["pct_vs_ema21"] = 5.0
-        row["ret_5d"] = -1.0
-        for rank in (30.0, 50.0, 74.9):
+    def test_rs_gate_blocks_middle_band(self):
+        """rs_rank_pct in 25–64 → None (no archetype for middle-band stocks)."""
+        row = self._make_weak_row()
+        for rank in (25.0, 40.0, 50.0, 64.9):
             self.assertIsNone(
                 _short_entry_signal(row, rs_rank_pct=rank, spy_ret_20d=0.0),
                 msg=f"Expected None for rs_rank_pct={rank}",
             )
 
-    def test_winner_reversal_not_in_weak_rs_path(self):
-        """rs_rank_pct < 25 → winner_reversal blocked; only standard short signals fire."""
-        row = self._make_row()
-        row["rsi"] = 75.0
-        row["pct_vs_ema21"] = 5.0
-        row["ret_5d"] = -1.0
-        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0)
-        if result is not None:  # pragma: no cover
-            self.assertNotIn("winner_reversal", result)
+    def test_rs_gate_blocks_none_rank(self):
+        """rs_rank_pct=None → None (no RS context available)."""
+        row = self._make_weak_row()
+        result = _short_entry_signal(row, rs_rank_pct=None, spy_ret_20d=0.0)
+        self.assertIsNone(result)
 
-    def test_winner_reversal_gate_value(self):
-        """_WINNER_REVERSAL_RS_GATE is set to 75.0."""
-        self.assertEqual(_WINNER_REVERSAL_RS_GATE, 75.0)
+    def test_regime_gate_blocks_in_bull_trend(self):
+        """Shorts blocked in BULL_TREND regardless of signal conditions."""
+        row = self._make_weak_row()
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime="BULL_TREND")
+        self.assertIsNone(result)
 
-    def test_winner_reversal_with_fundamentals_none(self):
-        """winner_reversal path with fundamentals=None does not crash."""
-        row = self._make_row()
-        row["rsi"] = 75.0
-        row["pct_vs_ema21"] = 5.0
-        row["ret_5d"] = -1.0
-        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0, fundamentals=None)
-        self.assertIsNotNone(result)
-        self.assertIn("winner_reversal", result)
+    def test_regime_gate_blocks_in_neutral_chop(self):
+        """Shorts blocked in NEUTRAL_CHOP regardless of signal conditions."""
+        row = self._make_weak_row()
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime="NEUTRAL_CHOP")
+        self.assertIsNone(result)
 
-    def test_winner_reversal_with_fundamentals_dict(self):
-        """winner_reversal path with non-None fundamentals enriches snapshot without crash."""
-        row = self._make_row()
-        row["rsi"] = 75.0
-        row["pct_vs_ema21"] = 5.0
-        row["ret_5d"] = -1.0
+    def test_regime_gate_allows_in_stress_risk_off(self):
+        """Shorts allowed in STRESS_RISK_OFF; signal logic then decides."""
+        row = self._make_weak_row()
+        fund = {"earnings_miss_active": True}
         result = _short_entry_signal(
-            row,
-            rs_rank_pct=80.0,
-            spy_ret_20d=0.0,
-            fundamentals={"earnings_miss_active": False},
+            row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime="STRESS_RISK_OFF", fundamentals=fund
+        )
+        # With earnings miss active, should fire
+        self.assertIsNotNone(result)
+        self.assertIn("earnings_miss", result)
+
+    def test_regime_none_does_not_block(self):
+        """regime=None skips the regime gate (backtest rows without regime context)."""
+        row = self._make_weak_row()
+        fund = {"earnings_miss_active": True}
+        result = _short_entry_signal(
+            row, rs_rank_pct=10.0, spy_ret_20d=0.0, regime=None, fundamentals=fund
         )
         self.assertIsNotNone(result)
-        self.assertIn("winner_reversal", result)
 
-    def test_winner_reversal_no_fire_when_conditions_not_met_at_high_rank(self):
-        """rs_rank_pct >= 75 but conditions not met → falls through to weak-RS gate → None."""
-        row = self._make_row()
-        # rsi too low for winner_reversal; price below EMA so no ema_breakdown either
-        row["rsi"] = 50.0
-        row["pct_vs_ema21"] = 1.0
-        row["ret_5d"] = 1.0
-        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0)
+    def test_earnings_miss_fires_on_fundamental_path(self):
+        """rs_rank < 25 + earnings_miss_active → earnings_miss signal fires."""
+        row = self._make_weak_row()
+        fund = {"earnings_miss_active": True}
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=fund)
+        self.assertIsNotNone(result)
+        self.assertIn("earnings_miss", result)
+
+    def test_no_signals_returns_none_on_fundamental_path(self):
+        """rs_rank < 25 but no earnings miss and no signal → None."""
+        row = self._make_weak_row()
+        result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=None)
         self.assertIsNone(result)
+
+    def test_reversal_path_fires_failed_breakout(self):
+        """rs_rank >= 65 + failed_breakout_flag → failed_breakout signal fires."""
+        row = self._make_extended_row(
+            failed_breakout_flag=True,
+            vol_ratio=1.5,
+            rsi=62.0,
+        )
+        result = _short_entry_signal(row, rs_rank_pct=70.0, spy_ret_20d=0.0)
+        self.assertIsNotNone(result)
+        self.assertIn("failed_breakout", result)
+
+    def test_reversal_path_fires_high_vol_reversal(self):
+        """rs_rank >= 65 + high vol + close in bottom of range → high_vol_reversal fires."""
+        row = self._make_extended_row(
+            vol_ratio=2.5,
+            close_pct_of_range=0.1,
+            rsi=65.0,
+            ret_5d=3.5,
+        )
+        result = _short_entry_signal(row, rs_rank_pct=70.0, spy_ret_20d=0.0)
+        self.assertIsNotNone(result)
+        self.assertIn("high_vol_reversal", result)
+
+    def test_reversal_path_blocked_below_65(self):
+        """rs_rank < 65 → reversal path skipped; fundamental path needs earnings_miss."""
+        row = self._make_extended_row(
+            failed_breakout_flag=True,
+            vol_ratio=3.0,
+            close_pct_of_range=0.1,
+            rsi=65.0,
+            ret_5d=4.0,
+        )
+        result = _short_entry_signal(row, rs_rank_pct=50.0, spy_ret_20d=0.0)
+        self.assertIsNone(result)
+
+    def test_reversal_rs_gate_value(self):
+        """_REVERSAL_SHORT_RS_GATE is 65.0."""
+        self.assertEqual(_REVERSAL_SHORT_RS_GATE, 65.0)
+
+    def test_earnings_miss_not_on_reversal_path(self):
+        """earnings_miss is blocked on the reversal path (high RS stocks, no fundamental gate)."""
+        row = self._make_extended_row()
+        fund = {"earnings_miss_active": True}
+        # No reversal pattern signals, only earnings_miss — reversal path blocks it
+        result = _short_entry_signal(row, rs_rank_pct=80.0, spy_ret_20d=0.0, fundamentals=fund)
+        # earnings_miss is blocked on reversal path, and no reversal signals → None
+        self.assertIsNone(result)
+
+    def test_fundamentals_none_on_reversal_path_does_not_crash(self):
+        """reversal path with fundamentals=None does not raise."""
+        row = self._make_extended_row(failed_breakout_flag=True, vol_ratio=1.5, rsi=62.0)
+        result = _short_entry_signal(row, rs_rank_pct=70.0, spy_ret_20d=0.0, fundamentals=None)
+        self.assertIsNotNone(result)
 
 
 class TestRunShortSimulation(unittest.TestCase):
     def _build_indicators_with_ranks(self, n: int = 100):
-        indicators, spy_ind = _make_short_indicators(n=n)
-        all_dates = [ts.strftime("%Y-%m-%d") for ts in pd.bdate_range("2024-11-01", periods=n)]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
-        return indicators, spy_ind, rs_ranks
+        # Build a stock that fires failed_breakout_flag: mostly flat, one breakout day,
+        # then failure. 40 days flat at 100, day 41 spikes to 105 (breaks 20d max),
+        # day 42 fails back to 98. failed_breakout_flag fires on day 42.
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        flat = [100.0] * 40
+        spike = [105.0]
+        fail = [98.0]
+        rest = [97.0 - i * 0.2 for i in range(n - 42)]
+        prices = (flat + spike + fail + rest)[:n]
+        spy_prices = [200.0 + i * 0.1 for i in range(n)]
+        spy_df = pd.DataFrame({"Close": spy_prices, "Volume": [50_000_000] * n}, index=idx)
+        spy_ind = _compute_indicators(spy_df)
+        weak_df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p + 0.5 for p in prices],
+                "Low": [p - 0.5 for p in prices],
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+        weak_ind = _compute_indicators(weak_df)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        # Use rs_rank=70 → reversal path (_REVERSAL_SHORT_RS_GATE=65)
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
+        return {"WEAK": weak_ind}, spy_ind, rs_ranks
 
     def test_returns_result_dict_with_expected_keys(self):
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
@@ -4974,7 +5008,7 @@ class TestRunShortSimulation(unittest.TestCase):
             self.assertIn(key, result)
 
     def test_short_profits_when_price_falls(self):
-        """A declining stock with RS < 25 should produce profitable short trades."""
+        """A stock with failed_breakout and rs_rank>=65 should enter short positions."""
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
         result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
@@ -4985,13 +5019,13 @@ class TestRunShortSimulation(unittest.TestCase):
             self.assertGreater(avg_pnl, -20.0)  # reasonable guard — not ruinously negative
 
     def test_empty_when_no_candidates_pass_rs_gate(self):
-        """No symbols below RS gate → no trades."""
+        """Middle-band RS (25–64) → no trades from either path."""
         indicators, spy_ind, _ = self._build_indicators_with_ranks()
         all_dates = [ts.strftime("%Y-%m-%d") for ts in pd.bdate_range("2024-11-01", periods=100)]
-        high_rs_ranks = {"WEAK": dict.fromkeys(all_dates, 80.0)}  # above gate
+        middle_rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}  # in dead zone
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
         result = _run_short_simulation(
-            indicators, dates, spy_indicators=spy_ind, rs_ranks=high_rs_ranks
+            indicators, dates, spy_indicators=spy_ind, rs_ranks=middle_rs_ranks
         )
         self.assertEqual(result["total_trades"], 0)
 
@@ -5016,7 +5050,7 @@ class TestRunShortSimulation(unittest.TestCase):
         indicators, spy_ind, rs_ranks = self._build_indicators_with_ranks()
         dates = pd.bdate_range("2025-01-15", "2025-02-28")
         result = _run_short_simulation(indicators, dates, spy_indicators=spy_ind, rs_ranks=rs_ranks)
-        for sig in ("earnings_miss", "ema_breakdown"):
+        for sig in ("earnings_miss", "failed_breakout", "high_vol_reversal"):
             self.assertIn(sig, result["signals_tested"])
 
     def test_validation_scope_is_rule_proxy_only(self):
@@ -5047,7 +5081,7 @@ class TestRunShortSimulation(unittest.TestCase):
         ind = _compute_indicators(df)
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5077,7 +5111,7 @@ class TestPrintShortSignalResults(unittest.TestCase):
             "max_drawdown_pct": -3.0,
             "sharpe_ratio": 1.2,
             "by_signal": {
-                "ema_breakdown": {"wins": 4, "losses": 2, "total_return": 3.0},
+                "failed_breakout": {"wins": 4, "losses": 2, "total_return": 3.0},
             },
         }
 
@@ -5094,7 +5128,7 @@ class TestPrintShortSignalResults(unittest.TestCase):
             sys.stdout = old_out
         output = buf.getvalue()
         self.assertIn("SHORT SIGNAL ANALYSIS", output)
-        self.assertIn("ema_breakdown", output)
+        self.assertIn("failed_breakout", output)
 
     def test_handles_empty_by_signal(self):
         import io
@@ -5205,10 +5239,9 @@ class TestShortEntrySignalExtraBranches(unittest.TestCase):
         return ind["WEAK"].iloc[-1].copy()
 
     def test_spy_ret_20d_none_skips_rel_strength(self):
-        """Line 285->289: spy_ret_20d=None → rel_strength_20d not added to snapshot."""
+        """spy_ret_20d=None does not crash."""
         row = self._declining_row()
         result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=None)
-        # Result may still be non-None if ema_breakdown fires; we just check it doesn't crash
         self.assertTrue(result is None or isinstance(result, list))
 
     def test_fundamentals_none_skips_earnings_miss(self):
@@ -5224,7 +5257,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
     def _build_indicators_with_ranks(self, n: int = 100):
         indicators, spy_ind = _make_short_indicators(n=n)
         all_dates = [ts.strftime("%Y-%m-%d") for ts in pd.bdate_range("2024-11-01", periods=n)]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         return indicators, spy_ind, rs_ranks
 
     def test_take_profit_exits_short(self):
@@ -5246,7 +5279,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.05 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5275,7 +5308,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5310,7 +5343,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 - i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5365,7 +5398,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5414,7 +5447,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         short_ind = ind.iloc[:30]
         indicators = {"WEAK": short_ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5464,7 +5497,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5492,7 +5525,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5515,7 +5548,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
             return
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         # Build spy_ind on DIFFERENT dates (2023) — no overlap with stock's prev_ts dates
         spy_idx = pd.bdate_range("2023-01-01", periods=n)
         spy_df = pd.DataFrame(
@@ -5541,7 +5574,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
                 ind.at[d, "Close"] = "crash"
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5564,7 +5597,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         ind.at[last_date, "Close"] = "crash_at_end"
         indicators = {"WEAK": ind}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
-        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 10.0)}
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 70.0)}
         spy_df = pd.DataFrame(
             {"Close": [200.0 + i * 0.1 for i in range(n)], "Volume": [50_000_000] * n},
             index=idx,
@@ -5661,7 +5694,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
         rs_ranks = {
             "STRONG": dict.fromkeys(all_dates, 90.0),
-            "WEAK": dict.fromkeys(all_dates, 10.0),
+            "WEAK": dict.fromkeys(all_dates, 70.0),
         }
         return indicators, spy_ind, rs_ranks
 
@@ -5700,7 +5733,12 @@ class TestRunCombinedSimulation(unittest.TestCase):
 
     @staticmethod
     def _make_short_ind(idx, close_vals=None, open_vals=None):
-        """Pre-built indicator DataFrame with ema_breakdown signal firing."""
+        """Pre-built indicator DataFrame that fires failed_breakout (reversal path).
+
+        Uses rs_rank=70 in test setups so the reversal path (_REVERSAL_SHORT_RS_GATE=65)
+        is selected. failed_breakout_flag=True + vol_ratio=1.5 + rsi in [45,85] triggers
+        the signal. regime must be in SHORT_ALLOWED_REGIMES for entries to happen.
+        """
         n = len(idx)
         cv = close_vals or [100.0 - i * 0.5 for i in range(n)]
         ov = open_vals or [c * 1.001 for c in cv]
@@ -5708,7 +5746,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
             {
                 "Close": cv,
                 "Volume": [2_000_000] * n,
-                "rsi": [50.0] * n,
+                "rsi": [62.0] * n,
                 "bb_pct": [0.5] * n,
                 "vol_ratio": [1.5] * n,
                 "ema9": [99.0] * n,
@@ -5717,6 +5755,8 @@ class TestRunCombinedSimulation(unittest.TestCase):
                 "ret_5d": [-2.0] * n,
                 "pct_vs_ema21": [-3.0] * n,
                 "ret_20d": [-10.0] * n,
+                "failed_breakout_flag": [True] * n,
+                "close_pct_of_range": [0.5] * n,
                 "Open": ov,
             },
             index=idx,
@@ -5783,12 +5823,14 @@ class TestRunCombinedSimulation(unittest.TestCase):
         self.assertGreaterEqual(result["short_trades"], 0)
 
     def test_short_allowed_regimes_constant(self):
-        """_SHORT_ALLOWED_REGIMES contains exactly the three bearish regimes."""
-        self.assertIn("DEFENSIVE_DOWNTREND", _SHORT_ALLOWED_REGIMES)
-        self.assertIn("HIGH_VOL_DOWNTREND", _SHORT_ALLOWED_REGIMES)
-        self.assertIn("STRESS_RISK_OFF", _SHORT_ALLOWED_REGIMES)
-        self.assertNotIn("BULL_TREND", _SHORT_ALLOWED_REGIMES)
-        self.assertNotIn("NEUTRAL_CHOP", _SHORT_ALLOWED_REGIMES)
+        """SHORT_ALLOWED_REGIMES (from signals.evaluator) contains exactly the three bearish regimes."""
+        from signals.evaluator import SHORT_ALLOWED_REGIMES
+
+        self.assertIn("DEFENSIVE_DOWNTREND", SHORT_ALLOWED_REGIMES)
+        self.assertIn("HIGH_VOL_DOWNTREND", SHORT_ALLOWED_REGIMES)
+        self.assertIn("STRESS_RISK_OFF", SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("BULL_TREND", SHORT_ALLOWED_REGIMES)
+        self.assertNotIn("NEUTRAL_CHOP", SHORT_ALLOWED_REGIMES)
 
     def test_regime_distribution_populated(self):
         indicators, spy_ind, rs_ranks = self._make_indicators()
@@ -5874,7 +5916,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -5913,7 +5955,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -5951,7 +5993,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -5985,7 +6027,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6023,7 +6065,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6126,7 +6168,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6219,7 +6261,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6245,7 +6287,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6263,7 +6305,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx,  # idx[0] triggers today_loc==0 continue in short scan
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6282,7 +6324,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
             {"WEAK": ind},
             idx[1:],
             spy_indicators=None,
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6305,7 +6347,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
             {"WEAK": ind},
             idx[1:],  # prev_ts = idx[0] = 2025-01-02, not in spy_idx
             spy_indicators=spy_ind,
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6322,7 +6364,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6340,7 +6382,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6357,7 +6399,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6379,7 +6421,7 @@ class TestRunCombinedSimulation(unittest.TestCase):
         result = _run_combined_simulation(
             {"WEAK": ind},
             idx[1:],
-            rs_ranks={"WEAK": dict.fromkeys(all_dates, 10.0)},
+            rs_ranks={"WEAK": dict.fromkeys(all_dates, 70.0)},
             regime_by_date=regime,
             max_long_positions=0,
             max_short_positions=2,
@@ -6636,16 +6678,16 @@ class TestPrintCombinedResults(unittest.TestCase):
         self.assertIn("[shorts active]", output)
 
     def test_prints_short_signal_with_trades(self):
-        """Lines 3349-3353: short signal in SHORT_SIGNAL_PRIORITY in by_signal → printed."""
+        """Short signal in SHORT_SIGNAL_PRIORITY in by_signal → printed."""
         import io
         from contextlib import redirect_stdout
 
         result = self._make_result()
-        result["by_signal"]["ema_breakdown"] = {"wins": 1, "losses": 1, "total_return": 0.5}
+        result["by_signal"]["failed_breakout"] = {"wins": 1, "losses": 1, "total_return": 0.5}
         buf = io.StringIO()
         with redirect_stdout(buf):
             _print_combined_results(result, "2025-01-01", "2025-12-31")
-        self.assertIn("ema_breakdown", buf.getvalue())
+        self.assertIn("failed_breakout", buf.getvalue())
 
 
 class TestRunIntradaySimulation(unittest.TestCase):
@@ -6717,7 +6759,7 @@ class TestRunShortParamSensitivity(unittest.TestCase):
                 ["AAPL", "FLAT"],
                 "2025-01-01",
                 "2025-06-30",
-                param_ranges=param_ranges or {"ema_breakdown_threshold": [-2.0, -3.0]},
+                param_ranges=param_ranges or {"fb_vol_min": [1.0, 1.5]},
                 **kwargs,
             )
 
@@ -6727,21 +6769,17 @@ class TestRunShortParamSensitivity(unittest.TestCase):
         self.assertIn("by_param", result)
 
     def test_by_param_keys_match_param_ranges(self):
-        result = self._run(
-            param_ranges={"ema_breakdown_threshold": [-2.0, -3.0], "wr_rsi_min": [65.0, 75.0]}
-        )
-        self.assertIn("ema_breakdown_threshold", result["by_param"])
-        self.assertIn("wr_rsi_min", result["by_param"])
+        result = self._run(param_ranges={"fb_vol_min": [1.0, 1.5], "hvr_vol_min": [2.0, 2.5]})
+        self.assertIn("fb_vol_min", result["by_param"])
+        self.assertIn("hvr_vol_min", result["by_param"])
 
     def test_each_param_has_one_result_per_value(self):
-        result = self._run(param_ranges={"ema_breakdown_threshold": [-1.5, -2.0, -3.0]})
-        self.assertEqual(
-            set(result["by_param"]["ema_breakdown_threshold"].keys()), {-1.5, -2.0, -3.0}
-        )
+        result = self._run(param_ranges={"fb_rsi_min": [45.0, 50.0, 55.0]})
+        self.assertEqual(set(result["by_param"]["fb_rsi_min"].keys()), {45.0, 50.0, 55.0})
 
     def test_each_result_has_required_keys(self):
-        result = self._run(param_ranges={"ema_breakdown_threshold": [-2.5]})
-        res = result["by_param"]["ema_breakdown_threshold"][-2.5]
+        result = self._run(param_ranges={"hvr_range_max": [0.3]})
+        res = result["by_param"]["hvr_range_max"][0.3]
         for key in (
             "total_return_pct",
             "sharpe_ratio",
@@ -6759,7 +6797,7 @@ class TestRunShortParamSensitivity(unittest.TestCase):
                 ["AAPL"],
                 "2025-01-01",
                 "2025-06-30",
-                param_ranges={"ema_breakdown_threshold": [-2.0]},
+                param_ranges={"fb_vol_min": [1.0]},
             )
         self.assertEqual(result, {})
 
@@ -6777,13 +6815,13 @@ class TestRunShortParamSensitivity(unittest.TestCase):
                 "2025-06-30",
                 param_ranges=None,
             )
-        self.assertIn("ema_breakdown_threshold", result["by_param"])
-        self.assertIn("wr_rsi_min", result["by_param"])
-        self.assertIn("wr_ema21_min", result["by_param"])
+        self.assertIn("fb_vol_min", result["by_param"])
+        self.assertIn("hvr_vol_min", result["by_param"])
+        self.assertIn("hvr_rsi_min", result["by_param"])
 
     def test_use_earnings_only_path(self):
         result = self._run(
-            param_ranges={"ema_breakdown_threshold": [-2.0]},
+            param_ranges={"fb_vol_min": [1.0]},
             use_earnings_only=True,
         )
         self.assertIn("baseline", result)
