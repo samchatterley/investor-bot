@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from utils.health import HealthStatus
 
 

@@ -497,12 +497,21 @@ def record_buy(
     signal: str = "unknown",
     regime: str = "UNKNOWN",
     confidence: int = 0,
+    track: str = "multiday",
 ):
     with _db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence) "
-            "VALUES (?,?,?,?,?,?)",
-            (symbol, today_et().isoformat(), round(entry_price, 4), signal, regime, confidence),
+            "INSERT OR REPLACE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence, track) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                symbol,
+                today_et().isoformat(),
+                round(entry_price, 4),
+                signal,
+                regime,
+                confidence,
+                track,
+            ),
         )
 
 
@@ -1010,13 +1019,14 @@ def record_short(
     signal: str = "rs_short",
     regime: str = "UNKNOWN",
     confidence: int = 0,
+    track: str = "multiday",
 ):
     """Record an opened short position in the positions table."""
     with _db() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO positions "
-            "(symbol, entry_date, entry_price, signal, regime, confidence, side) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "(symbol, entry_date, entry_price, signal, regime, confidence, side, track) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (
                 symbol,
                 today_et().isoformat(),
@@ -1025,6 +1035,7 @@ def record_short(
                 regime,
                 confidence,
                 "short",
+                track,
             ),
         )
 
@@ -1053,6 +1064,16 @@ def get_open_shorts() -> set[str]:
         return {row["symbol"] for row in rows}
     except Exception:
         return set()
+
+
+def get_intraday_positions() -> list[str]:
+    """Return symbols of positions opened by intraday signals (track='intraday')."""
+    try:
+        with _db() as conn:
+            rows = conn.execute("SELECT symbol FROM positions WHERE track='intraday'").fetchall()
+        return [row["symbol"] for row in rows]
+    except Exception:
+        return []
 
 
 def get_short_notional(client: TradingClient) -> float:

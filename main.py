@@ -61,6 +61,7 @@ from risk import (
 )
 from risk.regime_policy import get_regime_policy
 from risk.risk_config import RiskConfig
+from signals.evaluator import INTRADAY_SHORT_SIGNALS, INTRADAY_SIGNALS
 from utils import audit_log, decision_log, portfolio_tracker
 from utils.db import init_db
 from utils.health import HealthStatus, run_startup_health_check
@@ -1463,12 +1464,14 @@ def _execute_buy_phase(
                             daily_notional_spent += notional
                             trader.add_daily_notional(today, notional)
                             entry_price = sym_snap["current_price"] if sym_snap else 0.0
+                            _signal = candidate.get("key_signal", "unknown")
                             trader.record_buy(
                                 symbol,
                                 entry_price,
-                                signal=candidate.get("key_signal", "unknown"),
+                                signal=_signal,
                                 regime=mc.regime.get("regime", "UNKNOWN"),
                                 confidence=confidence,
+                                track="intraday" if _signal in INTRADAY_SIGNALS else "multiday",
                             )
                             audit_log.log_order_placed(
                                 symbol, "BUY", notional, buy_result.broker_order_id or ""
@@ -1687,6 +1690,50 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
         _current_lock_fd = None
 
 
+def _force_cover_intraday_positions(client, dry_run: bool, all_trades: list) -> None:
+    """Market-sell / cover all positions tagged track='intraday' before close."""
+    symbols = trader.get_intraday_positions()
+    if not symbols:
+        return
+    logger.info(f"Force-covering {len(symbols)} intraday position(s): {symbols}")
+    for symbol in symbols:
+        try:
+            meta = trader.get_position_meta(symbol)
+            is_short = meta.get("side", "long") == "short"
+            action_label = "COVER" if is_short else "SELL"
+            if not dry_run:
+                result = trader.close_position(client, symbol)
+                if result and result.is_success:
+                    if is_short:
+                        trader.record_cover(symbol)
+                    else:
+                        trader.record_sell(symbol)
+                    all_trades.append(
+                        {
+                            "symbol": symbol,
+                            "action": action_label,
+                            "detail": "intraday force-cover at close",
+                        }
+                    )
+                    audit_log.log_event(
+                        "INTRADAY_FORCE_COVER",
+                        {"symbol": symbol, "side": "short" if is_short else "long"},
+                    )
+                else:
+                    logger.error(f"Force-cover failed for {symbol}: {result}")
+            else:
+                logger.info(f"[dry-run] Would force-cover intraday position: {symbol}")
+                all_trades.append(
+                    {
+                        "symbol": symbol,
+                        "action": action_label,
+                        "detail": "intraday force-cover at close [dry-run]",
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Force-cover error for {symbol}: {e}")
+
+
 def _reconcile_late_fills(
     client,
     today: str,
@@ -1762,6 +1809,7 @@ def _reconcile_late_fills(
                             signal=signal,
                             regime=mc.regime.get("regime", "UNKNOWN"),
                             confidence=confidence,
+                            track="intraday" if signal in INTRADAY_SHORT_SIGNALS else "multiday",
                         )
                     else:
                         trader.record_buy(
@@ -1770,6 +1818,7 @@ def _reconcile_late_fills(
                             signal=signal,
                             regime=mc.regime.get("regime", "UNKNOWN"),
                             confidence=confidence,
+                            track="intraday" if signal in INTRADAY_SIGNALS else "multiday",
                         )
                     executed_symbols.add(sym)
                     all_trades.append(
@@ -2072,6 +2121,10 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols)
     if decisions is None:
         return
+
+    # ── Force-cover intraday positions (close pass only) ─────────────────────
+    if mode == "close":
+        _force_cover_intraday_positions(client, dry_run, all_trades)
 
     # ── Execute sells / covers ────────────────────────────────────────────────
     _execute_sell_phase(

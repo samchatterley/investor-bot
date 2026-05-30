@@ -97,7 +97,7 @@ The scheduler fires four times on every trading day (all times America/New_York)
 | 09:31 | `open_sells` | Earnings exits and AI sell decisions — no new buys into open noise |
 | 10:00 | `open` | Full cycle: market context → Claude → validate → risk gate → long buys + short hedges |
 | 12:00 | `midday` | Partial profit exits, stop checks; intraday-signal buys if setups present |
-| 15:30 | `close` | Final position review before market close |
+| 15:30 | `close` | Force-cover all intraday positions; final position review before market close |
 | 15:00 Sun | `weekly_review` | AI self-review, parameter proposals, diagnostics email |
 
 ### Scan universe
@@ -203,7 +203,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (2485 tests, 100% coverage)
+├── tests/             Unit test suite (2513 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **2485 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **2513 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -810,11 +810,21 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.52 — May 2026 — Phase 4: dual-track intraday live pipeline
+
+- **`track` column added to `positions` and `trades` tables (DB migrations v6, v7).** New `TEXT NOT NULL DEFAULT 'multiday'` column distinguishes positions opened by intraday signals from those opened by daily signals. Schema is backward-compatible — existing positions default to `'multiday'`.
+- **Intraday signal tagging on buy and short.** `record_buy()` and `record_short()` in `execution/trader.py` now accept a `track` parameter. In `main.py`, positions opened by signals in `INTRADAY_SIGNALS` (`orb_breakout`, `vwap_reclaim`, `intraday_momentum`) are tagged `track='intraday'`; all others default to `track='multiday'`. Short positions opened via `INTRADAY_SHORT_SIGNALS` are similarly tagged.
+- **`get_intraday_positions()` (new function in `execution/trader.py`).** Returns symbols of all currently-open positions tagged `track='intraday'`. Returns `[]` on DB error (fail-safe).
+- **`_force_cover_intraday_positions()` (new function in `main.py`).** At the `close` pass, before the regular sell phase, all intraday positions are market-sold (longs) or covered (shorts) regardless of AI recommendation. Prevents intraday momentum positions from being held overnight. Each cover is audit-logged as `INTRADAY_FORCE_COVER`. Dry-run mode skips broker calls but still appends to `all_trades` and logs the intent.
+- **28 new tests** across `tests/test_trader_metadata.py` (`TestTrackField` ×8), `tests/test_main.py` (`TestForceCoverIntradayPositions` ×6, `TestForceCoverIntradayInRunInner` ×2, `TestAssertAccountSafety` ×5, `TestHandleStopFailure` ×3, `TestFetchAtrForHeld` ×1, `TestRunInnerMaxOrdersLimit` ×1, `TestLateReconciliationSymbolNotInLive` ×1), and `tests/test_backtest.py` (`test_prints_short_signal_with_trades` ×1); **2513 passing, 100% coverage.**
+
+---
+
 ### 1.51h — May 2026 — Option B complete: `_run_inner` fully modularised
 
 - **`_run_inner` refactored into a clean 12-phase pipeline.** All inline business logic extracted into typed module-level helper functions. `_run_inner` is now a sequence of named calls with no embedded logic: `_evaluate_risk_limits` → `_fetch_market_context` → `_get_position_snapshot` → `_manage_existing_positions` → `_build_data_bundle` → `_run_ai_phase` → `_execute_sell_phase` → `_execute_buy_phase` → `_execute_shorts` → `_reconcile_late_fills` → `_finalise`. Each helper has a typed signature and returns a result type (or `None` as an early-exit signal).
 - **New phase helpers added across v1.51a–h:** `MarketContext`, `PositionSnapshot`, `DataBundle`, `RiskFlags` dataclasses in `models.py`; `_fetch_market_context`, `_get_position_snapshot`, `_manage_existing_positions`, `_build_data_bundle`, `_run_ai_phase`, `_execute_sell_phase`, `_execute_buy_phase`, `_reconcile_late_fills`, `_finalise`, `_evaluate_risk_limits` in `main.py`.
-- **0 new tests** (pure refactor — all behaviour preserved); **2485 passing, 100% coverage.**
+- **0 new tests** (pure refactor — all behaviour preserved); **2485 passing, 100% coverage.** (2513 after v1.52)
 
 ---
 

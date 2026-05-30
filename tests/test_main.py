@@ -797,6 +797,7 @@ class RunInnerBase(unittest.TestCase):
             "main.trader.ensure_stops_attached": None,
             "main.trader.get_position_ages": {},
             "main.trader.get_stale_positions": [],
+            "main.trader.get_intraday_positions": [],
             "main.trader.record_buy": None,
             "main.trader.record_sell": None,
             "main.trader.close_position": OrderResult(status=OrderStatus.FILLED, symbol="X"),
@@ -4028,6 +4029,347 @@ class TestSameDayOpenGuard(RunInnerBase):
             _run_inner(dry_run=True, mode="open", today="2026-01-15")
         check_mock.assert_not_called()
         lock_mock.assert_not_called()
+
+
+class TestAssertAccountSafety(unittest.TestCase):
+    """Lines 339, 342→exit, 349-352, 358-359: _assert_account_safety branches."""
+
+    def _make_account(self, pdt=False, equity=100_000.0, buying_power=100_000.0):
+        account = MagicMock()
+        account.pattern_day_trader = pdt
+        account.equity = str(equity)
+        account.buying_power = str(buying_power)
+        return account
+
+    def test_paper_account_returns_without_calling_client(self):
+        client = MagicMock()
+        with patch("main.config.IS_PAPER", True):
+            from main import _assert_account_safety
+
+            _assert_account_safety(client)
+        client.get_account.assert_not_called()
+
+    def test_allow_margin_true_skips_pdt_check(self):
+        """Branch 342→exit: ALLOW_MARGIN=True means the if body is skipped."""
+        client = MagicMock()
+        client.get_account.return_value = self._make_account(pdt=True)
+        with (
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.ALLOW_MARGIN", True),
+        ):
+            from main import _assert_account_safety
+
+            _assert_account_safety(client)  # no error
+
+    def test_pdt_flag_raises_runtime_error(self):
+        client = MagicMock()
+        client.get_account.return_value = self._make_account(pdt=True)
+        with (
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.ALLOW_MARGIN", False),
+        ):
+            from main import _assert_account_safety
+
+            with self.assertRaises(RuntimeError, msg="PDT"):
+                _assert_account_safety(client)
+
+    def test_high_buying_power_raises_runtime_error(self):
+        """Lines 349-352: buying_power > equity * 2.1 → RuntimeError."""
+        client = MagicMock()
+        client.get_account.return_value = self._make_account(
+            pdt=False, equity=100_000.0, buying_power=250_000.0
+        )
+        with (
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.ALLOW_MARGIN", False),
+        ):
+            from main import _assert_account_safety
+
+            with self.assertRaises(RuntimeError, msg="buying_power"):
+                _assert_account_safety(client)
+
+    def test_normal_cash_account_passes(self):
+        """Branch 351→exit: equity > 0 but buying_power <= equity * 2.1 → no error."""
+        client = MagicMock()
+        client.get_account.return_value = self._make_account(
+            pdt=False, equity=100_000.0, buying_power=100_000.0
+        )
+        with (
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.ALLOW_MARGIN", False),
+        ):
+            from main import _assert_account_safety
+
+            _assert_account_safety(client)  # should not raise
+
+    def test_api_error_wraps_in_runtime_error(self):
+        """Lines 358-359: non-RuntimeError from client.get_account() → RuntimeError."""
+        client = MagicMock()
+        client.get_account.side_effect = ConnectionError("timeout")
+        with (
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.ALLOW_MARGIN", False),
+        ):
+            from main import _assert_account_safety
+
+            with self.assertRaises(RuntimeError, msg="cannot verify"):
+                _assert_account_safety(client)
+
+
+class TestHandleStopFailure(unittest.TestCase):
+    """Lines 376-377, 401-416: _handle_stop_failure branches."""
+
+    def test_dry_run_returns_early_without_close(self):
+        """Lines 376-377: dry_run=True → log + return, no close."""
+        client = MagicMock()
+        with (
+            patch("main.trader.close_position") as close_mock,
+            patch("main.alerts.alert_error"),
+        ):
+            from main import _handle_stop_failure
+
+            _handle_stop_failure(client, "AAPL", dry_run=True)
+        close_mock.assert_not_called()
+
+    def test_live_non_paper_flatten_success(self):
+        """IS_PAPER=False, flatten succeeds → record_sell called."""
+        client = MagicMock()
+        record_sell_mock = MagicMock()
+        with (
+            patch("main.config.IS_PAPER", False),
+            patch(
+                "main.trader.close_position",
+                return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"),
+            ),
+            patch("main.trader.record_sell", new=record_sell_mock),
+            patch("main.alerts.alert_error"),
+        ):
+            from main import _handle_stop_failure
+
+            _handle_stop_failure(client, "AAPL", dry_run=False)
+        record_sell_mock.assert_called_once_with("AAPL")
+
+    def test_live_non_paper_flatten_fails_writes_halt_file(self):
+        """Lines 401-416: IS_PAPER=False, flatten fails → halt file written."""
+        tmpdir = tempfile.mkdtemp()
+        halt_file = os.path.join(tmpdir, "HALT")
+        try:
+            client = MagicMock()
+            failed = OrderResult(
+                status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="no fill"
+            )
+            with (
+                patch("main.config.IS_PAPER", False),
+                patch("main.config.LOG_DIR", tmpdir),
+                patch("main.config.HALT_FILE", halt_file),
+                patch("main.trader.close_position", return_value=failed),
+                patch("main.alerts.alert_error"),
+            ):
+                from main import _handle_stop_failure
+
+                _handle_stop_failure(client, "AAPL", dry_run=False)
+            self.assertTrue(os.path.exists(halt_file))
+        finally:
+            shutil.rmtree(tmpdir)
+
+
+class TestFetchAtrForHeld(unittest.TestCase):
+    """Line 428: _fetch_atr_for_held with non-empty held_symbols."""
+
+    def test_non_empty_set_calls_compute_atr(self):
+        with patch("main.exit_optimiser.compute_atr_pct", return_value=1.5) as atr_mock:
+            from main import _fetch_atr_for_held
+
+            result = _fetch_atr_for_held({"AAPL", "MSFT"})
+        self.assertEqual(atr_mock.call_count, 2)
+        self.assertIn("AAPL", result)
+        self.assertIn("MSFT", result)
+
+
+class TestRunInnerMaxOrdersLimit(RunInnerBase):
+    """Lines 1320-1323: MAX_ORDERS_PER_RUN limit hit mid-loop."""
+
+    def test_stops_after_max_orders_reached(self):
+        """Two candidates both above min_confidence; MAX_ORDERS_PER_RUN=1 → second not bought."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        # CHOPPY regime bumps min_confidence to 8, so both candidates need confidence >= 8
+        candidates = [
+            {"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"},
+            {"symbol": "MSFT", "confidence": 8, "key_signal": "momentum"},
+        ]
+        decisions = _decisions(buys=candidates)
+        stack, _ = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0},
+                    {"symbol": "MSFT", "current_price": 400.0},
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0},
+                    {"symbol": "MSFT", "current_price": 400.0},
+                ],
+                "main.trader.place_buy_order": buy_mock,
+                "main.config.MAX_ORDERS_PER_RUN": 1,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        self.assertEqual(buy_mock.call_count, 1)
+
+
+class TestLateReconciliationSymbolNotInLive(RunInnerBase):
+    """Line 1764: timeout intent for symbol absent from live positions is skipped."""
+
+    def test_intent_not_in_live_positions_is_skipped(self):
+        from unittest.mock import patch as _patch
+
+        audit_events = []
+
+        def _capture(name, payload=None):
+            audit_events.append(name)
+
+        timeout_intent = {
+            "symbol": "GHOST",
+            "side": "BUY",
+            "status": "timeout",
+            "client_order_id": "ib-GHOST-BUY-2026-01-15",
+            "broker_order_id": "broker-ghost",
+            "trade_date": "2026-01-15",
+        }
+        # live positions are empty — GHOST never actually filled
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [],
+                "main.audit_log.log_event": MagicMock(side_effect=_capture),
+            }
+        )
+        with (
+            stack,
+            _patch("utils.order_ledger.get_unresolved_intents", return_value=[timeout_intent]),
+        ):
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+        late_fills = [e for e in audit_events if e == "ORDER_LATE_FILL_RECONCILED"]
+        self.assertEqual(late_fills, [])
+
+
+class TestForceCoverIntradayPositions(unittest.TestCase):
+    """Unit tests for _force_cover_intraday_positions() in main.py."""
+
+    def _run(self, symbols, meta_map=None, close_result=None, dry_run=False):
+        if meta_map is None:
+            meta_map = {s: {"side": "long"} for s in symbols}
+        if close_result is None:
+            close_result = OrderResult(status=OrderStatus.FILLED, symbol="X")
+        close_mock = MagicMock(return_value=close_result)
+        record_sell_mock = MagicMock()
+        record_cover_mock = MagicMock()
+        all_trades = []
+        with (
+            patch("main.trader.get_intraday_positions", return_value=symbols),
+            patch(
+                "main.trader.get_position_meta",
+                side_effect=lambda s: meta_map.get(s, {"side": "long"}),
+            ),
+            patch("main.trader.close_position", new=close_mock),
+            patch("main.trader.record_sell", new=record_sell_mock),
+            patch("main.trader.record_cover", new=record_cover_mock),
+            patch("main.audit_log.log_event"),
+        ):
+            from main import _force_cover_intraday_positions
+
+            _force_cover_intraday_positions(MagicMock(), dry_run, all_trades)
+        return all_trades, close_mock, record_sell_mock, record_cover_mock
+
+    def test_no_intraday_positions_is_noop(self):
+        all_trades, close_mock, _, _ = self._run([])
+        close_mock.assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_long_position_closed_and_recorded(self):
+        all_trades, close_mock, record_sell_mock, record_cover_mock = self._run(
+            ["AAPL"], meta_map={"AAPL": {"side": "long"}}
+        )
+        close_mock.assert_called_once()
+        record_sell_mock.assert_called_once_with("AAPL")
+        record_cover_mock.assert_not_called()
+        self.assertEqual(len(all_trades), 1)
+        self.assertEqual(all_trades[0]["action"], "SELL")
+
+    def test_short_position_covered_and_recorded(self):
+        all_trades, close_mock, record_sell_mock, record_cover_mock = self._run(
+            ["TSLA"], meta_map={"TSLA": {"side": "short"}}
+        )
+        close_mock.assert_called_once()
+        record_cover_mock.assert_called_once_with("TSLA")
+        record_sell_mock.assert_not_called()
+        self.assertEqual(all_trades[0]["action"], "COVER")
+
+    def test_failed_close_does_not_record(self):
+        failed = OrderResult(status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="err")
+        all_trades, _, record_sell_mock, _ = self._run(["AAPL"], close_result=failed)
+        record_sell_mock.assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_dry_run_skips_close_but_appends_trade(self):
+        all_trades, close_mock, record_sell_mock, _ = self._run(["AAPL"], dry_run=True)
+        close_mock.assert_not_called()
+        record_sell_mock.assert_not_called()
+        self.assertEqual(len(all_trades), 1)
+        self.assertIn("dry-run", all_trades[0]["detail"])
+
+    def test_exception_per_symbol_does_not_abort_loop(self):
+        """An exception on the first symbol should not prevent the second from being processed."""
+        close_results = [
+            Exception("broker down"),
+            OrderResult(status=OrderStatus.FILLED, symbol="MSFT"),
+        ]
+        close_mock = MagicMock(side_effect=close_results)
+        record_sell_mock = MagicMock()
+        all_trades = []
+        with (
+            patch("main.trader.get_intraday_positions", return_value=["AAPL", "MSFT"]),
+            patch("main.trader.get_position_meta", return_value={"side": "long"}),
+            patch("main.trader.close_position", new=close_mock),
+            patch("main.trader.record_sell", new=record_sell_mock),
+            patch("main.trader.record_cover"),
+            patch("main.audit_log.log_event"),
+        ):
+            from main import _force_cover_intraday_positions
+
+            _force_cover_intraday_positions(MagicMock(), False, all_trades)
+        self.assertEqual(close_mock.call_count, 2)
+        record_sell_mock.assert_called_once_with("MSFT")
+
+
+class TestForceCoverIntradayInRunInner(RunInnerBase):
+    """Integration: _force_cover_intraday_positions wiring in _run_inner."""
+
+    def test_force_cover_triggered_in_close_mode(self):
+        force_mock = MagicMock()
+        stack, _ = self._patch_all(**{"main._force_cover_intraday_positions": force_mock})
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="close", today="2026-01-15")
+        force_mock.assert_called_once()
+
+    def test_force_cover_not_triggered_in_open_mode(self):
+        force_mock = MagicMock()
+        stack, _ = self._patch_all(**{"main._force_cover_intraday_positions": force_mock})
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        force_mock.assert_not_called()
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -146,3 +146,68 @@ class TestRecordPartialExit(_MetaTestBase):
             record_partial_exit("GHOST")
         except Exception:  # pragma: no cover
             self.fail("record_partial_exit raised on unknown symbol")
+
+
+class TestTrackField(_MetaTestBase):
+    """Migration v6: positions.track column and get_intraday_positions()."""
+
+    def test_record_buy_default_track_is_multiday(self):
+        from execution.trader import get_position_meta, record_buy
+
+        record_buy("AAPL", 175.0)
+        meta = get_position_meta("AAPL")
+        self.assertEqual(meta.get("track", "multiday"), "multiday")
+
+    def test_record_buy_intraday_track_stored(self):
+        from execution.trader import get_position_meta, record_buy
+
+        record_buy("AAPL", 175.0, track="intraday")
+        meta = get_position_meta("AAPL")
+        self.assertEqual(meta["track"], "intraday")
+
+    def test_record_short_default_track_is_multiday(self):
+        from execution.trader import get_position_meta, record_short
+
+        record_short("TSLA", 250.0)
+        meta = get_position_meta("TSLA")
+        self.assertEqual(meta.get("track", "multiday"), "multiday")
+
+    def test_record_short_intraday_track_stored(self):
+        from execution.trader import get_position_meta, record_short
+
+        record_short("TSLA", 250.0, track="intraday")
+        meta = get_position_meta("TSLA")
+        self.assertEqual(meta["track"], "intraday")
+
+    def test_get_intraday_positions_empty_when_none(self):
+        from execution.trader import get_intraday_positions, record_buy
+
+        record_buy("AAPL", 175.0, track="multiday")
+        self.assertEqual(get_intraday_positions(), [])
+
+    def test_get_intraday_positions_returns_intraday_symbols(self):
+        from execution.trader import get_intraday_positions, record_buy
+
+        record_buy("AAPL", 175.0, track="intraday")
+        record_buy("MSFT", 400.0, track="multiday")
+        result = get_intraday_positions()
+        self.assertEqual(result, ["AAPL"])
+
+    def test_get_intraday_positions_multiple_symbols(self):
+        from execution.trader import get_intraday_positions, record_buy
+
+        record_buy("AAPL", 175.0, track="intraday")
+        record_buy("NVDA", 800.0, track="intraday")
+        result = get_intraday_positions()
+        self.assertIn("AAPL", result)
+        self.assertIn("NVDA", result)
+        self.assertEqual(len(result), 2)
+
+    def test_get_intraday_positions_returns_empty_on_db_error(self):
+        from unittest.mock import patch
+
+        from execution.trader import get_intraday_positions
+
+        with patch("execution.trader._db", side_effect=Exception("db offline")):
+            result = get_intraday_positions()
+        self.assertEqual(result, [])
