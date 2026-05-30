@@ -810,6 +810,16 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.53 — May 2026 — Phase 5: disable drag signals + short parameter sweep framework
+
+- **`GLOBALLY_DISABLED` frozenset added to `signals/evaluator.py`.** Signals listed here are permanently blocked in both the live evaluation path and all backtest simulations. Merged into `evaluate_signals()` at function entry — no call-site changes needed. Initial members: `rsi_divergence` (Sharpe drag in every backtest run; WR 48%, avg −0.9% in NEUTRAL_CHOP which accounts for 75% of its trades) and `breakout_52w` (WR 35%, avg −1.5% in BULL_TREND, its only firing regime; consistently negative across all walk-forward folds).
+- **`run_short_param_sensitivity()` (new function in `backtest/engine.py`).** One-at-a-time parameter sweep for short signal thresholds (`DEFAULT_SHORT_SIGNAL_PARAMS`). For each parameter in `param_ranges`, runs a short-only simulation at each candidate value while holding all other params at defaults. Returns `{"baseline": ..., "by_param": {param: {value: sim_result}}}`. Default sweep covers `ema_breakdown_threshold` (−1.0 → −5.0), `wr_rsi_min` (60–80), and `wr_ema21_min` (1–5). Exposed as `--short-param-sensitivity` CLI flag on `backtest/engine.py`.
+- **`short_params` passthrough added to `_short_entry_signal` and `_run_short_simulation`.** Allows the sensitivity sweep to override individual short thresholds per simulation without touching the live defaults.
+- **Walk-forward baseline (full run, 2024–2026):** 3/3 folds profitable, 3/3 beat equal-weight baseline, mean OOS return +133.0% vs +15.2% baseline, mean OOS Sharpe 0.82, param stability 67%.
+- **17 new tests** (`TestRunShortParamSensitivity` ×7, updated `TestBreakout52w` ×1, updated `TestRsiDivergenceSignal` ×3, updated scanner tests ×2, updated stock-scanner globally-disabled tests ×4); **2730 passing, 100% coverage.**
+
+---
+
 ### 1.52 — May 2026 — Phase 4: dual-track intraday live pipeline
 
 - **`track` column added to `positions` and `trades` tables (DB migrations v6, v7).** New `TEXT NOT NULL DEFAULT 'multiday'` column distinguishes positions opened by intraday signals from those opened by daily signals. Schema is backward-compatible — existing positions default to `'multiday'`.

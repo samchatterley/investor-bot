@@ -55,6 +55,7 @@ from data.market_regime import compute_regime_series
 from data.universe_history import get_universe_for_date
 from risk.risk_config import RiskConfig
 from signals.evaluator import (
+    DEFAULT_SHORT_SIGNAL_PARAMS,
     DEFAULT_SIGNAL_PARAMS,
     INTRADAY_SIGNALS,
     REGIME_BLOCKED,
@@ -270,6 +271,7 @@ def _short_entry_signal(
     rs_rank_pct: float | None,
     spy_ret_20d: float | None,
     fundamentals: dict | None = None,
+    short_params: dict | None = None,
 ) -> list[str] | None:
     """Return matched bearish signals if this row qualifies as a short entry, else None.
 
@@ -287,6 +289,7 @@ def _short_entry_signal(
             snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
         wr_sigs = evaluate_short_signals(
             snap,
+            params=short_params,
             blocked=frozenset({"earnings_miss", "high_short_interest", "ema_breakdown"}),
         )
         if wr_sigs:
@@ -299,7 +302,9 @@ def _short_entry_signal(
     if fundamentals:
         snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
 
-    signals = evaluate_short_signals(snap, blocked=frozenset({"winner_reversal"}))
+    signals = evaluate_short_signals(
+        snap, params=short_params, blocked=frozenset({"winner_reversal"})
+    )
     return signals if signals else None
 
 
@@ -1078,6 +1083,7 @@ def _run_short_simulation(
     earnings_history: dict[str, list[dict]] | None = None,
     risk_config: RiskConfig | None = None,
     rs_ranks: dict[str, dict[str, float]] | None = None,
+    short_params: dict | None = None,
 ) -> dict:
     """Short-side simulation — mirrors _run_simulation() but enters short positions.
 
@@ -1231,6 +1237,7 @@ def _run_short_simulation(
                 rs_rank_pct=rs_rank_pct,
                 spy_ret_20d=spy_ret_20d,
                 fundamentals=fundamentals,
+                short_params=short_params,
             )
             if signals:
                 key_signal = signals[0]
@@ -3694,6 +3701,140 @@ def run_param_sensitivity(
     return out
 
 
+def _print_short_param_sensitivity(r: dict, start_date: str, end_date: str) -> None:
+    b = r["baseline"]
+    print("\n" + "=" * 72)
+    print(f"  SHORT PARAMETER SENSITIVITY  {start_date} → {end_date}")
+    print("=" * 72)
+    print(
+        f"  Baseline: Sharpe {b['sharpe_ratio']:.3f} | "
+        f"Return {b['total_return_pct']:+.1f}% | "
+        f"WR {b['win_rate_pct']:.0f}% | {b['total_trades']} trades"
+    )
+    for param, sweep in sorted(r["by_param"].items()):
+        default_val = DEFAULT_SHORT_SIGNAL_PARAMS.get(param)
+        print(f"\n  {param}  (default: {default_val})")
+        print(
+            f"  {'Value':>10}  {'WR%':>6}  {'Avg/trade':>10}  "
+            f"{'Sharpe':>8}  {'ΔSharpe':>8}  {'Trades':>7}"
+        )
+        print("  " + "-" * 60)
+        for val, res in sorted(sweep.items()):
+            delta = res["sharpe_ratio"] - b["sharpe_ratio"]
+            marker = " ←" if val == default_val else ""
+            print(
+                f"  {val:>10.4g}  {res['win_rate_pct']:>5.0f}%  "
+                f"{res['avg_return_per_trade_pct']:>+10.2f}%  "
+                f"{res['sharpe_ratio']:>8.3f}  {delta:>+8.3f}  "
+                f"{res['total_trades']:>7}{marker}"
+            )
+    print("=" * 72 + "\n")
+
+
+def run_short_param_sensitivity(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    param_ranges: dict[str, list[float]] | None = None,
+    initial_capital: float = 25_000.0,
+    max_positions: int = 2,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+    use_earnings_only: bool = False,
+) -> dict:
+    """One-at-a-time sensitivity sweep for short signal parameters.
+
+    Varies each entry in DEFAULT_SHORT_SIGNAL_PARAMS independently over the
+    supplied ranges while holding all others at their defaults.  Each trial
+    runs _run_short_simulation so results are directly comparable to the
+    --short-signals baseline.
+
+    Parameters
+    ----------
+    param_ranges : dict | None
+        Maps parameter name → list of values to test.  Defaults to a
+        pre-defined sweep of all three DEFAULT_SHORT_SIGNAL_PARAMS.
+    """
+    if param_ranges is None:
+        param_ranges = {
+            "ema_breakdown_threshold": [-1.0, -1.5, -2.0, -2.5, -3.0, -4.0, -5.0],
+            "wr_rsi_min": [60.0, 65.0, 70.0, 75.0, 80.0],
+            "wr_ema21_min": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+
+    _assert_pre_holdout(end_date)
+
+    n_sweeps = sum(len(v) for v in param_ranges.values())
+    logger.info(
+        f"Short param sensitivity: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"{n_sweeps} total sweeps" + (" | earnings=ON" if use_earnings_only else "")
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_sps: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_sps = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_sps.index = pd.DatetimeIndex(_vix_df_sps.index).tz_localize(None)
+    except Exception as exc:
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_sps)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    if use_earnings_only:
+        earnings_history = prefetch_earnings_history(symbols)
+
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "spy_indicators": spy_indicators,
+        "regime_by_date": regime_by_date or None,
+        "earnings_history": earnings_history,
+        "rs_ranks": rs_ranks,
+    }
+
+    logger.info("Short param sensitivity: running baseline…")
+    baseline = _run_short_simulation(indicators, trading_dates, **sim_kwargs)
+
+    by_param: dict[str, dict[float, dict]] = {}
+    for param, values in param_ranges.items():
+        logger.info(f"Short param sensitivity: sweeping {param} over {values}…")
+        by_param[param] = {}
+        for val in values:
+            trial_params = {**DEFAULT_SHORT_SIGNAL_PARAMS, param: val}
+            result = _run_short_simulation(
+                indicators, trading_dates, **sim_kwargs, short_params=trial_params
+            )
+            by_param[param][val] = result
+
+    out = {"baseline": baseline, "by_param": by_param}
+    _print_short_param_sensitivity(out, start_date, end_date)
+    return out
+
+
 def run_holdout_evaluation(
     frozen_params: dict,
     version: str,
@@ -3912,6 +4053,11 @@ if __name__ == "__main__":  # pragma: no cover
         help="Backtest bearish signals (earnings_miss, loser_momentum, ema_breakdown)",
     )
     parser.add_argument(
+        "--short-param-sensitivity",
+        action="store_true",
+        help="One-at-a-time parameter sweep for short signal thresholds",
+    )
+    parser.add_argument(
         "--combined",
         action="store_true",
         help="Combined long/short backtest — shared capital, regime-gated short entries",
@@ -3972,6 +4118,14 @@ if __name__ == "__main__":  # pragma: no cover
             args.end,
             initial_capital=args.capital,
             use_earnings_history=True,
+        )
+    elif args.short_param_sensitivity:
+        run_short_param_sensitivity(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            use_earnings_only=args.use_earnings_only,
         )
     elif args.combined:
         run_combined_analysis(

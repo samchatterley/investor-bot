@@ -160,6 +160,13 @@ _NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion", "iv_co
 # rsi_divergence: divergence setups in uptrends are consolidations, not reversals worth buying.
 _BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"})
 
+# ── Globally disabled signals ─────────────────────────────────────────────────
+# Signals removed from both live and backtest after consistent negative contribution
+# across all analysis runs (Jan 2024 – May 2026):
+#   rsi_divergence: WR 48%, avg -0.9% in NEUTRAL_CHOP (75% of its trades); +0.28–0.31 Sharpe drag.
+#   breakout_52w:   WR 35%, avg -1.5% in BULL_TREND (its only firing regime); drag in every run.
+GLOBALLY_DISABLED: frozenset[str] = frozenset({"rsi_divergence", "breakout_52w"})
+
 # ── Short-side signal constants ───────────────────────────────────────────────
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
@@ -277,6 +284,7 @@ def evaluate_signals(
     list[str]
         All signals that fired, sorted ascending by SIGNAL_PRIORITY value.
     """
+    blocked = blocked | GLOBALLY_DISABLED
     p = DEFAULT_SIGNAL_PARAMS if params is None else {**DEFAULT_SIGNAL_PARAMS, **params}
 
     def _f(key: str, default: float) -> float:

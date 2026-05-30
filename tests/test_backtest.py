@@ -335,12 +335,12 @@ class TestEntrySignalNewDailySignals(unittest.TestCase):
             )
         )
 
-    def test_breakout_52w_fires(self):
-        self.assertEqual(
-            _entry_signal(
-                _make_row(price_vs_52w_high_pct=-1.0, vol_ratio=1.3, ema9=101, ema21=100)
-            ),
-            "breakout_52w",
+    def test_breakout_52w_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("breakout_52w", GLOBALLY_DISABLED)
+        self.assertIsNone(
+            _entry_signal(_make_row(price_vs_52w_high_pct=-1.0, vol_ratio=1.3, ema9=101, ema21=100))
         )
 
     def test_breakout_52w_requires_proximity_to_high(self):
@@ -711,13 +711,19 @@ class TestRsiDivergenceSignal(unittest.TestCase):
         kw.setdefault("bb_pct", 0.20)  # must clear rsi_div_bb_max=0.30 default
         return _make_row(**kw)
 
+    def test_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("rsi_divergence", GLOBALLY_DISABLED)
+
     def test_fires_in_neutral_chop(self):
+        # Globally disabled — never fires regardless of regime
         row = self._row()
-        self.assertEqual(_entry_signal(row, regime="NEUTRAL_CHOP"), "rsi_divergence")
+        self.assertIsNone(_entry_signal(row, regime="NEUTRAL_CHOP"))
 
     def test_fires_without_regime(self):
         row = self._row()
-        self.assertEqual(_entry_signal(row), "rsi_divergence")
+        self.assertIsNone(_entry_signal(row))
 
     def test_no_fire_when_divergence_false(self):
         row = _make_row(rsi_divergence=False, adx=20, rsi=38, vol_ratio=1.2)
@@ -6696,3 +6702,88 @@ class TestRunIntradaySimulation(unittest.TestCase):
         with self.assertLogs("backtest.engine", level=logging.WARNING) as cm:
             _run_intraday_simulation(["AAPL"], "2024-01-01", "2024-12-31", bars={})
         self.assertTrue(any("HOLDOUT" in line for line in cm.output))
+
+
+class TestRunShortParamSensitivity(unittest.TestCase):
+    def _run(self, param_ranges=None, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            from backtest.engine import run_short_param_sensitivity
+
+            return run_short_param_sensitivity(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges=param_ranges or {"ema_breakdown_threshold": [-2.0, -3.0]},
+                **kwargs,
+            )
+
+    def test_returns_baseline_and_by_param(self):
+        result = self._run()
+        self.assertIn("baseline", result)
+        self.assertIn("by_param", result)
+
+    def test_by_param_keys_match_param_ranges(self):
+        result = self._run(
+            param_ranges={"ema_breakdown_threshold": [-2.0, -3.0], "wr_rsi_min": [65.0, 75.0]}
+        )
+        self.assertIn("ema_breakdown_threshold", result["by_param"])
+        self.assertIn("wr_rsi_min", result["by_param"])
+
+    def test_each_param_has_one_result_per_value(self):
+        result = self._run(param_ranges={"ema_breakdown_threshold": [-1.5, -2.0, -3.0]})
+        self.assertEqual(
+            set(result["by_param"]["ema_breakdown_threshold"].keys()), {-1.5, -2.0, -3.0}
+        )
+
+    def test_each_result_has_required_keys(self):
+        result = self._run(param_ranges={"ema_breakdown_threshold": [-2.5]})
+        res = result["by_param"]["ema_breakdown_threshold"][-2.5]
+        for key in (
+            "total_return_pct",
+            "sharpe_ratio",
+            "total_trades",
+            "win_rate_pct",
+            "avg_return_per_trade_pct",
+        ):
+            self.assertIn(key, res)
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            from backtest.engine import run_short_param_sensitivity
+
+            result = run_short_param_sensitivity(
+                ["AAPL"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges={"ema_breakdown_threshold": [-2.0]},
+            )
+        self.assertEqual(result, {})
+
+    def test_default_param_ranges_used_when_none(self):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            from backtest.engine import run_short_param_sensitivity
+
+            result = run_short_param_sensitivity(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges=None,
+            )
+        self.assertIn("ema_breakdown_threshold", result["by_param"])
+        self.assertIn("wr_rsi_min", result["by_param"])
+        self.assertIn("wr_ema21_min", result["by_param"])
+
+    def test_use_earnings_only_path(self):
+        result = self._run(
+            param_ranges={"ema_breakdown_threshold": [-2.0]},
+            use_earnings_only=True,
+        )
+        self.assertIn("baseline", result)

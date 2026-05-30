@@ -205,14 +205,12 @@ class TestPrefilterCandidates(unittest.TestCase):
 
     # ── breakout_52w ─────────────────────────────────────────────────────────
 
-    def test_breakout_52w_near_high_with_volume_passes(self):
-        # ema9_above_ema21 required (engine/evaluator condition — more rigorous than weekly_up)
-        snap = _snap(price_vs_52w_high_pct=-1.5, vol_ratio=1.5, ema9_above_ema21=True)
-        self.assertEqual(len(prefilter_candidates([snap])), 1)
+    def test_breakout_52w_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
 
-    def test_breakout_52w_at_high_passes(self):
-        snap = _snap(price_vs_52w_high_pct=0.0, vol_ratio=1.3, ema9_above_ema21=True)
-        self.assertEqual(len(prefilter_candidates([snap])), 1)
+        self.assertIn("breakout_52w", GLOBALLY_DISABLED)
+        snap = _snap(price_vs_52w_high_pct=-1.5, vol_ratio=1.5, ema9_above_ema21=True)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
 
     def test_breakout_52w_too_far_from_high_fails(self):
         snap = _snap(price_vs_52w_high_pct=-5.0, vol_ratio=1.5, weekly_trend_up=True)
@@ -629,11 +627,14 @@ class TestRegimeBlocking(unittest.TestCase):
         signals = result[0]["matched_signals"] if result else []
         self.assertNotIn("iv_compression", signals)
 
-    def test_rsi_divergence_fires_in_neutral_chop(self):
+    def test_rsi_divergence_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("rsi_divergence", GLOBALLY_DISABLED)
         snap = _snap(rsi_divergence=True, adx=20, rsi_14=38, vol_ratio=1.2, bb_pct=0.20)
         result = prefilter_candidates([snap], regime="NEUTRAL_CHOP")
-        self.assertTrue(result)
-        self.assertIn("rsi_divergence", result[0]["matched_signals"])
+        signals = result[0]["matched_signals"] if result else []
+        self.assertNotIn("rsi_divergence", signals)
 
     def test_rsi_divergence_blocked_in_bull_trend(self):
         snap = _snap(rsi_divergence=True, adx=20, rsi_14=38, vol_ratio=1.2)
