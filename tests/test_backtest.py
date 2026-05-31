@@ -6964,7 +6964,10 @@ class TestRunShortWalkForward(unittest.TestCase):
                 return raw
             raise ConnectionError("VIX unavailable")
 
-        with patch("backtest.engine.yf.download", side_effect=_dl):
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
             from backtest.engine import run_short_walk_forward
 
             result = run_short_walk_forward(
@@ -6978,7 +6981,10 @@ class TestRunShortWalkForward(unittest.TestCase):
     def test_spy_data_builds_regime_map(self):
         # SPY in symbols → spy_indicators not None → _build_regime_map called
         raw = _make_raw(n=100, symbols=("AAPL", "FLAT", "SPY"))
-        with patch("backtest.engine.yf.download", return_value=raw):
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
             from backtest.engine import run_short_walk_forward
 
             result = run_short_walk_forward(
@@ -7201,23 +7207,31 @@ class TestRunShortSimulationEarningsGap(unittest.TestCase):
         )
         self.assertIn("total_trades", result)
 
-    def test_gap_not_computed_when_today_loc_is_1(self):
-        # today_loc == 1 on first iteration → earnings_gap branch skipped
-        n = 30
+    def test_gap_below_threshold_does_not_fire(self):
+        # gap_pct > -5% threshold → earnings_gap_down does not fire → no trade
+        n = 60
         indicators, spy_ind, idx = self._build(n=n)
-        earn_date = idx[0].date()  # earnings on bar 0
-        earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -10.0}]}
-        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        ind_df = indicators["WEAK"]
+        gap_bar = max(5, len(ind_df) // 2)
+        # Only -1% gap — above the -5% threshold, signal must not fire
+        ind_df.loc[ind_df.index[gap_bar], "Open"] = float(ind_df.iloc[gap_bar - 1]["Close"]) * 0.99
+        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 2.0
+        earn_date = ind_df.index[gap_bar - 1].date()
+        earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -2.0}]}
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind_df.index]
         rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}
-        dates = idx[1:2]  # only bar 1 → today_loc == 1
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        sim_start = ind_df.index[gap_bar].strftime("%Y-%m-%d")
+        dates = pd.bdate_range(sim_start, periods=5)
         result = _run_short_simulation(
             indicators,
             dates,
             spy_indicators=spy_ind,
             rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
             earnings_history=earnings_history,
         )
-        self.assertIn("total_trades", result)
+        self.assertEqual(result["total_trades"], 0)
 
     def test_gap_not_computed_when_prior_close_zero(self):
         # prior_close == 0 → guard prevents division by zero

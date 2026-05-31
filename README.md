@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.60 — May 2026 — earnings_gap_down: same-bar entry, walk-forward fix, STATIC_SHORT_UNIVERSE
+
+- **Same-bar gap-open entry (structural fix).** `_run_short_simulation()` previously entered one bar after the gap (T+1), by which time the gap was already priced in. Now the gap is detected on the reaction bar itself: `earnings_gap_pct = (T_open − (T−1)_close) / (T−1)_close × 100` using `recent_earnings_date(sym, today_date_obj, ...)` where `today_date_obj` is the current simulation bar. AMC/BMO earnings are public before the open, so using `today_open` is not lookahead. Entry is at the market open on the gap day — the earliest tradeable price after the news.
+- **Walk-forward earnings_history bug fixed.** `run_short_walk_forward()` never called `prefetch_earnings_history()` and never passed `earnings_history` to `_run_short_simulation()`, causing 0 gap trades in all 11 walk-forward folds. Fixed by adding the fetch before `sim_kwargs` and adding `"earnings_history": earnings_history` to the kwargs dict.
+- **Short CLI broadened to `STATIC_SHORT_UNIVERSE` (~300 symbols).** `--short-signals`, `--short-param-sensitivity`, and `--short-walk-forward` now use `STATIC_SHORT_UNIVERSE` instead of the 52-symbol large-cap `STOCK_UNIVERSE`. PEAD literature documents the effect predominantly in small/mid-cap stocks with thinner analyst coverage; large-caps have faster information assimilation.
+- **`test_gap_not_computed_when_today_loc_is_1` replaced** with `test_gap_below_threshold_does_not_fire` — the prior guard (`today_loc >= 2`) no longer exists (same-bar path only needs `today_loc >= 0` via the outer skip). New test covers the False branch of `if gap_signals and "earnings_gap_down" in gap_signals:` when gap_pct is −1% (above −5% threshold → no signal).
+- **`test_vix_fetch_exception_handled` and `test_spy_data_builds_regime_map` patched** — now mock `prefetch_earnings_history` so they don't make real API calls after the walk-forward fix.
+- **0 net new tests** (1 test renamed/repurposed; 2 tests updated with new patch); **2855 passing, 100% coverage.**
+
+---
+
 ### 1.59 — May 2026 — earnings_gap_down short signal (backtest-enabled)
 
 - **`earnings_gap_down` signal (new).** Fires when a stock gaps down ≥ 5% on the first open after earnings with volume ≥ 1.5× average. Captures post-earnings announcement drift (negative PEAD): institutional rebalancing and analyst downgrades continue to push prices lower for 3–5 sessions after a gap-down reaction. Signal parameters in `DEFAULT_SHORT_SIGNAL_PARAMS`: `egd_gap_pct_max = -5.0`, `egd_vol_min = 1.5`.

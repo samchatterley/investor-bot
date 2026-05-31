@@ -54,6 +54,7 @@ from config import (
 )
 from data.market_regime import compute_regime_series
 from data.universe_history import get_universe_for_date
+from execution.short_universe import STATIC_SHORT_UNIVERSE
 from risk.risk_config import RiskConfig
 from signals.evaluator import (
     DEFAULT_SHORT_SIGNAL_PARAMS,
@@ -1320,7 +1321,7 @@ def _run_short_simulation(
                 vix_term_by_date.get(prev_date_str, True) if vix_term_by_date else True
             )
 
-            # Point-in-time earnings fundamentals
+            # Point-in-time earnings fundamentals (earnings_miss only — gap handled below)
             fundamentals: dict | None = None
             if earnings_history is not None:
                 prev_date = df.index[today_loc - 1].date()
@@ -1328,17 +1329,6 @@ def _run_short_simulation(
                 fund["earnings_miss_active"] = earnings_miss_active_on_date(
                     sym, prev_date, earnings_history
                 )
-                # Earnings gap-down: if earnings were released in the last 4 calendar days,
-                # compute the open-vs-prior-close gap on the first reaction bar.
-                if today_loc >= 2:
-                    earn_dt = recent_earnings_date(sym, prev_date, earnings_history)
-                    if earn_dt is not None:
-                        prev_open = float(df.iloc[today_loc - 1].get("Open", 0.0))
-                        prior_close = float(df.iloc[today_loc - 2].get("Close", 0.0))
-                        if prior_close > 0:
-                            fund["earnings_gap_pct"] = (
-                                (prev_open - prior_close) / prior_close * 100.0
-                            )
                 fundamentals = fund
 
             signals = _short_entry_signal(
@@ -1354,6 +1344,33 @@ def _run_short_simulation(
             if signals:
                 key_signal = signals[0]
                 candidates.append((sym, key_signal, signals, rs_rank_pct or 0.0))
+
+            # Same-bar gap-open entry: detect and enter on the earnings reaction bar itself.
+            # AMC/BMO earnings are public before the open, so using today_open is not lookahead.
+            if earnings_history is not None:
+                today_date_obj = df.index[today_loc].date()
+                earn_dt = recent_earnings_date(sym, today_date_obj, earnings_history)
+                if earn_dt is not None:
+                    today_open = float(df.iloc[today_loc].get("Open", 0.0))
+                    prev_close = float(df.iloc[today_loc - 1].get("Close", 0.0))
+                    if prev_close > 0:
+                        gap_pct = (today_open - prev_close) / prev_close * 100.0
+                        gap_fund = {"earnings_gap_pct": gap_pct}
+                        today_row = df.iloc[today_loc]
+                        gap_signals = _short_entry_signal(
+                            today_row,
+                            rs_rank_pct=rs_rank_pct,
+                            spy_ret_20d=spy_ret_20d,
+                            regime=regime,
+                            fundamentals=gap_fund,
+                            short_params=short_params,
+                            rs_rank_pct_10d_ago=rs_rank_pct_10d_ago,
+                            vix_term_inverted=vix_term_inverted,
+                        )
+                        if gap_signals and "earnings_gap_down" in gap_signals:
+                            candidates.append(
+                                (sym, gap_signals[0], gap_signals, rs_rank_pct or 0.0)
+                            )
 
         # Sort: most signals first (highest conviction), then lowest RS rank (weakest stock)
         candidates.sort(key=lambda item: (-len(item[2]), item[3]))
@@ -4033,6 +4050,8 @@ def run_short_walk_forward(
         logger.error(f"Not enough trading days ({len(trading_dates)}) for one {fold_days}-day fold")
         return {}
 
+    earnings_history = prefetch_earnings_history(symbols)
+
     sim_kwargs: dict = {
         "initial_capital": initial_capital,
         "max_positions": max_positions,
@@ -4042,6 +4061,7 @@ def run_short_walk_forward(
         "rs_ranks": rs_ranks,
         "short_params": _params,
         "rs_rank_lag10": rs_rank_lag10,
+        "earnings_history": earnings_history,
     }
 
     fold_results = []
@@ -4416,7 +4436,7 @@ if __name__ == "__main__":  # pragma: no cover
         )
     elif args.short_signals:
         run_short_signal_analysis(
-            STOCK_UNIVERSE,
+            STATIC_SHORT_UNIVERSE,
             args.start,
             args.end,
             initial_capital=args.capital,
@@ -4424,7 +4444,7 @@ if __name__ == "__main__":  # pragma: no cover
         )
     elif args.short_param_sensitivity:
         run_short_param_sensitivity(
-            STOCK_UNIVERSE,
+            STATIC_SHORT_UNIVERSE,
             args.start,
             args.end,
             initial_capital=args.capital,
@@ -4435,7 +4455,7 @@ if __name__ == "__main__":  # pragma: no cover
         if args.short_fb_vol_min is not None:
             _swf_params["fb_vol_min"] = args.short_fb_vol_min
         run_short_walk_forward(
-            STOCK_UNIVERSE,
+            STATIC_SHORT_UNIVERSE,
             args.start,
             args.end,
             short_params=_swf_params,
