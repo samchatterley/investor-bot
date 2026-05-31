@@ -293,31 +293,56 @@ def _short_entry_signal(
     regime: str | None = None,
     fundamentals: dict | None = None,
     short_params: dict | None = None,
+    rs_rank_pct_10d_ago: float | None = None,
+    vix_term_inverted: bool = True,
 ) -> list[str] | None:
     """Return matched bearish signals if this row qualifies as a short entry, else None.
 
     Regime gate: only enters in SHORT_ALLOWED_REGIMES.
+    VIX term gate: skips entry when VIX9D/VIX ≤ 1.05 (normal contango = less short edge).
+      Default True (allow) when VIX9D data unavailable.
 
-    Two RS-rank paths:
+    Three RS-rank paths:
+    - Deterioration path (rs_rank_pct_10d_ago > _REVERSAL_SHORT_RS_GATE AND rs_rank_pct < 65):
+      leader-to-laggard rotation — was top-35% of universe 10d ago, now fallen.
+      Catches the early stage of distribution before technical signals mature.
     - Reversal path (rs_rank_pct >= _REVERSAL_SHORT_RS_GATE): recently-strong stocks showing
-      exhaustion. Checks failed_breakout and high_vol_reversal. A stock that just hit a
-      new 20d high then failed has clearly-defined risk; an extended stock printing a
-      distribution bar on 2× volume signals institutional selling.
+      exhaustion. Checks failed_breakout and high_vol_reversal.
     - Fundamental path (rs_rank_pct < _SHORT_RS_RANK_GATE): bottom-quartile laggards with an
-      earnings miss catalyst. Avoids entering structural shorts on already-broken stocks with
-      no near-term catalyst.
+      earnings miss catalyst.
 
-    Stocks in the middle band (25–65%) produce no short signal — no clear archetype.
+    Stocks in the middle band (25–65%) without a prior leader history produce no signal.
     """
     if regime is not None and regime not in SHORT_ALLOWED_REGIMES:
         return None
 
+    if not vix_term_inverted:
+        return None
+
     snap = _row_to_snapshot(row)
+    snap["rs_rank_pct"] = rs_rank_pct if rs_rank_pct is not None else 50.0
+    if rs_rank_pct_10d_ago is not None:
+        snap["rs_rank_pct_10d_ago"] = rs_rank_pct_10d_ago
+
+    if fundamentals:
+        snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
+
+    # Deterioration path — leader-to-laggard: was top-35% 10d ago, now fallen below
+    if (
+        rs_rank_pct_10d_ago is not None
+        and rs_rank_pct_10d_ago > _REVERSAL_SHORT_RS_GATE
+        and (rs_rank_pct is None or rs_rank_pct < _REVERSAL_SHORT_RS_GATE)
+    ):
+        det_sigs = evaluate_short_signals(
+            snap,
+            params=short_params,
+            blocked=frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"}),
+        )
+        if det_sigs:
+            return det_sigs
 
     # Reversal path — extended/recently-strong stocks caught in a trap
     if rs_rank_pct is not None and rs_rank_pct >= _REVERSAL_SHORT_RS_GATE:
-        if fundamentals:
-            snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
         rev_sigs = evaluate_short_signals(
             snap,
             params=short_params,
@@ -329,9 +354,6 @@ def _short_entry_signal(
     # Fundamental path — bottom-quartile laggards with an earnings miss catalyst
     if rs_rank_pct is None or rs_rank_pct >= _SHORT_RS_RANK_GATE:
         return None
-
-    if fundamentals:
-        snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
 
     signals = evaluate_short_signals(
         snap,
@@ -671,6 +693,29 @@ def _compute_rs_ranks(
         sym_series = rs_rank_wide[sym].dropna()
         if not sym_series.empty:
             result[sym] = {ts.strftime("%Y-%m-%d"): float(v) for ts, v in sym_series.items()}
+    return result
+
+
+def _compute_rs_rank_lag10(
+    rs_ranks: dict[str, dict[str, float]],
+    trading_dates: pd.DatetimeIndex,
+) -> dict[str, dict[str, float]]:
+    """Shift rs_ranks forward by 10 trading days.
+
+    For each symbol, maps every date D to the rank that existed 10 trading
+    days before D.  Used by the short simulation to check whether a stock
+    was a relative-strength leader 10 days prior (rs_deterioration signal).
+    """
+    date_strs = [d.strftime("%Y-%m-%d") for d in trading_dates]
+    result: dict[str, dict[str, float]] = {}
+    for sym, rank_by_date in rs_ranks.items():
+        shifted: dict[str, float] = {}
+        for i in range(10, len(date_strs)):
+            past = date_strs[i - 10]
+            if past in rank_by_date:
+                shifted[date_strs[i]] = rank_by_date[past]
+        if shifted:
+            result[sym] = shifted
     return result
 
 
@@ -1117,6 +1162,8 @@ def _run_short_simulation(
     risk_config: RiskConfig | None = None,
     rs_ranks: dict[str, dict[str, float]] | None = None,
     short_params: dict | None = None,
+    rs_rank_lag10: dict[str, dict[str, float]] | None = None,
+    vix_term_by_date: dict[str, bool] | None = None,
 ) -> dict:
     """Short-side simulation — mirrors _run_simulation() but enters short positions.
 
@@ -1252,8 +1299,16 @@ def _run_short_simulation(
 
             # RS rank gate
             rs_rank_pct = rs_ranks.get(sym, {}).get(prev_date_str) if rs_ranks else None
+            rs_rank_pct_10d_ago = (
+                rs_rank_lag10.get(sym, {}).get(prev_date_str) if rs_rank_lag10 else None
+            )
 
             regime = regime_by_date.get(prev_date_str) if regime_by_date else None
+
+            # VIX term structure gate — True when VIX9D/VIX > 1.05
+            vix_term_inverted = (
+                vix_term_by_date.get(prev_date_str, True) if vix_term_by_date else True
+            )
 
             # Point-in-time earnings miss
             fundamentals: dict | None = None
@@ -1272,6 +1327,8 @@ def _run_short_simulation(
                 regime=regime,
                 fundamentals=fundamentals,
                 short_params=short_params,
+                rs_rank_pct_10d_ago=rs_rank_pct_10d_ago,
+                vix_term_inverted=vix_term_inverted,
             )
             if signals:
                 key_signal = signals[0]
@@ -1444,6 +1501,7 @@ def _run_combined_simulation(
     rs_ranks: dict[str, dict[str, float]] | None = None,
     rs_top_pct: float = 0.75,
     stop_activation_delay: int = 2,
+    rs_rank_lag10: dict[str, dict[str, float]] | None = None,
 ) -> dict:
     """Combined long/short simulation with a single shared cash pool.
 
@@ -1737,6 +1795,9 @@ def _run_combined_simulation(
                         spy_ret_20d = spy_indicators.loc[prev_ts].get("ret_20d")
 
                 rs_rank_pct = rs_ranks.get(sym, {}).get(prev_date_str) if rs_ranks else None
+                rs_rank_pct_10d_ago = (
+                    rs_rank_lag10.get(sym, {}).get(prev_date_str) if rs_rank_lag10 else None
+                )
 
                 fund_s: dict | None = None
                 if earnings_history is not None:
@@ -1753,6 +1814,8 @@ def _run_combined_simulation(
                     spy_ret_20d=spy_ret_20d,
                     regime=today_regime,
                     fundamentals=fund_s,
+                    rs_rank_pct_10d_ago=rs_rank_pct_10d_ago,
+                    vix_term_inverted=True,
                 )
                 if signals:
                     short_candidates.append((sym, signals[0], signals, rs_rank_pct or 0.0))
@@ -3184,6 +3247,7 @@ def run_short_signal_analysis(
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
 
     results = _run_short_simulation(
         indicators,
@@ -3197,6 +3261,7 @@ def run_short_signal_analysis(
         regime_by_date=regime_by_date or None,
         earnings_history=earnings_history,
         rs_ranks=rs_ranks,
+        rs_rank_lag10=rs_rank_lag10,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -3315,6 +3380,7 @@ def run_combined_analysis(
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
 
     results = _run_combined_simulation(
         indicators,
@@ -3332,6 +3398,7 @@ def run_combined_analysis(
         vix_spike_by_date=vix_spike_by_date or None,
         earnings_history=earnings_history,
         rs_ranks=rs_ranks,
+        rs_rank_lag10=rs_rank_lag10,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -3843,6 +3910,7 @@ def run_short_param_sensitivity(
 
     rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
 
     sim_kwargs: dict = {
         "initial_capital": initial_capital,
@@ -3852,6 +3920,7 @@ def run_short_param_sensitivity(
         "regime_by_date": regime_by_date or None,
         "earnings_history": earnings_history,
         "rs_ranks": rs_ranks,
+        "rs_rank_lag10": rs_rank_lag10,
     }
 
     logger.info("Short param sensitivity: running baseline…")
@@ -3937,6 +4006,7 @@ def run_short_walk_forward(
 
     rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
 
     if len(trading_dates) < fold_days:
         logger.error(f"Not enough trading days ({len(trading_dates)}) for one {fold_days}-day fold")
@@ -3950,6 +4020,7 @@ def run_short_walk_forward(
         "regime_by_date": regime_by_date or None,
         "rs_ranks": rs_ranks,
         "short_params": _params,
+        "rs_rank_lag10": rs_rank_lag10,
     }
 
     fold_results = []

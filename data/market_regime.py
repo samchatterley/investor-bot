@@ -86,6 +86,7 @@ class RegimeFeatures:
     vix_ma20: float | None
     vix_vs_ma: float | None
     vix_5d_change: float | None
+    vix9d: float | None  # CBOE 9-day VIX — near-term fear gauge
     data_quality: str  # "full" | "partial" | "minimal" | "insufficient"
 
 
@@ -119,14 +120,23 @@ class MarketRegimeSnapshot:
         """Backward-compatible dict for all existing callers.
 
         Preserves is_bearish, spy_change_pct, spy_5d_pct, regime (old keys)
-        and adds vix, data_quality, reasons (new keys).
+        and adds vix, data_quality, reasons, vix_term_inverted (new keys).
+        vix_term_inverted: True when VIX9D/VIX > 1.05 (near-term fear elevated
+        relative to medium-term — inverted VIX term structure favours shorts).
         """
+        vix = self.features.vix
+        vix9d = self.features.vix9d
+        vix_term_inverted = bool(
+            vix is not None and vix9d is not None and vix > 0 and vix9d / vix > 1.05
+        )
         return {
             "is_bearish": self.regime in (MarketRegime.STRESS_RISK_OFF, MarketRegime.UNKNOWN),
             "spy_change_pct": round(self.features.spy_ret_1d, 2),
             "spy_5d_pct": round(self.features.spy_ret_5d, 2),
             "regime": self.regime.value,
-            "vix": self.features.vix,
+            "vix": vix,
+            "vix9d": vix9d,
+            "vix_term_inverted": vix_term_inverted,
             "data_quality": self.features.data_quality,
             "reasons": list(self.reasons),
         }
@@ -136,11 +146,14 @@ def compute_regime_features(
     spy_df: pd.DataFrame,
     vix_df: pd.DataFrame | None,
     as_of: str | pd.Timestamp | None = None,
+    vix9d_df: pd.DataFrame | None = None,
 ) -> RegimeFeatures:
     """Compute all regime features from SPY and VIX DataFrames up to as_of.
 
     spy_df must have a 'Close' column indexed by Timestamp.
     vix_df (optional) must have a 'Close' column indexed by Timestamp.
+    vix9d_df (optional) must have a 'Close' column indexed by Timestamp.
+      Used to compute VIX term structure (VIX9D/VIX > 1.05 = near-term fear elevated).
     """
     if as_of is not None:
         cutoff = pd.Timestamp(as_of)
@@ -161,6 +174,7 @@ def compute_regime_features(
         vix_ma20=None,
         vix_vs_ma=None,
         vix_5d_change=None,
+        vix9d=None,
         data_quality="insufficient",
     )
     if n < _MIN_BARS_MINIMAL:
@@ -190,6 +204,7 @@ def compute_regime_features(
     vix_ma20: float | None = None
     vix_vs_ma: float | None = None
     vix_5d_change: float | None = None
+    vix9d: float | None = None
 
     if vix_df is not None:
         vix_close = vix_df["Close"].dropna()
@@ -203,6 +218,11 @@ def compute_regime_features(
             if len(vix_close) >= 6:
                 vix_5d_change = float((vix_close.iloc[-1] / vix_close.iloc[-6] - 1) * 100)
 
+    if vix9d_df is not None:
+        vix9d_close = vix9d_df["Close"].dropna()
+        if not vix9d_close.empty:
+            vix9d = float(vix9d_close.iloc[-1])
+
     return RegimeFeatures(
         spy_ret_1d=spy_ret_1d,
         spy_ret_5d=spy_ret_5d,
@@ -213,6 +233,7 @@ def compute_regime_features(
         vix_ma20=vix_ma20,
         vix_vs_ma=vix_vs_ma,
         vix_5d_change=vix_5d_change,
+        vix9d=vix9d,
         data_quality=data_quality,
     )
 
@@ -379,9 +400,10 @@ def get_market_regime(
     as_of: str | pd.Timestamp | None = None,
     previous: PreviousRegimeState | None = None,
     thresholds: RegimeThresholds | None = None,
+    vix9d_df: pd.DataFrame | None = None,
 ) -> MarketRegimeSnapshot:
     """Full regime classification: features → resolution → hysteresis."""
-    features = compute_regime_features(spy_df, vix_df, as_of)
+    features = compute_regime_features(spy_df, vix_df, as_of, vix9d_df=vix9d_df)
     candidate, reasons = resolve_regime(features, thresholds)
     return apply_regime_hysteresis(candidate, previous, reasons, features)
 
@@ -455,21 +477,25 @@ def save_regime_state(snapshot: MarketRegimeSnapshot) -> None:
 # ── Live data caching ────────────────────────────────────────────────────────
 
 
-def _load_cache() -> tuple[pd.DataFrame | None, pd.DataFrame | None, date | None]:
-    """Return (spy_df, vix_df, cache_date) or (None, None, None) on miss."""
+def _load_cache() -> tuple[
+    pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, date | None
+]:
+    """Return (spy_df, vix_df, vix9d_df, cache_date) or (None, None, None, None) on miss."""
     try:
         with open(_CACHE_PATH, "rb") as f:
             payload = pickle.load(f)
-        return payload["spy"], payload["vix"], payload["date"]
+        return payload["spy"], payload["vix"], payload.get("vix9d"), payload["date"]
     except Exception:
-        return None, None, None
+        return None, None, None, None
 
 
-def _save_cache(spy_df: pd.DataFrame, vix_df: pd.DataFrame | None) -> None:
+def _save_cache(
+    spy_df: pd.DataFrame, vix_df: pd.DataFrame | None, vix9d_df: pd.DataFrame | None = None
+) -> None:
     try:
         os.makedirs(cfg.LOG_DIR, exist_ok=True)
         with open(_CACHE_PATH, "wb") as f:
-            pickle.dump({"spy": spy_df, "vix": vix_df, "date": date.today()}, f)
+            pickle.dump({"spy": spy_df, "vix": vix_df, "vix9d": vix9d_df, "date": date.today()}, f)
     except Exception as e:
         logger.warning(f"Failed to save SPY/VIX cache: {e}")
 
@@ -484,8 +510,10 @@ def fetch_spy_vix_history(
 
     lookback_days=504 ≈ 2 calendar years, giving ~500 trading days — enough
     for MA200 plus a runway to avoid cold-start gaps.
+
+    Also fetches VIX9D internally; use fetch_vix9d_history() to get it.
     """
-    spy_cached, vix_cached, cache_date = _load_cache()
+    spy_cached, vix_cached, _vix9d_cached, cache_date = _load_cache()
     if cache_date == date.today() and spy_cached is not None:
         logger.debug("SPY/VIX cache hit — skipping yfinance download")
         return spy_cached, vix_cached
@@ -521,5 +549,32 @@ def fetch_spy_vix_history(
     except Exception as e:
         logger.warning(f"VIX history fetch failed: {e}")
 
-    _save_cache(spy_df, vix_df)
+    vix9d_df: pd.DataFrame | None = None
+    try:
+        raw_vix9d = yf.download("^VIX9D", start=start, auto_adjust=False, progress=False)
+        if not raw_vix9d.empty:
+            vix9d_close = raw_vix9d["Close"]
+            if isinstance(vix9d_close, pd.DataFrame):
+                vix9d_close = vix9d_close.iloc[:, 0]
+            vix9d_df = pd.DataFrame({"Close": vix9d_close.astype(float)}).dropna()
+            vix9d_df.index = pd.DatetimeIndex(vix9d_df.index).tz_localize(None)
+    except Exception as e:
+        logger.warning(f"VIX9D history fetch failed: {e}")
+
+    _save_cache(spy_df, vix_df, vix9d_df)
     return spy_df, vix_df
+
+
+def fetch_vix9d_history(lookback_days: int = 504) -> pd.DataFrame | None:
+    """Return cached VIX9D DataFrame, triggering a full fetch if the cache is cold.
+
+    Returns None if VIX9D data is unavailable (CBOE data starts ~2011;
+    yfinance may not always carry it).
+    """
+    _spy, _vix, vix9d_cached, cache_date = _load_cache()
+    if cache_date == date.today():
+        return vix9d_cached
+    # Cache is cold — trigger a full refresh via fetch_spy_vix_history
+    fetch_spy_vix_history(lookback_days=lookback_days)
+    _, _, vix9d_refreshed, _ = _load_cache()
+    return vix9d_refreshed

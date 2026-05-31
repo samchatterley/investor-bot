@@ -3,7 +3,12 @@ import logging
 import yfinance as yf
 
 from config import ETF_SYMBOLS, MIN_VOLUME
-from data.market_regime import fetch_spy_vix_history, load_regime_state, save_regime_state
+from data.market_regime import (
+    fetch_spy_vix_history,
+    fetch_vix9d_history,
+    load_regime_state,
+    save_regime_state,
+)
 from data.market_regime import get_market_regime as _compute_regime
 from signals.evaluator import REGIME_BLOCKED, SHORT_ALLOWED_REGIMES, evaluate_signals
 
@@ -160,13 +165,15 @@ def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> 
     """
     try:
         spy_df, vix_df = fetch_spy_vix_history()
+        vix9d_df = fetch_vix9d_history()
         previous = load_regime_state()
-        snapshot = _compute_regime(spy_df, vix_df, previous=previous)
+        snapshot = _compute_regime(spy_df, vix_df, previous=previous, vix9d_df=vix9d_df)
         save_regime_state(snapshot)
         result = snapshot.to_dict()
         logger.info(
             f"SPY 1d: {result['spy_change_pct']:+.2f}%  5d: {result['spy_5d_pct']:+.2f}%"
-            f"  Regime: {result['regime']}  ({result['data_quality']})"
+            f"  Regime: {result['regime']}  VIX9D/VIX inverted: {result.get('vix_term_inverted', False)}"
+            f"  ({result['data_quality']})"
         )
         return result
     except Exception as e:
@@ -296,18 +303,23 @@ def scan_short_candidates(
     regime: str | None,
     held_symbols: set[str],
 ) -> list[dict]:
-    """Return short candidates via two distinct paths.
+    """Return short candidates via three distinct paths.
 
     Regime gate: only runs in SHORT_ALLOWED_REGIMES (stress/downtrend regimes).
 
+    Path C — Deterioration (rs_rank_pct_10d_ago > 65, rs_rank_pct < 65): leader-to-laggard
+      rotation — was top-35% of universe 10 days ago, now fallen below. Catches early
+      institutional distribution before technical breakdown fully appears.
+      Signal checked: rs_deterioration.
+
     Path A — Reversal (rs_rank_pct >= 65): recently-strong stocks showing exhaustion.
       Gate: not ETF, min volume, rs_rank >= 65.
-      Signals checked: failed_breakout, high_vol_reversal.
+      Signals checked: failed_breakout, high_vol_reversal, high_short_interest.
 
     Path B — Fundamental deterioration (rs_rank_pct < 25): bottom-quartile laggards
       with an earnings-miss catalyst. No technical overlap with reversal setup.
       Gate: not ETF, min volume, rs_rank < 25, price below EMA21.
-      Signals checked: earnings_miss.
+      Signals checked: earnings_miss, high_short_interest.
 
     Returns candidates sorted by signal count descending, then rs_rank_pct ascending
     (for path A: highest RS first; for path B: lowest RS first — both handled by the
@@ -319,6 +331,8 @@ def scan_short_candidates(
         return []
 
     candidates = []
+    seen: set[str] = set()
+
     for s in snapshots:
         symbol = s.get("symbol", "")
         if symbol in held_symbols:
@@ -329,9 +343,32 @@ def scan_short_candidates(
             continue
 
         rs_rank = s.get("rs_rank_pct")
+        rs_rank_lag = s.get("rs_rank_pct_10d_ago")
+
+        # Path C: deterioration — was a leader 10d ago, now fallen below the median
+        if (
+            symbol not in seen
+            and rs_rank_lag is not None
+            and rs_rank_lag > 65.0
+            and (rs_rank is None or rs_rank < 65.0)
+        ):
+            det_signals = evaluate_short_signals(
+                s, blocked=frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"})
+            )
+            if det_signals:
+                confidence = int(len(det_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
+                candidates.append(
+                    {
+                        **s,
+                        "matched_signals": det_signals,
+                        "key_signal": det_signals[0],
+                        "confidence": confidence,
+                    }
+                )
+                seen.add(symbol)
 
         # Path A: reversal — recently strong, now showing exhaustion
-        if rs_rank is not None and rs_rank >= 65.0:
+        if symbol not in seen and rs_rank is not None and rs_rank >= 65.0:
             rev_signals = evaluate_short_signals(s, blocked=frozenset({"earnings_miss"}))
             if rev_signals:
                 confidence = int(len(rev_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
@@ -343,10 +380,11 @@ def scan_short_candidates(
                         "confidence": confidence,
                     }
                 )
+                seen.add(symbol)
             continue
 
         # Path B: fundamental — bottom-quartile laggard with earnings miss catalyst
-        if rs_rank is None or rs_rank >= 25.0:
+        if symbol in seen or rs_rank is None or rs_rank >= 25.0:
             continue
         if s.get("price_vs_ema21_pct", 0.0) >= 0:
             continue

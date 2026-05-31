@@ -875,6 +875,8 @@ class RunInnerBase(unittest.TestCase):
             "main.short_interest.get_short_interest": {},
             "main.audit_log.has_open_buys_run_today": False,
             "main.audit_log.log_open_buys_locked": None,
+            "main.get_short_universe": [],
+            "main.scan_short_universe": [],
         }
         # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
         if "main.run_startup_health_check" not in overrides:

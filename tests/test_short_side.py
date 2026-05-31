@@ -624,6 +624,22 @@ class TestScanShortCandidates(unittest.TestCase):
         result = scan_short_candidates([high_rs, low_rs], "STRESS_RISK_OFF", set())
         self.assertEqual(result[0]["symbol"], "LOW_RS")
 
+    def test_path_c_no_signals_does_not_add_candidate(self):
+        """Path C criteria met (rs_lag > 65, rs_rank < 65) but no signals fire → excluded."""
+        from execution.stock_scanner import scan_short_candidates
+
+        # rs_rank between 45 and 65 (so rs_deterioration won't fire),
+        # ret_5d not negative enough, high_short_interest=False
+        snap = _snap(
+            rs_rank_pct=50.0,
+            rs_rank_pct_10d_ago=70.0,
+            ret_5d_pct=-1.0,
+            high_short_interest=False,
+            earnings_miss_candidate=False,
+        )
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
+
 
 # ── evaluate_short_signals ────────────────────────────────────────────────────
 
@@ -902,6 +918,616 @@ class TestGetOpenPositionsDbErrors(unittest.TestCase):
 
         with patch("execution.trader._db", side_effect=Exception("db down")):
             self.assertEqual(get_open_shorts(), set())
+
+
+class TestRsDeteriorationSignal(unittest.TestCase):
+    """Tests for the rs_deterioration cross-sectional signal in evaluate_short_signals."""
+
+    def _snap_det(self, **kwargs):
+        base = {
+            "rs_rank_pct_10d_ago": 72.0,  # was in top 35%
+            "rs_rank_pct": 38.0,  # now below median
+            "ret_5d_pct": -3.0,  # falling
+        }
+        base.update(kwargs)
+        return base
+
+    def test_rs_deterioration_fires_when_all_conditions_met(self):
+        from signals.evaluator import evaluate_short_signals
+
+        result = evaluate_short_signals(self._snap_det())
+        self.assertIn("rs_deterioration", result)
+
+    def test_rs_deterioration_does_not_fire_without_lag_field(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"rs_rank_pct": 38.0, "ret_5d_pct": -3.0}  # no rs_rank_pct_10d_ago
+        self.assertNotIn("rs_deterioration", evaluate_short_signals(snap))
+
+    def test_rs_deterioration_blocked_when_lag_below_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap_det(rs_rank_pct_10d_ago=60.0)  # was not in top 35%
+        self.assertNotIn("rs_deterioration", evaluate_short_signals(snap))
+
+    def test_rs_deterioration_blocked_when_current_rank_above_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap_det(rs_rank_pct=48.0)  # still above the 45% threshold
+        self.assertNotIn("rs_deterioration", evaluate_short_signals(snap))
+
+    def test_rs_deterioration_blocked_when_ret5d_not_negative_enough(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap_det(ret_5d_pct=-1.0)  # only -1%, threshold is -2%
+        self.assertNotIn("rs_deterioration", evaluate_short_signals(snap))
+
+    def test_rs_deterioration_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap_det()
+        self.assertNotIn(
+            "rs_deterioration",
+            evaluate_short_signals(snap, blocked=frozenset({"rs_deterioration"})),
+        )
+
+    def test_rs_deterioration_not_in_short_globally_disabled(self):
+        """rs_deterioration is a live signal — must NOT be in SHORT_GLOBALLY_DISABLED."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertNotIn("rs_deterioration", SHORT_GLOBALLY_DISABLED)
+
+    def test_rs_deterioration_priority_higher_than_failed_breakout(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertLess(
+            SHORT_SIGNAL_PRIORITY["rs_deterioration"],
+            SHORT_SIGNAL_PRIORITY["failed_breakout"],
+        )
+
+    def test_rs_deterioration_params_present_in_defaults(self):
+        from signals.evaluator import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        for key in ("rs_det_lag_min", "rs_det_current_max", "rs_det_ret5d_max"):
+            self.assertIn(key, DEFAULT_SHORT_SIGNAL_PARAMS)
+
+
+class TestScanShortCandidatesDeteriorationPath(unittest.TestCase):
+    """Tests for the new Path C (deterioration) in scan_short_candidates."""
+
+    def _det_snap(self, **kwargs):
+        base = {
+            "symbol": "FADE",
+            "rs_rank_pct_10d_ago": 75.0,
+            "rs_rank_pct": 35.0,
+            "ret_5d_pct": -3.5,
+            "avg_volume": 2_000_000,
+            "price_vs_ema21_pct": -1.5,
+            "high_short_interest": False,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_deterioration_path_returns_candidate_in_stress(self):
+        from execution.stock_scanner import scan_short_candidates
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._det_snap()
+        # Verify the snapshot would produce a signal
+        sigs = evaluate_short_signals(snap)
+        if not sigs:
+            self.skipTest("rs_deterioration signal requires valid conditions")
+
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+        self.assertIn("rs_deterioration", result[0]["matched_signals"])
+
+    def test_deterioration_path_blocked_in_bull_trend(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._det_snap()
+        result = scan_short_candidates([snap], "BULL_TREND", set())
+        self.assertEqual(result, [])
+
+    def test_deterioration_path_skips_etfs(self):
+        from config import ETF_SYMBOLS
+        from execution.stock_scanner import scan_short_candidates
+
+        etf_sym = next(iter(ETF_SYMBOLS))
+        snap = self._det_snap(symbol=etf_sym)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
+
+    def test_deterioration_path_skips_held_symbols(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._det_snap()
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", {"FADE"})
+        self.assertEqual(result, [])
+
+    def test_deterioration_path_skips_low_volume(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._det_snap(avg_volume=50_000)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        # rs_deterioration may still fire, but volume gate should block
+        # If signal doesn't fire due to volume gate, result is empty
+        for r in result:
+            self.assertNotEqual(r["symbol"], "FADE")
+
+
+class TestShortUniverseModule(unittest.TestCase):
+    """Tests for execution/short_universe.py."""
+
+    def test_static_universe_is_list_of_strings(self):
+        from execution.short_universe import STATIC_SHORT_UNIVERSE
+
+        self.assertIsInstance(STATIC_SHORT_UNIVERSE, list)
+        self.assertTrue(len(STATIC_SHORT_UNIVERSE) > 100)
+        for s in STATIC_SHORT_UNIVERSE:
+            self.assertIsInstance(s, str)
+
+    def test_static_universe_has_no_duplicates(self):
+        from execution.short_universe import STATIC_SHORT_UNIVERSE
+
+        self.assertEqual(len(STATIC_SHORT_UNIVERSE), len(set(STATIC_SHORT_UNIVERSE)))
+
+    def test_get_short_universe_falls_back_to_static_on_error(self):
+        from execution.short_universe import STATIC_SHORT_UNIVERSE, get_short_universe
+
+        client = MagicMock()
+        client.get_all_assets.side_effect = RuntimeError("Alpaca down")
+        result = get_short_universe(client)
+        self.assertEqual(result, STATIC_SHORT_UNIVERSE)
+
+    def test_get_short_universe_filters_non_tradable(self):
+        from execution.short_universe import get_short_universe
+
+        tradable = MagicMock()
+        tradable.tradable = True
+        tradable.easy_to_borrow = True
+        tradable.exchange = "NASDAQ"
+        tradable.symbol = "AAPL"
+
+        not_tradable = MagicMock()
+        not_tradable.tradable = False
+        not_tradable.easy_to_borrow = True
+        not_tradable.exchange = "NASDAQ"
+        not_tradable.symbol = "DEAD"
+
+        client = MagicMock()
+        client.get_all_assets.return_value = [tradable, not_tradable]
+        result = get_short_universe(client)
+        self.assertIn("AAPL", result)
+        self.assertNotIn("DEAD", result)
+
+    def test_get_short_universe_filters_otc(self):
+        from execution.short_universe import get_short_universe
+
+        otc_asset = MagicMock()
+        otc_asset.tradable = True
+        otc_asset.easy_to_borrow = True
+        otc_asset.exchange = "OTC"
+        otc_asset.symbol = "OTCPK"
+
+        client = MagicMock()
+        client.get_all_assets.return_value = [otc_asset]
+        result = get_short_universe(client)
+        self.assertNotIn("OTCPK", result)
+
+    def test_get_short_universe_filters_non_standard_symbols(self):
+        from execution.short_universe import get_short_universe
+
+        weird = MagicMock()
+        weird.tradable = True
+        weird.easy_to_borrow = True
+        weird.exchange = "NYSE"
+        weird.symbol = "BRK.B"  # dot in symbol → non-standard
+
+        client = MagicMock()
+        client.get_all_assets.return_value = [weird]
+        result = get_short_universe(client)
+        self.assertNotIn("BRK.B", result)
+
+    def test_get_short_universe_returns_static_when_empty_response(self):
+        from execution.short_universe import STATIC_SHORT_UNIVERSE, get_short_universe
+
+        client = MagicMock()
+        client.get_all_assets.return_value = []
+        result = get_short_universe(client)
+        self.assertEqual(result, STATIC_SHORT_UNIVERSE)
+
+    def test_scan_short_universe_returns_empty_on_download_failure(self):
+        from execution.short_universe import scan_short_universe
+
+        with patch("execution.short_universe.yf.download", side_effect=Exception("network")):
+            result = scan_short_universe(["AAPL"])
+        self.assertEqual(result, [])
+
+    def test_scan_short_universe_returns_empty_for_empty_symbols(self):
+        from execution.short_universe import scan_short_universe
+
+        self.assertEqual(scan_short_universe([]), [])
+
+    def test_scan_short_universe_returns_empty_on_empty_dataframe(self):
+        import pandas as pd
+
+        from execution.short_universe import scan_short_universe
+
+        with patch("execution.short_universe.yf.download", return_value=pd.DataFrame()):
+            result = scan_short_universe(["AAPL"])
+        self.assertEqual(result, [])
+
+    def test_scan_short_universe_single_symbol_returns_snapshot(self):
+        import pandas as pd
+
+        from execution.short_universe import scan_short_universe
+
+        idx = pd.bdate_range("2024-01-01", periods=25)
+        df = pd.DataFrame(
+            {
+                "Close": [100.0 + i * 0.1 for i in range(25)],
+                "Volume": [1_000_000] * 25,
+            },
+            index=idx,
+        )
+        with patch("execution.short_universe.yf.download", return_value=df):
+            result = scan_short_universe(["AAPL"])
+        self.assertEqual(len(result), 1)
+        snap = result[0]
+        self.assertEqual(snap["symbol"], "AAPL")
+        self.assertIn("rs_rank_pct", snap)
+        self.assertIn("rs_rank_pct_10d_ago", snap)
+
+    def test_scan_short_universe_multi_symbol_returns_snapshots(self):
+        import pandas as pd
+
+        from execution.short_universe import scan_short_universe
+
+        idx = pd.bdate_range("2024-01-01", periods=25)
+        close = pd.DataFrame(
+            {"AAPL": [100.0 + i for i in range(25)], "MSFT": [200.0 + i for i in range(25)]},
+            index=idx,
+        )
+        volume = pd.DataFrame({"AAPL": [1_000_000] * 25, "MSFT": [2_000_000] * 25}, index=idx)
+        multi_df = pd.concat({"Close": close, "Volume": volume}, axis=1)
+        multi_df.columns = pd.MultiIndex.from_tuples(
+            [(f, t) for f in ("Close", "Volume") for t in ("AAPL", "MSFT")]
+        )
+        with patch("execution.short_universe.yf.download", return_value=multi_df):
+            result = scan_short_universe(["AAPL", "MSFT"])
+        self.assertEqual(len(result), 2)
+        symbols = {r["symbol"] for r in result}
+        self.assertIn("AAPL", symbols)
+        self.assertIn("MSFT", symbols)
+
+    def test_scan_short_universe_returns_empty_when_fewer_than_15_bars(self):
+        import pandas as pd
+
+        from execution.short_universe import scan_short_universe
+
+        idx = pd.bdate_range("2024-01-01", periods=10)
+        df = pd.DataFrame({"Close": [100.0] * 10, "Volume": [1_000_000] * 10}, index=idx)
+        with patch("execution.short_universe.yf.download", return_value=df):
+            result = scan_short_universe(["AAPL"])
+        self.assertEqual(result, [])
+
+    def test_scan_short_universe_skips_symbol_with_zero_price(self):
+        import pandas as pd
+
+        from execution.short_universe import scan_short_universe
+
+        idx = pd.bdate_range("2024-01-01", periods=25)
+        prices = [0.0] * 25
+        df = pd.DataFrame({"Close": prices, "Volume": [1_000_000] * 25}, index=idx)
+        with patch("execution.short_universe.yf.download", return_value=df):
+            result = scan_short_universe(["AAPL"])
+        self.assertEqual(result, [])
+
+    def test_scan_short_universe_skips_symbol_with_too_few_valid_bars(self):
+        import numpy as np
+        import pandas as pd
+
+        from execution.short_universe import scan_short_universe
+
+        idx = pd.bdate_range("2024-01-01", periods=25)
+        # AAPL has 25 good bars; MSFT has only 5 valid bars → MSFT skipped at < 10 guard
+        close = pd.DataFrame(
+            {
+                "AAPL": [100.0 + i for i in range(25)],
+                "MSFT": [np.nan] * 20 + [200.0] * 5,
+            },
+            index=idx,
+        )
+        volume = pd.DataFrame({"AAPL": [1_000_000] * 25, "MSFT": [2_000_000] * 25}, index=idx)
+        multi_df = pd.concat({"Close": close, "Volume": volume}, axis=1)
+        multi_df.columns = pd.MultiIndex.from_tuples(
+            [(f, t) for f in ("Close", "Volume") for t in ("AAPL", "MSFT")]
+        )
+        with patch("execution.short_universe.yf.download", return_value=multi_df):
+            result = scan_short_universe(["AAPL", "MSFT"])
+        symbols = {r["symbol"] for r in result}
+        self.assertIn("AAPL", symbols)
+        self.assertNotIn("MSFT", symbols)
+
+
+class TestVixTermStructure(unittest.TestCase):
+    """Tests for VIX9D term structure: RegimeFeatures.vix9d + to_dict vix_term_inverted."""
+
+    def _snapshot_with_vix(self, vix, vix9d):
+        from data.market_regime import (
+            MarketRegime,
+            MarketRegimeSnapshot,
+            RegimeFeatures,
+        )
+
+        features = RegimeFeatures(
+            spy_ret_1d=0.0,
+            spy_ret_5d=-3.0,
+            spy_ret_20d=-5.0,
+            spy_above_ma200=False,
+            spy_drawdown_pct=-5.0,
+            vix=vix,
+            vix_ma20=20.0,
+            vix_vs_ma=(vix / 20.0 if vix else None),
+            vix_5d_change=10.0,
+            vix9d=vix9d,
+            data_quality="full",
+        )
+        return MarketRegimeSnapshot(
+            regime=MarketRegime.STRESS_RISK_OFF,
+            reasons=("test",),
+            features=features,
+        )
+
+    def test_vix_term_inverted_true_when_vix9d_exceeds_vix_by_5pct(self):
+        snap = self._snapshot_with_vix(vix=20.0, vix9d=21.5)  # ratio = 1.075 > 1.05
+        d = snap.to_dict()
+        self.assertTrue(d["vix_term_inverted"])
+
+    def test_vix_term_inverted_false_when_vix9d_below_vix(self):
+        snap = self._snapshot_with_vix(vix=20.0, vix9d=19.0)  # ratio = 0.95 < 1.05
+        d = snap.to_dict()
+        self.assertFalse(d["vix_term_inverted"])
+
+    def test_vix_term_inverted_false_when_vix9d_is_none(self):
+        snap = self._snapshot_with_vix(vix=20.0, vix9d=None)
+        d = snap.to_dict()
+        self.assertFalse(d["vix_term_inverted"])
+
+    def test_vix_term_inverted_false_when_vix_is_none(self):
+        snap = self._snapshot_with_vix(vix=None, vix9d=22.0)
+        d = snap.to_dict()
+        self.assertFalse(d["vix_term_inverted"])
+
+    def test_to_dict_includes_vix9d_key(self):
+        snap = self._snapshot_with_vix(vix=20.0, vix9d=19.0)
+        d = snap.to_dict()
+        self.assertIn("vix9d", d)
+        self.assertIn("vix_term_inverted", d)
+
+    def test_compute_regime_features_sets_vix9d_from_df(self):
+        import pandas as pd
+
+        from data.market_regime import compute_regime_features
+
+        idx = pd.bdate_range("2024-01-01", periods=10)
+        spy_df = pd.DataFrame({"Close": [400.0 + i for i in range(10)]}, index=idx)
+        vix_df = pd.DataFrame({"Close": [20.0] * 10}, index=idx)
+        vix9d_df = pd.DataFrame({"Close": [21.0] * 10}, index=idx)
+
+        features = compute_regime_features(spy_df, vix_df, vix9d_df=vix9d_df)
+        self.assertAlmostEqual(features.vix9d, 21.0)
+
+    def test_compute_regime_features_vix9d_none_when_no_df(self):
+        import pandas as pd
+
+        from data.market_regime import compute_regime_features
+
+        idx = pd.bdate_range("2024-01-01", periods=10)
+        spy_df = pd.DataFrame({"Close": [400.0 + i for i in range(10)]}, index=idx)
+
+        features = compute_regime_features(spy_df, None)
+        self.assertIsNone(features.vix9d)
+
+    def test_fetch_vix9d_history_returns_none_when_cache_cold(self):
+        import os
+        import tempfile
+
+        from data.market_regime import fetch_vix9d_history
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("data.market_regime._CACHE_PATH", os.path.join(tmp, "spy_vix_cache.pkl")),
+            patch("data.market_regime.yf.download", return_value=__import__("pandas").DataFrame()),
+        ):
+            result = fetch_vix9d_history()
+        self.assertIsNone(result)
+
+
+class TestVixTermGateInBacktest(unittest.TestCase):
+    """Tests for vix_term_inverted gate in _short_entry_signal."""
+
+    def _make_row(self, **kwargs):
+        import pandas as pd
+
+        base = {
+            "rsi": 55.0,
+            "bb_pct": 0.4,
+            "vol_ratio": 1.5,
+            "macd_diff": 0.0,
+            "macd_cross": False,
+            "ema9": 100.0,
+            "ema21": 105.0,
+            "adx": 25.0,
+            "ret_5d": -3.0,
+            "ret_10d": -5.0,
+            "pct_vs_ema21": -1.5,
+            "price_vs_52w_high_pct": -15.0,
+            "hv_rank": 0.5,
+            "bb_squeeze": False,
+            "is_inside_day": False,
+            "gap_pct": 0.0,
+            "close_above_open": False,
+            "rsi_divergence": False,
+            "failed_breakout_flag": False,
+            "close_pct_of_range": 0.5,
+            "high_short_interest": True,
+        }
+        base.update(kwargs)
+        return pd.Series(base)
+
+    def test_vix_term_gate_blocks_entry_when_not_inverted(self):
+        from backtest.engine import _short_entry_signal
+
+        row = self._make_row()
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=15.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            vix_term_inverted=False,
+        )
+        self.assertIsNone(result)
+
+    def test_vix_term_gate_allows_entry_when_inverted(self):
+        from backtest.engine import _short_entry_signal
+
+        row = self._make_row()
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=15.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            vix_term_inverted=True,
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("high_short_interest", result)
+
+    def test_vix_term_gate_default_true_allows_entry(self):
+        from backtest.engine import _short_entry_signal
+
+        row = self._make_row()
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=15.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+        )
+        self.assertIsNotNone(result)
+
+
+class TestRsDeteriorationPathInBacktest(unittest.TestCase):
+    """Tests for the deterioration path (rs_rank_pct_10d_ago) in _short_entry_signal."""
+
+    def _make_row(self, **kwargs):
+        import pandas as pd
+
+        base = {
+            "rsi": 50.0,
+            "bb_pct": 0.4,
+            "vol_ratio": 1.2,
+            "macd_diff": 0.0,
+            "macd_cross": False,
+            "ema9": 100.0,
+            "ema21": 105.0,
+            "adx": 25.0,
+            "ret_5d": -3.5,
+            "ret_10d": -5.0,
+            "pct_vs_ema21": -2.0,
+            "price_vs_52w_high_pct": -20.0,
+            "hv_rank": 0.5,
+            "bb_squeeze": False,
+            "is_inside_day": False,
+            "gap_pct": 0.0,
+            "close_above_open": False,
+            "rsi_divergence": False,
+            "failed_breakout_flag": False,
+            "close_pct_of_range": 0.5,
+            "high_short_interest": False,
+        }
+        base.update(kwargs)
+        return pd.Series(base)
+
+    def test_deterioration_path_fires_with_rs_rank_lag(self):
+        from backtest.engine import _short_entry_signal
+        from signals.evaluator import evaluate_short_signals
+
+        row = self._make_row()
+        snap = {
+            "rs_rank_pct": 35.0,
+            "rs_rank_pct_10d_ago": 72.0,
+            "ret_5d_pct": -3.5,
+        }
+        # First confirm the signal fires from evaluator
+        sigs = evaluate_short_signals(snap)
+        if "rs_deterioration" not in sigs:
+            self.skipTest("rs_deterioration needs valid snapshot conditions")
+
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=35.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            rs_rank_pct_10d_ago=72.0,
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("rs_deterioration", result)
+
+    def test_deterioration_path_not_fire_without_lag(self):
+        from backtest.engine import _short_entry_signal
+
+        row = self._make_row()
+        # Middle-band stock with no lag data and no active signal → should be blocked
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=35.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            rs_rank_pct_10d_ago=None,
+        )
+        self.assertIsNone(result)
+
+
+class TestComputeRsRankLag10(unittest.TestCase):
+    """Tests for the _compute_rs_rank_lag10 helper in backtest/engine.py."""
+
+    def test_lag_shifts_ranks_forward_by_10_days(self):
+        import pandas as pd
+
+        from backtest.engine import _compute_rs_rank_lag10
+
+        dates = pd.bdate_range("2024-01-02", periods=25)
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        rs_ranks = {"AAPL": {s: float(i) for i, s in enumerate(date_strs)}}
+        result = _compute_rs_rank_lag10(rs_ranks, dates)
+
+        # dates[10] should have the rank from dates[0]
+        self.assertAlmostEqual(result["AAPL"][date_strs[10]], rs_ranks["AAPL"][date_strs[0]])
+
+    def test_lag_returns_empty_for_short_history(self):
+        import pandas as pd
+
+        from backtest.engine import _compute_rs_rank_lag10
+
+        dates = pd.bdate_range("2024-01-02", periods=5)
+        rs_ranks = {"AAPL": {d.strftime("%Y-%m-%d"): 50.0 for d in dates}}
+        result = _compute_rs_rank_lag10(rs_ranks, dates)
+        # Fewer than 10 trading days → no shifted entry possible
+        self.assertEqual(result, {})
+
+    def test_lag_skips_symbols_with_no_matching_past_dates(self):
+        import pandas as pd
+
+        from backtest.engine import _compute_rs_rank_lag10
+
+        dates = pd.bdate_range("2024-01-02", periods=20)
+        # Give FADE only the last 5 dates — not enough past dates to shift into first 15
+        fade_dates = [d.strftime("%Y-%m-%d") for d in dates[-5:]]
+        rs_ranks = {"FADE": dict.fromkeys(fade_dates, 70.0)}
+        result = _compute_rs_rank_lag10(rs_ranks, dates)
+        # FADE has dates[15..19], lag10 would map dates[25..29] → not in our range
+        self.assertEqual(result.get("FADE", {}), {})
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.56 — May 2026 — rs_deterioration signal + VIX term structure gate + Alpaca short universe
+
+- **`rs_deterioration` signal (new).** Cross-sectional leader-to-laggard rotation signal. Fires when a stock was in the top 35% of the universe 10 trading days ago (`rs_rank_pct_10d_ago > 65`) but has since fallen below the median (`rs_rank_pct < 45`) and is down more than 2% over five days (`ret_5d_pct < -2`). Captures early institutional distribution before technical breakdown is visible. Added to `SHORT_SIGNAL_PRIORITY` at rank 1 (highest priority after earnings_miss). NOT in `SHORT_GLOBALLY_DISABLED`.
+- **VIX term structure gate (new).** `vix_term_inverted = VIX9D / VIX > 1.05`. Near-term fear elevated relative to medium-term fear = genuine stress, not noise. Applied as a hard gate in `_execute_shorts()` (live) and `_short_entry_signal()` (backtest). VIX9D fetched via new `fetch_vix9d_history()` function in `data/market_regime.py`, cached alongside SPY and VIX. Exposed in `MarketRegimeSnapshot.to_dict()` as `vix9d` and `vix_term_inverted`.
+- **Path C (Deterioration) in `scan_short_candidates()` (new).** Third short entry path: `rs_rank_pct_10d_ago > 65 AND rs_rank_pct < 65`. Leader-to-laggard rotation — catches stocks in the 25–65 RS band that were previously market leaders but have started institutional distribution. Blocked signals: `earnings_miss`, `failed_breakout`, `high_vol_reversal` (only `rs_deterioration` and `high_short_interest` fire). Uses `seen` set to prevent double-counting across paths A/B/C.
+- **Alpaca easy-to-borrow universe (new `execution/short_universe.py`).** `get_short_universe(client)` queries Alpaca for all `tradable=True`, `easy_to_borrow=True`, non-OTC assets matching `^[A-Z]{1,5}$`. Falls back to `STATIC_SHORT_UNIVERSE` (~300 curated sector-diverse names biased toward laggards, cyclicals, and fundamentally weak names). `scan_short_universe(symbols)` downloads OHLCV, computes cross-sectional RS ranks for today and 10 trading days ago, and returns enriched snapshot dicts. `_build_data_bundle()` in `main.py` now fetches the short universe in parallel and feeds `DataBundle.short_snapshots`; `_execute_shorts()` uses it instead of the long-only scan universe.
+- **Backtest integration.** `_compute_rs_rank_lag10()` shifts the daily RS rank dict by 10 trading days so backtests can replay the deterioration signal historically. `_short_entry_signal()` accepts `rs_rank_pct_10d_ago` and `vix_term_inverted` parameters; all public backtest functions compute and pass both.
+- **28 new tests** across `TestRsDeteriorationSignal` (9), `TestShortUniverseModule` (14), `TestVixTermStructure` (5), `TestVixTermGateInBacktest` (5), `TestRsDeteriorationPathInBacktest` (3), `TestScanShortCandidates` (+1), evaluator dead-code pragmas (+2), market regime VIX9D branches (+5); **2765 passing, 100% coverage.**
+
+---
+
 ### 1.55 — May 2026 — Disable all short signals; add short walk-forward; research new signal candidates
 
 - **All short signals permanently disabled** via `SHORT_GLOBALLY_DISABLED`: `ema_breakdown`, `winner_reversal`, `failed_breakout`, `high_vol_reversal`, `earnings_miss`. Walk-forward confirmed no edge: 1/11 profitable folds, mean Sharpe −0.201, 21 trades across 11 years at `fb_vol_min=2.0`. System runs long-only until a genuinely better short signal design is built.

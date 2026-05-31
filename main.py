@@ -39,6 +39,7 @@ from data import (
 from data import sentiment as sentiment_module
 from execution import stock_scanner, trader
 from execution.quote_gate import check_quote_gate
+from execution.short_universe import get_short_universe, scan_short_universe
 from execution.universe import build_scan_universe
 from models import (
     BrokerStateUnavailable,
@@ -546,6 +547,15 @@ def _execute_shorts(
     - Regime gate: BULL_TREND or NEUTRAL_CHOP only.
     """
     regime_name = regime.get("regime", "UNKNOWN")
+
+    # VIX term structure gate: only enter shorts when near-term fear (VIX9D) exceeds
+    # medium-term fear (VIX) — inverted term structure signals higher short edge.
+    # Default True (allow) when data unavailable to avoid accidentally blocking all shorts.
+    vix_term_inverted: bool = regime.get("vix_term_inverted", True)
+    if not vix_term_inverted:
+        logger.info("VIX term structure not inverted (VIX9D/VIX ≤ 1.05) — skipping short entries")
+        return
+
     held_symbols = {p["symbol"] for p in open_positions}
     short_candidates = stock_scanner.scan_short_candidates(snapshots, regime_name, held_symbols)
     if not short_candidates:
@@ -954,6 +964,17 @@ def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> Dat
 
     sent = sentiment_module.get_sentiment(list(snap.held_symbols) + top_movers[:10])
 
+    # ── Short universe (expanded beyond the long scan) ───────────────────────
+    # Alpaca easy-to-borrow list or static fallback; RS ranks computed cross-sectionally.
+    logger.info("Building short universe...")
+    short_syms = get_short_universe(client)
+    short_snapshots = scan_short_universe(short_syms)
+    si_short = short_interest.get_short_interest([s["symbol"] for s in short_snapshots])
+    for s in short_snapshots:
+        if s["symbol"] in si_short:
+            s.update(si_short[s["symbol"]])
+    logger.info(f"Short universe: {len(short_snapshots)} snapshots enriched")
+
     return DataBundle(
         snapshots=snapshots,
         ai_snapshots=ai_snapshots,
@@ -961,6 +982,7 @@ def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> Dat
         options_sigs=options_sigs,
         news=news,
         sentiment=sent,
+        short_snapshots=short_snapshots,
     )
 
 
@@ -2155,7 +2177,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # ── Execute shorts ────────────────────────────────────────────────────────
     _execute_shorts(
         client=client,
-        snapshots=db.snapshots,
+        snapshots=db.short_snapshots,
         regime=mc.regime,
         open_positions=open_positions,
         account_now=account_now,

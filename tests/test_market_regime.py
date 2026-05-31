@@ -65,6 +65,7 @@ def _features_bull() -> RegimeFeatures:
         vix_ma20=14.0,
         vix_vs_ma=15.0 / 14.0,
         vix_5d_change=-5.0,
+        vix9d=None,
         data_quality="full",
     )
 
@@ -80,6 +81,7 @@ def _features_choppy() -> RegimeFeatures:
         vix_ma20=17.0,
         vix_vs_ma=18.0 / 17.0,
         vix_5d_change=2.0,
+        vix9d=None,
         data_quality="full",
     )
 
@@ -95,6 +97,7 @@ def _features_defensive() -> RegimeFeatures:
         vix_ma20=18.0,
         vix_vs_ma=22.0 / 18.0,
         vix_5d_change=10.0,
+        vix9d=None,
         data_quality="full",
     )
 
@@ -110,6 +113,7 @@ def _features_high_vol() -> RegimeFeatures:
         vix_ma20=20.0,
         vix_vs_ma=27.0 / 20.0,
         vix_5d_change=15.0,
+        vix9d=None,
         data_quality="full",
     )
 
@@ -126,6 +130,7 @@ def _features_stress_a() -> RegimeFeatures:
         vix_ma20=20.0,
         vix_vs_ma=1.75,
         vix_5d_change=40.0,
+        vix9d=None,
         data_quality="full",
     )
 
@@ -304,6 +309,18 @@ class TestComputeRegimeFeatures(unittest.TestCase):
         f = compute_regime_features(spy, None)
         self.assertFalse(f.spy_above_ma200)
 
+    def test_vix9d_empty_after_dropna_leaves_vix9d_none(self):
+        """Branch 223->226: vix9d_df provided but Close all NaN → vix9d stays None."""
+        import numpy as np
+
+        spy = _make_spy_df([400.0] * 10)
+        vix9d_df = pd.DataFrame(
+            {"Close": [np.nan] * 5},
+            index=pd.date_range("2024-01-01", periods=5, freq="B"),
+        )
+        f = compute_regime_features(spy, None, vix9d_df=vix9d_df)
+        self.assertIsNone(f.vix9d)
+
 
 # ── resolve_regime ────────────────────────────────────────────────────────────
 
@@ -320,6 +337,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=None,
             vix_vs_ma=None,
             vix_5d_change=None,
+            vix9d=None,
             data_quality="insufficient",
         )
         regime, reasons = resolve_regime(f)
@@ -337,6 +355,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=18.0,
             vix_vs_ma=1.1,
             vix_5d_change=5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, reasons = resolve_regime(f)
@@ -355,6 +374,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=18.0,
             vix_vs_ma=1.1,
             vix_5d_change=5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, _ = resolve_regime(f)
@@ -371,6 +391,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=18.0,
             vix_vs_ma=1.4,
             vix_5d_change=5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, reasons = resolve_regime(f)
@@ -388,6 +409,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=20.0,
             vix_vs_ma=1.55,
             vix_5d_change=5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, reasons = resolve_regime(f)
@@ -405,6 +427,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=20.0,
             vix_vs_ma=1.25,
             vix_5d_change=35.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, reasons = resolve_regime(f)
@@ -423,6 +446,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=20.0,
             vix_vs_ma=1.6,
             vix_5d_change=20.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, reasons = resolve_regime(f)
@@ -440,6 +464,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=18.0,
             vix_vs_ma=1.56,
             vix_5d_change=10.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, reasons = resolve_regime(f)
@@ -462,6 +487,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=20.0,
             vix_vs_ma=1.35,
             vix_5d_change=5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, _ = resolve_regime(f)
@@ -488,6 +514,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=14.0,
             vix_vs_ma=1.07,
             vix_5d_change=-5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, _ = resolve_regime(f)
@@ -504,6 +531,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=14.0,
             vix_vs_ma=1.07,
             vix_5d_change=-5.0,
+            vix9d=None,
             data_quality="full",
         )
         t = RegimeThresholds(require_above_ma200=False)
@@ -526,6 +554,7 @@ class TestResolveRegime(unittest.TestCase):
             vix_ma20=14.0,
             vix_vs_ma=1.07,
             vix_5d_change=-5.0,
+            vix9d=None,
             data_quality="full",
         )
         regime, _ = resolve_regime(f)
@@ -846,17 +875,19 @@ class TestSpyVixCache(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_load_cache_returns_nones_when_missing(self):
-        spy, vix, d = _load_cache()
+        spy, vix, vix9d, d = _load_cache()
         self.assertIsNone(spy)
         self.assertIsNone(vix)
+        self.assertIsNone(vix9d)
         self.assertIsNone(d)
 
     def test_save_and_load_cache_today(self):
         spy = _spy_df_flat(n=10)
         vix = _make_vix_df([20.0] * 10)
         _save_cache(spy, vix)
-        spy2, vix2, d = _load_cache()
+        spy2, vix2, vix9d2, d = _load_cache()
         self.assertIsNotNone(spy2)
+        self.assertIsNone(vix9d2)
         self.assertEqual(d, date.today())
 
     def test_cache_miss_when_stale(self):
@@ -864,7 +895,7 @@ class TestSpyVixCache(unittest.TestCase):
         cache_path = os.path.join(self._tmp.name, "spy_vix_cache.pkl")
         with open(cache_path, "wb") as f:
             pickle.dump({"spy": spy, "vix": None, "date": date.today() - timedelta(days=1)}, f)
-        _, _, d = _load_cache()
+        _, _, _vix9d, d = _load_cache()
         self.assertEqual(d, date.today() - timedelta(days=1))  # stale date returned
 
 
@@ -896,7 +927,7 @@ class TestFetchSpyVixHistory(unittest.TestCase):
                 return pd.DataFrame({"Close": spy_close})
             elif ticker == "^VIX":
                 return pd.DataFrame({"Close": vix_close})
-            return pd.DataFrame()  # pragma: no cover
+            return pd.DataFrame()  # ^VIX9D and any other tickers return empty
 
         return side_effect
 
@@ -945,7 +976,7 @@ class TestFetchSpyVixHistory(unittest.TestCase):
         def mock_dl(ticker, **kwargs):
             if ticker == "SPY":
                 return spy_close
-            raise Exception("VIX network error")
+            raise Exception("VIX network error")  # covers ^VIX and ^VIX9D
 
         with patch("data.market_regime.yf.download", side_effect=mock_dl):
             spy, vix = fetch_spy_vix_history()
@@ -995,11 +1026,90 @@ class TestFetchSpyVixHistory(unittest.TestCase):
         self.assertIsNotNone(vix)
         self.assertFalse(vix.empty)
 
+    def test_vix9d_series_format_is_handled(self):
+        """Branch 553->555: VIX9D raw has simple Close Series → isinstance is False, skip iloc."""
+        idx = pd.date_range("2024-01-01", periods=10, freq="B")
+        spy_raw = pd.DataFrame({"Close": [400.0] * 10}, index=idx)
+        vix_raw = pd.DataFrame({"Close": [20.0] * 10}, index=idx)
+        vix9d_raw = pd.DataFrame({"Close": [18.0] * 10}, index=idx)
+
+        def mock_dl(ticker, **kwargs):
+            if ticker == "SPY":
+                return spy_raw
+            if ticker == "^VIX":
+                return vix_raw
+            return vix9d_raw  # ^VIX9D returns simple single-column DataFrame
+
+        with patch("data.market_regime.yf.download", side_effect=mock_dl):
+            spy, vix = fetch_spy_vix_history()
+        self.assertFalse(spy.empty)
+
+    def test_vix9d_multiindex_close_extracted(self):
+        """Branch 553->554: VIX9D raw has MultiIndex columns → take first column."""
+        idx = pd.date_range("2024-01-01", periods=10, freq="B")
+        spy_raw = pd.DataFrame({"Close": [400.0] * 10}, index=idx)
+        vix_raw = pd.DataFrame({"Close": [20.0] * 10}, index=idx)
+        mi = pd.MultiIndex.from_tuples([("Close", "^VIX9D"), ("Volume", "^VIX9D")])
+        raw_vix9d = pd.DataFrame([[18.0, 1e6]] * 10, index=idx, columns=mi)
+
+        def mock_dl(ticker, **kwargs):
+            if ticker == "SPY":
+                return spy_raw
+            if ticker == "^VIX":
+                return vix_raw
+            return raw_vix9d  # ^VIX9D returns MultiIndex DataFrame
+
+        with patch("data.market_regime.yf.download", side_effect=mock_dl):
+            spy, vix = fetch_spy_vix_history()
+        self.assertFalse(spy.empty)
+
     def test_save_cache_failure_does_not_raise(self):
         """Lines 473-474: Exception in _save_cache is silently logged."""
         spy = _spy_df_flat(n=10)
         with patch("builtins.open", side_effect=PermissionError("read-only")):
             _save_cache(spy, None)  # must not raise
+
+    def test_fetch_vix9d_history_cold_cache_triggers_refresh(self):
+        """fetch_vix9d_history cold-cache path: calls fetch_spy_vix_history then re-reads cache."""
+        from data.market_regime import fetch_vix9d_history
+
+        # First _load_cache call (cold): returns stale date so cache_date != date.today()
+        # Second _load_cache call (after refresh): returns a real vix9d DataFrame
+        vix9d_df = pd.DataFrame(
+            {"Close": [18.0] * 5},
+            index=pd.date_range("2024-01-01", periods=5, freq="B"),
+        )
+        cold = (None, None, None, date(2020, 1, 1))
+        warm = (None, None, vix9d_df, date.today())
+        load_returns = iter([cold, warm])
+
+        with (
+            patch("data.market_regime._load_cache", side_effect=lambda: next(load_returns)),
+            patch("data.market_regime.fetch_spy_vix_history") as mock_fetch,
+        ):
+            result = fetch_vix9d_history()
+
+        mock_fetch.assert_called_once()
+        self.assertIsNotNone(result)
+
+    def test_fetch_vix9d_history_warm_cache_returns_immediately(self):
+        """fetch_vix9d_history warm-cache path: cache_date == today → return without fetching."""
+        from data.market_regime import fetch_vix9d_history
+
+        vix9d_df = pd.DataFrame(
+            {"Close": [18.0] * 5},
+            index=pd.date_range("2024-01-01", periods=5, freq="B"),
+        )
+        warm = (None, None, vix9d_df, date.today())
+
+        with (
+            patch("data.market_regime._load_cache", return_value=warm),
+            patch("data.market_regime.fetch_spy_vix_history") as mock_fetch,
+        ):
+            result = fetch_vix9d_history()
+
+        mock_fetch.assert_not_called()
+        self.assertIsNotNone(result)
 
 
 # ── PreviousRegimeState.to_previous() ────────────────────────────────────────

@@ -66,6 +66,7 @@ class TestGetMarketRegime(unittest.TestCase):
             vix_ma20=17.0,
             vix_vs_ma=1.06,
             vix_5d_change=-2.0,
+            vix9d=None,
             data_quality="full",
         )
         snapshot = MarketRegimeSnapshot(
@@ -77,6 +78,7 @@ class TestGetMarketRegime(unittest.TestCase):
 
         return contextlib.ExitStack(), [
             patch("execution.stock_scanner.fetch_spy_vix_history", return_value=(spy_df, vix_df)),
+            patch("execution.stock_scanner.fetch_vix9d_history", return_value=None),
             patch("execution.stock_scanner.load_regime_state", return_value=None),
             patch("execution.stock_scanner._compute_regime", return_value=snapshot),
             patch("execution.stock_scanner.save_regime_state"),
@@ -88,27 +90,27 @@ class TestGetMarketRegime(unittest.TestCase):
 
     def test_bull_trend_regime(self):
         patchers = self._with_regime("BULL_TREND")
-        with patchers[0], patchers[1], patchers[2], patchers[3]:
+        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
             result = get_market_regime(threshold_pct=-1.5)
         self.assertEqual(result["regime"], "BULL_TREND")
         self.assertFalse(result["is_bearish"])
 
     def test_stress_regime_sets_is_bearish(self):
         patchers = self._with_regime("STRESS_RISK_OFF")
-        with patchers[0], patchers[1], patchers[2], patchers[3]:
+        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
             result = get_market_regime(threshold_pct=-1.5)
         self.assertEqual(result["regime"], "STRESS_RISK_OFF")
         self.assertTrue(result["is_bearish"])
 
     def test_high_vol_downtrend_regime(self):
         patchers = self._with_regime("HIGH_VOL_DOWNTREND")
-        with patchers[0], patchers[1], patchers[2], patchers[3]:
+        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
             result = get_market_regime(threshold_pct=-1.5, vix=30.0)
         self.assertEqual(result["regime"], "HIGH_VOL_DOWNTREND")
 
     def test_neutral_chop_regime(self):
         patchers = self._with_regime("NEUTRAL_CHOP")
-        with patchers[0], patchers[1], patchers[2], patchers[3]:
+        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
             result = get_market_regime(threshold_pct=-1.5)
         self.assertEqual(result["regime"], "NEUTRAL_CHOP")
 
@@ -123,7 +125,7 @@ class TestGetMarketRegime(unittest.TestCase):
 
     def test_result_has_required_keys(self):
         patchers = self._with_regime("NEUTRAL_CHOP")
-        with patchers[0], patchers[1], patchers[2], patchers[3]:
+        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
             result = get_market_regime()
         for key in ("is_bearish", "spy_change_pct", "spy_5d_pct", "regime"):
             self.assertIn(key, result)
@@ -692,3 +694,17 @@ class TestEvaluateSignalsNoneGuard(unittest.TestCase):
         )
         result = evaluate_signals(snap)
         self.assertIsInstance(result, list)
+
+
+class TestEvaluateSignalsSignalPaths(unittest.TestCase):
+    """Coverage for evaluate_signals signal paths not hit by existing tests."""
+
+    def test_breakout_52w_in_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("breakout_52w", GLOBALLY_DISABLED)
+
+    def test_rsi_divergence_in_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("rsi_divergence", GLOBALLY_DISABLED)

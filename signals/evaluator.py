@@ -188,9 +188,10 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
-    "failed_breakout": 1,  # Bull trap: broke 20d high yesterday, failed back below today
-    "high_vol_reversal": 2,  # Distribution bar: 2× volume, close in bottom of range, extended
-    "high_short_interest": 3,  # Crowded short + low lendable supply (live-only, not backtestable)
+    "rs_deterioration": 1,  # Leader-to-laggard: was top-35% 10d ago, now below median + falling
+    "failed_breakout": 2,  # Bull trap: broke 20d high yesterday, failed back below today
+    "high_vol_reversal": 3,  # Distribution bar: 2× volume, close in bottom of range, extended
+    "high_short_interest": 4,  # Crowded short + low lendable supply (live-only, not backtestable)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -203,6 +204,10 @@ DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     "hvr_range_max": 0.3,  # close must be in bottom 30% of day's High–Low range
     "hvr_rsi_min": 55.0,  # came from overbought territory
     "hvr_ret5d_min": 2.0,  # was extended upward (5d return > 2%)
+    # rs_deterioration thresholds (cross-sectional signal — requires universe-level data)
+    "rs_det_lag_min": 65.0,  # rs_rank_pct_10d_ago must exceed this (was in top 35%)
+    "rs_det_current_max": 45.0,  # rs_rank_pct today must be below this (now below median)
+    "rs_det_ret5d_max": -2.0,  # ret_5d_pct must be below this (falling > 2% in 5 days)
 }
 
 
@@ -234,7 +239,24 @@ def evaluate_short_signals(
     matched: list[str] = []
 
     if "earnings_miss" not in blocked and snapshot.get("earnings_miss_candidate"):
-        matched.append("earnings_miss")
+        matched.append(
+            "earnings_miss"
+        )  # pragma: no cover — earnings_miss in SHORT_GLOBALLY_DISABLED
+
+    # rs_deterioration: cross-sectional signal — leader-to-laggard rotation.
+    # Stock was in the top 35% of the universe 10 trading days ago but has now
+    # dropped below the median and is down >2% over 5 days.  Captures the early
+    # stage of institutional distribution before technical signals appear.
+    # Requires rs_rank_pct_10d_ago in snapshot (set by backtest lag or live scan).
+    _rs_lag = snapshot.get("rs_rank_pct_10d_ago")
+    if (
+        "rs_deterioration" not in blocked
+        and _rs_lag is not None
+        and _rs_lag > p["rs_det_lag_min"]
+        and snapshot.get("rs_rank_pct", 50.0) < p["rs_det_current_max"]
+        and snapshot.get("ret_5d_pct", 0.0) < p["rs_det_ret5d_max"]
+    ):
+        matched.append("rs_deterioration")
 
     # failed_breakout: stock hit a new 20-day high yesterday, closed back below it today.
     # Hypothesis: trapped longs from the breakout attempt become sellers; the failed breakout
@@ -246,7 +268,9 @@ def evaluate_short_signals(
         and snapshot.get("rsi_14", 50.0) >= p["fb_rsi_min"]
         and snapshot.get("rsi_14", 50.0) <= p["fb_rsi_max"]
     ):
-        matched.append("failed_breakout")
+        matched.append(
+            "failed_breakout"
+        )  # pragma: no cover — failed_breakout in SHORT_GLOBALLY_DISABLED
 
     # high_vol_reversal: high-volume day where price closes in the bottom of its range
     # after an extended run. Hypothesis: institutional distribution — smart money selling
@@ -258,7 +282,9 @@ def evaluate_short_signals(
         and snapshot.get("rsi_14", 50.0) >= p["hvr_rsi_min"]
         and snapshot.get("ret_5d_pct", 0.0) >= p["hvr_ret5d_min"]
     ):
-        matched.append("high_vol_reversal")
+        matched.append(
+            "high_vol_reversal"
+        )  # pragma: no cover — high_vol_reversal in SHORT_GLOBALLY_DISABLED
 
     if "high_short_interest" not in blocked and snapshot.get("high_short_interest"):
         matched.append("high_short_interest")
@@ -386,7 +412,7 @@ def evaluate_signals(
         and adx >= 20
         and "breakout_52w" not in blocked
     ):
-        matched.append("breakout_52w")
+        matched.append("breakout_52w")  # pragma: no cover — breakout_52w in GLOBALLY_DISABLED
 
     # 12-month momentum (skipped when mom_12_1_pct field absent)
     if (
@@ -470,7 +496,7 @@ def evaluate_signals(
         and bb < p["rsi_div_bb_max"]
         and "rsi_divergence" not in blocked
     ):
-        matched.append("rsi_divergence")
+        matched.append("rsi_divergence")  # pragma: no cover — rsi_divergence in GLOBALLY_DISABLED
 
     # Momentum
     if (

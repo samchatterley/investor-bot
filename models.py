@@ -214,3 +214,4 @@ class DataBundle:
     options_sigs: dict
     news: dict
     sentiment: dict
+    short_snapshots: list  # expanded short universe with rs_rank_pct + rs_rank_pct_10d_ago
