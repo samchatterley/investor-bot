@@ -37,7 +37,7 @@ from data import (
     short_interest,
 )
 from data import sentiment as sentiment_module
-from execution import stock_scanner, trader
+from execution import short_risk, stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.short_universe import get_short_universe, scan_short_universe
 from execution.universe import build_scan_universe
@@ -597,6 +597,15 @@ def _execute_shorts(
         # Correlation gate — skip if correlated with any held position
         if correlation.correlated_with_held(symbol, held_symbols):
             logger.info(f"  Short skip {symbol}: correlated with existing position")
+            continue
+
+        # Squeeze risk gate — blocks crowded shorts and stocks in active squeezes
+        _squeeze_info = short_risk.fetch_squeeze_info(symbol)
+        _squeeze_blocked, _squeeze_reason = short_risk.is_squeeze_risk(
+            symbol, candidate, **_squeeze_info
+        )
+        if _squeeze_blocked:
+            logger.info(f"  Short skip {symbol}: squeeze risk — {_squeeze_reason}")
             continue
 
         current_price = candidate.get("current_price", 0.0)

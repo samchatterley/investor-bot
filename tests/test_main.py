@@ -3713,6 +3713,7 @@ class TestExecuteShorts(unittest.TestCase):
             "main.trader.get_long_notional": 50_000.0,
             "main.trader.get_short_notional": 0.0,
             "main.correlation.correlated_with_held": False,
+            "main.short_risk.fetch_squeeze_info": {"short_pct_float": None, "days_to_cover": None},
             "main.position_sizer.risk_budget_size": 500.0,
             "main.trader.place_short_order": filled_order,
             "main.trader.record_short": None,
@@ -3810,6 +3811,20 @@ class TestExecuteShorts(unittest.TestCase):
         all_trades, _, mocks = self._run(
             dry_run=True, **{"main.correlation.correlated_with_held": True}
         )
+        self.assertEqual(all_trades, [])
+
+    def test_squeeze_risk_blocks_short(self):
+        # fetch_squeeze_info returns high short interest → is_squeeze_risk returns True → skipped
+        all_trades, _, mocks = self._run(
+            dry_run=True,
+            **{
+                "main.short_risk.fetch_squeeze_info": {
+                    "short_pct_float": 0.35,
+                    "days_to_cover": None,
+                }
+            },
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
         self.assertEqual(all_trades, [])
 
     def test_no_price_candidate_skipped(self):

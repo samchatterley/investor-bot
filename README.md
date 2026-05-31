@@ -810,6 +810,14 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.58 — May 2026 — Short squeeze avoidance gate (live-only)
+
+- **`execution/short_risk.py` (new module).** `is_squeeze_risk(symbol, snapshot, *, short_pct_float, days_to_cover, ...)` blocks short entry on three independent criteria: reported short interest > 20 % of float (FINRA bi-monthly via yfinance), days-to-cover > 5, or 5-day price momentum > 15 % (active squeeze proxy, real-time). `fetch_squeeze_info(symbol)` fetches the yfinance `.info` fields; returns `None` for both fields on any API failure so a transient outage never silently blocks all shorts.
+- **Wired into `_execute_shorts()` in `main.py`** — called per candidate after the correlation gate, before position sizing. Live-only: not wired into the backtest (historical short-interest data is unavailable; adding a retroactive momentum proxy would bias backtest results).
+- **13 new tests** in `TestSqueezeRisk`; 1 new test in `TestExecuteShorts`; **2779 passing, 100% coverage.**
+
+---
+
 ### 1.57 — May 2026 — Disable rs_deterioration; fix backtest weekend crash
 
 - **`rs_deterioration` disabled** (added to `SHORT_GLOBALLY_DISABLED`). Walk-forward 2015–2026 showed 0/11 profitable folds, mean Sharpe −0.872, 619 trades, WR 36%, avg/trade −1.17% — no edge at any threshold. Existing code preserved under `# pragma: no cover`; signal can be re-enabled if a structural improvement is found.

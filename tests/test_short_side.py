@@ -1043,10 +1043,7 @@ class TestScanShortCandidatesDeteriorationPath(unittest.TestCase):
 
         snap = self._det_snap(avg_volume=50_000)
         result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
-        # rs_deterioration may still fire, but volume gate should block
-        # If signal doesn't fire due to volume gate, result is empty
-        for r in result:
-            self.assertNotEqual(r["symbol"], "FADE")
+        self.assertEqual(result, [])
 
 
 class TestShortUniverseModule(unittest.TestCase):
@@ -1509,6 +1506,127 @@ class TestComputeRsRankLag10(unittest.TestCase):
         result = _compute_rs_rank_lag10(rs_ranks, dates)
         # FADE has dates[15..19], lag10 would map dates[25..29] → not in our range
         self.assertEqual(result.get("FADE", {}), {})
+
+
+class TestSqueezeRisk(unittest.TestCase):
+    """Tests for execution/short_risk.py — is_squeeze_risk and fetch_squeeze_info."""
+
+    def _snap(self, ret_5d_pct=0.0):
+        return {"symbol": "CRWD", "ret_5d_pct": ret_5d_pct}
+
+    # ── is_squeeze_risk ───────────────────────────────────────────────────────
+
+    def test_blocked_by_short_pct_float(self):
+        from execution.short_risk import is_squeeze_risk
+
+        blocked, reason = is_squeeze_risk("CRWD", self._snap(), short_pct_float=0.25)
+        self.assertTrue(blocked)
+        self.assertIn("short_pct_float", reason)
+
+    def test_blocked_by_days_to_cover(self):
+        from execution.short_risk import is_squeeze_risk
+
+        blocked, reason = is_squeeze_risk("CRWD", self._snap(), days_to_cover=6.0)
+        self.assertTrue(blocked)
+        self.assertIn("days_to_cover", reason)
+
+    def test_blocked_by_momentum(self):
+        from execution.short_risk import is_squeeze_risk
+
+        blocked, reason = is_squeeze_risk("CRWD", self._snap(ret_5d_pct=20.0))
+        self.assertTrue(blocked)
+        self.assertIn("ret_5d_pct", reason)
+        self.assertIn("active squeeze", reason)
+
+    def test_safe_when_all_clear(self):
+        from execution.short_risk import is_squeeze_risk
+
+        blocked, reason = is_squeeze_risk(
+            "CRWD",
+            self._snap(ret_5d_pct=2.0),
+            short_pct_float=0.10,
+            days_to_cover=3.0,
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(reason, "")
+
+    def test_none_short_pct_float_skips_check(self):
+        from execution.short_risk import is_squeeze_risk
+
+        # None → field check skipped; only momentum checked (below threshold)
+        blocked, _ = is_squeeze_risk("CRWD", self._snap(), short_pct_float=None)
+        self.assertFalse(blocked)
+
+    def test_none_days_to_cover_skips_check(self):
+        from execution.short_risk import is_squeeze_risk
+
+        blocked, _ = is_squeeze_risk("CRWD", self._snap(), days_to_cover=None)
+        self.assertFalse(blocked)
+
+    def test_missing_ret_5d_defaults_to_zero(self):
+        from execution.short_risk import is_squeeze_risk
+
+        snap = {"symbol": "CRWD"}  # no ret_5d_pct key
+        blocked, _ = is_squeeze_risk("CRWD", snap)
+        self.assertFalse(blocked)
+
+    def test_reason_includes_values(self):
+        from execution.short_risk import is_squeeze_risk
+
+        _, reason = is_squeeze_risk("CRWD", self._snap(), short_pct_float=0.30)
+        self.assertIn("30.0%", reason)
+
+    def test_custom_thresholds_respected(self):
+        from execution.short_risk import is_squeeze_risk
+
+        # Default short_pct_float_max=0.20; raising it to 0.40 should not block at 0.25
+        blocked, _ = is_squeeze_risk(
+            "CRWD", self._snap(), short_pct_float=0.25, short_pct_float_max=0.40
+        )
+        self.assertFalse(blocked)
+
+    def test_exactly_at_threshold_not_blocked(self):
+        from execution.short_risk import is_squeeze_risk
+
+        # > not >=: exactly at threshold is safe
+        blocked, _ = is_squeeze_risk("CRWD", self._snap(), short_pct_float=0.20)
+        self.assertFalse(blocked)
+
+    # ── fetch_squeeze_info ────────────────────────────────────────────────────
+
+    def test_fetch_squeeze_info_returns_fields(self):
+        from unittest.mock import MagicMock, patch
+
+        from execution.short_risk import fetch_squeeze_info
+
+        mock_ticker = MagicMock()
+        mock_ticker.info = {"shortPercentOfFloat": 0.12, "shortRatio": 3.5}
+        with patch("execution.short_risk.yf.Ticker", return_value=mock_ticker):
+            result = fetch_squeeze_info("CRWD")
+        self.assertAlmostEqual(result["short_pct_float"], 0.12)
+        self.assertAlmostEqual(result["days_to_cover"], 3.5)
+
+    def test_fetch_squeeze_info_returns_none_for_missing_keys(self):
+        from unittest.mock import MagicMock, patch
+
+        from execution.short_risk import fetch_squeeze_info
+
+        mock_ticker = MagicMock()
+        mock_ticker.info = {}  # no short-interest fields
+        with patch("execution.short_risk.yf.Ticker", return_value=mock_ticker):
+            result = fetch_squeeze_info("CRWD")
+        self.assertIsNone(result["short_pct_float"])
+        self.assertIsNone(result["days_to_cover"])
+
+    def test_fetch_squeeze_info_handles_exception(self):
+        from unittest.mock import patch
+
+        from execution.short_risk import fetch_squeeze_info
+
+        with patch("execution.short_risk.yf.Ticker", side_effect=RuntimeError("api down")):
+            result = fetch_squeeze_info("CRWD")
+        self.assertIsNone(result["short_pct_float"])
+        self.assertIsNone(result["days_to_cover"])
 
 
 if __name__ == "__main__":  # pragma: no cover
