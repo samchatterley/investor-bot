@@ -4277,8 +4277,8 @@ def _print_results(r: dict):
 
 if __name__ == "__main__":  # pragma: no cover
     parser = argparse.ArgumentParser()
-    _yesterday = datetime.today() - timedelta(days=1)
-    _last_bday = pd.bdate_range(end=_yesterday, periods=1)[0].strftime("%Y-%m-%d")
+    _today = pd.Timestamp.today().normalize()
+    _last_bday = (_today - pd.offsets.BDay(1)).strftime("%Y-%m-%d")
     parser.add_argument("--start", default=BACKTEST_DEFAULT_START)
     parser.add_argument("--end", default=_last_bday)
     parser.add_argument("--capital", type=float, default=25000.0)

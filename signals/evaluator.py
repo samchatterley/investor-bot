@@ -183,7 +183,14 @@ SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset(
 #                    Fires after a stock has already broken down — too late; no predictive edge.
 #   winner_reversal: RSI>70 + extended + ret_5d<0 is self-contradictory; barely fires.
 SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
-    {"ema_breakdown", "winner_reversal", "failed_breakout", "high_vol_reversal", "earnings_miss"}
+    {
+        "ema_breakdown",
+        "winner_reversal",
+        "failed_breakout",
+        "high_vol_reversal",
+        "earnings_miss",
+        "rs_deterioration",  # 0/11 profitable walk-forward folds, mean Sharpe -0.872 — no edge
+    }
 )
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
@@ -256,7 +263,9 @@ def evaluate_short_signals(
         and snapshot.get("rs_rank_pct", 50.0) < p["rs_det_current_max"]
         and snapshot.get("ret_5d_pct", 0.0) < p["rs_det_ret5d_max"]
     ):
-        matched.append("rs_deterioration")
+        matched.append(
+            "rs_deterioration"
+        )  # pragma: no cover — rs_deterioration in SHORT_GLOBALLY_DISABLED
 
     # failed_breakout: stock hit a new 20-day high yesterday, closed back below it today.
     # Hypothesis: trapped longs from the breakout attempt become sellers; the failed breakout

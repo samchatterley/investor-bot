@@ -932,11 +932,11 @@ class TestRsDeteriorationSignal(unittest.TestCase):
         base.update(kwargs)
         return base
 
-    def test_rs_deterioration_fires_when_all_conditions_met(self):
+    def test_rs_deterioration_blocked_globally_even_with_valid_conditions(self):
         from signals.evaluator import evaluate_short_signals
 
         result = evaluate_short_signals(self._snap_det())
-        self.assertIn("rs_deterioration", result)
+        self.assertNotIn("rs_deterioration", result)
 
     def test_rs_deterioration_does_not_fire_without_lag_field(self):
         from signals.evaluator import evaluate_short_signals
@@ -971,11 +971,11 @@ class TestRsDeteriorationSignal(unittest.TestCase):
             evaluate_short_signals(snap, blocked=frozenset({"rs_deterioration"})),
         )
 
-    def test_rs_deterioration_not_in_short_globally_disabled(self):
-        """rs_deterioration is a live signal — must NOT be in SHORT_GLOBALLY_DISABLED."""
+    def test_rs_deterioration_in_short_globally_disabled(self):
+        """rs_deterioration disabled: 0/11 profitable walk-forward folds, Sharpe -0.872."""
         from signals.evaluator import SHORT_GLOBALLY_DISABLED
 
-        self.assertNotIn("rs_deterioration", SHORT_GLOBALLY_DISABLED)
+        self.assertIn("rs_deterioration", SHORT_GLOBALLY_DISABLED)
 
     def test_rs_deterioration_priority_higher_than_failed_breakout(self):
         from signals.evaluator import SHORT_SIGNAL_PRIORITY
@@ -1008,19 +1008,12 @@ class TestScanShortCandidatesDeteriorationPath(unittest.TestCase):
         base.update(kwargs)
         return base
 
-    def test_deterioration_path_returns_candidate_in_stress(self):
+    def test_deterioration_path_returns_no_candidates_because_globally_disabled(self):
         from execution.stock_scanner import scan_short_candidates
-        from signals.evaluator import evaluate_short_signals
 
         snap = self._det_snap()
-        # Verify the snapshot would produce a signal
-        sigs = evaluate_short_signals(snap)
-        if not sigs:
-            self.skipTest("rs_deterioration signal requires valid conditions")
-
         result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
-        self.assertEqual(len(result), 1)
-        self.assertIn("rs_deterioration", result[0]["matched_signals"])
+        self.assertEqual(result, [])
 
     def test_deterioration_path_blocked_in_bull_trend(self):
         from execution.stock_scanner import scan_short_candidates
@@ -1449,21 +1442,10 @@ class TestRsDeteriorationPathInBacktest(unittest.TestCase):
         base.update(kwargs)
         return pd.Series(base)
 
-    def test_deterioration_path_fires_with_rs_rank_lag(self):
+    def test_deterioration_path_returns_none_because_globally_disabled(self):
         from backtest.engine import _short_entry_signal
-        from signals.evaluator import evaluate_short_signals
 
         row = self._make_row()
-        snap = {
-            "rs_rank_pct": 35.0,
-            "rs_rank_pct_10d_ago": 72.0,
-            "ret_5d_pct": -3.5,
-        }
-        # First confirm the signal fires from evaluator
-        sigs = evaluate_short_signals(snap)
-        if "rs_deterioration" not in sigs:
-            self.skipTest("rs_deterioration needs valid snapshot conditions")
-
         result = _short_entry_signal(
             row,
             rs_rank_pct=35.0,
@@ -1471,8 +1453,7 @@ class TestRsDeteriorationPathInBacktest(unittest.TestCase):
             regime="STRESS_RISK_OFF",
             rs_rank_pct_10d_ago=72.0,
         )
-        self.assertIsNotNone(result)
-        self.assertIn("rs_deterioration", result)
+        self.assertIsNone(result)
 
     def test_deterioration_path_not_fire_without_lag(self):
         from backtest.engine import _short_entry_signal

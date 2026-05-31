@@ -810,6 +810,14 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.57 — May 2026 — Disable rs_deterioration; fix backtest weekend crash
+
+- **`rs_deterioration` disabled** (added to `SHORT_GLOBALLY_DISABLED`). Walk-forward 2015–2026 showed 0/11 profitable folds, mean Sharpe −0.872, 619 trades, WR 36%, avg/trade −1.17% — no edge at any threshold. Existing code preserved under `# pragma: no cover`; signal can be re-enabled if a structural improvement is found.
+- **`backtest/engine.py` weekend crash fix.** `pd.bdate_range(end=yesterday, periods=1)` returned an empty array on Saturdays and Sundays (yesterday is a weekend day → no business days match → IndexError at module-load time). Fixed by using `pd.Timestamp.today().normalize() - pd.offsets.BDay(1)` which always returns the prior business day regardless of the day of the week.
+- **4 tests renamed** to reflect the disabled-signal assertions (same count); **2765 passing, 100% coverage.**
+
+---
+
 ### 1.56 — May 2026 — rs_deterioration signal + VIX term structure gate + Alpaca short universe
 
 - **`rs_deterioration` signal (new).** Cross-sectional leader-to-laggard rotation signal. Fires when a stock was in the top 35% of the universe 10 trading days ago (`rs_rank_pct_10d_ago > 65`) but has since fallen below the median (`rs_rank_pct < 45`) and is down more than 2% over five days (`ret_5d_pct < -2`). Captures early institutional distribution before technical breakdown is visible. Added to `SHORT_SIGNAL_PRIORITY` at rank 1 (highest priority after earnings_miss). NOT in `SHORT_GLOBALLY_DISABLED`.
