@@ -42,6 +42,7 @@ from backtest.historical_fundamentals import (
     pead_active_on_date,
     prefetch_earnings_history,
     prefetch_insider_history,
+    recent_earnings_date,
 )
 from config import (
     BACKTEST_DEFAULT_START,
@@ -326,6 +327,15 @@ def _short_entry_signal(
 
     if fundamentals:
         snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
+        if "earnings_gap_pct" in fundamentals:
+            snap["earnings_gap_pct"] = fundamentals["earnings_gap_pct"]
+
+    # Event path — earnings gap-down: fires on all RS rank tiers.  Returns early if the
+    # earnings_gap_down signal specifically fires (not just any signal from the snapshot).
+    if snap.get("earnings_gap_pct") is not None:
+        event_sigs = evaluate_short_signals(snap, params=short_params)
+        if "earnings_gap_down" in event_sigs:
+            return event_sigs
 
     # Deterioration path — leader-to-laggard: was top-35% 10d ago, now fallen below
     if (
@@ -1310,7 +1320,7 @@ def _run_short_simulation(
                 vix_term_by_date.get(prev_date_str, True) if vix_term_by_date else True
             )
 
-            # Point-in-time earnings miss
+            # Point-in-time earnings fundamentals
             fundamentals: dict | None = None
             if earnings_history is not None:
                 prev_date = df.index[today_loc - 1].date()
@@ -1318,6 +1328,17 @@ def _run_short_simulation(
                 fund["earnings_miss_active"] = earnings_miss_active_on_date(
                     sym, prev_date, earnings_history
                 )
+                # Earnings gap-down: if earnings were released in the last 4 calendar days,
+                # compute the open-vs-prior-close gap on the first reaction bar.
+                if today_loc >= 2:
+                    earn_dt = recent_earnings_date(sym, prev_date, earnings_history)
+                    if earn_dt is not None:
+                        prev_open = float(df.iloc[today_loc - 1].get("Open", 0.0))
+                        prior_close = float(df.iloc[today_loc - 2].get("Close", 0.0))
+                        if prior_close > 0:
+                            fund["earnings_gap_pct"] = (
+                                (prev_open - prior_close) / prior_close * 100.0
+                            )
                 fundamentals = fund
 
             signals = _short_entry_signal(
@@ -4049,7 +4070,7 @@ def run_short_walk_forward(
         )
         i += fold_days
 
-    if not fold_results:
+    if not fold_results:  # pragma: no cover
         return {"folds": [], "summary": {}}
 
     n = len(fold_results)

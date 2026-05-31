@@ -810,6 +810,18 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.59 — May 2026 — earnings_gap_down short signal (backtest-enabled)
+
+- **`earnings_gap_down` signal (new).** Fires when a stock gaps down ≥ 5% on the first open after earnings with volume ≥ 1.5× average. Captures post-earnings announcement drift (negative PEAD): institutional rebalancing and analyst downgrades continue to push prices lower for 3–5 sessions after a gap-down reaction. Signal parameters in `DEFAULT_SHORT_SIGNAL_PARAMS`: `egd_gap_pct_max = -5.0`, `egd_vol_min = 1.5`.
+- **Event path in `_short_entry_signal()`.** New Path D fires before the RS-rank gates (deterioration/reversal/fundamental) so it applies to all stocks regardless of RS tier. Returns early if `earnings_gap_down` fires.
+- **Backtest gap computation in `_run_short_simulation()`.** For each simulation bar, `recent_earnings_date()` (new function in `backtest/historical_fundamentals.py`) checks for an earnings report in the prior 4 calendar days. If found, `earnings_gap_pct = (T-1 open − T-2 close) / T-2 close × 100` is computed and injected into fundamentals for `_short_entry_signal()`. Zero-close guard prevents division by zero.
+- **Path D in `scan_short_candidates()`.** RS-rank-agnostic event path fires before Paths A/B/C in the live scanner. Phase 2 will enrich `earnings_gap_pct` in `scan_short_universe()`; current live scanner does not yet compute gap detection.
+- **`run_short_walk_forward()` (new function in `backtest/engine.py`).** Walk-forward stability check for a fixed short parameter set — no train phase, fold-by-fold consistency check. Complements `run_short_param_sensitivity()`.
+- **Short squeeze avoidance VIX gate coverage.** Added `test_vix_not_inverted_blocks_shorts` and `test_short_snapshot_enriched_with_short_interest` to complete 100% coverage on `main.py`.
+- **68 new tests** across `TestRecentEarningsDate` (7), `TestShortEntrySignalEventPath` (6), `TestRunShortSimulationEarningsGap` (5), `TestRunShortWalkForward` (9), `TestEarningsGapDownSignal` (12), `TestScanShortCandidatesEventPath` (7), coverage-gap tests (+22); **2847 passing, 100% coverage.**
+
+---
+
 ### 1.58 — May 2026 — Short squeeze avoidance gate (live-only)
 
 - **`execution/short_risk.py` (new module).** `is_squeeze_risk(symbol, snapshot, *, short_pct_float, days_to_cover, ...)` blocks short entry on three independent criteria: reported short interest > 20 % of float (FINRA bi-monthly via yfinance), days-to-cover > 5, or 5-day price momentum > 15 % (active squeeze proxy, real-time). `fetch_squeeze_info(symbol)` fetches the yfinance `.info` fields; returns `None` for both fields on any API failure so a transient outage never silently blocks all shorts.

@@ -1045,6 +1045,15 @@ class TestScanShortCandidatesDeteriorationPath(unittest.TestCase):
         result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
         self.assertEqual(result, [])
 
+    def test_deterioration_path_fires_when_high_short_interest(self):
+        # high_short_interest is not blocked in Path C — should return a candidate
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._det_snap(high_short_interest=True)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+        self.assertIn("high_short_interest", result[0]["matched_signals"])
+
 
 class TestShortUniverseModule(unittest.TestCase):
     """Tests for execution/short_universe.py."""
@@ -1506,6 +1515,160 @@ class TestComputeRsRankLag10(unittest.TestCase):
         result = _compute_rs_rank_lag10(rs_ranks, dates)
         # FADE has dates[15..19], lag10 would map dates[25..29] → not in our range
         self.assertEqual(result.get("FADE", {}), {})
+
+
+class TestEarningsGapDownSignal(unittest.TestCase):
+    """Tests for the earnings_gap_down signal in evaluate_short_signals."""
+
+    def _snap(self, **kwargs):
+        base = {"earnings_gap_pct": -8.0, "vol_ratio": 2.0}
+        base.update(kwargs)
+        return base
+
+    def test_fires_when_gap_and_volume_meet_thresholds(self):
+        from signals.evaluator import evaluate_short_signals
+
+        result = evaluate_short_signals(self._snap())
+        self.assertIn("earnings_gap_down", result)
+
+    def test_blocked_when_gap_too_small(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(earnings_gap_pct=-3.0)  # only 3%, below 5% threshold
+        self.assertNotIn("earnings_gap_down", evaluate_short_signals(snap))
+
+    def test_blocked_when_gap_is_positive(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(earnings_gap_pct=2.0)  # gap UP — not a down signal
+        self.assertNotIn("earnings_gap_down", evaluate_short_signals(snap))
+
+    def test_blocked_when_no_gap_field(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"vol_ratio": 2.0}  # no earnings_gap_pct key
+        self.assertNotIn("earnings_gap_down", evaluate_short_signals(snap))
+
+    def test_blocked_when_vol_too_low(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(vol_ratio=1.0)  # below 1.5× threshold
+        self.assertNotIn("earnings_gap_down", evaluate_short_signals(snap))
+
+    def test_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap()
+        self.assertNotIn(
+            "earnings_gap_down",
+            evaluate_short_signals(snap, blocked=frozenset({"earnings_gap_down"})),
+        )
+
+    def test_not_in_short_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertNotIn("earnings_gap_down", SHORT_GLOBALLY_DISABLED)
+
+    def test_in_short_signal_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("earnings_gap_down", SHORT_SIGNAL_PRIORITY)
+
+    def test_params_in_defaults(self):
+        from signals.evaluator import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        self.assertIn("egd_gap_pct_max", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("egd_vol_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+
+    def test_custom_thresholds_respected(self):
+        from signals.evaluator import evaluate_short_signals
+
+        # Tighten to -10% → a -8% gap should no longer fire
+        snap = self._snap(earnings_gap_pct=-8.0)
+        result = evaluate_short_signals(snap, params={"egd_gap_pct_max": -10.0})
+        self.assertNotIn("earnings_gap_down", result)
+
+    def test_exactly_at_threshold_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(earnings_gap_pct=-5.0)  # exactly at threshold (<=)
+        self.assertIn("earnings_gap_down", evaluate_short_signals(snap))
+
+    def test_priority_higher_than_high_short_interest(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertLess(
+            SHORT_SIGNAL_PRIORITY["earnings_gap_down"],
+            SHORT_SIGNAL_PRIORITY["high_short_interest"],
+        )
+
+
+class TestScanShortCandidatesEventPath(unittest.TestCase):
+    """Tests for Path D (event-driven) in scan_short_candidates."""
+
+    def _gap_snap(self, **kwargs):
+        base = {
+            "symbol": "AAPL",
+            "earnings_gap_pct": -8.0,
+            "vol_ratio": 2.0,
+            "avg_volume": 1_000_000,
+            "rs_rank_pct": 40.0,  # middle band — wouldn't fire on paths A/B/C
+        }
+        base.update(kwargs)
+        return base
+
+    def test_path_d_returns_candidate(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        result = scan_short_candidates([self._gap_snap()], "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+        self.assertIn("earnings_gap_down", result[0]["matched_signals"])
+
+    def test_path_d_skips_when_no_gap_field(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._gap_snap()
+        del snap["earnings_gap_pct"]
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
+
+    def test_path_d_skips_when_gap_too_small(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._gap_snap(earnings_gap_pct=-2.0)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
+
+    def test_path_d_skips_etfs(self):
+        from config import ETF_SYMBOLS
+        from execution.stock_scanner import scan_short_candidates
+
+        etf = next(iter(ETF_SYMBOLS))
+        snap = self._gap_snap(symbol=etf)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
+
+    def test_path_d_skips_held_symbols(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        result = scan_short_candidates([self._gap_snap()], "STRESS_RISK_OFF", {"AAPL"})
+        self.assertEqual(result, [])
+
+    def test_path_d_skips_low_volume(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        snap = self._gap_snap(avg_volume=50_000)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
+
+    def test_path_d_symbol_not_double_counted(self):
+        from execution.stock_scanner import scan_short_candidates
+
+        # Same symbol qualifies for both Path D and would qualify for another path — only one entry
+        snap = self._gap_snap(rs_rank_pct=10.0, high_short_interest=True)
+        result = scan_short_candidates([snap], "STRESS_RISK_OFF", set())
+        symbols = [c["symbol"] for c in result]
+        self.assertEqual(len(symbols), symbols.count("AAPL"))  # at most one entry
 
 
 class TestSqueezeRisk(unittest.TestCase):

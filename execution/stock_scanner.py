@@ -303,14 +303,20 @@ def scan_short_candidates(
     regime: str | None,
     held_symbols: set[str],
 ) -> list[dict]:
-    """Return short candidates via three distinct paths.
+    """Return short candidates via four distinct paths.
 
     Regime gate: only runs in SHORT_ALLOWED_REGIMES (stress/downtrend regimes).
+
+    Path D — Event-driven (earnings_gap_pct present): earnings gap-down continuation.
+      RS-rank agnostic — fires when a stock gapped down ≥ 5% on earnings with high volume.
+      Signal checked: earnings_gap_down.
+      Note: earnings_gap_pct is only populated by scan_short_universe() once earnings gap
+      detection is wired into the live scanner; backtest path is in _run_short_simulation().
 
     Path C — Deterioration (rs_rank_pct_10d_ago > 65, rs_rank_pct < 65): leader-to-laggard
       rotation — was top-35% of universe 10 days ago, now fallen below. Catches early
       institutional distribution before technical breakdown fully appears.
-      Signal checked: rs_deterioration.
+      Signal checked: rs_deterioration (currently disabled).
 
     Path A — Reversal (rs_rank_pct >= 65): recently-strong stocks showing exhaustion.
       Gate: not ETF, min volume, rs_rank >= 65.
@@ -344,6 +350,21 @@ def scan_short_candidates(
 
         rs_rank = s.get("rs_rank_pct")
         rs_rank_lag = s.get("rs_rank_pct_10d_ago")
+
+        # Path D: event-driven — earnings gap-down, RS-rank agnostic
+        if symbol not in seen and s.get("earnings_gap_pct") is not None:
+            event_sigs = evaluate_short_signals(s)
+            if "earnings_gap_down" in event_sigs:
+                confidence = int(len(event_sigs) / len(SHORT_SIGNAL_PRIORITY) * 10)
+                candidates.append(
+                    {
+                        **s,
+                        "matched_signals": event_sigs,
+                        "key_signal": event_sigs[0],
+                        "confidence": confidence,
+                    }
+                )
+                seen.add(symbol)
 
         # Path C: deterioration — was a leader 10d ago, now fallen below the median
         if (

@@ -194,14 +194,18 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
 )
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
-    "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental
-    "rs_deterioration": 1,  # Leader-to-laggard: was top-35% 10d ago, now below median + falling
-    "failed_breakout": 2,  # Bull trap: broke 20d high yesterday, failed back below today
-    "high_vol_reversal": 3,  # Distribution bar: 2× volume, close in bottom of range, extended
-    "high_short_interest": 4,  # Crowded short + low lendable supply (live-only, not backtestable)
+    "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental (disabled)
+    "earnings_gap_down": 1,  # Post-earnings gap-down continuation — PEAD short (active)
+    "rs_deterioration": 2,  # Leader-to-laggard rotation (disabled — no edge)
+    "failed_breakout": 3,  # Bull trap: broke 20d high yesterday, failed back below today (disabled)
+    "high_vol_reversal": 4,  # Distribution bar (disabled)
+    "high_short_interest": 5,  # Crowded short + low lendable supply (live-only, not backtestable)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
+    # earnings_gap_down thresholds (PEAD short — post-earnings gap continuation)
+    "egd_gap_pct_max": -5.0,  # open must be at least 5% below prior close on earnings day
+    "egd_vol_min": 1.5,  # vol_ratio floor — confirms institutional selling, not noise
     # failed_breakout thresholds
     "fb_vol_min": 1.0,  # volume confirmation on the failure day (vol_ratio)
     "fb_rsi_min": 45.0,  # RSI floor — stock must have come from elevated levels
@@ -230,7 +234,7 @@ def evaluate_short_signals(
     snapshot : dict
         Technical snapshot in scanner / market_data format.  Expected keys:
         failed_breakout_flag, close_pct_of_range, vol_ratio, rsi_14,
-        ret_5d_pct, earnings_miss_candidate.
+        ret_5d_pct, earnings_miss_candidate, earnings_gap_pct.
     params : dict | None
         Override DEFAULT_SHORT_SIGNAL_PARAMS thresholds.
     blocked : frozenset[str]
@@ -249,6 +253,21 @@ def evaluate_short_signals(
         matched.append(
             "earnings_miss"
         )  # pragma: no cover — earnings_miss in SHORT_GLOBALLY_DISABLED
+
+    # earnings_gap_down: PEAD short — stock gapped down ≥ egd_gap_pct_max% on the first
+    # session after earnings with volume ≥ egd_vol_min × 20d average.  Captures the first
+    # 1–5 days of institutional selling / analyst-downgrade drift after a negative reaction.
+    # RS-rank agnostic: fired via the event path in _short_entry_signal() so it bypasses the
+    # reversal/fundamental path RS gates.  Backtest-only until earnings gap detection is wired
+    # into scan_short_universe() for the live scanner.
+    _egd_gap = snapshot.get("earnings_gap_pct")
+    if (
+        "earnings_gap_down" not in blocked
+        and _egd_gap is not None
+        and _egd_gap <= p["egd_gap_pct_max"]
+        and snapshot.get("vol_ratio", 0.0) >= p["egd_vol_min"]
+    ):
+        matched.append("earnings_gap_down")
 
     # rs_deterioration: cross-sectional signal — leader-to-laggard rotation.
     # Stock was in the top 35% of the universe 10 trading days ago but has now

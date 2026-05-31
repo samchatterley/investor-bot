@@ -3676,6 +3676,22 @@ class TestRunInnerMissingBranches(RunInnerBase):
             _run_inner(dry_run=False, mode="close", today="2026-01-15")
         email_mock.assert_not_called()
 
+    def test_short_snapshot_enriched_with_short_interest(self):
+        # Two snapshots: one symbol in si_short (True branch), one not (False branch)
+        stack, mocks = self._patch_all(
+            **{
+                "main.scan_short_universe": [{"symbol": "TSLA"}, {"symbol": "AMZN"}],
+                "main.get_short_universe": ["TSLA", "AMZN"],
+                "main.short_interest.get_short_interest": {
+                    "TSLA": {"high_short_interest": True, "short_ratio": 8.0}
+                },
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+
 
 class TestExecuteShorts(unittest.TestCase):
     """Lines 543-682: _execute_shorts — slot gate, hedge cap, live/shadow/dry paths."""
@@ -3898,6 +3914,24 @@ class TestExecuteShorts(unittest.TestCase):
         all_trades, _, mocks = self._run(**{"main.trader.get_long_notional": 0.0})
         mocks["main.trader.place_short_order"].assert_not_called()
         self.assertEqual(all_trades, [])
+
+    def test_vix_not_inverted_blocks_shorts(self):
+        # vix_term_inverted=False → returns before scan_short_candidates
+        from main import _execute_shorts
+
+        with patch("main.stock_scanner.scan_short_candidates") as mock_scan:
+            _execute_shorts(
+                client=MagicMock(),
+                snapshots=[self._snap()],
+                regime={"regime": "STRESS_RISK_OFF", "vix_term_inverted": False},
+                open_positions=[],
+                account_now=self._account_now(),
+                all_trades=[],
+                executed_symbols=set(),
+                dry_run=True,
+                _live_shadow=False,
+            )
+            mock_scan.assert_not_called()
 
 
 class TestRunInnerCoverShorts(RunInnerBase):

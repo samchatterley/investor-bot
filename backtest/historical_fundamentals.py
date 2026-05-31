@@ -152,6 +152,39 @@ def earnings_miss_active_on_date(
     return False
 
 
+def recent_earnings_date(
+    sym: str,
+    sim_date: date,
+    earnings_history: dict[str, list[dict]],
+    lookback_days: int = 4,
+) -> date | None:
+    """Return the most recent earnings date for *sym* within *lookback_days* calendar
+    days before *sim_date* (inclusive of *sim_date*).
+
+    Used by the backtest engine to detect whether the current simulation bar is a
+    post-earnings gap day so ``earnings_gap_pct`` can be computed from OHLCV.
+
+    Returns ``None`` when no qualifying event is found or when *sym* has no earnings
+    history.  A lookback of 4 calendar days covers:
+    - BMO on the same day (0 days)
+    - AMC on the prior trading day (1 calendar day)
+    - AMC before a long weekend, e.g. Friday → Monday (3 calendar days)
+    """
+    events = earnings_history.get(sym, [])
+    if not events:
+        return None
+    cutoff = sim_date - timedelta(days=lookback_days)
+    best: date | None = None
+    for event in events:
+        ed = event["date"]
+        if ed < cutoff:
+            continue
+        if ed > sim_date:
+            break  # sorted oldest-first; no further events can be in-window
+        best = ed
+    return best
+
+
 # ── Insider buying ────────────────────────────────────────────────────────────
 
 

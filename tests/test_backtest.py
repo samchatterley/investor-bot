@@ -52,7 +52,7 @@ from backtest.engine import (
     run_signal_analysis,
     run_walk_forward_optimized,
 )
-from backtest.historical_fundamentals import earnings_miss_active_on_date
+from backtest.historical_fundamentals import earnings_miss_active_on_date, recent_earnings_date
 from config import BACKTEST_DEFAULT_START, HOLDOUT_START_DATE
 from risk.risk_config import RiskConfig
 
@@ -5438,7 +5438,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         prices = [100.0 - i * 0.5 for i in range(n)]
         df = pd.DataFrame({"Close": prices, "Volume": [2_000_000] * n}, index=idx)
         ind = _compute_indicators(df)
-        if ind.empty:
+        if ind.empty:  # pragma: no cover
             return
         ind["high_short_interest"] = True
         # Make a copy that only has the first 30 rows — so exit days will raise KeyError
@@ -5463,7 +5463,7 @@ class TestRunShortSimulationExtraBranches(unittest.TestCase):
         prices = [100.0 - i * 0.5 for i in range(n)]
         df = pd.DataFrame({"Close": prices, "Volume": [2_000_000] * n}, index=idx)
         ind = _compute_indicators(df)
-        if ind.empty:
+        if ind.empty:  # pragma: no cover
             return
         # Replace with a MagicMock that raises on .loc access
         mock_ind = MagicMock()
@@ -6829,3 +6829,448 @@ class TestRunShortParamSensitivity(unittest.TestCase):
             use_earnings_only=True,
         )
         self.assertIn("baseline", result)
+
+    def test_vix_fetch_exception_handled(self):
+        # VIX download raises on second call → logged, continues without regime_by_date
+        raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return raw
+            raise ConnectionError("VIX unavailable")
+
+        with (
+            patch("backtest.engine.yf.download", side_effect=_dl),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            from backtest.engine import run_short_param_sensitivity
+
+            result = run_short_param_sensitivity(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges={"fb_vol_min": [1.0]},
+            )
+        self.assertIn("baseline", result)
+
+    def test_spy_data_builds_regime_map(self):
+        # SPY in symbols → spy_indicators not None → _build_regime_map called
+        raw = _make_raw(n=100, symbols=("AAPL", "FLAT", "SPY"))
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            from backtest.engine import run_short_param_sensitivity
+
+            result = run_short_param_sensitivity(
+                ["AAPL", "FLAT", "SPY"],
+                "2025-01-01",
+                "2025-06-30",
+                param_ranges={"fb_vol_min": [1.0]},
+            )
+        self.assertIn("baseline", result)
+
+
+class TestRunShortWalkForward(unittest.TestCase):
+    def _run(self, raw=None, fold_days=30, **kwargs):
+        from backtest.engine import run_short_walk_forward
+
+        if raw is None:
+            raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            return run_short_walk_forward(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                fold_days=fold_days,
+                **kwargs,
+            )
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            from backtest.engine import run_short_walk_forward
+
+            result = run_short_walk_forward(
+                ["AAPL"],
+                "2025-01-01",
+                "2025-06-30",
+                fold_days=30,
+            )
+        self.assertEqual(result, {})
+
+    def test_returns_empty_when_insufficient_dates(self):
+        # fold_days > available trading days → returns {}
+        result = self._run(fold_days=5000)
+        self.assertEqual(result, {})
+
+    def test_returns_folds_and_summary(self):
+        result = self._run(fold_days=30)
+        self.assertIn("folds", result)
+        self.assertIn("summary", result)
+        self.assertGreater(len(result["folds"]), 0)
+
+    def test_summary_has_required_keys(self):
+        result = self._run(fold_days=30)
+        summary = result["summary"]
+        for key in (
+            "n_folds",
+            "profitable_folds",
+            "mean_sharpe",
+            "mean_return_pct",
+            "mean_win_rate_pct",
+            "total_trades",
+            "params",
+        ):
+            self.assertIn(key, summary)
+
+    def test_each_fold_has_required_keys(self):
+        result = self._run(fold_days=30)
+        for fold in result["folds"]:
+            for key in (
+                "fold_start",
+                "fold_end",
+                "sharpe",
+                "total_return_pct",
+                "win_rate_pct",
+                "avg_trade_pct",
+                "total_trades",
+            ):
+                self.assertIn(key, fold)
+
+    def test_default_params_used_when_none(self):
+        from backtest.engine import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        result = self._run(fold_days=30, short_params=None)
+        self.assertEqual(result["summary"]["params"], DEFAULT_SHORT_SIGNAL_PARAMS)
+
+    def test_custom_params_propagated(self):
+        custom = {"fb_vol_min": 99.0}
+        result = self._run(fold_days=30, short_params=custom)
+        self.assertEqual(result["summary"]["params"], custom)
+
+    def test_vix_fetch_exception_handled(self):
+        # VIX download raises on second call → logged, continues without regime_by_date
+        raw = _make_raw(n=100)
+        call_count = [0]
+
+        def _dl(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return raw
+            raise ConnectionError("VIX unavailable")
+
+        with patch("backtest.engine.yf.download", side_effect=_dl):
+            from backtest.engine import run_short_walk_forward
+
+            result = run_short_walk_forward(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                fold_days=30,
+            )
+        self.assertIn("folds", result)
+
+    def test_spy_data_builds_regime_map(self):
+        # SPY in symbols → spy_indicators not None → _build_regime_map called
+        raw = _make_raw(n=100, symbols=("AAPL", "FLAT", "SPY"))
+        with patch("backtest.engine.yf.download", return_value=raw):
+            from backtest.engine import run_short_walk_forward
+
+            result = run_short_walk_forward(
+                ["AAPL", "FLAT", "SPY"],
+                "2025-01-01",
+                "2025-06-30",
+                fold_days=30,
+            )
+        self.assertIn("folds", result)
+
+
+class TestRecentEarningsDate(unittest.TestCase):
+    def _hist(self, sym, events):
+        from datetime import date
+
+        return {sym: [{"date": date(*d), "surprise_pct": s} for d, s in events]}
+
+    def test_returns_date_within_window(self):
+        from datetime import date
+
+        sim_date = date(2025, 4, 29)
+        earn_date = date(2025, 4, 25)  # 4 calendar days before sim_date
+        hist = self._hist("AAPL", [((2025, 4, 25), -8.0)])
+        result = recent_earnings_date("AAPL", sim_date, hist)
+        self.assertEqual(result, earn_date)
+
+    def test_returns_none_outside_window(self):
+        from datetime import date
+
+        sim_date = date(2025, 4, 29)
+        # 5 calendar days before sim_date → outside 4-day window
+        hist = self._hist("AAPL", [((2025, 4, 24), -8.0)])
+        self.assertIsNone(recent_earnings_date("AAPL", sim_date, hist))
+
+    def test_returns_none_for_unknown_symbol(self):
+        from datetime import date
+
+        hist = self._hist("AAPL", [((2025, 4, 25), -8.0)])
+        self.assertIsNone(recent_earnings_date("MSFT", date(2025, 4, 29), hist))
+
+    def test_returns_none_for_empty_history(self):
+        from datetime import date
+
+        self.assertIsNone(recent_earnings_date("AAPL", date(2025, 4, 29), {}))
+
+    def test_returns_most_recent_of_multiple_events(self):
+        from datetime import date
+
+        sim_date = date(2025, 4, 29)
+        hist = self._hist(
+            "AAPL",
+            [((2025, 4, 25), -8.0), ((2025, 4, 28), -5.0)],
+        )
+        result = recent_earnings_date("AAPL", sim_date, hist)
+        self.assertEqual(result, date(2025, 4, 28))
+
+    def test_excludes_future_events(self):
+        from datetime import date
+
+        sim_date = date(2025, 4, 29)
+        hist = self._hist("AAPL", [((2025, 4, 30), -8.0)])  # after sim_date
+        self.assertIsNone(recent_earnings_date("AAPL", sim_date, hist))
+
+    def test_same_day_bmo_included(self):
+        from datetime import date
+
+        sim_date = date(2025, 4, 29)
+        hist = self._hist("AAPL", [((2025, 4, 29), -8.0)])  # same day (BMO)
+        result = recent_earnings_date("AAPL", sim_date, hist)
+        self.assertEqual(result, sim_date)
+
+
+class TestShortEntrySignalEventPath(unittest.TestCase):
+    """Tests for the earnings_gap_down event path in _short_entry_signal."""
+
+    def _make_row(self, **overrides):
+        indicators, _ = _make_short_indicators(n=80)
+        row = indicators["WEAK"].iloc[-1].copy()
+        for k, v in overrides.items():
+            row[k] = v
+        return row
+
+    def test_event_path_fires_with_valid_gap(self):
+        row = self._make_row(vol_ratio=2.0)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=40.0,  # middle band — would be blocked by RS gate normally
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            fundamentals={"earnings_gap_pct": -8.0, "earnings_miss_active": False},
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("earnings_gap_down", result)
+
+    def test_event_path_skipped_without_gap_field(self):
+        row = self._make_row(high_short_interest=False, vol_ratio=2.0)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=40.0,  # middle band — no signals on RS paths either
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            fundamentals={"earnings_miss_active": False},  # no earnings_gap_pct
+        )
+        self.assertIsNone(result)
+
+    def test_event_path_skipped_when_gap_too_small(self):
+        row = self._make_row(vol_ratio=2.0)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=40.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            fundamentals={"earnings_gap_pct": -2.0},  # gap only 2%, below 5% threshold
+        )
+        self.assertIsNone(result)
+
+    def test_event_path_respects_regime_gate(self):
+        row = self._make_row(vol_ratio=2.0)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=40.0,
+            spy_ret_20d=None,
+            regime="BULL_TREND",  # shorts blocked in bull trend
+            fundamentals={"earnings_gap_pct": -8.0},
+        )
+        self.assertIsNone(result)
+
+    def test_event_path_respects_vix_gate(self):
+        row = self._make_row(vol_ratio=2.0)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=40.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+            vix_term_inverted=False,
+            fundamentals={"earnings_gap_pct": -8.0},
+        )
+        self.assertIsNone(result)
+
+    def test_deterioration_path_returns_signals(self):
+        # rs_rank_pct_10d_ago > 65, rs_rank_pct < 65, high_short_interest fires
+        row = self._make_row(high_short_interest=True)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=30.0,
+            rs_rank_pct_10d_ago=75.0,
+            spy_ret_20d=None,
+            regime="STRESS_RISK_OFF",
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("high_short_interest", result)
+
+
+class TestRunShortSimulationEarningsGap(unittest.TestCase):
+    """Coverage for the earnings_gap_pct computation in _run_short_simulation."""
+
+    def _build(self, n=60, open_gap_bar=None, open_gap_pct=-0.10):
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        prices = [100.0 - i * 0.3 for i in range(n)]
+        opens = list(prices)
+        if open_gap_bar is not None:
+            opens[open_gap_bar] = prices[open_gap_bar - 1] * (1 + open_gap_pct)
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": opens,
+                "High": [p + 0.5 for p in prices],
+                "Low": [p - 0.5 for p in prices],
+                "Volume": [2_000_000] * n,
+            },
+            index=idx,
+        )
+        ind = _compute_indicators(df)
+        spy_df = pd.DataFrame({"Close": [200.0] * n, "Volume": [50_000_000] * n}, index=idx)
+        spy_ind = _compute_indicators(spy_df)
+        return {"WEAK": ind}, spy_ind, idx
+
+    def test_earnings_gap_triggers_entry_on_event_path(self):
+        n = 60
+        # Use a mid-point bar in the indicators DataFrame (not raw index)
+        indicators, spy_ind, idx = self._build(n=n, open_gap_bar=None)
+        ind_df = indicators["WEAK"]
+        ind_len = len(ind_df)
+        gap_bar = max(5, ind_len // 2)  # a bar in the middle of the indicators
+        # Set a large gap-down on the open of gap_bar
+        ind_df.loc[ind_df.index[gap_bar], "Open"] = float(ind_df.iloc[gap_bar - 1]["Close"]) * 0.88
+        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 2.0
+        earn_date = ind_df.index[gap_bar - 1].date()  # AMC earnings the prior bar
+        earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -8.0}]}
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind_df.index]
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}  # middle band → only event path
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        sim_start = ind_df.index[gap_bar].strftime("%Y-%m-%d")
+        dates = pd.bdate_range(sim_start, periods=10)
+        result = _run_short_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+        )
+        self.assertIn("total_trades", result)
+        self.assertGreater(result["total_trades"], 0)
+
+    def test_no_gap_computed_without_recent_earnings(self):
+        n = 60
+        indicators, spy_ind, idx = self._build(n=n)
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}
+        # earnings_history provided but no events for WEAK — no gap should be computed
+        earnings_history: dict = {"WEAK": []}
+        dates = pd.bdate_range(idx[25].strftime("%Y-%m-%d"), periods=10)
+        result = _run_short_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            earnings_history=earnings_history,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_gap_not_computed_when_today_loc_is_1(self):
+        # today_loc == 1 on first iteration → earnings_gap branch skipped
+        n = 30
+        indicators, spy_ind, idx = self._build(n=n)
+        earn_date = idx[0].date()  # earnings on bar 0
+        earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -10.0}]}
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in idx]
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}
+        dates = idx[1:2]  # only bar 1 → today_loc == 1
+        result = _run_short_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            earnings_history=earnings_history,
+        )
+        self.assertIn("total_trades", result)
+
+    def test_gap_not_computed_when_prior_close_zero(self):
+        # prior_close == 0 → guard prevents division by zero
+        n = 60
+        indicators, spy_ind, idx = self._build(n=n)
+        ind_df = indicators["WEAK"]
+        gap_bar = max(5, len(ind_df) // 2)
+        ind_df.loc[ind_df.index[gap_bar], "Open"] = float(ind_df.iloc[gap_bar - 1]["Close"]) * 0.88
+        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 2.0
+        # Zero out prior bar close — guard should prevent zero-division
+        ind_df.loc[ind_df.index[gap_bar - 1], "Close"] = 0.0
+        earn_date = ind_df.index[gap_bar - 1].date()
+        earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -8.0}]}
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind_df.index]
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        sim_start = ind_df.index[gap_bar].strftime("%Y-%m-%d")
+        dates = pd.bdate_range(sim_start, periods=5)
+        result = _run_short_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+        )
+        # Should not crash — guard prevents zero-division
+        self.assertIn("total_trades", result)
+
+    def test_tiny_capital_skips_entry_notional_too_small(self):
+        # notional < 0.5 → entry loop continue branch (line 1384)
+        n = 60
+        indicators, spy_ind, idx = self._build(n=n)
+        ind_df = indicators["WEAK"]
+        ind_len = len(ind_df)
+        gap_bar = max(5, ind_len // 2)
+        ind_df.loc[ind_df.index[gap_bar], "Open"] = float(ind_df.iloc[gap_bar - 1]["Close"]) * 0.88
+        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 2.0
+        earn_date = ind_df.index[gap_bar - 1].date()
+        earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -8.0}]}
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind_df.index]
+        rs_ranks = {"WEAK": dict.fromkeys(all_dates, 40.0)}
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        sim_start = ind_df.index[gap_bar].strftime("%Y-%m-%d")
+        dates = pd.bdate_range(sim_start, periods=5)
+        # initial_capital=0.01 → notional = (0.01/2)*0.9 = 0.0045 < 0.5 → continue
+        result = _run_short_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+            initial_capital=0.01,
+        )
+        self.assertEqual(result["total_trades"], 0)

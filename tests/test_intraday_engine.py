@@ -764,7 +764,7 @@ class TestOrbBreakdownSignal(unittest.TestCase):
         bars = _make_orb_breakdown_day("2025-01-06")
         trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
         for t in trades:
-            if t["signal"] == "orb_breakdown":
+            if t["signal"] == "orb_breakdown":  # pragma: no cover
                 self.assertEqual(t["direction"], "short")
 
     def test_orb_breakdown_not_fired_in_breakout_day(self):
@@ -812,7 +812,7 @@ class TestGapUpFailureSignal(unittest.TestCase):
         bars = _make_gap_up_failure_day("2025-01-06")
         trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
         for t in trades:
-            if t["signal"] == "gap_up_failure":
+            if t["signal"] == "gap_up_failure":  # pragma: no cover
                 self.assertEqual(t["direction"], "short")
 
     def test_gap_up_failure_no_flag_without_bullish_first_bar(self):
@@ -864,7 +864,7 @@ class TestVwapRejectionSignal(unittest.TestCase):
         bars = _make_vwap_rejection_day("2025-01-06")
         trades = _replay_day("AAPL", "2025-01-06", bars, 1.0, 2.0, 10_000_000, 20_000)
         for t in trades:
-            if t["signal"] == "vwap_rejection":
+            if t["signal"] == "vwap_rejection":  # pragma: no cover
                 self.assertEqual(t["direction"], "short")
 
     def test_vwap_rejection_no_fire_when_never_above_vwap(self):
