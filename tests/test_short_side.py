@@ -1521,7 +1521,7 @@ class TestEarningsGapDownSignal(unittest.TestCase):
     """Tests for the earnings_gap_down signal in evaluate_short_signals."""
 
     def _snap(self, **kwargs):
-        base = {"earnings_gap_pct": -8.0, "vol_ratio": 2.0}
+        base = {"earnings_gap_pct": -8.0, "vol_ratio": 3.0}
         base.update(kwargs)
         return base
 
@@ -1534,7 +1534,7 @@ class TestEarningsGapDownSignal(unittest.TestCase):
     def test_blocked_when_gap_too_small(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = self._snap(earnings_gap_pct=-3.0)  # only 3%, below 5% threshold
+        snap = self._snap(earnings_gap_pct=-3.0)  # only 3%, below 7% threshold
         self.assertNotIn("earnings_gap_down", evaluate_short_signals(snap))
 
     def test_blocked_when_gap_is_positive(self):
@@ -1552,7 +1552,7 @@ class TestEarningsGapDownSignal(unittest.TestCase):
     def test_blocked_when_vol_too_low(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = self._snap(vol_ratio=1.0)  # below 1.5× threshold
+        snap = self._snap(vol_ratio=1.0)  # below 2.5× threshold
         self.assertNotIn("earnings_gap_down", evaluate_short_signals(snap))
 
     def test_blocked_when_in_blocked_set(self):
@@ -1591,7 +1591,7 @@ class TestEarningsGapDownSignal(unittest.TestCase):
     def test_exactly_at_threshold_fires(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = self._snap(earnings_gap_pct=-5.0)  # exactly at threshold (<=)
+        snap = self._snap(earnings_gap_pct=-7.0)  # exactly at threshold (<=)
         self.assertIn("earnings_gap_down", evaluate_short_signals(snap))
 
     def test_priority_higher_than_high_short_interest(self):
@@ -1610,7 +1610,7 @@ class TestScanShortCandidatesEventPath(unittest.TestCase):
         base = {
             "symbol": "AAPL",
             "earnings_gap_pct": -8.0,
-            "vol_ratio": 2.0,
+            "vol_ratio": 3.0,
             "avg_volume": 1_000_000,
             "rs_rank_pct": 40.0,  # middle band — wouldn't fire on paths A/B/C
         }

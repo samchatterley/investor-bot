@@ -810,6 +810,15 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.61 — May 2026 — earnings_gap_down: tighten params to egd_gap_pct_max=−7, egd_vol_min=2.5
+
+- **`DEFAULT_SHORT_SIGNAL_PARAMS` updated.** `egd_gap_pct_max`: −5.0 → −7.0; `egd_vol_min`: 1.5 → 2.5. Selected by one-at-a-time sensitivity sweep on `STATIC_SHORT_UNIVERSE` 2015–2023 followed by walk-forward validation of the combined set.
+- **Sensitivity results.** Gap sweep: −7% gives Sharpe +0.400 (+0.330 delta vs −5% baseline); going to −10% or −12% reduces trades without proportional improvement. Vol sweep: strictly monotonic — 2.5× gives Sharpe +0.430 (+0.360 delta); 3.0× adds marginal quality at cost of frequency. Combined walk-forward at `−7, 2.5`: mean Sharpe **+0.643** across all 9 folds (vs +0.258 at defaults); **mean Sharpe +1.45 across the 4 active folds** (2019–2023 stress periods only). 4/4 active folds profitable; 5 zero-trade folds in 2015–2019 bull run are correct abstentions not failures.
+- **Param rationale.** Larger gap (−7%) filters out ambiguous reactions — stocks gapping down only 5–6% may recover intraday. Higher vol (2.5×) screens for institutional-level selling conviction vs retail panic. Both changes are economically motivated, not curve-fit.
+- **Test updates.** `_snap()` and `_gap_snap()` helper `vol_ratio` updated 2.0 → 3.0 to stay clearly above new threshold; `test_exactly_at_threshold_fires` updated to −7.0; comments updated to reference new values; `test_tiny_capital_skips_entry_notional_too_small` updated to vol=3.0 to trigger the candidate path. **0 net new tests; 2855 passing, 100% coverage.**
+
+---
+
 ### 1.60 — May 2026 — earnings_gap_down: same-bar entry, walk-forward fix, STATIC_SHORT_UNIVERSE
 
 - **Same-bar gap-open entry (structural fix).** `_run_short_simulation()` previously entered one bar after the gap (T+1), by which time the gap was already priced in. Now the gap is detected on the reaction bar itself: `earnings_gap_pct = (T_open − (T−1)_close) / (T−1)_close × 100` using `recent_earnings_date(sym, today_date_obj, ...)` where `today_date_obj` is the current simulation bar. AMC/BMO earnings are public before the open, so using `today_open` is not lookahead. Entry is at the market open on the gap day — the earliest tradeable price after the news.

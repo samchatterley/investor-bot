@@ -204,8 +204,8 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     # earnings_gap_down thresholds (PEAD short — post-earnings gap continuation)
-    "egd_gap_pct_max": -5.0,  # open must be at least 5% below prior close on earnings day
-    "egd_vol_min": 1.5,  # vol_ratio floor — confirms institutional selling, not noise
+    "egd_gap_pct_max": -7.0,  # open must be at least 7% below prior close on earnings day
+    "egd_vol_min": 2.5,  # vol_ratio floor — confirms institutional selling, not noise
     # failed_breakout thresholds
     "fb_vol_min": 1.0,  # volume confirmation on the failure day (vol_ratio)
     "fb_rsi_min": 45.0,  # RSI floor — stock must have come from elevated levels

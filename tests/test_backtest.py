@@ -7068,7 +7068,7 @@ class TestShortEntrySignalEventPath(unittest.TestCase):
         return row
 
     def test_event_path_fires_with_valid_gap(self):
-        row = self._make_row(vol_ratio=2.0)
+        row = self._make_row(vol_ratio=3.0)
         result = _short_entry_signal(
             row,
             rs_rank_pct=40.0,  # middle band — would be blocked by RS gate normally
@@ -7171,7 +7171,7 @@ class TestRunShortSimulationEarningsGap(unittest.TestCase):
         gap_bar = max(5, ind_len // 2)  # a bar in the middle of the indicators
         # Set a large gap-down on the open of gap_bar
         ind_df.loc[ind_df.index[gap_bar], "Open"] = float(ind_df.iloc[gap_bar - 1]["Close"]) * 0.88
-        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 2.0
+        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 3.0
         earn_date = ind_df.index[gap_bar - 1].date()  # AMC earnings the prior bar
         earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -8.0}]}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind_df.index]
@@ -7269,7 +7269,7 @@ class TestRunShortSimulationEarningsGap(unittest.TestCase):
         ind_len = len(ind_df)
         gap_bar = max(5, ind_len // 2)
         ind_df.loc[ind_df.index[gap_bar], "Open"] = float(ind_df.iloc[gap_bar - 1]["Close"]) * 0.88
-        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 2.0
+        ind_df.loc[ind_df.index[gap_bar], "vol_ratio"] = 3.0
         earn_date = ind_df.index[gap_bar - 1].date()
         earnings_history = {"WEAK": [{"date": earn_date, "surprise_pct": -8.0}]}
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind_df.index]
