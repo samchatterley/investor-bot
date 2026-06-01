@@ -810,6 +810,20 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.62 — June 2026 — three new short signals: overbought_downtrend, parabolic_exhaustion, faded_earnings_gap_up
+
+- **`overbought_downtrend` (new active signal).** Fires when a stock is below its 50-day SMA (established downtrend) and RSI crosses back below `ordt_rsi_cross` (default 62.0) after bouncing above it — fading the relief rally. Volume gate: `ordt_vol_min` (default 0.8). RS-rank agnostic: fires via a dedicated technical path in `_short_entry_signal()` that bypasses the RS-gated reversal/fundamental paths, since `price_below_sma50` provides the directional filter. Theory: mean-reversion from overbought relief rallies in downtrending stocks (Lo & MacKinlay contrarian literature).
+- **`parabolic_exhaustion` (new active signal).** Fires when a stock is up ≥ `pe_ret60d_min` % (default 80%) in 60 trading days, RSI ≥ `pe_rsi_min` (default 72.0), and volume drying up (vol_ratio ≤ `pe_vol_ratio_max`, default 0.9). Fires via the existing reversal path (rs_rank_pct ≥ 65) — parabolic stocks naturally have high RS ranks. Theory: momentum crash (Daniel & Moskowitz 2016) — stocks with extreme prior-period returns are subject to systematic reversals when buyers exhaust.
+- **`faded_earnings_gap_up` (new active signal).** Fires the session after a stock gaps up ≥ `fegu_gap_min` % (default 5%) on earnings but closes in the bottom `fegu_range_max` of the day's High–Low range (default 30%) on volume ≥ `fegu_vol_min` (default 1.5×). T+1 entry: the fade is detected on the earnings bar (T) using `close_pct_of_range` and `gap_pct`; entry is at the next open. Complement to `earnings_gap_down`: opposite polarity, same earnings anchor. Theory: smart money distributing into retail excitement on an earnings beat — when sellers dominate a gap-up day, the bar flags institutional distribution.
+- **New indicators in `_compute_indicators()`.** `sma50` (50-bar SMA), `rsi_prev` (lagged RSI for cross detection), `ret_60d` (60-day return for parabolic detection). None added to `_CORE_COLS` (no extra warmup rows dropped).
+- **`_row_to_snapshot()` extended.** Added `price_below_sma50`, `rsi_prev`, `ret_60d_pct` to the snapshot dict for evaluator consumption.
+- **`signals_only` parameter.** `_run_short_simulation()` and `run_short_walk_forward()` accept `signals_only: frozenset[str] | None` — when set, all other signals are blocked, enabling isolated walk-forward evaluation of a single signal without code changes.
+- **Three new CLI commands.** `--short-walk-forward-ordt`, `--short-walk-forward-pe`, `--short-walk-forward-fegu` run isolated walk-forwards for each new signal over `STATIC_SHORT_UNIVERSE`.
+- **All signals active by default** (not in `SHORT_GLOBALLY_DISABLED`). New snapshot fields (`price_below_sma50`, `ret_60d_pct`, `faded_earnings_gap_up_pct`) are not yet computed by the live scanner, so signals are silently inert in production until the scanner is wired up.
+- **36 new tests** across `test_short_side.py` (evaluator unit tests for all 3 signals) and `test_backtest.py` (simulation firing + `signals_only` filter). **Total: ~2891 passing, 100% coverage.**
+
+---
+
 ### 1.61 — May 2026 — earnings_gap_down: tighten params to egd_gap_pct_max=−7, egd_vol_min=2.5
 
 - **`DEFAULT_SHORT_SIGNAL_PARAMS` updated.** `egd_gap_pct_max`: −5.0 → −7.0; `egd_vol_min`: 1.5 → 2.5. Selected by one-at-a-time sensitivity sweep on `STATIC_SHORT_UNIVERSE` 2015–2023 followed by walk-forward validation of the combined set.

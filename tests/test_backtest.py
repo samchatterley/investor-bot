@@ -7288,3 +7288,303 @@ class TestRunShortSimulationEarningsGap(unittest.TestCase):
             initial_capital=0.01,
         )
         self.assertEqual(result["total_trades"], 0)
+
+
+class TestRunShortSimulationOverboughtDowntrend(unittest.TestCase):
+    """overbought_downtrend fires when RSI crosses back below threshold in a downtrend."""
+
+    def _build(self, n=120):
+        # Linearly declining with small oscillation → non-zero Bollinger variance.
+        prices = [100.0 - i * 0.3 + (i % 5) * 0.2 for i in range(n)]
+        idx = pd.bdate_range("2022-01-03", periods=n)
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p + 2 for p in prices],
+                "Low": [p - 2 for p in prices],
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+        ind = _compute_indicators(df)
+        spy_df = pd.DataFrame({"Close": [200.0] * n, "Volume": [50_000_000] * n}, index=idx)
+        spy_ind = _compute_indicators(spy_df)
+        return ind, spy_ind, idx
+
+    def test_overbought_downtrend_triggers_entry(self):
+        ind, spy_ind, idx = self._build()
+        bar = len(ind) - 10
+        # Force price_below_sma50=True and RSI cross below threshold
+        ind.loc[ind.index[bar], "sma50"] = ind.iloc[bar]["Close"] * 1.25
+        ind.loc[ind.index[bar], "rsi"] = 58.0
+        ind.loc[ind.index[bar], "rsi_prev"] = 65.0
+        ind.loc[ind.index[bar], "vol_ratio"] = 1.0
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
+        sim_start = ind.index[bar].strftime("%Y-%m-%d")
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(sim_start, periods=8),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+        )
+        self.assertGreater(result["total_trades"], 0)
+
+    def test_no_entry_when_price_above_sma50(self):
+        ind, spy_ind, idx = self._build()
+        bar = len(ind) - 10
+        # Force price_below_sma50=False: set sma50 BELOW close
+        ind.loc[ind.index[bar], "sma50"] = ind.iloc[bar]["Close"] * 0.8
+        ind.loc[ind.index[bar], "rsi"] = 58.0
+        ind.loc[ind.index[bar], "rsi_prev"] = 65.0
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
+        sim_start = ind.index[bar].strftime("%Y-%m-%d")
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(sim_start, periods=5),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+        )
+        self.assertEqual(result["total_trades"], 0)
+
+
+class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
+    """parabolic_exhaustion fires when stock is up 80%+ in 60d with high RSI and drying volume."""
+
+    def _build(self, n=120):
+        prices = [100.0 - i * 0.1 + (i % 7) * 0.3 for i in range(n)]
+        idx = pd.bdate_range("2021-01-04", periods=n)
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p + 2 for p in prices],
+                "Low": [p - 2 for p in prices],
+                "Volume": [1_500_000] * n,
+            },
+            index=idx,
+        )
+        ind = _compute_indicators(df)
+        spy_df = pd.DataFrame({"Close": [200.0] * n, "Volume": [50_000_000] * n}, index=idx)
+        spy_ind = _compute_indicators(spy_df)
+        return ind, spy_ind, idx
+
+    def test_parabolic_exhaustion_triggers_entry(self):
+        ind, spy_ind, idx = self._build()
+        bar = len(ind) - 5
+        # Directly inject parabolic conditions: ret_60d > 80%, high RSI, low vol
+        ind.loc[ind.index[bar], "ret_60d"] = 90.0
+        ind.loc[ind.index[bar], "rsi"] = 76.0
+        ind.loc[ind.index[bar], "rsi_prev"] = 77.0
+        ind.loc[ind.index[bar], "vol_ratio"] = 0.6
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 75.0)}
+        sim_start = ind.index[bar].strftime("%Y-%m-%d")
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(sim_start, periods=8),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+        )
+        self.assertGreater(result["total_trades"], 0)
+
+    def test_no_entry_when_rsi_too_low(self):
+        ind, spy_ind, idx = self._build()
+        bar = len(ind) - 5
+        ind.loc[ind.index[bar], "ret_60d"] = 90.0
+        ind.loc[ind.index[bar], "rsi"] = 60.0  # below 72 threshold
+        ind.loc[ind.index[bar], "vol_ratio"] = 0.6
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 75.0)}
+        sim_start = ind.index[bar].strftime("%Y-%m-%d")
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(sim_start, periods=5),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+        )
+        self.assertEqual(result["total_trades"], 0)
+
+
+class TestRunShortSimulationFadedEarningsGapUp(unittest.TestCase):
+    """faded_earnings_gap_up detected on earnings bar, entry placed on T+1."""
+
+    def _build(self, n=80):
+        prices = [100.0 - i * 0.2 + (i % 5) * 0.15 for i in range(n)]
+        idx = pd.bdate_range("2023-01-03", periods=n)
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p + 2 for p in prices],
+                "Low": [p - 2 for p in prices],
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+        ind = _compute_indicators(df)
+        spy_df = pd.DataFrame({"Close": [400.0] * n, "Volume": [50_000_000] * n}, index=idx)
+        spy_ind = _compute_indicators(spy_df)
+        return ind, spy_ind, idx
+
+    def test_faded_gap_up_triggers_entry_on_next_bar(self):
+        ind, spy_ind, idx = self._build()
+        ind_len = len(ind)
+        earn_bar = max(5, ind_len // 2)
+
+        # Earnings bar: gap up 7%, but closes in bottom 12.5% of day's range
+        prev_close = float(ind.iloc[earn_bar - 1]["Close"])
+        earn_open = prev_close * 1.07
+        earn_close = prev_close * 1.01  # weak close — just above prior close
+        earn_high = prev_close * 1.08
+        earn_low = prev_close
+
+        ind.loc[ind.index[earn_bar], "Open"] = earn_open
+        ind.loc[ind.index[earn_bar], "Close"] = earn_close
+        ind.loc[ind.index[earn_bar], "High"] = earn_high
+        ind.loc[ind.index[earn_bar], "Low"] = earn_low
+        ind.loc[ind.index[earn_bar], "gap_pct"] = (earn_open / prev_close - 1) * 100.0
+        earn_range = earn_high - earn_low
+        ind.loc[ind.index[earn_bar], "close_pct_of_range"] = (earn_close - earn_low) / earn_range
+        ind.loc[ind.index[earn_bar], "vol_ratio"] = 2.0
+
+        earn_date = ind.index[earn_bar].date()
+        earnings_history = {"STOCK": [{"date": earn_date, "surprise_pct": 5.0}]}
+
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
+
+        # Simulation starts at earn_bar+1 — detection bar is earn_bar (T-1), entry T
+        entry_date = ind.index[earn_bar + 1].strftime("%Y-%m-%d")
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(entry_date, periods=8),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+        )
+        self.assertGreater(result["total_trades"], 0)
+
+    def test_no_entry_when_close_not_weak(self):
+        ind, spy_ind, idx = self._build()
+        ind_len = len(ind)
+        earn_bar = max(5, ind_len // 2)
+
+        prev_close = float(ind.iloc[earn_bar - 1]["Close"])
+        earn_open = prev_close * 1.07
+        earn_high = prev_close * 1.08
+        earn_low = prev_close
+        earn_close = prev_close * 1.075  # closes near top of range — no distribution
+
+        ind.loc[ind.index[earn_bar], "gap_pct"] = (earn_open / prev_close - 1) * 100.0
+        earn_range = earn_high - earn_low
+        ind.loc[ind.index[earn_bar], "close_pct_of_range"] = (earn_close - earn_low) / earn_range
+        ind.loc[ind.index[earn_bar], "vol_ratio"] = 2.0
+
+        earn_date = ind.index[earn_bar].date()
+        earnings_history = {"STOCK": [{"date": earn_date, "surprise_pct": 5.0}]}
+
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
+        entry_date = ind.index[earn_bar + 1].strftime("%Y-%m-%d")
+
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(entry_date, periods=5),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+        )
+        self.assertEqual(result["total_trades"], 0)
+
+
+class TestSignalsOnlyFilter(unittest.TestCase):
+    """signals_only restricts which signals can fire in _run_short_simulation."""
+
+    def _build(self, n=80):
+        prices = [100.0 - i * 0.2 + (i % 5) * 0.15 for i in range(n)]
+        idx = pd.bdate_range("2022-06-01", periods=n)
+        df = pd.DataFrame(
+            {
+                "Close": prices,
+                "Open": prices,
+                "High": [p + 2 for p in prices],
+                "Low": [p - 2 for p in prices],
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+        ind = _compute_indicators(df)
+        spy_df = pd.DataFrame({"Close": [400.0] * n, "Volume": [50_000_000] * n}, index=idx)
+        spy_ind = _compute_indicators(spy_df)
+        return ind, spy_ind, idx
+
+    def test_signals_only_blocks_earnings_gap_down_when_not_in_set(self):
+        ind, spy_ind, idx = self._build()
+        ind_len = len(ind)
+        gap_bar = max(5, ind_len // 2)
+
+        prev_close = float(ind.iloc[gap_bar - 1]["Close"])
+        ind.loc[ind.index[gap_bar], "Open"] = prev_close * 0.88  # -12% gap down
+        ind.loc[ind.index[gap_bar], "vol_ratio"] = 3.0
+        earn_date = ind.index[gap_bar - 1].date()
+        earnings_history = {"STOCK": [{"date": earn_date, "surprise_pct": -8.0}]}
+
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
+        sim_start = ind.index[gap_bar].strftime("%Y-%m-%d")
+
+        # signals_only={"overbought_downtrend"} must block earnings_gap_down
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(sim_start, periods=8),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+            signals_only=frozenset({"overbought_downtrend"}),
+        )
+        self.assertEqual(result["total_trades"], 0)
+
+    def test_signals_only_none_allows_earnings_gap_down(self):
+        ind, spy_ind, idx = self._build()
+        ind_len = len(ind)
+        gap_bar = max(5, ind_len // 2)
+
+        prev_close = float(ind.iloc[gap_bar - 1]["Close"])
+        ind.loc[ind.index[gap_bar], "Open"] = prev_close * 0.88
+        ind.loc[ind.index[gap_bar], "vol_ratio"] = 3.0
+        earn_date = ind.index[gap_bar - 1].date()
+        earnings_history = {"STOCK": [{"date": earn_date, "surprise_pct": -8.0}]}
+
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
+        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
+        sim_start = ind.index[gap_bar].strftime("%Y-%m-%d")
+
+        # signals_only=None → no restriction → earnings_gap_down fires normally
+        result = _run_short_simulation(
+            {"STOCK": ind},
+            pd.bdate_range(sim_start, periods=8),
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=regime_by_date,
+            earnings_history=earnings_history,
+            signals_only=None,
+        )
+        self.assertGreater(result["total_trades"], 0)

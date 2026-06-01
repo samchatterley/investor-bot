@@ -196,16 +196,23 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental (disabled)
     "earnings_gap_down": 1,  # Post-earnings gap-down continuation — PEAD short (active)
-    "rs_deterioration": 2,  # Leader-to-laggard rotation (disabled — no edge)
-    "failed_breakout": 3,  # Bull trap: broke 20d high yesterday, failed back below today (disabled)
-    "high_vol_reversal": 4,  # Distribution bar (disabled)
-    "high_short_interest": 5,  # Crowded short + low lendable supply (live-only, not backtestable)
+    "faded_earnings_gap_up": 2,  # Earnings beat faded — distribution into gap-up (active)
+    "rs_deterioration": 3,  # Leader-to-laggard rotation (disabled — no edge)
+    "failed_breakout": 4,  # Bull trap: broke 20d high yesterday, failed back below today (disabled)
+    "high_vol_reversal": 5,  # Distribution bar (disabled)
+    "overbought_downtrend": 6,  # Relief rally fade — RSI cross in established downtrend (active)
+    "parabolic_exhaustion": 7,  # Momentum crash — up 80%+ in 60d, vol drying, RSI extended (active)
+    "high_short_interest": 8,  # Crowded short + low lendable supply (live-only, not backtestable)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     # earnings_gap_down thresholds (PEAD short — post-earnings gap continuation)
     "egd_gap_pct_max": -7.0,  # open must be at least 7% below prior close on earnings day
     "egd_vol_min": 2.5,  # vol_ratio floor — confirms institutional selling, not noise
+    # faded_earnings_gap_up thresholds (distribution into earnings beat)
+    "fegu_gap_min": 5.0,  # gap-up must be at least 5% on earnings day
+    "fegu_range_max": 0.30,  # close must be in bottom 30% of day's H-L range (sellers dominated)
+    "fegu_vol_min": 1.5,  # vol_ratio floor — confirms institutional distribution, not thin tape
     # failed_breakout thresholds
     "fb_vol_min": 1.0,  # volume confirmation on the failure day (vol_ratio)
     "fb_rsi_min": 45.0,  # RSI floor — stock must have come from elevated levels
@@ -215,6 +222,13 @@ DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     "hvr_range_max": 0.3,  # close must be in bottom 30% of day's High–Low range
     "hvr_rsi_min": 55.0,  # came from overbought territory
     "hvr_ret5d_min": 2.0,  # was extended upward (5d return > 2%)
+    # overbought_downtrend thresholds (relief rally fade in established downtrend)
+    "ordt_rsi_cross": 62.0,  # RSI threshold — must cross from above to below (overbought exit)
+    "ordt_vol_min": 0.8,  # vol_ratio floor — minimal bar needed to confirm
+    # parabolic_exhaustion thresholds (momentum crash — up big, volume drying, RSI extended)
+    "pe_ret60d_min": 80.0,  # 60-day return must exceed this % (parabolic run)
+    "pe_rsi_min": 72.0,  # RSI must be in overbought territory
+    "pe_vol_ratio_max": 0.9,  # volume has dried up (below 20d average) — buyers exhausted
     # rs_deterioration thresholds (cross-sectional signal — requires universe-level data)
     "rs_det_lag_min": 65.0,  # rs_rank_pct_10d_ago must exceed this (was in top 35%)
     "rs_det_current_max": 45.0,  # rs_rank_pct today must be below this (now below median)
@@ -233,8 +247,9 @@ def evaluate_short_signals(
     ----------
     snapshot : dict
         Technical snapshot in scanner / market_data format.  Expected keys:
-        failed_breakout_flag, close_pct_of_range, vol_ratio, rsi_14,
-        ret_5d_pct, earnings_miss_candidate, earnings_gap_pct.
+        failed_breakout_flag, close_pct_of_range, vol_ratio, rsi_14, rsi_prev,
+        ret_5d_pct, ret_60d_pct, price_below_sma50, earnings_miss_candidate,
+        earnings_gap_pct, faded_earnings_gap_up_pct.
     params : dict | None
         Override DEFAULT_SHORT_SIGNAL_PARAMS thresholds.
     blocked : frozenset[str]
@@ -268,6 +283,45 @@ def evaluate_short_signals(
         and snapshot.get("vol_ratio", 0.0) >= p["egd_vol_min"]
     ):
         matched.append("earnings_gap_down")
+
+    # faded_earnings_gap_up: stock gapped UP on earnings (beat) but closed in the bottom
+    # of the day's range on heavy volume — smart money distributing into retail excitement.
+    # Detected on the earnings reaction bar; entry is the following open (T+1).
+    # Complement to earnings_gap_down: opposite polarity, same earnings catalyst anchor.
+    _fegu = snapshot.get("faded_earnings_gap_up_pct")
+    if (
+        "faded_earnings_gap_up" not in blocked
+        and _fegu is not None
+        and _fegu >= p["fegu_gap_min"]
+        and snapshot.get("close_pct_of_range", 0.5) <= p["fegu_range_max"]
+        and snapshot.get("vol_ratio", 0.0) >= p["fegu_vol_min"]
+    ):
+        matched.append("faded_earnings_gap_up")
+
+    # overbought_downtrend: stock is below its 50-day SMA (established downtrend) but has
+    # staged a relief rally that pushed RSI above ordt_rsi_cross.  Signal fires when RSI
+    # crosses back below that threshold — the bounce is exhausting, downtrend reasserting.
+    # RS-rank agnostic: fired via the technical path in _short_entry_signal.
+    if (
+        "overbought_downtrend" not in blocked
+        and snapshot.get("price_below_sma50", False)
+        and snapshot.get("rsi_prev", 50.0) >= p["ordt_rsi_cross"]
+        and snapshot.get("rsi_14", 50.0) < p["ordt_rsi_cross"]
+        and snapshot.get("vol_ratio", 0.0) >= p["ordt_vol_min"]
+    ):
+        matched.append("overbought_downtrend")
+
+    # parabolic_exhaustion: stock up >pe_ret60d_min% in 60 trading days (~3 months) with
+    # RSI in overbought territory and volume drying up — buyers exhausted.  Targets the
+    # momentum-crash dynamic documented in Daniel & Moskowitz (2016).
+    # Fired via the reversal path (high RS rank) in _short_entry_signal.
+    if (
+        "parabolic_exhaustion" not in blocked
+        and snapshot.get("ret_60d_pct", 0.0) >= p["pe_ret60d_min"]
+        and snapshot.get("rsi_14", 50.0) >= p["pe_rsi_min"]
+        and snapshot.get("vol_ratio", 1.0) <= p["pe_vol_ratio_max"]
+    ):
+        matched.append("parabolic_exhaustion")
 
     # rs_deterioration: cross-sectional signal — leader-to-laggard rotation.
     # Stock was in the top 35% of the universe 10 trading days ago but has now

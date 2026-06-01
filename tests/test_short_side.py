@@ -1792,5 +1792,255 @@ class TestSqueezeRisk(unittest.TestCase):
         self.assertIsNone(result["days_to_cover"])
 
 
+class TestOverboughtDowntrendSignal(unittest.TestCase):
+    """Tests for the overbought_downtrend signal in evaluate_short_signals."""
+
+    def _snap(self, **kwargs):
+        base = {
+            "price_below_sma50": True,
+            "rsi_prev": 65.0,
+            "rsi_14": 58.0,
+            "vol_ratio": 1.0,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_fires_when_rsi_crosses_below_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        result = evaluate_short_signals(self._snap())
+        self.assertIn("overbought_downtrend", result)
+
+    def test_blocked_when_not_below_sma50(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(price_below_sma50=False)
+        self.assertNotIn("overbought_downtrend", evaluate_short_signals(snap))
+
+    def test_blocked_when_rsi_prev_below_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(rsi_prev=55.0)  # never bounced above 62 — no cross
+        self.assertNotIn("overbought_downtrend", evaluate_short_signals(snap))
+
+    def test_blocked_when_rsi_still_above_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(rsi_14=65.0)  # still overbought — hasn't crossed back down
+        self.assertNotIn("overbought_downtrend", evaluate_short_signals(snap))
+
+    def test_blocked_when_vol_too_low(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(vol_ratio=0.3)  # below 0.8 floor
+        self.assertNotIn("overbought_downtrend", evaluate_short_signals(snap))
+
+    def test_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap()
+        self.assertNotIn(
+            "overbought_downtrend",
+            evaluate_short_signals(snap, blocked=frozenset({"overbought_downtrend"})),
+        )
+
+    def test_not_in_short_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertNotIn("overbought_downtrend", SHORT_GLOBALLY_DISABLED)
+
+    def test_in_short_signal_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("overbought_downtrend", SHORT_SIGNAL_PRIORITY)
+
+    def test_params_in_defaults(self):
+        from signals.evaluator import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        self.assertIn("ordt_rsi_cross", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("ordt_vol_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+
+    def test_custom_rsi_threshold_respected(self):
+        from signals.evaluator import evaluate_short_signals
+
+        # Tighten to 70 → rsi_prev=65 is below 70, never crossed above threshold
+        snap = self._snap(rsi_prev=65.0)
+        result = evaluate_short_signals(snap, params={"ordt_rsi_cross": 70.0})
+        self.assertNotIn("overbought_downtrend", result)
+
+    def test_exactly_at_rsi_cross_does_not_fire(self):
+        from signals.evaluator import evaluate_short_signals
+
+        # rsi_14 == threshold: condition is strict < so at-threshold should NOT fire
+        snap = self._snap(rsi_14=62.0)
+        self.assertNotIn("overbought_downtrend", evaluate_short_signals(snap))
+
+
+class TestParabolicExhaustionSignal(unittest.TestCase):
+    """Tests for the parabolic_exhaustion signal in evaluate_short_signals."""
+
+    def _snap(self, **kwargs):
+        base = {
+            "ret_60d_pct": 90.0,
+            "rsi_14": 75.0,
+            "vol_ratio": 0.7,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_fires_with_valid_conditions(self):
+        from signals.evaluator import evaluate_short_signals
+
+        result = evaluate_short_signals(self._snap())
+        self.assertIn("parabolic_exhaustion", result)
+
+    def test_blocked_when_ret60d_too_low(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(ret_60d_pct=60.0)  # below 80% threshold
+        self.assertNotIn("parabolic_exhaustion", evaluate_short_signals(snap))
+
+    def test_blocked_when_rsi_too_low(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(rsi_14=68.0)  # below 72 threshold
+        self.assertNotIn("parabolic_exhaustion", evaluate_short_signals(snap))
+
+    def test_blocked_when_volume_not_drying(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(vol_ratio=1.2)  # above 0.9 max — buyers still active
+        self.assertNotIn("parabolic_exhaustion", evaluate_short_signals(snap))
+
+    def test_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap()
+        self.assertNotIn(
+            "parabolic_exhaustion",
+            evaluate_short_signals(snap, blocked=frozenset({"parabolic_exhaustion"})),
+        )
+
+    def test_not_in_short_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertNotIn("parabolic_exhaustion", SHORT_GLOBALLY_DISABLED)
+
+    def test_in_short_signal_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("parabolic_exhaustion", SHORT_SIGNAL_PRIORITY)
+
+    def test_params_in_defaults(self):
+        from signals.evaluator import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        self.assertIn("pe_ret60d_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("pe_rsi_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("pe_vol_ratio_max", DEFAULT_SHORT_SIGNAL_PARAMS)
+
+    def test_exactly_at_ret60d_threshold_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(ret_60d_pct=80.0)  # exactly at threshold (>=)
+        self.assertIn("parabolic_exhaustion", evaluate_short_signals(snap))
+
+    def test_custom_threshold_respected(self):
+        from signals.evaluator import evaluate_short_signals
+
+        # Raise threshold to 120% → 90% no longer qualifies
+        snap = self._snap(ret_60d_pct=90.0)
+        result = evaluate_short_signals(snap, params={"pe_ret60d_min": 120.0})
+        self.assertNotIn("parabolic_exhaustion", result)
+
+
+class TestFadedEarningsGapUpSignal(unittest.TestCase):
+    """Tests for the faded_earnings_gap_up signal in evaluate_short_signals."""
+
+    def _snap(self, **kwargs):
+        base = {
+            "faded_earnings_gap_up_pct": 8.0,
+            "close_pct_of_range": 0.15,
+            "vol_ratio": 2.0,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_fires_with_gap_up_and_weak_close(self):
+        from signals.evaluator import evaluate_short_signals
+
+        result = evaluate_short_signals(self._snap())
+        self.assertIn("faded_earnings_gap_up", result)
+
+    def test_blocked_when_gap_too_small(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(faded_earnings_gap_up_pct=3.0)  # below 5% threshold
+        self.assertNotIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_blocked_when_no_gap_field(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"close_pct_of_range": 0.15, "vol_ratio": 2.0}  # no faded_earnings_gap_up_pct
+        self.assertNotIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_blocked_when_close_not_weak(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(close_pct_of_range=0.7)  # closed in upper half — no distribution
+        self.assertNotIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_blocked_when_vol_too_low(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(vol_ratio=0.8)  # below 1.5 floor
+        self.assertNotIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap()
+        self.assertNotIn(
+            "faded_earnings_gap_up",
+            evaluate_short_signals(snap, blocked=frozenset({"faded_earnings_gap_up"})),
+        )
+
+    def test_not_in_short_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertNotIn("faded_earnings_gap_up", SHORT_GLOBALLY_DISABLED)
+
+    def test_in_short_signal_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("faded_earnings_gap_up", SHORT_SIGNAL_PRIORITY)
+
+    def test_params_in_defaults(self):
+        from signals.evaluator import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        self.assertIn("fegu_gap_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("fegu_range_max", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("fegu_vol_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+
+    def test_exactly_at_gap_threshold_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(faded_earnings_gap_up_pct=5.0)  # exactly at threshold (>=)
+        self.assertIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_gap_must_be_positive(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(faded_earnings_gap_up_pct=-3.0)  # negative gap → not a gap-up
+        self.assertNotIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_priority_lower_than_earnings_gap_down(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertLess(
+            SHORT_SIGNAL_PRIORITY["earnings_gap_down"],
+            SHORT_SIGNAL_PRIORITY["faded_earnings_gap_up"],
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

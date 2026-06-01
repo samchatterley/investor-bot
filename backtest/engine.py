@@ -109,6 +109,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Core indicators ───────────────────────────────────────────────────────
     df["rsi"] = RSIIndicator(close=close, window=14).rsi()
+    df["rsi_prev"] = df["rsi"].shift(1)
     macd = MACD(close=close)
     df["macd_diff"] = macd.macd_diff()
     df["ema9"] = EMAIndicator(close=close, window=9).ema_indicator()
@@ -123,6 +124,8 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── Extended indicators for new daily signals ─────────────────────────────
     df["ret_10d"] = close.pct_change(10) * 100
     df["ret_20d"] = close.pct_change(20) * 100
+    df["ret_60d"] = close.pct_change(60) * 100
+    df["sma50"] = close.rolling(50).mean()
 
     # MACD cross: diff crosses from <= 0 to > 0 (NaN comparisons return False)
     df["macd_cross"] = (df["macd_diff"].shift(1) <= 0) & (df["macd_diff"] > 0)
@@ -230,7 +233,15 @@ def _row_to_snapshot(
         "high_short_interest": bool(row.get("high_short_interest", False)),
         "spy_ret_5d": spy_ret_5d,
         "spy_ret_10d": spy_ret_10d,
+        # Short-side extended indicators
+        "rsi_prev": float(row.get("rsi_prev", 50.0)),
+        "ret_60d_pct": float(row.get("ret_60d", 0.0)),
     }
+    _close_px = float(row.get("Close", float("nan")))
+    _sma50_px = float(row.get("sma50", float("nan")))
+    snap["price_below_sma50"] = (
+        not math.isnan(_close_px) and not math.isnan(_sma50_px) and _close_px < _sma50_px
+    )
     _m121 = row.get("mom_12_1")
     if _m121 is not None:
         snap["mom_12_1_pct"] = float(_m121)
@@ -297,6 +308,7 @@ def _short_entry_signal(
     short_params: dict | None = None,
     rs_rank_pct_10d_ago: float | None = None,
     vix_term_inverted: bool = True,
+    signals_only: frozenset[str] | None = None,
 ) -> list[str] | None:
     """Return matched bearish signals if this row qualifies as a short entry, else None.
 
@@ -321,6 +333,11 @@ def _short_entry_signal(
     if not vix_term_inverted:
         return None
 
+    # signals_only: restrict which signals can fire (for isolated signal backtests).
+    _extra_blocked: frozenset[str] = frozenset()
+    if signals_only is not None:
+        _extra_blocked = frozenset(SHORT_SIGNAL_PRIORITY.keys()) - signals_only
+
     snap = _row_to_snapshot(row)
     snap["rs_rank_pct"] = rs_rank_pct if rs_rank_pct is not None else 50.0
     if rs_rank_pct_10d_ago is not None:
@@ -330,13 +347,43 @@ def _short_entry_signal(
         snap["earnings_miss_candidate"] = bool(fundamentals.get("earnings_miss_active", False))
         if "earnings_gap_pct" in fundamentals:
             snap["earnings_gap_pct"] = fundamentals["earnings_gap_pct"]
+        if "faded_earnings_gap_up_pct" in fundamentals:
+            snap["faded_earnings_gap_up_pct"] = fundamentals["faded_earnings_gap_up_pct"]
 
     # Event path — earnings gap-down: fires on all RS rank tiers.  Returns early if the
     # earnings_gap_down signal specifically fires (not just any signal from the snapshot).
     if snap.get("earnings_gap_pct") is not None:
-        event_sigs = evaluate_short_signals(snap, params=short_params)
+        event_sigs = evaluate_short_signals(snap, params=short_params, blocked=_extra_blocked)
         if "earnings_gap_down" in event_sigs:
             return event_sigs
+
+    # Event path — faded earnings gap-up: T+1 entry after observing gap-up + weak close on
+    # earnings day.  close_pct_of_range and vol_ratio from the detection bar (prev_row) are
+    # already in snap via _row_to_snapshot; only the gap pct needs explicit injection.
+    if snap.get("faded_earnings_gap_up_pct") is not None:
+        fegu_sigs = evaluate_short_signals(snap, params=short_params, blocked=_extra_blocked)
+        if "faded_earnings_gap_up" in fegu_sigs:
+            return fegu_sigs
+
+    # Technical path — overbought_downtrend fires for any RS rank tier.  price_below_sma50
+    # provides the directional filter; no RS gate needed.  All other signals blocked here to
+    # prevent double-counting with the RS-gated paths below.
+    if snap.get("price_below_sma50"):
+        _ordt_blocked = _extra_blocked | frozenset(
+            {
+                "earnings_miss",
+                "earnings_gap_down",
+                "faded_earnings_gap_up",
+                "rs_deterioration",
+                "failed_breakout",
+                "high_vol_reversal",
+                "parabolic_exhaustion",
+                "high_short_interest",
+            }
+        )
+        ordt_sigs = evaluate_short_signals(snap, params=short_params, blocked=_ordt_blocked)
+        if ordt_sigs:
+            return ordt_sigs
 
     # Deterioration path — leader-to-laggard: was top-35% 10d ago, now fallen below
     if (
@@ -347,7 +394,8 @@ def _short_entry_signal(
         det_sigs = evaluate_short_signals(
             snap,
             params=short_params,
-            blocked=frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"}),
+            blocked=_extra_blocked
+            | frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"}),
         )
         if det_sigs:
             return det_sigs
@@ -357,7 +405,7 @@ def _short_entry_signal(
         rev_sigs = evaluate_short_signals(
             snap,
             params=short_params,
-            blocked=frozenset({"earnings_miss"}),
+            blocked=_extra_blocked | frozenset({"earnings_miss"}),
         )
         if rev_sigs:
             return rev_sigs
@@ -369,7 +417,7 @@ def _short_entry_signal(
     signals = evaluate_short_signals(
         snap,
         params=short_params,
-        blocked=frozenset({"failed_breakout", "high_vol_reversal"}),
+        blocked=_extra_blocked | frozenset({"failed_breakout", "high_vol_reversal"}),
     )
     return signals if signals else None
 
@@ -1175,6 +1223,7 @@ def _run_short_simulation(
     short_params: dict | None = None,
     rs_rank_lag10: dict[str, dict[str, float]] | None = None,
     vix_term_by_date: dict[str, bool] | None = None,
+    signals_only: frozenset[str] | None = None,
 ) -> dict:
     """Short-side simulation — mirrors _run_simulation() but enters short positions.
 
@@ -1321,7 +1370,7 @@ def _run_short_simulation(
                 vix_term_by_date.get(prev_date_str, True) if vix_term_by_date else True
             )
 
-            # Point-in-time earnings fundamentals (earnings_miss only — gap handled below)
+            # Point-in-time earnings fundamentals
             fundamentals: dict | None = None
             if earnings_history is not None:
                 prev_date = df.index[today_loc - 1].date()
@@ -1329,6 +1378,12 @@ def _run_short_simulation(
                 fund["earnings_miss_active"] = earnings_miss_active_on_date(
                     sym, prev_date, earnings_history
                 )
+                # Faded gap-up: detect earnings-day gap-up + weak close on prev bar → T+1 entry
+                _earn_dt = recent_earnings_date(sym, prev_date, earnings_history)
+                if _earn_dt is not None:
+                    _prev_gap = float(prev_row.get("gap_pct", 0.0))
+                    if _prev_gap > 0:
+                        fund["faded_earnings_gap_up_pct"] = _prev_gap
                 fundamentals = fund
 
             signals = _short_entry_signal(
@@ -1340,6 +1395,7 @@ def _run_short_simulation(
                 short_params=short_params,
                 rs_rank_pct_10d_ago=rs_rank_pct_10d_ago,
                 vix_term_inverted=vix_term_inverted,
+                signals_only=signals_only,
             )
             if signals:
                 key_signal = signals[0]
@@ -1366,6 +1422,7 @@ def _run_short_simulation(
                             short_params=short_params,
                             rs_rank_pct_10d_ago=rs_rank_pct_10d_ago,
                             vix_term_inverted=vix_term_inverted,
+                            signals_only=signals_only,
                         )
                         if gap_signals and "earnings_gap_down" in gap_signals:
                             candidates.append(
@@ -3989,6 +4046,7 @@ def run_short_walk_forward(
     initial_capital: float = 25_000.0,
     max_positions: int = 2,
     max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+    signals_only: frozenset[str] | None = None,
 ) -> dict:
     """Walk-forward stability check for a fixed set of short signal parameters.
 
@@ -4062,6 +4120,7 @@ def run_short_walk_forward(
         "short_params": _params,
         "rs_rank_lag10": rs_rank_lag10,
         "earnings_history": earnings_history,
+        "signals_only": signals_only,
     }
 
     fold_results = []
@@ -4375,6 +4434,21 @@ if __name__ == "__main__":  # pragma: no cover
         help="Walk-forward stability check for short signals with fixed params",
     )
     parser.add_argument(
+        "--short-walk-forward-ordt",
+        action="store_true",
+        help="Walk-forward for overbought_downtrend signal only (isolated evaluation)",
+    )
+    parser.add_argument(
+        "--short-walk-forward-pe",
+        action="store_true",
+        help="Walk-forward for parabolic_exhaustion signal only (isolated evaluation)",
+    )
+    parser.add_argument(
+        "--short-walk-forward-fegu",
+        action="store_true",
+        help="Walk-forward for faded_earnings_gap_up signal only (isolated evaluation)",
+    )
+    parser.add_argument(
         "--short-fb-vol-min",
         type=float,
         default=None,
@@ -4460,6 +4534,30 @@ if __name__ == "__main__":  # pragma: no cover
             args.end,
             short_params=_swf_params,
             initial_capital=args.capital,
+        )
+    elif args.short_walk_forward_ordt:
+        run_short_walk_forward(
+            STATIC_SHORT_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            signals_only=frozenset({"overbought_downtrend"}),
+        )
+    elif args.short_walk_forward_pe:
+        run_short_walk_forward(
+            STATIC_SHORT_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            signals_only=frozenset({"parabolic_exhaustion"}),
+        )
+    elif args.short_walk_forward_fegu:
+        run_short_walk_forward(
+            STATIC_SHORT_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            signals_only=frozenset({"faded_earnings_gap_up"}),
         )
     elif args.combined:
         run_combined_analysis(
