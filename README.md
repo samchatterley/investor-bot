@@ -810,6 +810,18 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.63 — June 2026 — redesign overbought_downtrend + parabolic_exhaustion; disable faded_earnings_gap_up
+
+Walk-forward results on all three v1.62 signals were negative (overbought_downtrend −0.444 mean Sharpe, parabolic_exhaustion 0 trades, faded_earnings_gap_up −0.201 mean Sharpe with a −35% catastrophic fold in 2020-21). Root causes identified and acted on:
+
+- **`faded_earnings_gap_up` disabled** (added to `SHORT_GLOBALLY_DISABLED`). Mean Sharpe −0.201, only 2/9 profitable folds; the 2020–2021 fold produced −35% return and Sharpe −2.33. Structural flaw: gap-ups that close weak still continue higher in strong FOMO markets, and there is no reliable regime gate that can distinguish these conditions in advance.
+- **`overbought_downtrend` redesigned.** Changed trigger from `price < sma50` → `price < sma200` (confirmed major structural downtrend, not just a bull-market pullback). Split single RSI threshold `ordt_rsi_cross` (62.0) into separate entry/exit levels: `ordt_rsi_entry` (65.0, must have bounced above) and `ordt_rsi_exit` (60.0, must fall back below) — requires a meaningful 5+ point RSI move, filtering out noise crosses. The `price_below_sma200` field is now computed in both `_compute_indicators()` and `_row_to_snapshot()`. Technical path in `_short_entry_signal()` updated to route on `price_below_sma200`.
+- **`parabolic_exhaustion` redesigned.** Root cause of 0 trades was architectural: the signal requires `rsi ≥ 72` and `vol_ratio ≤ 0.9` (quiet, overbought extension), but was gated behind `SHORT_ALLOWED_REGIMES` (STRESS_RISK_OFF / HIGH_VOL_DOWNTREND / DEFENSIVE_DOWNTREND), which demand the opposite — elevated volume and declining RSI. Fix: moved parabolic_exhaustion to a dedicated path in `_short_entry_signal()` evaluated *before* the VIX term gate and regime gate. The signal now fires in BULL_TREND and NEUTRAL_CHOP where parabolic runs actually occur. Internal quality filters (ret_60d ≥ 80%, rsi ≥ 72, vol_ratio ≤ 0.9) provide selectivity without an external regime constraint.
+- **New indicator `sma200`** added to `_compute_indicators()` and `price_below_sma200` to `_row_to_snapshot()`.
+- **Test updates** across `test_short_side.py` and `test_backtest.py`: overbought_downtrend tests updated to sma200/ordt_rsi_entry/ordt_rsi_exit; parabolic tests updated to assert firing in BULL_TREND; faded_earnings_gap_up tests flipped to assert global disable. **0 net new tests; ~2891 passing, 100% coverage.**
+
+---
+
 ### 1.62 — June 2026 — three new short signals: overbought_downtrend, parabolic_exhaustion, faded_earnings_gap_up
 
 - **`overbought_downtrend` (new active signal).** Fires when a stock is below its 50-day SMA (established downtrend) and RSI crosses back below `ordt_rsi_cross` (default 62.0) after bouncing above it — fading the relief rally. Volume gate: `ordt_vol_min` (default 0.8). RS-rank agnostic: fires via a dedicated technical path in `_short_entry_signal()` that bypasses the RS-gated reversal/fundamental paths, since `price_below_sma50` provides the directional filter. Theory: mean-reversion from overbought relief rallies in downtrending stocks (Lo & MacKinlay contrarian literature).

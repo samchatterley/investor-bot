@@ -7315,10 +7315,10 @@ class TestRunShortSimulationOverboughtDowntrend(unittest.TestCase):
     def test_overbought_downtrend_triggers_entry(self):
         ind, spy_ind, idx = self._build()
         bar = len(ind) - 10
-        # Force price_below_sma50=True and RSI cross below threshold
-        ind.loc[ind.index[bar], "sma50"] = ind.iloc[bar]["Close"] * 1.25
-        ind.loc[ind.index[bar], "rsi"] = 58.0
-        ind.loc[ind.index[bar], "rsi_prev"] = 65.0
+        # Force price_below_sma200=True: set sma200 ABOVE close
+        ind.loc[ind.index[bar], "sma200"] = ind.iloc[bar]["Close"] * 1.25
+        ind.loc[ind.index[bar], "rsi"] = 57.0  # below ordt_rsi_exit (60.0)
+        ind.loc[ind.index[bar], "rsi_prev"] = 68.0  # above ordt_rsi_entry (65.0)
         ind.loc[ind.index[bar], "vol_ratio"] = 1.0
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
         regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
@@ -7333,13 +7333,13 @@ class TestRunShortSimulationOverboughtDowntrend(unittest.TestCase):
         )
         self.assertGreater(result["total_trades"], 0)
 
-    def test_no_entry_when_price_above_sma50(self):
+    def test_no_entry_when_price_above_sma200(self):
         ind, spy_ind, idx = self._build()
         bar = len(ind) - 10
-        # Force price_below_sma50=False: set sma50 BELOW close
-        ind.loc[ind.index[bar], "sma50"] = ind.iloc[bar]["Close"] * 0.8
-        ind.loc[ind.index[bar], "rsi"] = 58.0
-        ind.loc[ind.index[bar], "rsi_prev"] = 65.0
+        # Force price_below_sma200=False: set sma200 BELOW close
+        ind.loc[ind.index[bar], "sma200"] = ind.iloc[bar]["Close"] * 0.8
+        ind.loc[ind.index[bar], "rsi"] = 57.0
+        ind.loc[ind.index[bar], "rsi_prev"] = 68.0
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
         regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
         rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
@@ -7375,16 +7375,16 @@ class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
         spy_ind = _compute_indicators(spy_df)
         return ind, spy_ind, idx
 
-    def test_parabolic_exhaustion_triggers_entry(self):
+    def test_parabolic_exhaustion_triggers_entry_in_bull_trend(self):
+        # Parabolic exhaustion is regime-agnostic — must fire in BULL_TREND too
         ind, spy_ind, idx = self._build()
         bar = len(ind) - 5
-        # Directly inject parabolic conditions: ret_60d > 80%, high RSI, low vol
         ind.loc[ind.index[bar], "ret_60d"] = 90.0
         ind.loc[ind.index[bar], "rsi"] = 76.0
         ind.loc[ind.index[bar], "rsi_prev"] = 77.0
         ind.loc[ind.index[bar], "vol_ratio"] = 0.6
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
-        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        regime_by_date = dict.fromkeys(all_dates, "BULL_TREND")  # the whole point of the redesign
         rs_ranks = {"STOCK": dict.fromkeys(all_dates, 75.0)}
         sim_start = ind.index[bar].strftime("%Y-%m-%d")
         result = _run_short_simulation(
@@ -7400,10 +7400,10 @@ class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
         ind, spy_ind, idx = self._build()
         bar = len(ind) - 5
         ind.loc[ind.index[bar], "ret_60d"] = 90.0
-        ind.loc[ind.index[bar], "rsi"] = 60.0  # below 72 threshold
+        ind.loc[ind.index[bar], "rsi"] = 60.0  # below pe_rsi_min (72) — not overbought
         ind.loc[ind.index[bar], "vol_ratio"] = 0.6
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
-        regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
+        regime_by_date = dict.fromkeys(all_dates, "BULL_TREND")
         rs_ranks = {"STOCK": dict.fromkeys(all_dates, 75.0)}
         sim_start = ind.index[bar].strftime("%Y-%m-%d")
         result = _run_short_simulation(
@@ -7417,7 +7417,7 @@ class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
 
 
 class TestRunShortSimulationFadedEarningsGapUp(unittest.TestCase):
-    """faded_earnings_gap_up detected on earnings bar, entry placed on T+1."""
+    """faded_earnings_gap_up is globally disabled — no trades should fire."""
 
     def _build(self, n=80):
         prices = [100.0 - i * 0.2 + (i % 5) * 0.15 for i in range(n)]
@@ -7437,15 +7437,15 @@ class TestRunShortSimulationFadedEarningsGapUp(unittest.TestCase):
         spy_ind = _compute_indicators(spy_df)
         return ind, spy_ind, idx
 
-    def test_faded_gap_up_triggers_entry_on_next_bar(self):
+    def test_faded_gap_up_does_not_trigger_entry_when_disabled(self):
+        # faded_earnings_gap_up is in SHORT_GLOBALLY_DISABLED — no trades even with perfect setup
         ind, spy_ind, idx = self._build()
         ind_len = len(ind)
         earn_bar = max(5, ind_len // 2)
 
-        # Earnings bar: gap up 7%, but closes in bottom 12.5% of day's range
         prev_close = float(ind.iloc[earn_bar - 1]["Close"])
         earn_open = prev_close * 1.07
-        earn_close = prev_close * 1.01  # weak close — just above prior close
+        earn_close = prev_close * 1.01
         earn_high = prev_close * 1.08
         earn_low = prev_close
 
@@ -7465,7 +7465,6 @@ class TestRunShortSimulationFadedEarningsGapUp(unittest.TestCase):
         regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
         rs_ranks = {"STOCK": dict.fromkeys(all_dates, 40.0)}
 
-        # Simulation starts at earn_bar+1 — detection bar is earn_bar (T-1), entry T
         entry_date = ind.index[earn_bar + 1].strftime("%Y-%m-%d")
         result = _run_short_simulation(
             {"STOCK": ind},
@@ -7475,7 +7474,7 @@ class TestRunShortSimulationFadedEarningsGapUp(unittest.TestCase):
             regime_by_date=regime_by_date,
             earnings_history=earnings_history,
         )
-        self.assertGreater(result["total_trades"], 0)
+        self.assertEqual(result["total_trades"], 0)
 
     def test_no_entry_when_close_not_weak(self):
         ind, spy_ind, idx = self._build()

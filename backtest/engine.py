@@ -126,6 +126,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ret_20d"] = close.pct_change(20) * 100
     df["ret_60d"] = close.pct_change(60) * 100
     df["sma50"] = close.rolling(50).mean()
+    df["sma200"] = close.rolling(200).mean()
 
     # MACD cross: diff crosses from <= 0 to > 0 (NaN comparisons return False)
     df["macd_cross"] = (df["macd_diff"].shift(1) <= 0) & (df["macd_diff"] > 0)
@@ -242,6 +243,10 @@ def _row_to_snapshot(
     snap["price_below_sma50"] = (
         not math.isnan(_close_px) and not math.isnan(_sma50_px) and _close_px < _sma50_px
     )
+    _sma200_px = float(row.get("sma200", float("nan")))
+    snap["price_below_sma200"] = (
+        not math.isnan(_close_px) and not math.isnan(_sma200_px) and _close_px < _sma200_px
+    )
     _m121 = row.get("mom_12_1")
     if _m121 is not None:
         snap["mom_12_1_pct"] = float(_m121)
@@ -312,27 +317,20 @@ def _short_entry_signal(
 ) -> list[str] | None:
     """Return matched bearish signals if this row qualifies as a short entry, else None.
 
-    Regime gate: only enters in SHORT_ALLOWED_REGIMES.
-    VIX term gate: skips entry when VIX9D/VIX ≤ 1.05 (normal contango = less short edge).
-      Default True (allow) when VIX9D data unavailable.
-
-    Three RS-rank paths:
-    - Deterioration path (rs_rank_pct_10d_ago > _REVERSAL_SHORT_RS_GATE AND rs_rank_pct < 65):
-      leader-to-laggard rotation — was top-35% of universe 10d ago, now fallen.
-      Catches the early stage of distribution before technical signals mature.
-    - Reversal path (rs_rank_pct >= _REVERSAL_SHORT_RS_GATE): recently-strong stocks showing
-      exhaustion. Checks failed_breakout and high_vol_reversal.
-    - Fundamental path (rs_rank_pct < _SHORT_RS_RANK_GATE): bottom-quartile laggards with an
-      earnings miss catalyst.
+    Signal routing (evaluated in order):
+    - Parabolic path (ret_60d_pct >= pe_ret60d_min): regime-agnostic and VIX-gate-agnostic.
+      Fires parabolic_exhaustion in bull and stress markets alike — parabolic runs happen in
+      BULL_TREND, not just STRESS_RISK_OFF.
+    - VIX term gate: skips all remaining signals when VIX9D/VIX ≤ 1.05 (normal contango).
+    - Regime gate: all remaining signals blocked outside SHORT_ALLOWED_REGIMES.
+    - Event paths (earnings_gap_down, faded_earnings_gap_up): fires on all RS rank tiers.
+    - Technical path (price_below_sma200): fires overbought_downtrend for any RS rank.
+    - Deterioration path (was top-35% 10d ago, now fallen): leader-to-laggard rotation.
+    - Reversal path (rs_rank_pct >= _REVERSAL_SHORT_RS_GATE): exhaustion in strong stocks.
+    - Fundamental path (rs_rank_pct < _SHORT_RS_RANK_GATE): laggards with earnings miss.
 
     Stocks in the middle band (25–65%) without a prior leader history produce no signal.
     """
-    if regime is not None and regime not in SHORT_ALLOWED_REGIMES:
-        return None
-
-    if not vix_term_inverted:
-        return None
-
     # signals_only: restrict which signals can fire (for isolated signal backtests).
     _extra_blocked: frozenset[str] = frozenset()
     if signals_only is not None:
@@ -350,6 +348,41 @@ def _short_entry_signal(
         if "faded_earnings_gap_up_pct" in fundamentals:
             snap["faded_earnings_gap_up_pct"] = fundamentals["faded_earnings_gap_up_pct"]
 
+    # Parabolic exhaustion path — regime-agnostic and VIX-gate-agnostic.
+    # Parabolic stocks (up ≥80% in 60d) exist in bull markets; gating behind STRESS_RISK_OFF
+    # would prevent the signal from ever firing.  Internal quality filters (rsi ≥72,
+    # vol_ratio ≤0.9) provide sufficient selectivity without an external regime constraint.
+    if "parabolic_exhaustion" not in _extra_blocked:
+        _pe_params = (
+            DEFAULT_SHORT_SIGNAL_PARAMS
+            if short_params is None
+            else {**DEFAULT_SHORT_SIGNAL_PARAMS, **short_params}
+        )
+        if snap.get("ret_60d_pct", 0.0) >= _pe_params["pe_ret60d_min"]:
+            _pe_blocked = _extra_blocked | frozenset(
+                {
+                    "earnings_miss",
+                    "earnings_gap_down",
+                    "faded_earnings_gap_up",
+                    "rs_deterioration",
+                    "failed_breakout",
+                    "high_vol_reversal",
+                    "overbought_downtrend",
+                    "high_short_interest",
+                }
+            )
+            pe_sigs = evaluate_short_signals(snap, params=short_params, blocked=_pe_blocked)
+            if pe_sigs:
+                return pe_sigs
+
+    # VIX term gate — applies to all signals below this point.
+    if not vix_term_inverted:
+        return None
+
+    # Regime gate — all remaining signals only in stress regimes.
+    if regime is not None and regime not in SHORT_ALLOWED_REGIMES:
+        return None
+
     # Event path — earnings gap-down: fires on all RS rank tiers.  Returns early if the
     # earnings_gap_down signal specifically fires (not just any signal from the snapshot).
     if snap.get("earnings_gap_pct") is not None:
@@ -357,18 +390,16 @@ def _short_entry_signal(
         if "earnings_gap_down" in event_sigs:
             return event_sigs
 
-    # Event path — faded earnings gap-up: T+1 entry after observing gap-up + weak close on
-    # earnings day.  close_pct_of_range and vol_ratio from the detection bar (prev_row) are
-    # already in snap via _row_to_snapshot; only the gap pct needs explicit injection.
+    # Event path — faded earnings gap-up (disabled — in SHORT_GLOBALLY_DISABLED).
+    # Path kept for completeness; evaluate_short_signals blocks it automatically.
     if snap.get("faded_earnings_gap_up_pct") is not None:
         fegu_sigs = evaluate_short_signals(snap, params=short_params, blocked=_extra_blocked)
         if "faded_earnings_gap_up" in fegu_sigs:
             return fegu_sigs
 
-    # Technical path — overbought_downtrend fires for any RS rank tier.  price_below_sma50
-    # provides the directional filter; no RS gate needed.  All other signals blocked here to
-    # prevent double-counting with the RS-gated paths below.
-    if snap.get("price_below_sma50"):
+    # Technical path — overbought_downtrend fires for any RS rank tier.  price_below_sma200
+    # (200-day SMA) confirms a major structural downtrend, not just a bull-market pullback.
+    if snap.get("price_below_sma200"):
         _ordt_blocked = _extra_blocked | frozenset(
             {
                 "earnings_miss",

@@ -190,17 +190,18 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "high_vol_reversal",
         "earnings_miss",
         "rs_deterioration",  # 0/11 profitable walk-forward folds, mean Sharpe -0.872 — no edge
+        "faded_earnings_gap_up",  # mean Sharpe -0.201, 2/9 folds; 2020-21 fold -35% catastrophic
     }
 )
 
 SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "earnings_miss": 0,  # Negative PEAD — strongest bearish fundamental (disabled)
     "earnings_gap_down": 1,  # Post-earnings gap-down continuation — PEAD short (active)
-    "faded_earnings_gap_up": 2,  # Earnings beat faded — distribution into gap-up (active)
+    "faded_earnings_gap_up": 2,  # Earnings beat faded — distribution into gap-up (disabled — no edge)
     "rs_deterioration": 3,  # Leader-to-laggard rotation (disabled — no edge)
     "failed_breakout": 4,  # Bull trap: broke 20d high yesterday, failed back below today (disabled)
     "high_vol_reversal": 5,  # Distribution bar (disabled)
-    "overbought_downtrend": 6,  # Relief rally fade — RSI cross in established downtrend (active)
+    "overbought_downtrend": 6,  # Relief rally fade — RSI cross below sma200 (active, redesigned v1.63)
     "parabolic_exhaustion": 7,  # Momentum crash — up 80%+ in 60d, vol drying, RSI extended (active)
     "high_short_interest": 8,  # Crowded short + low lendable supply (live-only, not backtestable)
 }
@@ -222,8 +223,9 @@ DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     "hvr_range_max": 0.3,  # close must be in bottom 30% of day's High–Low range
     "hvr_rsi_min": 55.0,  # came from overbought territory
     "hvr_ret5d_min": 2.0,  # was extended upward (5d return > 2%)
-    # overbought_downtrend thresholds (relief rally fade in established downtrend)
-    "ordt_rsi_cross": 62.0,  # RSI threshold — must cross from above to below (overbought exit)
+    # overbought_downtrend thresholds (relief rally fade below 200-day SMA)
+    "ordt_rsi_entry": 65.0,  # RSI must have been at or above this (genuine overbought bounce)
+    "ordt_rsi_exit": 60.0,  # RSI must fall below this (meaningful exhaustion, not just noise)
     "ordt_vol_min": 0.8,  # vol_ratio floor — minimal bar needed to confirm
     # parabolic_exhaustion thresholds (momentum crash — up big, volume drying, RSI extended)
     "pe_ret60d_min": 80.0,  # 60-day return must exceed this % (parabolic run)
@@ -298,15 +300,16 @@ def evaluate_short_signals(
     ):
         matched.append("faded_earnings_gap_up")
 
-    # overbought_downtrend: stock is below its 50-day SMA (established downtrend) but has
-    # staged a relief rally that pushed RSI above ordt_rsi_cross.  Signal fires when RSI
-    # crosses back below that threshold — the bounce is exhausting, downtrend reasserting.
+    # overbought_downtrend: stock is below its 200-day SMA (confirmed major downtrend) but has
+    # staged a relief rally that pushed RSI above ordt_rsi_entry.  Signal fires when RSI
+    # crosses back below ordt_rsi_exit — the bounce has exhausted, downtrend reasserting.
+    # Using sma200 (not sma50) avoids triggering on normal bull-market pullbacks.
     # RS-rank agnostic: fired via the technical path in _short_entry_signal.
     if (
         "overbought_downtrend" not in blocked
-        and snapshot.get("price_below_sma50", False)
-        and snapshot.get("rsi_prev", 50.0) >= p["ordt_rsi_cross"]
-        and snapshot.get("rsi_14", 50.0) < p["ordt_rsi_cross"]
+        and snapshot.get("price_below_sma200", False)
+        and snapshot.get("rsi_prev", 50.0) >= p["ordt_rsi_entry"]
+        and snapshot.get("rsi_14", 50.0) < p["ordt_rsi_exit"]
         and snapshot.get("vol_ratio", 0.0) >= p["ordt_vol_min"]
     ):
         matched.append("overbought_downtrend")
@@ -314,7 +317,8 @@ def evaluate_short_signals(
     # parabolic_exhaustion: stock up >pe_ret60d_min% in 60 trading days (~3 months) with
     # RSI in overbought territory and volume drying up — buyers exhausted.  Targets the
     # momentum-crash dynamic documented in Daniel & Moskowitz (2016).
-    # Fired via the reversal path (high RS rank) in _short_entry_signal.
+    # Fired via a dedicated regime-agnostic path in _short_entry_signal so it can fire in
+    # BULL_TREND and NEUTRAL_CHOP, where parabolic moves actually occur.
     if (
         "parabolic_exhaustion" not in blocked
         and snapshot.get("ret_60d_pct", 0.0) >= p["pe_ret60d_min"]
