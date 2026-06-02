@@ -1,4 +1,6 @@
 import logging
+import os
+import pickle
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -12,7 +14,7 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, LOG_DIR
 from data.fundamentals import get_fundamentals
 
 logger = logging.getLogger(__name__)
@@ -298,12 +300,39 @@ def _spy_return_from_preloaded(preloaded: dict, as_of: str, lookback: int) -> fl
         return None
 
 
-def _bulk_download(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFrame]:
-    """Download OHLCV for all symbols in a single yf.download() call.
+def _bulk_cache_path() -> str:
+    today = datetime.now(_ET).date().isoformat()
+    return os.path.join(LOG_DIR, f"market_data_{today}.pkl")
 
-    Using one session for all symbols avoids the per-symbol crumb/session churn
-    that triggers Yahoo Finance 401 errors under concurrent load.
-    """
+
+def _load_bulk_cache() -> dict[str, pd.DataFrame]:
+    path = _bulk_cache_path()
+    try:
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        if isinstance(data, dict):
+            logger.info(f"Bulk cache hit: {len(data)} symbols from {os.path.basename(path)}")
+            return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"Bulk cache read error: {e}")
+    return {}
+
+
+def _save_bulk_cache(data: dict[str, pd.DataFrame]) -> None:
+    path = _bulk_cache_path()
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        logger.info(f"Bulk cache saved: {len(data)} symbols → {os.path.basename(path)}")
+    except Exception as e:
+        logger.warning(f"Bulk cache write error: {e}")
+
+
+def _download_symbols(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFrame]:
+    """Raw yfinance batch download for a list of symbols."""
     end = datetime.now()
     start = (end - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
@@ -317,7 +346,7 @@ def _bulk_download(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFram
             progress=False,
         )
     except Exception as e:
-        logger.warning(f"Bulk yfinance download failed, falling back to per-symbol: {e}")
+        logger.warning(f"Bulk yfinance download failed: {e}")
         return {}
     if raw is None or raw.empty:
         return {}
@@ -335,6 +364,65 @@ def _bulk_download(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFram
     elif len(symbols) == 1:
         result[symbols[0]] = raw.dropna(how="all").copy()
     return result
+
+
+def _bulk_download(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFrame]:
+    """Download OHLCV for all symbols, using a same-day disk cache.
+
+    The first call each ET calendar day downloads everything and saves to
+    logs/market_data_YYYY-MM-DD.pkl.  Subsequent calls (later trading
+    windows, or a full re-run) load from cache and only download symbols
+    not already present (e.g. dynamic top-movers added after the prefetch).
+    This eliminates the 60-90 min repeat download on every intraday trigger.
+    """
+    cache = _load_bulk_cache()
+    missing = [s for s in symbols if s not in cache]
+
+    if not missing:
+        return {s: cache[s] for s in symbols if s in cache}
+
+    logger.info(
+        f"Downloading {len(missing)} symbols (cache has {len(cache)}, total requested {len(symbols)})"
+    )
+    fresh = _download_symbols(missing, fetch_days)
+
+    if fresh:
+        cache.update(fresh)
+        _save_bulk_cache(cache)
+    elif not cache:
+        logger.warning("Bulk download returned no data — per-symbol fallback active")
+
+    return {s: cache[s] for s in symbols if s in cache}
+
+
+def prefetch_market_data(symbols: list[str]) -> None:
+    """Warm the same-day bulk cache before market open.
+
+    Called by the scheduler at 09:00 ET so that the 09:31 open_sells and
+    10:00 open_buys runs load from disk instead of re-downloading.  Safe to
+    call multiple times — subsequent calls are no-ops if cache is already warm.
+    """
+    fetch_days = max(config_lookback() + 150, 200)
+    logger.info(f"Pre-market prefetch: {len(symbols)} symbols, fetch_days={fetch_days}")
+    cached = _load_bulk_cache()
+    missing = [s for s in symbols if s not in cached]
+    if not missing:
+        logger.info("Prefetch: cache already warm, nothing to download")
+        return
+    fresh = _download_symbols(missing, fetch_days)
+    if fresh:
+        cached.update(fresh)
+        _save_bulk_cache(cached)
+        logger.info(f"Prefetch complete: {len(cached)} symbols cached")
+    else:
+        logger.warning("Prefetch: download returned no data")
+
+
+def config_lookback() -> int:
+    """Return LOOKBACK_DAYS from config without a circular import."""
+    from config import LOOKBACK_DAYS  # local import — avoids module-level circular dep
+
+    return LOOKBACK_DAYS
 
 
 def get_market_snapshots(

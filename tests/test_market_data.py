@@ -1,5 +1,8 @@
 """Tests for data/market_data.py — summarise_for_ai and yfinance helpers."""
 
+import os
+import pickle
+import tempfile
 import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -683,6 +686,16 @@ class TestGetSpy20dReturn(unittest.TestCase):
 class TestBulkDownload(unittest.TestCase):
     """_bulk_download: single API call returns per-symbol DataFrames."""
 
+    def setUp(self):
+        self._p_load = patch("data.market_data._load_bulk_cache", return_value={})
+        self._p_save = patch("data.market_data._save_bulk_cache")
+        self._p_load.start()
+        self._p_save.start()
+
+    def tearDown(self):
+        self._p_load.stop()
+        self._p_save.stop()
+
     def _make_multi_df(self, symbols: list[str], periods: int = 10) -> pd.DataFrame:
         idx = pd.bdate_range("2025-01-01", periods=periods)
         data = {
@@ -750,6 +763,16 @@ class TestSpyReturnFromPreloadedException(unittest.TestCase):
 
 class TestBulkDownloadKeyError(unittest.TestCase):
     """Lines 290-291: KeyError in xs() is swallowed silently."""
+
+    def setUp(self):
+        self._p_load = patch("data.market_data._load_bulk_cache", return_value={})
+        self._p_save = patch("data.market_data._save_bulk_cache")
+        self._p_load.start()
+        self._p_save.start()
+
+    def tearDown(self):
+        self._p_load.stop()
+        self._p_save.stop()
 
     def test_xs_keyerror_is_ignored(self):
         from data.market_data import _bulk_download
@@ -918,6 +941,16 @@ class TestGetIntradayData(unittest.TestCase):
 class TestBulkDownloadBranchGaps(unittest.TestCase):
     """Branches 288->284 and 292->294 in _bulk_download."""
 
+    def setUp(self):
+        self._p_load = patch("data.market_data._load_bulk_cache", return_value={})
+        self._p_save = patch("data.market_data._save_bulk_cache")
+        self._p_load.start()
+        self._p_save.start()
+
+    def tearDown(self):
+        self._p_load.stop()
+        self._p_save.stop()
+
     def test_xs_returns_empty_df_symbol_excluded(self):
         """Line 288->284: sym_df.empty after xs() → symbol not added to result."""
         from data.market_data import _bulk_download
@@ -1029,3 +1062,218 @@ class TestGetIntradayDataOrbBranches(unittest.TestCase):
 
         self.assertIn("AAPL", result)
         self.assertIsNone(result["AAPL"]["intraday_rsi"])
+
+
+# ── Same-day bulk cache ───────────────────────────────────────────────────────
+
+
+def _make_sym_df(periods: int = 5) -> pd.DataFrame:
+    idx = pd.bdate_range("2025-01-01", periods=periods)
+    return pd.DataFrame(
+        {"Close": [100.0 + i for i in range(periods)], "Volume": [1e6] * periods}, index=idx
+    )
+
+
+class TestBulkCachePath(unittest.TestCase):
+    def test_path_contains_todays_et_date(self):
+        from zoneinfo import ZoneInfo
+
+        from data.market_data import _bulk_cache_path
+
+        expected_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        path = _bulk_cache_path()
+        self.assertIn(expected_date, path)
+        self.assertTrue(path.endswith(".pkl"))
+
+
+class TestLoadBulkCache(unittest.TestCase):
+    def test_returns_empty_when_file_missing(self):
+        from data.market_data import _load_bulk_cache
+
+        with patch("data.market_data._bulk_cache_path", return_value="/nonexistent/path.pkl"):
+            result = _load_bulk_cache()
+        self.assertEqual(result, {})
+
+    def test_returns_data_when_valid_cache_exists(self):
+        from data.market_data import _load_bulk_cache
+
+        data = {"AAPL": _make_sym_df()}
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            tmp = f.name
+        try:
+            with patch("data.market_data._bulk_cache_path", return_value=tmp):
+                result = _load_bulk_cache()
+            self.assertIn("AAPL", result)
+        finally:
+            os.unlink(tmp)
+
+    def test_returns_empty_on_corrupt_file(self):
+        from data.market_data import _load_bulk_cache
+
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+            f.write(b"not-a-pickle")
+            tmp = f.name
+        try:
+            with patch("data.market_data._bulk_cache_path", return_value=tmp):
+                result = _load_bulk_cache()
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(tmp)
+
+    def test_returns_empty_when_pickle_not_a_dict(self):
+        from data.market_data import _load_bulk_cache
+
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+            pickle.dump(["not", "a", "dict"], f)
+            tmp = f.name
+        try:
+            with patch("data.market_data._bulk_cache_path", return_value=tmp):
+                result = _load_bulk_cache()
+            self.assertEqual(result, {})
+        finally:
+            os.unlink(tmp)
+
+
+class TestSaveBulkCache(unittest.TestCase):
+    def test_writes_pickle_file(self):
+        from data.market_data import _save_bulk_cache
+
+        data = {"AAPL": _make_sym_df()}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = os.path.join(tmpdir, "cache.pkl")
+            with (
+                patch("data.market_data._bulk_cache_path", return_value=tmp_path),
+                patch("data.market_data.LOG_DIR", tmpdir),
+            ):
+                _save_bulk_cache(data)
+            self.assertTrue(os.path.exists(tmp_path))
+            with open(tmp_path, "rb") as f:
+                loaded = pickle.load(f)
+            self.assertIn("AAPL", loaded)
+
+    def test_handles_write_error_without_raising(self):
+        from data.market_data import _save_bulk_cache
+
+        with (
+            patch("data.market_data._bulk_cache_path", return_value="/no/such/dir/cache.pkl"),
+            patch("data.market_data.os.makedirs", side_effect=OSError("no perms")),
+        ):
+            _save_bulk_cache({"AAPL": _make_sym_df()})  # must not raise
+
+
+class TestBulkDownloadCacheBehavior(unittest.TestCase):
+    """_bulk_download cache-aware routing."""
+
+    def _make_multi_df(self, symbols: list[str]) -> pd.DataFrame:
+        idx = pd.bdate_range("2025-01-01", periods=5)
+        data = {
+            (f, s): [float(i) for i in range(5)]
+            for f in ("Open", "Close", "Volume")
+            for s in symbols
+        }
+        return pd.DataFrame(data, index=idx)
+
+    def test_cache_hit_skips_download(self):
+        from data.market_data import _bulk_download
+
+        warm = {"AAPL": _make_sym_df()}
+        with (
+            patch("data.market_data._load_bulk_cache", return_value=warm),
+            patch("data.market_data._download_symbols") as mock_dl,
+        ):
+            result = _bulk_download(["AAPL"], 200)
+        mock_dl.assert_not_called()
+        self.assertIn("AAPL", result)
+
+    def test_cache_miss_downloads_and_saves(self):
+        from data.market_data import _bulk_download
+
+        with (
+            patch("data.market_data._load_bulk_cache", return_value={}),
+            patch(
+                "data.market_data._download_symbols", return_value={"AAPL": _make_sym_df()}
+            ) as mock_dl,
+            patch("data.market_data._save_bulk_cache") as mock_save,
+        ):
+            result = _bulk_download(["AAPL"], 200)
+        mock_dl.assert_called_once_with(["AAPL"], 200)
+        mock_save.assert_called_once()
+        self.assertIn("AAPL", result)
+
+    def test_partial_cache_downloads_only_missing(self):
+        from data.market_data import _bulk_download
+
+        warm = {"AAPL": _make_sym_df()}
+        with (
+            patch("data.market_data._load_bulk_cache", return_value=warm),
+            patch(
+                "data.market_data._download_symbols", return_value={"NVDA": _make_sym_df()}
+            ) as mock_dl,
+            patch("data.market_data._save_bulk_cache"),
+        ):
+            result = _bulk_download(["AAPL", "NVDA"], 200)
+        mock_dl.assert_called_once_with(["NVDA"], 200)
+        self.assertIn("AAPL", result)
+        self.assertIn("NVDA", result)
+
+    def test_download_failure_with_empty_cache_returns_empty(self):
+        from data.market_data import _bulk_download
+
+        with (
+            patch("data.market_data._load_bulk_cache", return_value={}),
+            patch("data.market_data._download_symbols", return_value={}),
+            patch("data.market_data._save_bulk_cache"),
+        ):
+            result = _bulk_download(["AAPL"], 200)
+        self.assertEqual(result, {})
+
+    def test_download_failure_with_partial_cache_returns_cached_symbols(self):
+        # fresh=empty, cache has AAPL → elif not cache: is False → return partial cache silently
+        from data.market_data import _bulk_download
+
+        warm = {"AAPL": _make_sym_df()}
+        with (
+            patch("data.market_data._load_bulk_cache", return_value=warm),
+            patch("data.market_data._download_symbols", return_value={}),
+            patch("data.market_data._save_bulk_cache"),
+        ):
+            result = _bulk_download(["AAPL", "NVDA"], 200)
+        self.assertIn("AAPL", result)
+        self.assertNotIn("NVDA", result)
+
+
+class TestPrefetchMarketData(unittest.TestCase):
+    def test_downloads_when_cache_empty(self):
+        from data.market_data import prefetch_market_data
+
+        with (
+            patch("data.market_data._load_bulk_cache", return_value={}),
+            patch(
+                "data.market_data._download_symbols", return_value={"AAPL": _make_sym_df()}
+            ) as mock_dl,
+            patch("data.market_data._save_bulk_cache"),
+        ):
+            prefetch_market_data(["AAPL"])
+        mock_dl.assert_called_once()
+
+    def test_noop_when_all_symbols_cached(self):
+        from data.market_data import prefetch_market_data
+
+        warm = {"AAPL": _make_sym_df(), "MSFT": _make_sym_df()}
+        with (
+            patch("data.market_data._load_bulk_cache", return_value=warm),
+            patch("data.market_data._download_symbols") as mock_dl,
+        ):
+            prefetch_market_data(["AAPL", "MSFT"])
+        mock_dl.assert_not_called()
+
+    def test_handles_download_failure_without_raising(self):
+        from data.market_data import prefetch_market_data
+
+        with (
+            patch("data.market_data._load_bulk_cache", return_value={}),
+            patch("data.market_data._download_symbols", return_value={}),
+            patch("data.market_data._save_bulk_cache"),
+        ):
+            prefetch_market_data(["AAPL"])  # must not raise

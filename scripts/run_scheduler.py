@@ -67,6 +67,7 @@ config.validate()
 import main as bot  # noqa: E402
 from analysis.performance import get_attribution  # noqa: E402
 from analysis.weekly_review import run_weekly_review  # noqa: E402
+from data.market_data import prefetch_market_data  # noqa: E402
 from notifications.emailer import send_weekly_review  # noqa: E402
 from scripts.run_diagnostics import run_diagnostics  # noqa: E402
 
@@ -87,6 +88,16 @@ def _run(mode: str):
         bot.run(mode=mode)
     except Exception as e:
         logger.error(f"Run failed ({mode}): {e}", exc_info=True)
+
+
+def _prefetch():
+    if os.path.exists(config.HALT_FILE):
+        return
+    logger.info("Pre-market data prefetch starting...")
+    try:
+        prefetch_market_data(list(config.STOCK_UNIVERSE))
+    except Exception as e:
+        logger.error(f"Prefetch failed (non-fatal): {e}", exc_info=True)
 
 
 def _open_sells():
@@ -162,6 +173,7 @@ if __name__ == "__main__":  # pragma: no cover
     logging.getLogger().addHandler(_fh)
     _ET = "America/New_York"
     for _day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
+        getattr(schedule.every(), _day).at("09:00", _ET).do(_prefetch)
         getattr(schedule.every(), _day).at("09:31", _ET).do(_open_sells)
         getattr(schedule.every(), _day).at("10:00", _ET).do(_open)
         getattr(schedule.every(), _day).at("12:00", _ET).do(_midday)
@@ -170,7 +182,7 @@ if __name__ == "__main__":  # pragma: no cover
     schedule.every().sunday.at("15:30", _ET).do(_weekly_review)
 
     logger.info(
-        "Scheduler running — Mon–Fri at 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)"
+        "Scheduler running — Mon–Fri at 09:00 (prefetch) / 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)"
     )
     logger.info("Ctrl+C to stop.")
 
