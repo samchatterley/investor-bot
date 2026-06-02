@@ -6,8 +6,12 @@ from unittest.mock import patch
 
 import config
 from risk.position_sizer import (
+    SIGNAL_SHARPE_MULTIPLIER,
+    atr_position_size,
+    cofiring_boost,
     drawdown_scalar,
     get_max_positions,
+    get_signal_size_multiplier,
     kelly_fraction,
     risk_budget_size,
 )
@@ -300,3 +304,98 @@ class TestDrawdownScalar(unittest.TestCase):
         # Malformed records with 2 entries pass the length check but KeyError in values extraction
         bad_history = [{"wrong_key": {}}, {"wrong_key": {}}]
         self.assertEqual(drawdown_scalar(bad_history), 1.0)
+
+
+class TestSignalSharpeMultiplier(unittest.TestCase):
+    def test_iv_compression_is_highest(self):
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["iv_compression"], 1.5)
+
+    def test_breakout_52w_is_zero(self):
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["breakout_52w"], 0.0)
+
+    def test_rsi_divergence_is_zero(self):
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["rsi_divergence"], 0.0)
+
+    def test_vix_fear_reversion_is_minimal(self):
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["vix_fear_reversion"], 0.25)
+
+    def test_range_reversion_is_baseline(self):
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["range_reversion"], 1.0)
+
+
+class TestGetSignalSizeMultiplier(unittest.TestCase):
+    def test_known_signal_returns_correct_multiplier(self):
+        self.assertEqual(get_signal_size_multiplier("iv_compression"), 1.5)
+
+    def test_pead_returns_correct_multiplier(self):
+        self.assertEqual(get_signal_size_multiplier("pead"), 1.3)
+
+    def test_unknown_signal_returns_one(self):
+        self.assertEqual(get_signal_size_multiplier("brand_new_signal"), 1.0)
+
+    def test_disabled_signal_breakout_52w_returns_zero(self):
+        self.assertEqual(get_signal_size_multiplier("breakout_52w"), 0.0)
+
+    def test_disabled_signal_rsi_divergence_returns_zero(self):
+        self.assertEqual(get_signal_size_multiplier("rsi_divergence"), 0.0)
+
+
+class TestAtrPositionSize(unittest.TestCase):
+    def test_normal_case_computes_correctly(self):
+        # equity=10000, risk_pct=0.01, atr_pct=25.0
+        # size = (10000 * 0.01) / (25.0 / 100) = 100 / 0.25 = 400 — below cap
+        result = atr_position_size(10_000, 25.0, risk_pct=0.01)
+        self.assertAlmostEqual(result, 400.0)
+
+    def test_zero_atr_pct_returns_zero(self):
+        self.assertEqual(atr_position_size(10_000, 0.0), 0.0)
+
+    def test_negative_atr_pct_returns_zero(self):
+        self.assertEqual(atr_position_size(10_000, -1.0), 0.0)
+
+    def test_zero_equity_returns_zero(self):
+        self.assertEqual(atr_position_size(0.0, 3.5), 0.0)
+
+    def test_negative_equity_returns_zero(self):
+        self.assertEqual(atr_position_size(-5_000, 3.5), 0.0)
+
+    def test_caps_at_max_position_weight(self):
+        # Very small atr_pct → huge uncapped size; should be capped at equity * MAX_POSITION_WEIGHT
+        equity = 10_000
+        result = atr_position_size(equity, 0.001, risk_pct=0.10)
+        self.assertAlmostEqual(result, equity * config.MAX_POSITION_WEIGHT)
+
+    def test_custom_risk_pct_overrides_default(self):
+        equity = 10_000
+        atr_pct = 2.0
+        custom_risk = 0.005
+        expected = min(
+            (equity * custom_risk) / (atr_pct / 100),
+            equity * config.MAX_POSITION_WEIGHT,
+        )
+        result = atr_position_size(equity, atr_pct, risk_pct=custom_risk)
+        self.assertAlmostEqual(result, expected)
+
+    def test_default_risk_pct_uses_risk_per_trade_pct(self):
+        equity = 10_000
+        atr_pct = 2.0
+        expected = min(
+            (equity * config.RISK_PER_TRADE_PCT) / (atr_pct / 100),
+            equity * config.MAX_POSITION_WEIGHT,
+        )
+        result = atr_position_size(equity, atr_pct)
+        self.assertAlmostEqual(result, expected)
+
+
+class TestCofiringBoost(unittest.TestCase):
+    def test_zero_signals_returns_one(self):
+        self.assertEqual(cofiring_boost(0), 1.0)
+
+    def test_one_signal_returns_one(self):
+        self.assertEqual(cofiring_boost(1), 1.0)
+
+    def test_two_signals_returns_one_point_five(self):
+        self.assertEqual(cofiring_boost(2), 1.5)
+
+    def test_five_signals_still_capped_at_one_point_five(self):
+        self.assertEqual(cofiring_boost(5), 1.5)

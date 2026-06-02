@@ -111,3 +111,76 @@ def compute_exit_levels(
         "timedecay_stop_pct": timedecay_stop_pct,
         "apply_timedecay": apply_timedecay,
     }
+
+
+def rs_decay_triggered(
+    current_rs_rank_pct: float,
+    entry_rs_rank_pct: float,
+    decay_threshold: float = 25.0,
+) -> bool:
+    """Return True when RS rank has decayed enough to exit.
+
+    Fires when current_rs_rank_pct has dropped >= decay_threshold percentile points
+    below entry_rs_rank_pct.
+
+    Only meaningful for momentum signals (rs_leader, momentum, momentum_12_1).
+    For other signals, callers should not call this function.
+
+    current_rs_rank_pct: 0–100, where 100 = strongest stock in universe
+    entry_rs_rank_pct: RS rank at entry (stored in position record)
+    decay_threshold: percentile point drop that triggers exit (default 25)
+    """
+    return (entry_rs_rank_pct - current_rs_rank_pct) >= decay_threshold
+
+
+def adverse_volume_triggered(
+    vol_ratio_today: float,
+    day_return_today: float,
+    vol_ratio_yesterday: float,
+    day_return_yesterday: float,
+    vol_threshold: float = 2.5,
+    return_threshold: float = -1.5,
+) -> bool:
+    """Return True when two consecutive adverse-volume days signal institutional distribution.
+
+    Fires when BOTH:
+      - Today: vol_ratio >= vol_threshold AND day_return <= return_threshold
+      - Yesterday: vol_ratio >= vol_threshold AND day_return <= return_threshold
+
+    vol_ratio: today's volume / 20-day average volume
+    day_return: % return for the day (e.g. -2.1 for -2.1%)
+    """
+    today_adverse = vol_ratio_today >= vol_threshold and day_return_today <= return_threshold
+    yesterday_adverse = (
+        vol_ratio_yesterday >= vol_threshold and day_return_yesterday <= return_threshold
+    )
+    return today_adverse and yesterday_adverse
+
+
+def profit_acceleration_triggered(
+    unrealised_pct: float,
+    days_held: int,
+    signal: str,
+    fast_exit_signals: frozenset[str] | None = None,
+) -> str:
+    """Return exit action for mean-reversion signals with rapid early gains.
+
+    Only applies to fast_exit_signals (default: mean_reversion, range_reversion).
+    Returns one of: "full_exit", "partial_exit", "hold"
+
+    Rules:
+      - unrealised_pct >= 8.0 AND days_held <= 2 → "full_exit"
+      - unrealised_pct >= 5.0 AND days_held <= 1 → "partial_exit"
+      - otherwise → "hold"
+
+    Returns "hold" immediately for signals not in fast_exit_signals.
+    """
+    if fast_exit_signals is None:
+        fast_exit_signals = frozenset({"mean_reversion", "range_reversion"})
+    if signal not in fast_exit_signals:
+        return "hold"
+    if unrealised_pct >= 8.0 and days_held <= 2:
+        return "full_exit"
+    if unrealised_pct >= 5.0 and days_held <= 1:
+        return "partial_exit"
+    return "hold"

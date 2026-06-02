@@ -188,3 +188,74 @@ def small_account_size(portfolio_value: float, max_single_order: float = 55.0) -
     # Aim for 2 equal positions spending ~80% of portfolio
     per_position = (portfolio_value * 0.80) / 2.0
     return max(40.0, min(per_position, max_single_order))
+
+
+# Signal quality multipliers derived from backtest signal isolation (2015–2023).
+# Scale position size by signal's historical Sharpe relative to the median signal.
+# Updated quarterly from live trade log as empirical data accumulates.
+SIGNAL_SHARPE_MULTIPLIER: dict[str, float] = {
+    "iv_compression": 1.5,  # Sharpe +0.62 in isolation — strongest signal
+    "pead": 1.3,  # Sharpe +0.45 — high quality, many trades
+    "range_reversion": 1.0,  # Sharpe +0.16 — baseline
+    "inside_day_breakout": 1.0,  # Sharpe +0.09
+    "momentum": 1.0,  # Sharpe +0.05
+    "macd_crossover": 1.0,  # Sharpe +0.03
+    "bb_squeeze": 0.5,  # Sharpe +0.05 but 78% of trades, noisy — half size
+    "insider_buying": 1.3,  # Fundamental conviction; treat as pead-equivalent
+    "rs_leader": 1.2,  # Cross-sectional strength — when it fires, size up
+    "momentum_12_1": 1.1,  # Factor-based — moderate quality boost
+    "gap_and_go": 0.8,  # Sharpe -0.11 in isolation — reduce size
+    "trend_pullback": 0.8,  # Sharpe -0.05
+    "mean_reversion": 0.8,  # Sharpe -0.06
+    "vix_fear_reversion": 0.25,  # Sharpe -0.38 — pending redesign; minimal size
+    "breakout_52w": 0.0,  # Globally disabled
+    "rsi_divergence": 0.0,  # Globally disabled
+}
+
+
+def get_signal_size_multiplier(signal: str) -> float:
+    """Return the Sharpe-based size multiplier for signal.
+
+    Returns 1.0 for unknown signals (conservative default — don't penalise new signals).
+    Returns 0.0 for globally disabled signals (breakout_52w, rsi_divergence).
+    """
+    return SIGNAL_SHARPE_MULTIPLIER.get(signal, 1.0)
+
+
+def atr_position_size(
+    equity: float,
+    atr_pct: float,
+    risk_pct: float | None = None,
+) -> float:
+    """ATR-based equal-risk position sizing.
+
+    position_size = (equity * risk_pct) / (atr_pct / 100)
+
+    Ensures each trade risks the same dollar amount regardless of volatility.
+    Capped at equity * MAX_POSITION_WEIGHT.
+    Floored at 0.
+
+    atr_pct: 14-day ATR as % of current price (e.g. 3.5 means ATR is 3.5% of price)
+    risk_pct: fraction of equity to risk per trade; defaults to RISK_PER_TRADE_PCT
+
+    Returns 0.0 when atr_pct <= 0 or equity <= 0.
+    """
+    if equity <= 0 or atr_pct <= 0:
+        return 0.0
+    effective_risk_pct = risk_pct if risk_pct is not None else RISK_PER_TRADE_PCT
+    position_size = (equity * effective_risk_pct) / (atr_pct / 100)
+    capped = min(position_size, equity * MAX_POSITION_WEIGHT)
+    return max(0.0, capped)
+
+
+def cofiring_boost(n_signals: int) -> float:
+    """Return position size multiplier for co-firing signals.
+
+    1 signal: 1.0× (no boost)
+    2+ signals: 1.5× (rare convergence, high information content)
+
+    The 1.5× is a hard cap — 3 signals don't get more than 2 do.
+    """
+    if n_signals >= 2:
+        return 1.5
+    return 1.0

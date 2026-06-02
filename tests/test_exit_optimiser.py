@@ -3,7 +3,13 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from risk.exit_optimiser import compute_atr_pct, compute_exit_levels
+from risk.exit_optimiser import (
+    adverse_volume_triggered,
+    compute_atr_pct,
+    compute_exit_levels,
+    profit_acceleration_triggered,
+    rs_decay_triggered,
+)
 
 
 class TestComputeExitLevels(unittest.TestCase):
@@ -149,3 +155,119 @@ class TestComputeAtrPct(unittest.TestCase):
         with patch("yfinance.download", return_value=df):
             result = compute_atr_pct("AAPL")
         self.assertIsNone(result)
+
+
+class TestRsDecayTriggered(unittest.TestCase):
+    def test_no_decay_returns_false(self):
+        # entry=70, current=65 → drop of 5, below default threshold of 25
+        self.assertFalse(rs_decay_triggered(65.0, 70.0))
+
+    def test_decay_equals_threshold_returns_true(self):
+        # entry=75, current=50 → drop of exactly 25
+        self.assertTrue(rs_decay_triggered(50.0, 75.0))
+
+    def test_decay_exceeds_threshold_returns_true(self):
+        # entry=80, current=50 → drop of 30 > 25
+        self.assertTrue(rs_decay_triggered(50.0, 80.0))
+
+    def test_entry_80_current_50_default_threshold(self):
+        self.assertTrue(rs_decay_triggered(50.0, 80.0))
+
+    def test_custom_threshold_not_triggered(self):
+        # entry=80, current=60 → drop of 20; custom threshold=30 → no trigger
+        self.assertFalse(rs_decay_triggered(60.0, 80.0, decay_threshold=30.0))
+
+    def test_custom_threshold_triggered(self):
+        # entry=80, current=60 → drop of 20; custom threshold=10 → triggers
+        self.assertTrue(rs_decay_triggered(60.0, 80.0, decay_threshold=10.0))
+
+
+class TestAdverseVolumeTriggered(unittest.TestCase):
+    def test_both_days_qualify_returns_true(self):
+        self.assertTrue(
+            adverse_volume_triggered(
+                vol_ratio_today=3.0,
+                day_return_today=-2.0,
+                vol_ratio_yesterday=2.8,
+                day_return_yesterday=-1.8,
+            )
+        )
+
+    def test_only_today_qualifies_returns_false(self):
+        self.assertFalse(
+            adverse_volume_triggered(
+                vol_ratio_today=3.0,
+                day_return_today=-2.0,
+                vol_ratio_yesterday=2.8,
+                day_return_yesterday=0.5,  # positive return — not adverse
+            )
+        )
+
+    def test_only_yesterday_qualifies_returns_false(self):
+        self.assertFalse(
+            adverse_volume_triggered(
+                vol_ratio_today=3.0,
+                day_return_today=0.3,  # positive return — not adverse
+                vol_ratio_yesterday=2.8,
+                day_return_yesterday=-2.0,
+            )
+        )
+
+    def test_neither_qualifies_returns_false(self):
+        self.assertFalse(
+            adverse_volume_triggered(
+                vol_ratio_today=1.2,
+                day_return_today=0.5,
+                vol_ratio_yesterday=1.0,
+                day_return_yesterday=0.1,
+            )
+        )
+
+    def test_vol_below_threshold_today_returns_false(self):
+        # return is adverse but vol ratio is below threshold
+        self.assertFalse(
+            adverse_volume_triggered(
+                vol_ratio_today=1.5,  # below 2.5
+                day_return_today=-2.0,
+                vol_ratio_yesterday=3.0,
+                day_return_yesterday=-2.0,
+            )
+        )
+
+
+class TestProfitAccelerationTriggered(unittest.TestCase):
+    def test_non_fast_signal_returns_hold(self):
+        result = profit_acceleration_triggered(10.0, 1, "momentum")
+        self.assertEqual(result, "hold")
+
+    def test_fast_signal_day_2_nine_percent_gain_returns_full_exit(self):
+        result = profit_acceleration_triggered(9.0, 2, "mean_reversion")
+        self.assertEqual(result, "full_exit")
+
+    def test_fast_signal_day_1_six_percent_gain_returns_partial_exit(self):
+        result = profit_acceleration_triggered(6.0, 1, "mean_reversion")
+        self.assertEqual(result, "partial_exit")
+
+    def test_fast_signal_day_3_ten_percent_gain_returns_hold(self):
+        # days_held=3 > 2, so full_exit rule doesn't fire; days_held=3 > 1, partial_exit doesn't fire
+        result = profit_acceleration_triggered(10.0, 3, "mean_reversion")
+        self.assertEqual(result, "hold")
+
+    def test_fast_signal_small_gain_returns_hold(self):
+        result = profit_acceleration_triggered(3.0, 1, "range_reversion")
+        self.assertEqual(result, "hold")
+
+    def test_range_reversion_day_2_eight_percent_returns_full_exit(self):
+        result = profit_acceleration_triggered(8.0, 2, "range_reversion")
+        self.assertEqual(result, "full_exit")
+
+    def test_custom_fast_exit_signals_respected(self):
+        custom = frozenset({"gap_and_go"})
+        # gap_and_go is in custom set → should evaluate normally
+        result = profit_acceleration_triggered(9.0, 1, "gap_and_go", fast_exit_signals=custom)
+        self.assertEqual(result, "full_exit")
+
+    def test_signal_not_in_custom_set_returns_hold(self):
+        custom = frozenset({"gap_and_go"})
+        result = profit_acceleration_triggered(9.0, 1, "mean_reversion", fast_exit_signals=custom)
+        self.assertEqual(result, "hold")
