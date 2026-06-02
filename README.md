@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.65 — June 2026 — expand long universe from 52 to 509 symbols (S&P 500 + ETFs)
+
+`STOCK_UNIVERSE` in `config.py` replaced with the full S&P 500 current constituents (503 stocks, sourced from Wikipedia 2026-06-02) plus the 6 broad-market and sector ETFs retained from the prior list (`SPY`, `QQQ`, `IWM`, `XLK`, `XLE`, `XLF`) for market-regime and momentum signals. Total: **509 symbols** (was 52).
+
+- Dual-class share pairs (GOOG/GOOGL, FOXA/FOX, NWS/NWSA) included; duplicates verified absent.
+- `BRK.B` and `BF.B` use dot notation; `execution/universe.py` normalises to hyphens for Alpaca at runtime.
+- Short universe (`STATIC_SHORT_UNIVERSE`, 212 symbols) unchanged — separate expansion planned.
+- **0 new tests** (config-only change); **~2950 passing, 100% coverage.**
+
+---
+
 ### 1.64 — June 2026 — comprehensive signal testing suite (8 new modes)
 
 Eight new analysis modes covering every angle of signal validation, all wired to CLI flags:
