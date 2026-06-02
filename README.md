@@ -816,7 +816,7 @@ Eliminates redundant data downloads across the four daily trading windows.
 
 - **`_bulk_download` cache** (`data/market_data.py`). First call each ET calendar day downloads all symbols and serialises to `logs/market_data_YYYY-MM-DD.pkl`. Subsequent calls (10:00 buys, 12:00 midday, 15:30 close) load from disk and only download symbols absent from cache (dynamic top-movers). Cache is automatically stale the next calendar day.
 - **`prefetch_market_data`** (new function). Warms the cache with no trading logic, safe to call multiple times — no-op if already warm.
-- **09:00 ET prefetch trigger** (`scripts/run_scheduler.py`). Scheduler now fires a silent prefetch 31 minutes before open_sells. By 09:31 ET, all 509 symbols are on disk; open_sells and open_buys each load from cache instead of re-downloading. Expected run-time drop: ~94 min → ~10 min per intraday window.
+- **07:00 ET prefetch trigger** (`scripts/run_scheduler.py`). Scheduler fires a silent prefetch 2.5 hours before open_sells, giving a comfortable buffer for the ~90 min download. By 09:31 ET all 509 symbols are on disk; open_sells and open_buys each load from cache instead of re-downloading. Expected run-time drop: ~94 min → ~10 min per intraday window.
 - **16 new tests** (`test_market_data.py`): `TestBulkCachePath` (1), `TestLoadBulkCache` (4), `TestSaveBulkCache` (2), `TestBulkDownloadCacheBehavior` (5), `TestPrefetchMarketData` (3), plus `setUp`/`tearDown` cache isolation added to `TestBulkDownload`, `TestBulkDownloadKeyError`, `TestBulkDownloadBranchGaps`. **~2971 passing, 100% coverage.**
 
 ---
