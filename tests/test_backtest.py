@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from backtest.engine import (
+    _ACTIVE_SHORT_SIGNALS,
     _CORE_COLS,
     _DEFAULT_PARAMS,
     _REVERSAL_SHORT_RS_GATE,
@@ -20,8 +21,10 @@ from backtest.engine import (
     _assert_pre_holdout,
     _binomial_p_value,
     _bootstrap_cell_ci,
+    _bootstrap_mean_ci,
     _compute_indicators,
     _compute_intraday_day,
+    _compute_rs_rank_lag10,
     _compute_rs_ranks,
     _entry_signal,
     _holm_bonferroni,
@@ -29,13 +32,21 @@ from backtest.engine import (
     _market_impact_bps,
     _print_ablation_results,
     _print_backward_elimination_results,
+    _print_co_firing_results,
     _print_combined_results,
+    _print_crisis_slices,
     _print_hold_period_table,
+    _print_monte_carlo_results,
+    _print_multi_fold_results,
     _print_param_sensitivity,
     _print_regime_blocked,
     _print_regime_table,
     _print_results,
+    _print_short_ablation_results,
+    _print_short_backward_elimination_results,
+    _print_short_regime_table,
     _print_short_signal_results,
+    _print_signal_isolation_results,
     _run_combined_simulation,
     _run_short_simulation,
     _run_simulation,
@@ -45,11 +56,19 @@ from backtest.engine import (
     run_ablation,
     run_backtest,
     run_backward_elimination,
+    run_co_firing_analysis,
     run_combined_analysis,
+    run_crisis_slices,
     run_holdout_evaluation,
+    run_monte_carlo,
+    run_multi_fold_walk_forward,
     run_param_sensitivity,
+    run_short_ablation,
+    run_short_backward_elimination,
+    run_short_regime_analysis,
     run_short_signal_analysis,
     run_signal_analysis,
+    run_signal_isolation,
     run_walk_forward_optimized,
 )
 from backtest.historical_fundamentals import earnings_miss_active_on_date, recent_earnings_date
@@ -4672,6 +4691,26 @@ class TestComputeRsRanks(unittest.TestCase):
         self.assertGreater(len(result), 0)
 
 
+class TestComputeRsRankLag10(unittest.TestCase):
+    """Cover lines 804-810: _compute_rs_rank_lag10 shift loop."""
+
+    def test_shifted_ranks_populated(self):
+        dates = pd.bdate_range("2025-01-01", periods=20)
+        date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+        rs_ranks = {"AAPL": {d: float(i) for i, d in enumerate(date_strs)}}
+        result = _compute_rs_rank_lag10(rs_ranks, dates)
+        self.assertIn("AAPL", result)
+        # Day-index 10 should map to the rank recorded at day-index 0
+        self.assertEqual(result["AAPL"][date_strs[10]], 0.0)
+
+    def test_symbol_with_no_matching_past_dates_excluded(self):
+        dates = pd.bdate_range("2025-01-01", periods=20)
+        # Provide a symbol whose rank dict has no dates matching any date 10 ago
+        rs_ranks = {"AAPL": {"1900-01-01": 50.0}}
+        result = _compute_rs_rank_lag10(rs_ranks, dates)
+        self.assertNotIn("AAPL", result)
+
+
 class TestRsRankFilterContinue(unittest.TestCase):
     """Cover line 771: low RS rank → continue skips signal candidate."""
 
@@ -7587,3 +7626,682 @@ class TestSignalsOnlyFilter(unittest.TestCase):
             signals_only=None,
         )
         self.assertGreater(result["total_trades"], 0)
+
+
+# ── run_signal_isolation ──────────────────────────────────────────────────────
+
+
+class TestRunSignalIsolation(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_signal_isolation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_baseline_and_isolations(self):
+        result = self._run()
+        self.assertIn("baseline", result)
+        self.assertIn("isolations", result)
+
+    def test_each_isolation_has_required_keys(self):
+        result = self._run()
+        for iso in result["isolations"]:
+            for key in (
+                "signal",
+                "sharpe",
+                "total_return_pct",
+                "win_rate_pct",
+                "avg_return_pct",
+                "trades",
+            ):
+                self.assertIn(key, iso)
+
+    def test_no_intraday_signals_in_isolations(self):
+        from signals.evaluator import INTRADAY_SIGNALS
+
+        result = self._run()
+        names = {iso["signal"] for iso in result["isolations"]}
+        self.assertTrue(names.isdisjoint(INTRADAY_SIGNALS))
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_signal_isolation(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_print_signal_isolation_results_no_error(self):
+        result = self._run()
+        try:
+            _print_signal_isolation_results(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_signal_isolation_results raised: {exc}")
+
+    def test_disabled_signals_merged_with_isolation_set(self):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            result = run_signal_isolation(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                disabled_signals=frozenset({"momentum"}),
+            )
+        self.assertIn("baseline", result)
+
+    def test_use_earnings_only_fetches_earnings_history(self):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            run_signal_isolation(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                use_earnings_only=True,
+            )
+        mock_earn.assert_called_once()
+
+    def test_use_fundamentals_fetches_insider_history(self):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}) as mock_ins,
+        ):
+            run_signal_isolation(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                use_fundamentals=True,
+            )
+        mock_ins.assert_called_once()
+
+
+# ── run_short_ablation ────────────────────────────────────────────────────────
+
+
+class TestRunShortAblation(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            return run_short_ablation(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_expected_top_level_keys(self):
+        result = self._run()
+        for key in ("baseline", "ablations", "active_signals"):
+            self.assertIn(key, result)
+
+    def test_each_ablation_has_required_keys(self):
+        result = self._run()
+        for a in result["ablations"]:
+            for key in ("signal", "baseline_trades", "sharpe_delta", "return_delta", "verdict"):
+                self.assertIn(key, a)
+
+    def test_ablation_count_matches_active_shorts(self):
+        result = self._run()
+        self.assertEqual(len(result["ablations"]), len(_ACTIVE_SHORT_SIGNALS))
+
+    def test_verdict_logic(self):
+        result = self._run()
+        for a in result["ablations"]:
+            expected = "KEEP" if a["sharpe_delta"] < 0 else "REVIEW"
+            self.assertEqual(a["verdict"], expected)
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_short_ablation(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_print_short_ablation_results_no_error(self):
+        result = self._run()
+        try:
+            _print_short_ablation_results(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_short_ablation_results raised: {exc}")
+
+
+# ── run_short_backward_elimination ───────────────────────────────────────────
+
+
+class TestRunShortBackwardElimination(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            return run_short_backward_elimination(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs
+            )
+
+    def test_returns_expected_top_level_keys(self):
+        result = self._run()
+        for key in (
+            "steps",
+            "original_baseline",
+            "final_result",
+            "signals_kept",
+            "signals_removed",
+        ):
+            self.assertIn(key, result)
+
+    def test_signals_kept_and_removed_disjoint(self):
+        result = self._run()
+        self.assertTrue(set(result["signals_kept"]).isdisjoint(set(result["signals_removed"])))
+
+    def test_steps_count_matches_signals_removed(self):
+        result = self._run()
+        self.assertEqual(len(result["steps"]), len(result["signals_removed"]))
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_short_backward_elimination(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_print_short_backward_elimination_no_steps(self):
+        r = {
+            "steps": [],
+            "original_baseline": {"sharpe_ratio": 0.4, "total_return_pct": 2.0, "total_trades": 5},
+            "final_result": {"sharpe_ratio": 0.4, "total_return_pct": 2.0, "total_trades": 5},
+            "signals_kept": ["earnings_gap_down"],
+            "signals_removed": [],
+        }
+        try:
+            _print_short_backward_elimination_results(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"raised: {exc}")
+
+    def test_print_short_backward_elimination_with_steps(self):
+        r = {
+            "steps": [
+                {
+                    "step": 1,
+                    "signal_removed": "overbought_downtrend",
+                    "sharpe_delta": 0.1,
+                    "sharpe_after": 0.5,
+                    "return_after": 3.0,
+                    "trades_removed": 4,
+                }
+            ],
+            "original_baseline": {"sharpe_ratio": 0.4, "total_return_pct": 2.0, "total_trades": 9},
+            "final_result": {"sharpe_ratio": 0.5, "total_return_pct": 3.0, "total_trades": 5},
+            "signals_kept": ["earnings_gap_down"],
+            "signals_removed": ["overbought_downtrend"],
+        }
+        try:
+            _print_short_backward_elimination_results(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"raised: {exc}")
+
+    def test_removal_loop_executes_when_signal_hurts_sharpe(self):
+        _baseline = {
+            "sharpe_ratio": 0.3,
+            "total_return_pct": 2.0,
+            "total_trades": 5,
+            "equity_curve": [],
+            "trades": [],
+            "by_signal": {},
+            "win_rate_pct": 60.0,
+            "max_drawdown_pct": 5.0,
+        }
+        from backtest.engine import _ACTIVE_SHORT_SIGNALS as _ASS
+
+        n_active = len(_ASS)
+        call_count = [0]
+
+        def fake_short_sim(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return _baseline
+            elif call_count[0] <= 1 + n_active:
+                # first-iteration trials: removing any signal improves Sharpe
+                return {**_baseline, "sharpe_ratio": 0.6, "total_return_pct": 3.0}
+            else:
+                # second-iteration trials: no improvement → loop exits
+                return {**_baseline, "sharpe_ratio": 0.4, "total_return_pct": 2.5}
+
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine._run_short_simulation", side_effect=fake_short_sim),
+        ):
+            result = run_short_backward_elimination(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertGreater(len(result["steps"]), 0)
+        self.assertEqual(len(result["signals_removed"]), len(result["steps"]))
+
+
+# ── run_short_regime_analysis ─────────────────────────────────────────────────
+
+
+class TestRunShortRegimeAnalysis(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            return run_short_regime_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_expected_top_level_keys(self):
+        result = self._run()
+        for key in ("baseline", "regime_stats", "decay_stats"):
+            self.assertIn(key, result)
+
+    def test_regime_stats_is_dict(self):
+        result = self._run()
+        self.assertIsInstance(result["regime_stats"], dict)
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_short_regime_analysis(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_print_short_regime_table_no_error(self):
+        result = self._run()
+        try:
+            _print_short_regime_table(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_short_regime_table raised: {exc}")
+
+    def test_regime_stats_populated_from_cover_trades(self):
+        fake_trades = [
+            {
+                "action": "COVER",
+                "pnl_pct": 2.0,
+                "entry_regime": "BULL_TREND",
+                "days_held": 2,
+                "signal": "earnings_gap_down",
+                "date": "2025-03-01",
+            },
+            {
+                "action": "COVER",
+                "pnl_pct": -1.5,
+                "entry_regime": "DEFENSIVE_DOWNTREND",
+                "days_held": 3,
+                "signal": "earnings_gap_down",
+                "date": "2025-03-05",
+            },
+        ]
+        fake_baseline = {
+            "sharpe_ratio": 0.5,
+            "total_return_pct": 2.0,
+            "total_trades": 2,
+            "equity_curve": [],
+            "trades": fake_trades,
+            "by_signal": {},
+            "win_rate_pct": 50.0,
+            "max_drawdown_pct": 5.0,
+        }
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine._run_short_simulation", return_value=fake_baseline),
+        ):
+            result = run_short_regime_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertIn("earnings_gap_down", result["regime_stats"])
+        self.assertIn("earnings_gap_down", result["decay_stats"])
+        # Print loops should also execute without error
+        try:
+            _print_short_regime_table(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_short_regime_table raised with populated data: {exc}")
+
+
+# ── _bootstrap_mean_ci ────────────────────────────────────────────────────────
+
+
+class TestBootstrapMeanCi(unittest.TestCase):
+    def test_returns_tuple_of_two(self):
+        lo, hi = _bootstrap_mean_ci([1.0, 2.0, 3.0, 4.0, 5.0])
+        self.assertIsInstance(lo, float)
+        self.assertIsInstance(hi, float)
+
+    def test_lo_le_hi(self):
+        lo, hi = _bootstrap_mean_ci([1.0, 2.0, 3.0, 4.0, 5.0])
+        self.assertLessEqual(lo, hi)
+
+    def test_single_value_returns_same_for_both(self):
+        lo, hi = _bootstrap_mean_ci([3.5])
+        self.assertEqual(lo, hi)
+
+    def test_empty_list_returns_zero_zero(self):
+        lo, hi = _bootstrap_mean_ci([])
+        self.assertEqual(lo, 0.0)
+        self.assertEqual(hi, 0.0)
+
+
+# ── run_monte_carlo ───────────────────────────────────────────────────────────
+
+
+class TestRunMonteCarlo(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+        ):
+            return run_monte_carlo(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                n_permutations=50,
+                **kwargs,
+            )
+
+    def test_returns_expected_keys(self):
+        result = self._run()
+        for key in (
+            "actual_sharpe",
+            "mean_permuted_sharpe",
+            "p_value",
+            "n_permutations",
+            "per_signal",
+        ):
+            self.assertIn(key, result)
+
+    def test_p_value_in_unit_interval(self):
+        result = self._run()
+        self.assertGreaterEqual(result["p_value"], 0.0)
+        self.assertLessEqual(result["p_value"], 1.0)
+
+    def test_n_permutations_matches_input(self):
+        result = self._run()
+        self.assertEqual(result["n_permutations"], 50)
+
+    def test_per_signal_entries_have_required_keys(self):
+        result = self._run()
+        for d in result["per_signal"].values():
+            for key in ("trades", "actual_mean_pct", "ci_low_pct", "ci_high_pct", "significant"):
+                self.assertIn(key, d)
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_monte_carlo(["AAPL"], "2025-01-01", "2025-06-30", n_permutations=10)
+        self.assertEqual(result, {})
+
+    def test_print_monte_carlo_results_no_error(self):
+        result = self._run()
+        try:
+            _print_monte_carlo_results(result, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_monte_carlo_results raised: {exc}")
+
+    def test_print_monte_carlo_empty_per_signal(self):
+        r = {
+            "actual_sharpe": 0.8,
+            "mean_permuted_sharpe": 0.1,
+            "p_value": 0.03,
+            "n_permutations": 100,
+            "per_signal": {},
+        }
+        try:
+            _print_monte_carlo_results(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"raised: {exc}")
+
+    def test_per_signal_bootstrap_with_sufficient_trades(self):
+        fake_trades = [
+            {"action": "SELL", "pnl_pct": 1.0 + i * 0.05, "signal": "momentum"} for i in range(12)
+        ]
+        equity = [(f"2025-01-{i + 1:02d}", 100_000.0 + i * 50) for i in range(30)]
+        fake_result = {
+            "sharpe_ratio": 0.8,
+            "total_return_pct": 5.0,
+            "total_trades": 12,
+            "equity_curve": equity,
+            "trades": fake_trades,
+            "win_rate_pct": 75.0,
+            "max_drawdown_pct": 3.0,
+        }
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine.prefetch_insider_history", return_value={}),
+            patch("backtest.engine._run_simulation", return_value=fake_result),
+        ):
+            result = run_monte_carlo(
+                ["AAPL", "FLAT"], "2025-01-01", "2025-06-30", n_permutations=10
+            )
+        self.assertIn("momentum", result["per_signal"])
+        self.assertEqual(result["per_signal"]["momentum"]["trades"], 12)
+
+
+# ── run_multi_fold_walk_forward ───────────────────────────────────────────────
+
+
+class TestRunMultiFoldWalkForward(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=200)
+        with patch("backtest.engine.yf.download", return_value=raw):
+            return run_multi_fold_walk_forward(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-09-30",
+                fold_sizes=[63],
+                **kwargs,
+            )
+
+    def test_returns_by_fold_size_and_sensitivity(self):
+        result = self._run()
+        self.assertIn("by_fold_size", result)
+        self.assertIn("sensitivity", result)
+
+    def test_fold_size_entry_has_required_keys(self):
+        result = self._run()
+        for data in result["by_fold_size"].values():
+            for key in ("folds", "mean_sharpe", "profitable_pct", "n_folds"):
+                self.assertIn(key, data)
+
+    def test_sensitivity_is_zero_for_single_fold_size(self):
+        result = self._run()
+        self.assertEqual(result["sensitivity"], 0.0)
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_multi_fold_walk_forward(["AAPL"], "2025-01-01", "2025-09-30")
+        self.assertEqual(result, {})
+
+    def test_print_multi_fold_results_no_error(self):
+        result = self._run()
+        try:
+            _print_multi_fold_results(result, "2025-01-01", "2025-09-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_multi_fold_results raised: {exc}")
+
+    def test_skips_fold_size_too_large_for_date_range(self):
+        raw = _make_raw(n=50)
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = run_multi_fold_walk_forward(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-03-31",
+                fold_sizes=[500],
+            )
+        self.assertEqual(result["by_fold_size"], {})
+
+
+# ── run_crisis_slices ─────────────────────────────────────────────────────────
+
+
+class TestRunCrisisSlices(unittest.TestCase):
+    def test_returns_dict_with_period_names(self):
+        raw = _make_raw(n=400, symbols=("AAPL", "FLAT"))
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = run_crisis_slices(
+                ["AAPL", "FLAT"],
+                crisis_periods={"TEST_PERIOD": ("2025-01-02", "2025-03-31")},
+            )
+        self.assertIn("TEST_PERIOD", result)
+
+    def test_each_period_has_required_keys(self):
+        raw = _make_raw(n=400, symbols=("AAPL", "FLAT"))
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = run_crisis_slices(
+                ["AAPL", "FLAT"],
+                crisis_periods={"TEST_PERIOD": ("2025-01-02", "2025-03-31")},
+            )
+        for key in ("sharpe", "total_return_pct", "max_drawdown_pct", "total_trades"):
+            self.assertIn(key, result.get("TEST_PERIOD", {}))
+
+    def test_skips_period_on_empty_download(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_crisis_slices(
+                ["AAPL"],
+                crisis_periods={"EMPTY": ("2025-01-02", "2025-03-31")},
+            )
+        self.assertNotIn("EMPTY", result)
+
+    def test_print_crisis_slices_no_error(self):
+        r = {
+            "GFC_2008-09": {
+                "start": "2008-01-02",
+                "end": "2009-06-30",
+                "sharpe": -0.5,
+                "total_return_pct": -20.0,
+                "max_drawdown_pct": -35.0,
+                "total_trades": 12,
+                "win_rate_pct": 40.0,
+            }
+        }
+        try:
+            _print_crisis_slices(r)
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_crisis_slices raised: {exc}")
+
+    def test_skips_period_with_no_trading_dates(self):
+        # end < start produces an empty bdate_range → no trading dates → period skipped
+        raw = _make_raw(n=5)
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = run_crisis_slices(
+                ["AAPL", "FLAT"],
+                crisis_periods={"EMPTY_RANGE": ("2025-06-30", "2025-01-01")},
+            )
+        self.assertNotIn("EMPTY_RANGE", result)
+
+
+# ── run_co_firing_analysis ────────────────────────────────────────────────────
+
+
+class TestRunCoFiringAnalysis(unittest.TestCase):
+    def _run(self, **kwargs):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+        ):
+            return run_co_firing_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30", **kwargs)
+
+    def test_returns_expected_top_level_keys(self):
+        result = self._run()
+        for key in ("fire_counts", "co_fire_pct", "high_overlap_pairs", "total_buy_events"):
+            self.assertIn(key, result)
+
+    def test_total_buy_events_non_negative(self):
+        result = self._run()
+        self.assertGreaterEqual(result["total_buy_events"], 0)
+
+    def test_high_overlap_pairs_sorted_descending(self):
+        result = self._run()
+        pairs = result["high_overlap_pairs"]
+        for i in range(len(pairs) - 1):
+            self.assertGreaterEqual(pairs[i]["co_fire_pct"], pairs[i + 1]["co_fire_pct"])
+
+    def test_returns_empty_on_no_data(self):
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = run_co_firing_analysis(["AAPL"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result, {})
+
+    def test_print_co_firing_results_no_overlap(self):
+        r = {
+            "fire_counts": {"momentum": 10, "mean_reversion": 5},
+            "co_fire_pct": {},
+            "high_overlap_pairs": [],
+            "total_buy_events": 15,
+        }
+        try:
+            _print_co_firing_results(r, "2025-01-01", "2025-06-30")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_print_co_firing_results raised: {exc}")
+
+    def test_print_co_firing_results_with_overlap(self):
+        r = {
+            "fire_counts": {"momentum": 10, "mean_reversion": 10},
+            "co_fire_pct": {"momentum": {"mean_reversion": 25.0}},
+            "high_overlap_pairs": [
+                {"signal_a": "momentum", "signal_b": "mean_reversion", "co_fire_pct": 25.0}
+            ],
+            "total_buy_events": 10,
+        }
+        try:
+            _print_co_firing_results(r, "2025-01-01", "2025-06-30", threshold=20.0)
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"raised: {exc}")
+
+    def test_co_firing_matrix_built_from_multi_signal_trades(self):
+        fake_trades = [
+            {
+                "action": "BUY",
+                "signals": ["momentum", "vix_fear_reversion"],
+                "signal": "momentum",
+            },
+            {
+                "action": "BUY",
+                "signals": ["momentum", "vix_fear_reversion"],
+                "signal": "momentum",
+            },
+            {
+                "action": "BUY",
+                "signals": ["momentum"],
+                "signal": "momentum",
+            },
+        ]
+        fake_result = {
+            "sharpe_ratio": 0.5,
+            "total_return_pct": 3.0,
+            "total_trades": 3,
+            "equity_curve": [],
+            "trades": fake_trades,
+            "win_rate_pct": 66.7,
+            "max_drawdown_pct": 5.0,
+        }
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}),
+            patch("backtest.engine._run_simulation", return_value=fake_result),
+        ):
+            result = run_co_firing_analysis(["AAPL", "FLAT"], "2025-01-01", "2025-06-30")
+        self.assertEqual(result["total_buy_events"], 3)
+        self.assertIn("momentum", result["fire_counts"])
+        self.assertIn("vix_fear_reversion", result["fire_counts"])
+        # co_fire_pct should capture momentum↔vix_fear_reversion co-firing
+        self.assertIn("momentum", result["co_fire_pct"])
+        self.assertIn("vix_fear_reversion", result["co_fire_pct"]["momentum"])
+
+    def test_use_earnings_only_fetches_earnings_for_co_firing(self):
+        raw = _make_raw(n=100)
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("backtest.engine.prefetch_earnings_history", return_value={}) as mock_earn,
+        ):
+            run_co_firing_analysis(
+                ["AAPL", "FLAT"],
+                "2025-01-01",
+                "2025-06-30",
+                use_earnings_only=True,
+            )
+        mock_earn.assert_called_once()

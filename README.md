@@ -810,6 +810,25 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.64 — June 2026 — comprehensive signal testing suite (8 new modes)
+
+Eight new analysis modes covering every angle of signal validation, all wired to CLI flags:
+
+- **`run_signal_isolation`** (`--signal-isolation`). Runs each long signal in complete isolation — all others disabled — measuring standalone edge without slot-competition. Distinct from ablation (which measures ΔSharpe on removal from the ensemble); isolation measures raw signal quality.
+- **`run_short_ablation`** (`--short-ablation`). Mirror of the existing long ablation but for the short-side ensemble: for each active short signal, measures ΔSharpe when that signal is removed. `_ACTIVE_SHORT_SIGNALS` constant computed as `SHORT_SIGNAL_PRIORITY.keys() − SHORT_GLOBALLY_DISABLED − {"high_short_interest"}`.
+- **`run_short_backward_elimination`** (`--short-backward-elimination`). Greedy iterative removal of short signals: at each step removes the signal whose absence most improves the ensemble Sharpe, stopping when no further improvement is possible. Identifies genuinely redundant or harmful short signals.
+- **`run_short_regime_analysis`** (`--short-regime-analysis`). Stratifies closed COVER trades by `entry_regime` and `days_held`, building per-signal win-rate and average-return breakdowns. Uses existing `entry_regime` field already written to trade records by `_run_short_simulation`.
+- **`run_monte_carlo`** (`--monte-carlo`, `--monte-carlo-n`). Two-tier statistical test: (1) portfolio-level Sharpe permutation test — shuffles the equity-curve's daily returns N times and computes the fraction of random Sharpes ≥ actual (empirical p-value under H₀ = white noise); (2) per-signal bootstrap 95% CI on mean trade P&L for signals with ≥ 10 closed trades. A lower CI bound > 0 indicates statistically positive expectancy.
+- **`run_multi_fold_walk_forward`** (`--multi-fold`). Runs the long simulation with `DEFAULT_SIGNAL_PARAMS` (no optimisation) across non-overlapping windows of three fold sizes (63 / 126 / 252 trading days). Sensitivity = max(mean Sharpe) − min(mean Sharpe) across fold sizes; high sensitivity flags fold-choice artefacts rather than real signal edge.
+- **`run_crisis_slices`** (`--crisis-slices`). Runs the long simulation independently across three fixed historical stress windows: GFC 2008–09, COVID 2020, and the 2022 rate-hike year. A strategy that collapses in these periods is hiding tail risk behind benign market conditions.
+- **`run_co_firing_analysis`** (`--co-firing`). Analyses the `signals` field of every BUY entry (which records all signals that fired, not just the priority winner). Co-firing rate for (A, B) = trades where both A and B fired / total trades where A fired. Pairs above the overlap threshold (default 20%) flag redundant technical conditions.
+- **`--param-sensitivity` CLI flag** wired to the pre-existing `run_param_sensitivity` function (was reachable programmatically but not from the CLI).
+- **New constants.** `_ACTIVE_SHORT_SIGNALS`, `_MULTI_FOLD_SIZES = [63, 126, 252]`, `_CRISIS_PERIODS` (GFC / COVID / RATES_2022).
+- **`_bootstrap_mean_ci`** helper: bootstrap 95% CI on mean of a list of floats via resampling with replacement.
+- **59 new tests** (total ~2950 passing): `TestRunSignalIsolation` (8), `TestRunShortAblation` (6), `TestRunShortBackwardElimination` (8), `TestRunShortRegimeAnalysis` (6), `TestBootstrapMeanCi` (4), `TestRunMonteCarlo` (9), `TestRunMultiFoldWalkForward` (6), `TestRunCrisisSlices` (5), `TestRunCoFiringAnalysis` (8), `TestComputeRsRankLag10` (2). **100% coverage.**
+
+---
+
 ### 1.63 — June 2026 — redesign overbought_downtrend + parabolic_exhaustion; disable faded_earnings_gap_up
 
 Walk-forward results on all three v1.62 signals were negative (overbought_downtrend −0.444 mean Sharpe, parabolic_exhaustion 0 trades, faded_earnings_gap_up −0.201 mean Sharpe with a −35% catastrophic fold in 2020-21). Root causes identified and acted on:

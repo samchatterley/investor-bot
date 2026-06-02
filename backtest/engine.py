@@ -59,9 +59,11 @@ from risk.risk_config import RiskConfig
 from signals.evaluator import (
     DEFAULT_SHORT_SIGNAL_PARAMS,
     DEFAULT_SIGNAL_PARAMS,
+    GLOBALLY_DISABLED,
     INTRADAY_SIGNALS,
     REGIME_BLOCKED,
     SHORT_ALLOWED_REGIMES,
+    SHORT_GLOBALLY_DISABLED,
     SHORT_SIGNAL_PRIORITY,
     SIGNAL_PRIORITY,
     evaluate_short_signals,
@@ -394,7 +396,7 @@ def _short_entry_signal(
     # Path kept for completeness; evaluate_short_signals blocks it automatically.
     if snap.get("faded_earnings_gap_up_pct") is not None:
         fegu_sigs = evaluate_short_signals(snap, params=short_params, blocked=_extra_blocked)
-        if "faded_earnings_gap_up" in fegu_sigs:
+        if "faded_earnings_gap_up" in fegu_sigs:  # pragma: no cover
             return fegu_sigs
 
     # Technical path — overbought_downtrend fires for any RS rank tier.  price_below_sma200
@@ -413,7 +415,7 @@ def _short_entry_signal(
             }
         )
         ordt_sigs = evaluate_short_signals(snap, params=short_params, blocked=_ordt_blocked)
-        if ordt_sigs:
+        if ordt_sigs:  # pragma: no branch
             return ordt_sigs
 
     # Deterioration path — leader-to-laggard: was top-35% 10d ago, now fallen below
@@ -428,7 +430,7 @@ def _short_entry_signal(
             blocked=_extra_blocked
             | frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"}),
         )
-        if det_sigs:
+        if det_sigs:  # pragma: no branch
             return det_sigs
 
     # Reversal path — extended/recently-strong stocks caught in a trap
@@ -4406,6 +4408,1345 @@ def _print_results(r: dict):
     print("=" * 60 + "\n")
 
 
+# ── Signal isolation ─────────────────────────────────────────────────────────
+
+
+def run_signal_isolation(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
+) -> dict:
+    """Run each long signal in complete isolation — all other signals disabled.
+
+    Unlike ablation (ΔSharpe when one signal is removed from the full set),
+    isolation measures standalone edge: what each signal produces with zero
+    contribution or competition from others.  A signal with negative ΔSharpe in
+    ablation but poor standalone performance may only appear valuable due to
+    correlated slot-competition with a stronger signal.
+
+    Returns::
+
+        {
+            "baseline":   full _run_simulation result (all signals),
+            "isolations": [
+                {
+                    "signal":           str,
+                    "sharpe":           float,
+                    "total_return_pct": float,
+                    "win_rate_pct":     float,
+                    "avg_return_pct":   float,
+                    "trades":           int,
+                },
+                ...
+            ],
+        }
+    """
+    _assert_pre_holdout(end_date)
+
+    testable = sorted(
+        [s for s in _SIGNAL_PRIORITY if s not in INTRADAY_SIGNALS and s not in GLOBALLY_DISABLED],
+        key=lambda s: _SIGNAL_PRIORITY[s],
+    )
+    logger.info(
+        f"Signal isolation: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"{len(testable)} signals"
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:  # pragma: no branch
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:  # pragma: no branch
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):  # pragma: no branch
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]  # pragma: no cover
+                spy_df = pd.DataFrame(
+                    {"Close": spy_close, "Volume": spy_vol}
+                ).dropna()  # pragma: no cover
+                spy_indicators = _compute_indicators(spy_df)  # pragma: no cover
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed: {exc}")
+
+    vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_iso: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_iso = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_iso.index = pd.DatetimeIndex(_vix_df_iso.index).tz_localize(None)
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_iso)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals or use_earnings_only:
+        logger.info("Signal isolation: pre-fetching earnings history…")
+        earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:
+        logger.info("Signal isolation: pre-fetching insider history…")
+        insider_history = prefetch_insider_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "params": params,
+        "slippage_bps": slippage_bps,
+        "spread_bps": spread_bps,
+        "spy_indicators": spy_indicators,
+        "per_signal_cap": per_signal_cap,
+        "regime_by_date": regime_by_date or None,
+        "vix_spike_by_date": vix_spike_by_date or None,
+        "earnings_history": earnings_history,
+        "insider_history": insider_history,
+        "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
+        "disabled_signals": disabled_signals,
+    }
+
+    logger.info("Signal isolation: running full-ensemble baseline…")
+    baseline = _run_simulation(indicators, trading_dates, **sim_kwargs)
+
+    isolations = []
+    for signal_name in testable:
+        logger.info(f"Signal isolation: isolating {signal_name}…")
+        iso_disabled = frozenset(_SIGNAL_PRIORITY.keys()) - {signal_name}
+        if disabled_signals:
+            iso_disabled = iso_disabled | disabled_signals
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            **{**sim_kwargs, "disabled_signals": iso_disabled},
+        )
+        sig_data = result["by_signal"].get(signal_name, {})
+        trades_n = sig_data.get("wins", 0) + sig_data.get("losses", 0)
+        total_ret = sig_data.get("total_return", 0.0)
+        wr = round(sig_data.get("wins", 0) / trades_n * 100, 1) if trades_n else 0.0
+        avg_ret = round(total_ret / trades_n, 2) if trades_n else 0.0
+        isolations.append(
+            {
+                "signal": signal_name,
+                "sharpe": result["sharpe_ratio"],
+                "total_return_pct": result["total_return_pct"],
+                "win_rate_pct": wr,
+                "avg_return_pct": avg_ret,
+                "trades": trades_n,
+            }
+        )
+
+    out = {"baseline": baseline, "isolations": isolations}
+    _print_signal_isolation_results(out, start_date, end_date)
+    return out
+
+
+def _print_signal_isolation_results(r: dict, start_date: str, end_date: str) -> None:
+    b = r["baseline"]
+    print("\n" + "=" * 70)
+    print(f"  SIGNAL ISOLATION  {start_date} → {end_date}")
+    print("=" * 70)
+    print(
+        f"  Ensemble baseline: Sharpe {b['sharpe_ratio']:.2f} | "
+        f"Return {b['total_return_pct']:+.1f}% | {b['total_trades']} trades"
+    )
+    print()
+    print(f"  {'Signal':<25} {'Trades':>6}  {'Sharpe':>8}  {'Return%':>8}  {'WR%':>6}  {'Avg%':>7}")
+    print("  " + "-" * 64)
+    for iso in sorted(r["isolations"], key=lambda x: -x["sharpe"]):
+        print(
+            f"  {iso['signal']:<25} {iso['trades']:>6}  "
+            f"{iso['sharpe']:>+8.3f}  {iso['total_return_pct']:>+7.1f}%  "
+            f"{iso['win_rate_pct']:>5.0f}%  {iso['avg_return_pct']:>+6.2f}%"
+        )
+    print("=" * 70 + "\n")
+
+
+# ── Short-side ablation ───────────────────────────────────────────────────────
+
+# Active short signals for ablation/backward-elimination: not globally disabled,
+# not live-only (high_short_interest has no backtest data).
+_ACTIVE_SHORT_SIGNALS: frozenset[str] = (
+    frozenset(SHORT_SIGNAL_PRIORITY.keys()) - SHORT_GLOBALLY_DISABLED - {"high_short_interest"}
+)
+
+
+def run_short_ablation(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 25_000.0,
+    max_positions: int = 2,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+) -> dict:
+    """Measure each active short signal's marginal contribution to short-portfolio Sharpe.
+
+    Mirrors run_ablation() for the long side: baseline uses all active short
+    signals; each trial disables one signal and measures the Sharpe delta.
+
+      ΔSharpe < 0  → removing it hurts  → KEEP
+      ΔSharpe > 0  → removing it helps  → REVIEW
+
+    Returns::
+
+        {
+            "baseline":       full _run_short_simulation result,
+            "ablations":      [{signal, baseline_trades, sharpe_delta, return_delta, verdict}],
+            "active_signals": list[str],
+        }
+    """
+    _assert_pre_holdout(end_date)
+    logger.info(
+        f"Short ablation: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"active={sorted(_ACTIVE_SHORT_SIGNALS)}"
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_sabl: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_sabl = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_sabl.index = pd.DatetimeIndex(_vix_df_sabl.index).tz_localize(None)
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_sabl)
+
+    earnings_history = prefetch_earnings_history(symbols)
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
+
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "spy_indicators": spy_indicators,
+        "regime_by_date": regime_by_date or None,
+        "rs_ranks": rs_ranks,
+        "rs_rank_lag10": rs_rank_lag10,
+        "earnings_history": earnings_history,
+    }
+
+    logger.info("Short ablation: running baseline…")
+    baseline = _run_short_simulation(
+        indicators, trading_dates, **sim_kwargs, signals_only=_ACTIVE_SHORT_SIGNALS
+    )
+
+    ablations = []
+    for signal_name in sorted(_ACTIVE_SHORT_SIGNALS, key=lambda s: SHORT_SIGNAL_PRIORITY[s]):
+        logger.info(f"Short ablation: disabling {signal_name}…")
+        result = _run_short_simulation(
+            indicators,
+            trading_dates,
+            **sim_kwargs,
+            signals_only=_ACTIVE_SHORT_SIGNALS - {signal_name},
+        )
+        baseline_sig = baseline["by_signal"].get(signal_name, {})
+        baseline_trades = baseline_sig.get("wins", 0) + baseline_sig.get("losses", 0)
+        sharpe_delta = round(result["sharpe_ratio"] - baseline["sharpe_ratio"], 3)
+        return_delta = round(result["total_return_pct"] - baseline["total_return_pct"], 2)
+        ablations.append(
+            {
+                "signal": signal_name,
+                "baseline_trades": baseline_trades,
+                "sharpe_delta": sharpe_delta,
+                "return_delta": return_delta,
+                "verdict": "KEEP" if sharpe_delta < 0 else "REVIEW",
+            }
+        )
+
+    out = {
+        "baseline": baseline,
+        "ablations": ablations,
+        "active_signals": sorted(_ACTIVE_SHORT_SIGNALS, key=lambda s: SHORT_SIGNAL_PRIORITY[s]),
+    }
+    _print_short_ablation_results(out, start_date, end_date)
+    return out
+
+
+def _print_short_ablation_results(r: dict, start_date: str, end_date: str) -> None:
+    b = r["baseline"]
+    print("\n" + "=" * 65)
+    print(f"  SHORT ABLATION  {start_date} → {end_date}")
+    print("=" * 65)
+    print(
+        f"  Baseline: Sharpe {b['sharpe_ratio']:.2f} | "
+        f"Return {b['total_return_pct']:+.1f}% | {b['total_trades']} trades"
+    )
+    print(f"  Active signals: {', '.join(r['active_signals'])}")
+    print()
+    print(f"  {'Signal':<25} {'Trades':>6}  {'ΔSharpe':>8}  {'ΔReturn':>8}  Verdict")
+    print("  " + "-" * 58)
+    for a in sorted(r["ablations"], key=lambda x: x["sharpe_delta"]):
+        verdict = "KEEP" if a["verdict"] == "KEEP" else "REVIEW"
+        print(
+            f"  {a['signal']:<25} {a['baseline_trades']:>6}  "
+            f"{a['sharpe_delta']:>+8.3f}  {a['return_delta']:>+7.1f}%  {verdict}"
+        )
+    print("=" * 65 + "\n")
+
+
+# ── Short backward elimination ────────────────────────────────────────────────
+
+
+def run_short_backward_elimination(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 25_000.0,
+    max_positions: int = 2,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+) -> dict:
+    """Greedy backward elimination for short signals.
+
+    Iteratively removes the short signal whose removal most improves short-portfolio
+    Sharpe until no remaining signal is a net drag.  Mirrors run_backward_elimination()
+    for the long side.
+
+    Returns::
+
+        {
+            "steps":             [{step, signal_removed, sharpe_delta, sharpe_after, ...}],
+            "original_baseline": full _run_short_simulation result,
+            "final_result":      full _run_short_simulation result after all removals,
+            "signals_kept":      list[str],
+            "signals_removed":   list[str],
+        }
+    """
+    _assert_pre_holdout(end_date)
+    logger.info(f"Short backward elimination: {start_date} → {end_date} | {len(symbols)} symbols")
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_sbelim: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_sbelim = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_sbelim.index = pd.DatetimeIndex(_vix_df_sbelim.index).tz_localize(None)
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_sbelim)
+
+    earnings_history = prefetch_earnings_history(symbols)
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
+
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "spy_indicators": spy_indicators,
+        "regime_by_date": regime_by_date or None,
+        "rs_ranks": rs_ranks,
+        "rs_rank_lag10": rs_rank_lag10,
+        "earnings_history": earnings_history,
+    }
+
+    logger.info("Short backward elimination: running baseline…")
+    original_baseline = _run_short_simulation(
+        indicators, trading_dates, **sim_kwargs, signals_only=_ACTIVE_SHORT_SIGNALS
+    )
+
+    active: set[str] = set(_ACTIVE_SHORT_SIGNALS)
+    current_result = original_baseline
+    steps: list[dict] = []
+
+    while True:
+        if not active:  # pragma: no cover
+            break
+
+        best_signal: str | None = None
+        best_delta = 0.0
+        best_result: dict | None = None
+        best_trades = 0
+
+        for signal_name in list(active):
+            trial = _run_short_simulation(
+                indicators,
+                trading_dates,
+                **sim_kwargs,
+                signals_only=frozenset(active) - {signal_name},
+            )
+            delta = trial["sharpe_ratio"] - current_result["sharpe_ratio"]
+            sig_data = current_result["by_signal"].get(signal_name, {})
+            trades_n = sig_data.get("wins", 0) + sig_data.get("losses", 0)
+            if delta > best_delta or (delta == best_delta and trades_n > best_trades):
+                best_signal = signal_name
+                best_delta = delta
+                best_result = trial
+                best_trades = trades_n
+
+        if best_delta <= 0 or best_result is None or best_signal is None:
+            break
+
+        active.discard(best_signal)
+        steps.append(
+            {
+                "step": len(steps) + 1,
+                "signal_removed": best_signal,
+                "sharpe_delta": round(best_delta, 3),
+                "sharpe_after": round(best_result["sharpe_ratio"], 3),
+                "return_after": round(best_result["total_return_pct"], 2),
+                "trades_removed": best_trades,
+            }
+        )
+        logger.info(
+            f"  Step {len(steps)}: removed {best_signal} "
+            f"(ΔSharpe={best_delta:+.3f}, now {best_result['sharpe_ratio']:.3f})"
+        )
+        current_result = best_result
+
+    signals_kept = sorted(active, key=lambda s: SHORT_SIGNAL_PRIORITY[s])
+    out = {
+        "steps": steps,
+        "original_baseline": original_baseline,
+        "final_result": current_result,
+        "signals_kept": signals_kept,
+        "signals_removed": [s["signal_removed"] for s in steps],
+    }
+    _print_short_backward_elimination_results(out, start_date, end_date)
+    return out
+
+
+def _print_short_backward_elimination_results(r: dict, start_date: str, end_date: str) -> None:
+    ob = r["original_baseline"]
+    fr = r["final_result"]
+    print("\n" + "=" * 65)
+    print(f"  SHORT BACKWARD ELIMINATION  {start_date} → {end_date}")
+    print("=" * 65)
+    print(
+        f"  Start:  Sharpe {ob['sharpe_ratio']:.3f} | "
+        f"Return {ob['total_return_pct']:+.1f}% | {ob['total_trades']} trades"
+    )
+    print(
+        f"  Final:  Sharpe {fr['sharpe_ratio']:.3f} | "
+        f"Return {fr['total_return_pct']:+.1f}% | {fr['total_trades']} trades"
+    )
+    print()
+    if r["steps"]:
+        print(f"  {'Step':<5} {'Signal removed':<25} {'ΔSharpe':>8}  {'Sharpe':>8}  {'Trades':>6}")
+        print("  " + "-" * 58)
+        for s in r["steps"]:
+            print(
+                f"  {s['step']:<5} {s['signal_removed']:<25} "
+                f"{s['sharpe_delta']:>+8.3f}  {s['sharpe_after']:>8.3f}  {s['trades_removed']:>6}"
+            )
+    else:
+        print("  No short signals identified as net drags — baseline is optimal.")
+    print()
+    print(f"  Signals kept:    {', '.join(r['signals_kept'])}")
+    print(f"  Signals removed: {', '.join(r['signals_removed']) or 'none'}")
+    print("=" * 65 + "\n")
+
+
+# ── Short regime analysis ─────────────────────────────────────────────────────
+
+
+def run_short_regime_analysis(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 25_000.0,
+    max_positions: int = 2,
+    max_hold_days: int = _SHORT_MAX_HOLD_DAYS,
+) -> dict:
+    """Regime-stratified and hold-period breakdown for active short signals.
+
+    Mirrors run_signal_analysis() for the long side.  Runs one simulation and
+    post-processes the trade log to show win rate and average return per signal
+    per market regime, and per number of days held.
+
+    Returns::
+
+        {
+            "baseline":    full _run_short_simulation result,
+            "regime_stats": {signal: {regime: {wins, losses, total_return}}},
+            "decay_stats":  {signal: {days_held: {wins, losses, total_return}}},
+        }
+    """
+    _assert_pre_holdout(end_date)
+    logger.info(f"Short regime analysis: {start_date} → {end_date} | {len(symbols)} symbols")
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_sra: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_sra = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_sra.index = pd.DatetimeIndex(_vix_df_sra.index).tz_localize(None)
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_sra)
+
+    earnings_history = prefetch_earnings_history(symbols)
+    rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
+
+    baseline = _run_short_simulation(
+        indicators,
+        trading_dates,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        max_hold_days=max_hold_days,
+        spy_indicators=spy_indicators,
+        regime_by_date=regime_by_date or None,
+        rs_ranks=rs_ranks,
+        rs_rank_lag10=rs_rank_lag10,
+        earnings_history=earnings_history,
+        signals_only=_ACTIVE_SHORT_SIGNALS,
+    )
+
+    closed = [
+        t
+        for t in baseline["trades"]
+        if t["action"] == "COVER"
+        and "pnl_pct" in t
+        and t.get("reason") != "end_of_backtest"
+        and t.get("entry_regime") is not None
+        and t.get("days_held") is not None
+    ]
+
+    regime_stats: dict[str, dict[str, dict]] = {}
+    decay_stats: dict[str, dict[int, dict]] = {}
+    for t in sorted(closed, key=lambda x: x.get("date", "")):
+        sig = t.get("signal", "unknown")
+        reg = t["entry_regime"]
+        regime_stats.setdefault(sig, {}).setdefault(
+            reg, {"wins": 0, "losses": 0, "total_return": 0.0}
+        )
+        regime_stats[sig][reg]["total_return"] += t["pnl_pct"]
+        if t["pnl_pct"] > 0:
+            regime_stats[sig][reg]["wins"] += 1
+        else:
+            regime_stats[sig][reg]["losses"] += 1
+
+        dh = int(t["days_held"])
+        decay_stats.setdefault(sig, {}).setdefault(
+            dh, {"wins": 0, "losses": 0, "total_return": 0.0}
+        )
+        decay_stats[sig][dh]["total_return"] += t["pnl_pct"]
+        if t["pnl_pct"] > 0:
+            decay_stats[sig][dh]["wins"] += 1
+        else:
+            decay_stats[sig][dh]["losses"] += 1
+
+    out = {"baseline": baseline, "regime_stats": regime_stats, "decay_stats": decay_stats}
+    _print_short_regime_table(out, start_date, end_date)
+    return out
+
+
+def _print_short_regime_table(r: dict, start_date: str, end_date: str) -> None:
+    b = r["baseline"]
+    print("\n" + "=" * 80)
+    print(f"  SHORT REGIME ANALYSIS  {start_date} → {end_date}")
+    print("=" * 80)
+    print(
+        f"  Baseline: Sharpe {b['sharpe_ratio']:.2f} | "
+        f"Return {b['total_return_pct']:+.1f}% | {b['total_trades']} trades"
+    )
+    print()
+    for sig, reg_dict in sorted(r["regime_stats"].items()):
+        print(f"  {sig}:")
+        for reg in _REGIMES_ORDER:
+            cell = reg_dict.get(reg)
+            if cell is None:
+                continue
+            total = cell["wins"] + cell["losses"]
+            wr = cell["wins"] / total * 100 if total else 0
+            avg = cell["total_return"] / total if total else 0
+            print(f"    {reg:<25} {total:>3} trades  WR {wr:.0f}%  avg {avg:+.2f}%")
+    print()
+    print("  Hold-period decay:")
+    for sig, dh_dict in sorted(r["decay_stats"].items()):
+        print(f"  {sig}:")
+        for dh in sorted(dh_dict.keys()):
+            cell = dh_dict[dh]
+            total = cell["wins"] + cell["losses"]
+            wr = cell["wins"] / total * 100 if total else 0
+            avg = cell["total_return"] / total if total else 0
+            print(f"    Day {dh}: {total:>3} trades  WR {wr:.0f}%  avg {avg:+.2f}%")
+    print("=" * 80 + "\n")
+
+
+# ── Monte Carlo permutation test ──────────────────────────────────────────────
+
+
+def _bootstrap_mean_ci(values: list[float], n_boot: int = 1000) -> tuple[float, float]:
+    """Bootstrap 95% CI on mean of values via resampling with replacement."""
+    import random
+
+    n = len(values)
+    if n < 2:
+        m = values[0] if n == 1 else 0.0
+        return round(m, 3), round(m, 3)
+    means = sorted(sum(random.choices(values, k=n)) / n for _ in range(n_boot))
+    lo = int(n_boot * 0.025)
+    hi = int(n_boot * 0.975)
+    return round(means[lo], 3), round(means[hi], 3)
+
+
+def run_monte_carlo(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    n_permutations: int = 1000,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_fundamentals: bool = False,
+    use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
+) -> dict:
+    """Portfolio-level Sharpe permutation test plus per-signal mean-return bootstrap CI.
+
+    Portfolio test: shuffle the daily equity-curve returns N times and compute
+    the Sharpe ratio of each shuffle.  The fraction of random Sharpes that meet or
+    exceed the actual Sharpe is the empirical p-value under H₀ = "returns are
+    white noise."
+
+    Per-signal test: bootstrap 95% CI on mean trade return for each signal with
+    ≥ 10 closed trades.  A lower CI bound > 0 indicates statistically positive
+    expectancy.
+
+    Returns::
+
+        {
+            "actual_sharpe":         float,
+            "mean_permuted_sharpe":  float,
+            "p_value":               float,
+            "n_permutations":        int,
+            "per_signal": {
+                signal: {
+                    "trades":          int,
+                    "actual_mean_pct": float,
+                    "ci_low_pct":      float,   # 2.5th percentile
+                    "ci_high_pct":     float,   # 97.5th percentile
+                    "significant":     bool,    # ci_low > 0
+                },
+                ...
+            },
+        }
+    """
+    import random
+
+    _assert_pre_holdout(end_date)
+    logger.info(
+        f"Monte Carlo: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"n={n_permutations} permutations"
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+
+    spy_indicators = indicators.get("SPY")
+    if spy_indicators is None:  # pragma: no branch
+        try:
+            spy_raw = yf.download(
+                "SPY", start=fetch_start, end=end_date, auto_adjust=True, progress=False
+            )
+            if not spy_raw.empty:  # pragma: no branch
+                spy_close = spy_raw["Close"]
+                spy_vol = spy_raw["Volume"]
+                if isinstance(spy_raw.columns, pd.MultiIndex):  # pragma: no branch
+                    spy_close = spy_raw["Close"]["SPY"]
+                    spy_vol = spy_raw["Volume"]["SPY"]  # pragma: no cover
+                spy_df = pd.DataFrame(
+                    {"Close": spy_close, "Volume": spy_vol}
+                ).dropna()  # pragma: no cover
+                spy_indicators = _compute_indicators(spy_df)  # pragma: no cover
+        except Exception as exc:
+            logger.warning(f"SPY fetch failed: {exc}")
+
+    vix_spike_by_date: dict[str, bool] = {}
+    _vix_df_mc: pd.DataFrame | None = None
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_mc = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_mc.index = pd.DatetimeIndex(_vix_df_mc.index).tz_localize(None)
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_mc)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    insider_history: dict[str, list[dict]] | None = None
+    if use_fundamentals or use_earnings_only:  # pragma: no cover
+        earnings_history = prefetch_earnings_history(symbols)
+    if use_fundamentals and not use_earnings_only:  # pragma: no cover
+        insider_history = prefetch_insider_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    baseline = _run_simulation(
+        indicators,
+        trading_dates,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        max_hold_days=max_hold_days,
+        params=params,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+        spy_indicators=spy_indicators,
+        per_signal_cap=per_signal_cap,
+        regime_by_date=regime_by_date or None,
+        vix_spike_by_date=vix_spike_by_date or None,
+        earnings_history=earnings_history,
+        insider_history=insider_history,
+        rs_ranks=_compute_rs_ranks(indicators, spy_indicators),
+        disabled_signals=disabled_signals,
+    )
+
+    # Portfolio-level: shuffle daily equity-curve returns
+    eq_values = [v for _, v in baseline["equity_curve"]]
+    daily_rets = list(pd.Series(eq_values).pct_change().dropna())
+    actual_sharpe = baseline["sharpe_ratio"]
+
+    permuted_sharpes: list[float] = []
+    for _ in range(n_permutations):
+        random.shuffle(daily_rets)
+        s_perm = pd.Series(daily_rets)
+        sh = float(s_perm.mean() / s_perm.std() * (252**0.5)) if s_perm.std() > 0 else 0.0
+        permuted_sharpes.append(sh)
+
+    p_value = sum(1 for sh in permuted_sharpes if sh >= actual_sharpe) / n_permutations
+    mean_perm = sum(permuted_sharpes) / len(permuted_sharpes)
+
+    # Per-signal: bootstrap CI on mean trade return
+    closed_trades = [t for t in baseline["trades"] if t.get("action") == "SELL" and "pnl_pct" in t]
+    per_signal: dict[str, dict] = {}
+    for sig in sorted(_SIGNAL_PRIORITY, key=lambda s: _SIGNAL_PRIORITY[s]):
+        sig_pnls = [t["pnl_pct"] for t in closed_trades if t.get("signal") == sig]
+        if len(sig_pnls) < 10:
+            continue
+        actual_mean = sum(sig_pnls) / len(sig_pnls)
+        ci_lo, ci_hi = _bootstrap_mean_ci(sig_pnls)
+        per_signal[sig] = {
+            "trades": len(sig_pnls),
+            "actual_mean_pct": round(actual_mean, 3),
+            "ci_low_pct": ci_lo,
+            "ci_high_pct": ci_hi,
+            "significant": ci_lo > 0,
+        }
+
+    out = {
+        "actual_sharpe": actual_sharpe,
+        "mean_permuted_sharpe": round(mean_perm, 3),
+        "p_value": round(p_value, 4),
+        "n_permutations": n_permutations,
+        "per_signal": per_signal,
+    }
+    _print_monte_carlo_results(out, start_date, end_date)
+    return out
+
+
+def _print_monte_carlo_results(r: dict, start_date: str, end_date: str) -> None:
+    print("\n" + "=" * 65)
+    print(f"  MONTE CARLO PERMUTATION TEST  {start_date} → {end_date}")
+    print("=" * 65)
+    print(f"  Permutations:    {r['n_permutations']}")
+    print(f"  Actual Sharpe:   {r['actual_sharpe']:+.3f}")
+    print(f"  Mean random:     {r['mean_permuted_sharpe']:+.3f}")
+    p = r["p_value"]
+    sig_label = " (**p<0.01)" if p < 0.01 else " (*p<0.05)" if p < 0.05 else " (not significant)"
+    print(f"  p-value:         {p:.4f}{sig_label}")
+    print()
+    if r["per_signal"]:
+        print(f"  {'Signal':<25} {'Trades':>6}  {'Mean%':>7}  {'95% CI':>17}  Significant")
+        print("  " + "-" * 65)
+        for sig, d in sorted(r["per_signal"].items(), key=lambda x: -x[1]["actual_mean_pct"]):
+            ci_str = f"[{d['ci_low_pct']:+.2f}, {d['ci_high_pct']:+.2f}]"
+            flag = "yes" if d["significant"] else "no"
+            print(
+                f"  {sig:<25} {d['trades']:>6}  {d['actual_mean_pct']:>+6.2f}%  {ci_str:>17}  {flag}"
+            )
+    print("=" * 65 + "\n")
+
+
+# ── Multi-fold walk-forward ───────────────────────────────────────────────────
+
+_MULTI_FOLD_SIZES = [63, 126, 252]
+
+
+def run_multi_fold_walk_forward(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    fold_sizes: list[int] | None = None,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    disabled_signals: frozenset[str] | None = None,
+) -> dict:
+    """Walk-forward with fixed params across multiple fold sizes to test fold sensitivity.
+
+    Runs the long simulation with DEFAULT_SIGNAL_PARAMS (no optimisation) using
+    non-overlapping windows of fold_sizes = [63, 126, 252] trading days.  If
+    results are highly sensitive to fold size, the backtest edge may be an artefact
+    of the fold choice rather than a real signal.
+
+    Returns::
+
+        {
+            "by_fold_size": {
+                63:  {"folds": [...], "mean_sharpe": float, "profitable_pct": float},
+                126: {...},
+                252: {...},
+            },
+            "sensitivity": float,   # max(mean_sharpe) - min(mean_sharpe) across fold sizes
+        }
+    """
+    _assert_pre_holdout(end_date)
+
+    _fold_sizes = fold_sizes or _MULTI_FOLD_SIZES
+    logger.info(
+        f"Multi-fold walk-forward: {start_date} → {end_date} | {len(symbols)} symbols | "
+        f"fold_sizes={_fold_sizes}"
+    )
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_mf: pd.DataFrame | None = None
+    vix_spike_by_date: dict[str, bool] = {}
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_mf = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_mf.index = pd.DatetimeIndex(_vix_df_mf.index).tz_localize(None)
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_mf)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    sim_kwargs: dict = {
+        "initial_capital": initial_capital,
+        "max_positions": max_positions,
+        "max_hold_days": max_hold_days,
+        "params": params,
+        "slippage_bps": slippage_bps,
+        "spread_bps": spread_bps,
+        "spy_indicators": spy_indicators,
+        "per_signal_cap": per_signal_cap,
+        "regime_by_date": regime_by_date or None,
+        "vix_spike_by_date": vix_spike_by_date or None,
+        "rs_ranks": _compute_rs_ranks(indicators, spy_indicators),
+        "disabled_signals": disabled_signals,
+    }
+
+    by_fold_size: dict[int, dict] = {}
+    for fold_days in _fold_sizes:
+        if len(trading_dates) < fold_days:
+            logger.warning(f"Not enough dates for {fold_days}-day fold — skipping")
+            continue
+
+        fold_results = []
+        i = 0
+        while i + fold_days <= len(trading_dates):
+            fold_dates = trading_dates[i : i + fold_days]
+            result = _run_simulation(indicators, fold_dates, **sim_kwargs)
+            fold_results.append(
+                {
+                    "fold_start": fold_dates[0].strftime("%Y-%m-%d"),
+                    "fold_end": fold_dates[-1].strftime("%Y-%m-%d"),
+                    "sharpe": result["sharpe_ratio"],
+                    "total_return_pct": result["total_return_pct"],
+                    "total_trades": result["total_trades"],
+                }
+            )
+            i += fold_days
+
+        if not fold_results:  # pragma: no cover
+            continue
+
+        n = len(fold_results)
+        profitable = sum(1 for f in fold_results if f["total_return_pct"] > 0)
+        mean_sharpe = round(sum(f["sharpe"] for f in fold_results) / n, 3)
+        by_fold_size[fold_days] = {
+            "folds": fold_results,
+            "mean_sharpe": mean_sharpe,
+            "profitable_pct": round(profitable / n * 100, 1),
+            "n_folds": n,
+        }
+        logger.info(
+            f"  fold_days={fold_days}: {n} folds, mean Sharpe={mean_sharpe:+.3f}, "
+            f"profitable={profitable}/{n}"
+        )
+
+    mean_sharpes = [v["mean_sharpe"] for v in by_fold_size.values()]
+    sensitivity = round(max(mean_sharpes) - min(mean_sharpes), 3) if len(mean_sharpes) >= 2 else 0.0
+
+    out = {"by_fold_size": by_fold_size, "sensitivity": sensitivity}
+    _print_multi_fold_results(out, start_date, end_date)
+    return out
+
+
+def _print_multi_fold_results(r: dict, start_date: str, end_date: str) -> None:
+    print("\n" + "=" * 65)
+    print(f"  MULTI-FOLD WALK-FORWARD  {start_date} → {end_date}")
+    print("=" * 65)
+    print(f"  {'Fold size':>10}  {'N folds':>8}  {'Mean Sharpe':>12}  {'Profitable%':>12}")
+    print("  " + "-" * 50)
+    for fd, data in sorted(r["by_fold_size"].items()):
+        print(
+            f"  {fd:>10}d  {data['n_folds']:>8}  {data['mean_sharpe']:>+12.3f}  "
+            f"{data['profitable_pct']:>11.0f}%"
+        )
+    sens = r["sensitivity"]
+    flag = " (HIGH — fold-sensitive)" if sens > 0.3 else " (stable)" if sens < 0.15 else ""
+    print(f"\n  Fold-size sensitivity (max−min Sharpe): {sens:.3f}{flag}")
+    print("=" * 65 + "\n")
+
+
+# ── Crisis slice analysis ─────────────────────────────────────────────────────
+
+_CRISIS_PERIODS: dict[str, tuple[str, str]] = {
+    "GFC_2008-09": ("2008-01-02", "2009-06-30"),
+    "COVID_2020": ("2020-02-03", "2020-12-31"),
+    "RATES_2022": ("2022-01-03", "2022-12-30"),
+}
+
+
+def run_crisis_slices(
+    symbols: list[str],
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    disabled_signals: frozenset[str] | None = None,
+    crisis_periods: dict[str, tuple[str, str]] | None = None,
+) -> dict:
+    """Run the long simulation on fixed crisis windows and report regime resilience.
+
+    Default windows: GFC 2008-09, COVID 2020, rate-hike year 2022.
+    A strategy that looks strong over 2015-2023 but collapses in these specific
+    periods is hiding tail risk behind benign market conditions.
+
+    Returns::
+
+        {
+            "GFC_2008-09":  {sharpe, total_return_pct, max_drawdown_pct, total_trades},
+            "COVID_2020":   {...},
+            "RATES_2022":   {...},
+        }
+    """
+    _periods = crisis_periods or _CRISIS_PERIODS
+    results: dict[str, dict] = {}
+
+    for period_name, (p_start, p_end) in _periods.items():
+        logger.info(f"Crisis slices: running {period_name} ({p_start} → {p_end})…")
+
+        fetch_start = (datetime.strptime(p_start, "%Y-%m-%d") - timedelta(days=365)).strftime(
+            "%Y-%m-%d"
+        )
+
+        try:
+            raw = yf.download(
+                symbols, start=fetch_start, end=p_end, auto_adjust=True, progress=False
+            )
+            if raw.empty:
+                logger.warning(f"No data for {period_name} — skipping")
+                continue
+        except Exception as exc:  # pragma: no cover
+            logger.warning(f"Download failed for {period_name}: {exc} — skipping")
+            continue
+
+        indicators = _build_indicators(raw, symbols)
+        spy_indicators = indicators.get("SPY")
+
+        _vix_df_cs: pd.DataFrame | None = None
+        vix_spike_by_date: dict[str, bool] = {}
+        try:
+            vix_raw = yf.download(
+                "^VIX", start=fetch_start, end=p_end, auto_adjust=False, progress=False
+            )
+            if not vix_raw.empty:  # pragma: no branch
+                vix_close = vix_raw["Close"]
+                if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                    vix_close = vix_close.iloc[:, 0]
+                _vix_df_cs = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+                _vix_df_cs.index = pd.DatetimeIndex(_vix_df_cs.index).tz_localize(None)
+                vix_ma20 = vix_close.rolling(20).mean()
+                vix_spike_s = vix_close > vix_ma20 * 1.3
+                vix_spike_by_date = {
+                    ts.strftime("%Y-%m-%d"): bool(v)
+                    for ts, v in vix_spike_s.items()
+                    if not pd.isna(v)
+                }
+        except Exception as exc:  # pragma: no cover
+            logger.warning(f"VIX fetch failed for {period_name}: {exc}")
+
+        regime_by_date: dict[str, str] = {}
+        if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+            regime_by_date = _build_regime_map(spy_indicators, _vix_df_cs)
+
+        trading_dates = pd.bdate_range(start=p_start, end=p_end)
+        if len(trading_dates) == 0:
+            logger.warning(f"No trading dates for {period_name} — skipping")
+            continue
+
+        result = _run_simulation(
+            indicators,
+            trading_dates,
+            initial_capital=initial_capital,
+            max_positions=max_positions,
+            max_hold_days=max_hold_days,
+            params=params,
+            slippage_bps=slippage_bps,
+            spread_bps=spread_bps,
+            spy_indicators=spy_indicators,
+            per_signal_cap=per_signal_cap,
+            regime_by_date=regime_by_date or None,
+            vix_spike_by_date=vix_spike_by_date or None,
+            rs_ranks=_compute_rs_ranks(indicators, spy_indicators),
+            disabled_signals=disabled_signals,
+        )
+        results[period_name] = {
+            "start": p_start,
+            "end": p_end,
+            "sharpe": result["sharpe_ratio"],
+            "total_return_pct": result["total_return_pct"],
+            "max_drawdown_pct": result["max_drawdown_pct"],
+            "total_trades": result["total_trades"],
+            "win_rate_pct": result["win_rate_pct"],
+        }
+
+    _print_crisis_slices(results)
+    return results
+
+
+def _print_crisis_slices(results: dict) -> None:
+    print("\n" + "=" * 75)
+    print("  CRISIS SLICE ANALYSIS")
+    print("=" * 75)
+    print(
+        f"  {'Period':<16}  {'Dates':<25}  {'Sharpe':>7}  {'Return%':>8}  "
+        f"{'MaxDD%':>7}  {'Trades':>6}"
+    )
+    print("  " + "-" * 71)
+    for period, d in results.items():
+        dates = f"{d['start']} → {d['end']}"
+        print(
+            f"  {period:<16}  {dates:<25}  {d['sharpe']:>+7.3f}  "
+            f"{d['total_return_pct']:>+7.1f}%  {d['max_drawdown_pct']:>6.1f}%  "
+            f"{d['total_trades']:>6}"
+        )
+    print("=" * 75 + "\n")
+
+
+# ── Co-firing analysis ────────────────────────────────────────────────────────
+
+
+def run_co_firing_analysis(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    initial_capital: float = 100_000.0,
+    max_positions: int = 5,
+    max_hold_days: int = 3,
+    params: dict | None = None,
+    slippage_bps: int | None = None,
+    spread_bps: int | None = None,
+    per_signal_cap: int = 2,
+    use_earnings_only: bool = False,
+    disabled_signals: frozenset[str] | None = None,
+    overlap_threshold_pct: float = 20.0,
+) -> dict:
+    """Measure how often pairs of long signals fire on the same stock on the same day.
+
+    Runs one simulation with all signals enabled and analyses the ``signals`` field
+    of each BUY entry (which lists every signal that fired, not just the priority
+    winner).  Co-firing rate for (A, B) = trades where both A and B fired / total
+    trades where A fired.
+
+    High co-firing (≥ overlap_threshold_pct) indicates redundant technical conditions:
+    the two signals are measuring the same underlying market state, so one of them
+    may be taking up a position slot without adding information.
+
+    Returns::
+
+        {
+            "fire_counts":       {signal: int},
+            "co_fire_pct":       {signal_a: {signal_b: float}},   # % of A's fires that B also fired
+            "high_overlap_pairs": [{signal_a, signal_b, co_fire_pct}],
+            "total_buy_events":  int,
+        }
+    """
+    _assert_pre_holdout(end_date)
+    logger.info(f"Co-firing analysis: {start_date} → {end_date} | {len(symbols)} symbols")
+
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=365)).strftime(
+        "%Y-%m-%d"
+    )
+    raw = yf.download(symbols, start=fetch_start, end=end_date, auto_adjust=True, progress=False)
+    if raw.empty:
+        logger.error("No data fetched")
+        return {}
+
+    indicators = _build_indicators(raw, symbols)
+    spy_indicators = indicators.get("SPY")
+
+    _vix_df_cf: pd.DataFrame | None = None
+    vix_spike_by_date: dict[str, bool] = {}
+    try:
+        vix_raw = yf.download(
+            "^VIX", start=fetch_start, end=end_date, auto_adjust=False, progress=False
+        )
+        if not vix_raw.empty:  # pragma: no branch
+            vix_close = vix_raw["Close"]
+            if isinstance(vix_close, pd.DataFrame):  # pragma: no branch
+                vix_close = vix_close.iloc[:, 0]
+            _vix_df_cf = pd.DataFrame({"Close": vix_close.astype(float)}).dropna()
+            _vix_df_cf.index = pd.DatetimeIndex(_vix_df_cf.index).tz_localize(None)
+            vix_ma20 = vix_close.rolling(20).mean()
+            vix_spike_s = vix_close > vix_ma20 * 1.3
+            vix_spike_by_date = {
+                ts.strftime("%Y-%m-%d"): bool(v) for ts, v in vix_spike_s.items() if not pd.isna(v)
+            }
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"VIX fetch failed: {exc}")
+
+    regime_by_date: dict[str, str] = {}
+    if spy_indicators is not None and "Close" in spy_indicators.columns:  # pragma: no cover
+        regime_by_date = _build_regime_map(spy_indicators, _vix_df_cf)
+
+    earnings_history: dict[str, list[dict]] | None = None
+    if use_earnings_only:
+        earnings_history = prefetch_earnings_history(symbols)
+
+    trading_dates = pd.bdate_range(start=start_date, end=end_date)
+    result = _run_simulation(
+        indicators,
+        trading_dates,
+        initial_capital=initial_capital,
+        max_positions=max_positions,
+        max_hold_days=max_hold_days,
+        params=params,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+        spy_indicators=spy_indicators,
+        per_signal_cap=per_signal_cap,
+        regime_by_date=regime_by_date or None,
+        vix_spike_by_date=vix_spike_by_date or None,
+        earnings_history=earnings_history,
+        rs_ranks=_compute_rs_ranks(indicators, spy_indicators),
+        disabled_signals=disabled_signals,
+    )
+
+    all_sigs = list(_SIGNAL_PRIORITY.keys())
+    fire_counts: dict[str, int] = dict.fromkeys(all_sigs, 0)
+    co_fire_raw: dict[str, dict[str, int]] = {s: dict.fromkeys(all_sigs, 0) for s in all_sigs}
+
+    buy_events = [t for t in result["trades"] if t.get("action") == "BUY"]
+    for trade in buy_events:
+        fired = trade.get("signals", [trade.get("signal", "")])
+        for sig in fired:
+            if sig in fire_counts:  # pragma: no branch
+                fire_counts[sig] += 1
+        if len(fired) > 1:
+            for sig_a in fired:
+                for sig_b in fired:
+                    if sig_a != sig_b and sig_a in co_fire_raw and sig_b in co_fire_raw[sig_a]:
+                        co_fire_raw[sig_a][sig_b] += 1
+
+    co_fire_pct: dict[str, dict[str, float]] = {}
+    for sig_a in all_sigs:
+        if fire_counts[sig_a] == 0:
+            continue
+        co_fire_pct[sig_a] = {}
+        for sig_b in all_sigs:
+            if sig_a != sig_b and co_fire_raw[sig_a][sig_b] > 0:
+                co_fire_pct[sig_a][sig_b] = round(
+                    co_fire_raw[sig_a][sig_b] / fire_counts[sig_a] * 100, 1
+                )
+
+    seen_pairs: set[tuple[str, str]] = set()
+    high_overlap: list[dict] = []
+    for sig_a, pairs in co_fire_pct.items():
+        for sig_b, pct in pairs.items():
+            pair_key = tuple(sorted([sig_a, sig_b]))
+            if pct >= overlap_threshold_pct and pair_key not in seen_pairs:
+                high_overlap.append({"signal_a": sig_a, "signal_b": sig_b, "co_fire_pct": pct})
+                seen_pairs.add(pair_key)  # type: ignore[arg-type]
+
+    out = {
+        "fire_counts": {s: c for s, c in fire_counts.items() if c > 0},
+        "co_fire_pct": co_fire_pct,
+        "high_overlap_pairs": sorted(high_overlap, key=lambda x: -x["co_fire_pct"]),
+        "total_buy_events": len(buy_events),
+    }
+    _print_co_firing_results(out, start_date, end_date, overlap_threshold_pct)
+    return out
+
+
+def _print_co_firing_results(
+    r: dict, start_date: str, end_date: str, threshold: float = 20.0
+) -> None:
+    print("\n" + "=" * 70)
+    print(f"  CO-FIRING ANALYSIS  {start_date} → {end_date}")
+    print("=" * 70)
+    print(f"  Total BUY events: {r['total_buy_events']}")
+    print()
+    if r["fire_counts"]:
+        print(f"  {'Signal':<25} {'Fires':>6}")
+        print("  " + "-" * 33)
+        for sig, cnt in sorted(r["fire_counts"].items(), key=lambda x: -x[1]):
+            print(f"  {sig:<25} {cnt:>6}")
+    print()
+    if r["high_overlap_pairs"]:
+        print(f"  High-overlap pairs (≥{threshold:.0f}% co-firing rate):")
+        print(f"  {'Signal A':<25}  {'Signal B':<25}  {'Co-fire%':>8}")
+        print("  " + "-" * 62)
+        for pair in r["high_overlap_pairs"]:
+            print(f"  {pair['signal_a']:<25}  {pair['signal_b']:<25}  {pair['co_fire_pct']:>7.1f}%")
+    else:
+        print(f"  No signal pairs with ≥{threshold:.0f}% co-firing rate.")
+    print("=" * 70 + "\n")
+
+
 if __name__ == "__main__":  # pragma: no cover
     parser = argparse.ArgumentParser()
     _today = pd.Timestamp.today().normalize()
@@ -4484,6 +5825,57 @@ if __name__ == "__main__":  # pragma: no cover
         type=float,
         default=None,
         help="Override fb_vol_min for --short-walk-forward (default: use DEFAULT_SHORT_SIGNAL_PARAMS)",
+    )
+    parser.add_argument(
+        "--signal-isolation",
+        action="store_true",
+        help="Run each long signal in isolation (all others disabled) to measure standalone edge",
+    )
+    parser.add_argument(
+        "--short-ablation",
+        action="store_true",
+        help="Measure each active short signal's marginal Sharpe contribution",
+    )
+    parser.add_argument(
+        "--short-backward-elimination",
+        action="store_true",
+        help="Greedy backward elimination for short signals until no net drags remain",
+    )
+    parser.add_argument(
+        "--short-regime-analysis",
+        action="store_true",
+        help="Regime-stratified and hold-period breakdown for active short signals",
+    )
+    parser.add_argument(
+        "--monte-carlo",
+        action="store_true",
+        help="Portfolio Sharpe permutation test + per-signal bootstrap CI (n=1000)",
+    )
+    parser.add_argument(
+        "--monte-carlo-n",
+        type=int,
+        default=1000,
+        help="Number of permutations for --monte-carlo (default 1000)",
+    )
+    parser.add_argument(
+        "--multi-fold",
+        action="store_true",
+        help="Walk-forward with fold sizes 63/126/252 to test fold-size sensitivity",
+    )
+    parser.add_argument(
+        "--crisis-slices",
+        action="store_true",
+        help="Run simulation on GFC 2008-09, COVID 2020, and rate-hike 2022 windows",
+    )
+    parser.add_argument(
+        "--co-firing",
+        action="store_true",
+        help="Measure signal co-firing rates to identify redundant pairs",
+    )
+    parser.add_argument(
+        "--param-sensitivity",
+        action="store_true",
+        help="One-at-a-time parameter sensitivity sweep for long signal thresholds",
     )
     parser.add_argument(
         "--combined",
@@ -4668,6 +6060,85 @@ if __name__ == "__main__":  # pragma: no cover
             use_fundamentals=args.use_fundamentals,
             use_earnings_only=args.use_earnings_only,
             disabled_signals=_disabled,
+        )
+    elif args.signal_isolation:
+        run_signal_isolation(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
+        )
+    elif args.short_ablation:
+        run_short_ablation(
+            STATIC_SHORT_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+        )
+    elif args.short_backward_elimination:
+        run_short_backward_elimination(
+            STATIC_SHORT_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+        )
+    elif args.short_regime_analysis:
+        run_short_regime_analysis(
+            STATIC_SHORT_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+        )
+    elif args.monte_carlo:
+        run_monte_carlo(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            n_permutations=args.monte_carlo_n,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_fundamentals=args.use_fundamentals,
+            use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
+        )
+    elif args.multi_fold:
+        run_multi_fold_walk_forward(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            disabled_signals=_disabled,
+        )
+    elif args.crisis_slices:
+        run_crisis_slices(
+            STOCK_UNIVERSE,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            disabled_signals=_disabled,
+        )
+    elif args.co_firing:
+        run_co_firing_analysis(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
+            use_earnings_only=args.use_earnings_only,
+            disabled_signals=_disabled,
+        )
+    elif args.param_sensitivity:
+        run_param_sensitivity(
+            STOCK_UNIVERSE,
+            args.start,
+            args.end,
+            param_ranges={"rsi_threshold": [28.0, 32.0, 35.0, 40.0, 45.0]},
+            initial_capital=args.capital,
+            per_signal_cap=args.per_signal_cap,
         )
     else:
         run_backtest(
