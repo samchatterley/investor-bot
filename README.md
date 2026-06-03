@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.72 — June 2026 — AV sentiment same-day cache + parallel market context fetch
+
+Two independent performance improvements that together cut each trading window's wall time by ~30–85 seconds.
+
+- **`data/av_sentiment.py` — same-day cache.** `_live_fetch_av_sentiment` returns `None` sentinels for symbols with no articles. `get_av_sentiment` reads `logs/av_sentiment_cache.json` first; only live-fetches cache misses. `prefetch_av_sentiment` warms all ~509 symbols at 07:00 ET. Estimated saving: ~65 s per window eliminated (AV's 13 s rate-limit sleep × batches, now 0 s on cache hit). Same pattern as v1.69–1.70.
+- **`_fetch_market_context()` — parallelized with `ThreadPoolExecutor(5)`.** The five I/O calls (`get_vix`, `get_market_regime`, `get_macro_risk`, `get_sector_performance`, `get_leading_sectors`, `get_latest_review`) were sequential; now run concurrently. `get_vix` and `get_market_regime` are chained inside `_vix_and_regime()` to preserve the vix → regime dependency. Wall time drops from `sum(latencies)` to `max(latency)`, estimated 10–20 s saving.
+- **`scripts/run_scheduler.py`** updated to call `prefetch_av_sentiment()` in `_prefetch()`.
+- **36 new/updated tests**: 31 in `test_av_sentiment.py` (100% coverage on new module), 5 in `TestFetchMarketContext` (all paths through the parallel executor), 1 stub addition in `test_scheduler.py`. **3276 passing.**
+
+---
+
 ### 1.71 — June 2026 — startup cache warm on late scheduler restart
 
 Fixes the cold-cache problem when the scheduler is killed and restarted after the 07:00 ET prefetch window has passed.
