@@ -2,11 +2,14 @@
 Runs the trading bot four times per trading day (all times America/New_York):
   09:31 ET — open sells       (earnings exits, AI sell decisions, no new buys)
   10:00 ET — open buys        (fresh AI buy analysis after open noise settles)
-  12:00 ET — midday check     (partial exits, no new buys)
-  15:30 ET — pre-close check  (final position review)
+  12:00 ET — midday           (partial exits + new buys on confirmed signals)
+  15:30 ET — pre-close check  (final position review, no new buys)
 
 Splitting open into two windows avoids buying into the noisy first 30 minutes
 of the session while still executing time-sensitive exits at the bell.
+Midday buys capture intraday signal confirmation (VWAP reclaim, ORB follow-
+through) that isn't visible at 10:00; the daily notional budget and position
+slot cap apply across both open and midday buy phases.
 Times are scheduled in NYSE timezone directly — no BST/GMT conversion needed.
 Leave this process running in a terminal or tmux session.
 """
