@@ -810,6 +810,31 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.70 — June 2026 — same-day cache for earnings and short interest data
+
+Extends the pre-market prefetch introduced in v1.66/v1.69 to cover all remaining static signals, eliminating ~64 seconds of sequential yfinance requests from every intraday trading window.
+
+- **`data/earnings_surprise.py` — same-day cache + shared single-fetch.** `_live_fetch_earnings` now fetches `yf.Ticker(sym).earnings_dates` once per symbol and computes both the PEAD beat and negative-PEAD miss results in a single pass. Cache stored at `logs/earnings_cache.json` keyed by ET business date. `get_earnings_surprise` and `get_earnings_miss` both read from the same per-symbol entry — no duplicate yfinance calls. `None` sentinels mark ETFs and no-data symbols so they are not re-queried within the same day.
+- **`data/short_interest.py` — same-day cache.** `_live_fetch_short_interest` populates `logs/short_interest_cache.json` with `None` sentinels for below-threshold symbols; `get_short_interest` serves cache hits instantly.
+- **`prefetch_earnings_data` / `prefetch_short_interest`** (new public functions). Called from the 07:00 ET pre-market prefetch job; warm all ~509 symbols before `open_sells`. Safe to call multiple times — already-cached symbols are skipped.
+- **`scripts/run_scheduler.py`** updated to call both new prefetch functions in the existing `_prefetch()` job, each wrapped in an independent try/except so a failure in one does not abort the others.
+- **Latency savings**: earnings surprise + earnings miss reduced from ~64 s combined to ~0 s (cache hit); short interest from ~32 s to ~0 s. Total intraday saving per window: ~1.5 minutes on top of the ~19 min saved in v1.69.
+- **61 new/updated tests** (`test_earnings_surprise.py`, `test_short_interest.py`): `TestEarningsCacheShared` (6), `TestPrefetchEarningsData` (5), `TestLoadSaveCacheEarnings` (4), `TestShortInterestCache` (4), `TestPrefetchShortInterest` (5), `TestLoadSaveCacheShortInterest` (4); plus all pre-existing tests updated with `_load_cache`/`_save_cache`/`today_et` patches. **3253 passing, 100% coverage.**
+
+---
+
+### 1.69 — June 2026 — same-day cache for SEC EDGAR insider activity
+
+Eliminates the 19-minute `open_sells` block caused by sequential EDGAR HTTP requests for 641 symbols.
+
+- **`data/insider_feed.py` — same-day cache.** Original `get_insider_activity` logic extracted to `_live_fetch(symbols, ...)`, which now returns every symbol (with `None` for no activity) so results can be cached as sentinels. New `get_insider_activity` checks `logs/insider_cache.json` first and only calls EDGAR on cache miss. `None` sentinels prevent repeat requests within the same calendar day.
+- **`prefetch_insider_activity`** (new public function). Called from the 07:00 ET prefetch job; warms all ~641 symbols in ~19 minutes before market open so `open_sells` reads from disk.
+- **`scripts/run_scheduler.py`** updated to call `prefetch_insider_activity()` in `_prefetch()`.
+- **Latency saved**: `open_sells` EDGAR block reduced from ~19 minutes to <1 second.
+- **33 new/updated tests** (`test_insider_feed.py`): `TestGetInsiderActivityCache` (4), `TestPrefetchInsiderActivity` (5), `TestLoadSaveCache` (4), `TestRecentForm4FilingsCutoff` (1); plus all pre-existing tests updated with cache patches. **~3220 passing, 100% coverage.**
+
+---
+
 ### 1.66 — June 2026 — same-day market data cache + pre-market prefetch
 
 Eliminates redundant data downloads across the four daily trading windows.
