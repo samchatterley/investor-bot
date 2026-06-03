@@ -15,7 +15,12 @@ def _load_scheduler_module():
         "config": MagicMock(HALT_FILE="halt", validate=MagicMock()),
         "main": MagicMock(),
         "analysis": MagicMock(),
+        "analysis.performance": MagicMock(),
         "analysis.weekly_review": MagicMock(),
+        "data.earnings_surprise": MagicMock(),
+        "data.insider_feed": MagicMock(),
+        "data.market_data": MagicMock(),
+        "data.short_interest": MagicMock(),
         "notifications": MagicMock(),
         "notifications.emailer": MagicMock(),
         "scripts": MagicMock(),
@@ -494,6 +499,51 @@ class TestSigtermHandler(unittest.TestCase):
             mod._sigterm_handler(15, None)
         mock_remove.assert_called_once()
         self.assertEqual(ctx.exception.code, 0)
+
+
+class TestStartupPrefetch(unittest.TestCase):
+    """Tests for _startup_prefetch in run_scheduler.py."""
+
+    def test_weekday_starts_daemon_thread_targeting_prefetch(self):
+        import threading as _threading
+        from datetime import date
+
+        mod = _load_scheduler_module()
+        mock_thread = MagicMock()
+        mod.config.today_et.return_value = date(2026, 6, 3)  # Wednesday
+
+        with patch.object(_threading, "Thread", return_value=mock_thread) as mock_thread_cls:
+            mod._startup_prefetch()
+
+        mock_thread_cls.assert_called_once()
+        call_kwargs = mock_thread_cls.call_args.kwargs
+        self.assertIs(call_kwargs["target"], mod._prefetch)
+        self.assertTrue(call_kwargs["daemon"])
+        mock_thread.start.assert_called_once()
+
+    def test_saturday_is_no_op(self):
+        import threading as _threading
+        from datetime import date
+
+        mod = _load_scheduler_module()
+        mod.config.today_et.return_value = date(2026, 6, 6)  # Saturday (weekday=5)
+
+        with patch.object(_threading, "Thread") as mock_thread_cls:
+            mod._startup_prefetch()
+
+        mock_thread_cls.assert_not_called()
+
+    def test_sunday_is_no_op(self):
+        import threading as _threading
+        from datetime import date
+
+        mod = _load_scheduler_module()
+        mod.config.today_et.return_value = date(2026, 6, 7)  # Sunday (weekday=6)
+
+        with patch.object(_threading, "Thread") as mock_thread_cls:
+            mod._startup_prefetch()
+
+        mock_thread_cls.assert_not_called()
 
 
 if __name__ == "__main__":  # pragma: no cover

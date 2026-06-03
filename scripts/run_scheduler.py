@@ -57,6 +57,7 @@ def _remove_pid_file() -> None:
 import atexit  # noqa: E402
 import logging  # noqa: E402
 import signal  # noqa: E402
+import threading  # noqa: E402
 import time  # noqa: E402
 
 import schedule  # noqa: E402
@@ -169,6 +170,19 @@ def _weekly_review():
         logger.error(f"Weekly review failed: {e}", exc_info=True)
 
 
+def _startup_prefetch() -> None:
+    """Warm caches immediately on startup in case the 07:00 ET prefetch was missed.
+
+    Runs _prefetch() in a daemon thread so the scheduler loop is not blocked.
+    No-op on weekends.  Each prefetch function returns instantly when the
+    same-day cache is already warm, so this is a fast no-op on normal days.
+    """
+    if config.today_et().weekday() >= 5:  # Saturday=5, Sunday=6
+        return
+    logger.info("Startup: launching background cache warm (no-op if 07:00 prefetch already ran)...")
+    threading.Thread(target=_prefetch, daemon=True, name="startup-prefetch").start()
+
+
 def _sigterm_handler(_signum, _frame):
     _remove_pid_file()
     sys.exit(0)
@@ -178,6 +192,7 @@ if __name__ == "__main__":  # pragma: no cover
     _check_singleton()
     atexit.register(_remove_pid_file)
     signal.signal(signal.SIGTERM, _sigterm_handler)
+    _startup_prefetch()
 
     # Append to log file so history survives launchd restarts
     _log_path = os.path.join(_ROOT, "logs", "scheduler.log")
