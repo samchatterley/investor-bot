@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.71 — June 2026 — startup cache warm on late scheduler restart
+
+Fixes the cold-cache problem when the scheduler is killed and restarted after the 07:00 ET prefetch window has passed.
+
+- **`_startup_prefetch()`** (new function in `scripts/run_scheduler.py`). Fires `_prefetch()` in a background daemon thread immediately when the scheduler starts, so all caches (market data, insider activity, earnings, short interest) warm in the background without blocking the scheduler loop. No-op on weekends and instantly exits per-symbol if the same-day cache is already warm.
+- **Root cause fixed**: on 2026-06-03 the scheduler process (PID 34349) was restarted at 13:51 BST, after the 12:00 BST (07:00 ET) prefetch window. All four caches were empty; `open_sells` had to fetch insider data live, taking ~80 minutes. After v1.71 any restart — at any time of day — triggers an immediate background warm.
+- **`test_scheduler.py`** — 3 new tests (`TestStartupPrefetch`): weekday fires a daemon thread targeting `_prefetch`; Saturday and Sunday are no-ops. Also fixes a pre-existing isolation bug where missing `analysis.performance` / `data.*` stubs caused `ModuleNotFoundError` when the file was run standalone.
+- **3256 passing** (3 new tests), 100% coverage on changed files.
+
+---
+
 ### 1.70 — June 2026 — same-day cache for earnings and short interest data
 
 Extends the pre-market prefetch introduced in v1.66/v1.69 to cover all remaining static signals, eliminating ~64 seconds of sequential yfinance requests from every intraday trading window.
