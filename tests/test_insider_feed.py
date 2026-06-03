@@ -6,14 +6,19 @@ from unittest.mock import MagicMock, patch
 
 from data.insider_feed import (
     _get_cik_map,
+    _load_cache,
     _parse_form4,
     _recent_form4_filings,
+    _save_cache,
     get_insider_activity,
+    prefetch_insider_activity,
 )
 
 # Dynamic dates — always within the 10-day default lookback window
 _D1 = (date.today() - timedelta(days=1)).isoformat()
 _D2 = (date.today() - timedelta(days=2)).isoformat()
+
+_TODAY = date(2026, 6, 3)
 
 _TICKERS_JSON = {
     "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
@@ -240,8 +245,11 @@ class TestGetInsiderActivity(unittest.TestCase):
 
     def test_cluster_true_when_two_insiders(self):
         with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
             patch("data.insider_feed.requests.get", side_effect=self._mock_two_insiders()),
             patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertIn("AAPL", result)
@@ -260,6 +268,8 @@ class TestGetInsiderActivity(unittest.TestCase):
             }
         }
         with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
             patch(
                 "data.insider_feed.requests.get",
                 side_effect=[
@@ -269,6 +279,7 @@ class TestGetInsiderActivity(unittest.TestCase):
                 ],
             ),
             patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertIn("AAPL", result)
@@ -287,6 +298,8 @@ class TestGetInsiderActivity(unittest.TestCase):
             }
         }
         with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
             patch(
                 "data.insider_feed.requests.get",
                 side_effect=[
@@ -296,14 +309,18 @@ class TestGetInsiderActivity(unittest.TestCase):
                 ],
             ),
             patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertTrue(result["AAPL"]["insider_large_buy"])
 
     def test_returns_empty_for_unknown_symbol(self):
         with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
             patch("data.insider_feed.requests.get") as mock_get,
             patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
         ):
             mock_get.return_value = _mock_response(json_data=_TICKERS_JSON)
             result = get_insider_activity(["UNKNOWN_TICKER_XYZ"])
@@ -311,8 +328,11 @@ class TestGetInsiderActivity(unittest.TestCase):
 
     def test_returns_empty_dict_on_full_network_failure(self):
         with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
             patch("data.insider_feed.requests.get", side_effect=Exception("network down")),
             patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertEqual(result, {})
@@ -329,6 +349,8 @@ class TestGetInsiderActivity(unittest.TestCase):
             }
         }
         with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
             patch(
                 "data.insider_feed.requests.get",
                 side_effect=[
@@ -337,9 +359,308 @@ class TestGetInsiderActivity(unittest.TestCase):
                 ],
             ),
             patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertNotIn("AAPL", result)
+
+
+class TestGetInsiderActivityCache(unittest.TestCase):
+    """Tests for the same-day caching behaviour of get_insider_activity."""
+
+    def setUp(self):
+        _get_cik_map.cache_clear()
+
+    def tearDown(self):
+        _get_cik_map.cache_clear()
+
+    def test_cache_hit_returns_without_network_call(self):
+        today_key = _TODAY.isoformat()
+        cached_data = {
+            "insider_cluster": True,
+            "insider_unique_insiders": 2,
+            "insider_transaction_count": 3,
+            "insider_total_shares": 8000.0,
+            "insider_large_buy": True,
+        }
+        warm_cache = {today_key: {"AAPL": cached_data}}
+        with (
+            patch("data.insider_feed._load_cache", return_value=warm_cache),
+            patch("data.insider_feed._save_cache") as mock_save,
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            result = get_insider_activity(["AAPL"])
+        mock_get.assert_not_called()
+        mock_save.assert_not_called()
+        self.assertEqual(result["AAPL"], cached_data)
+
+    def test_null_sentinel_omits_symbol_from_result(self):
+        # None in cache means "fetched, no activity" — symbol must not appear in result
+        today_key = _TODAY.isoformat()
+        warm_cache = {today_key: {"AAPL": None}}
+        with (
+            patch("data.insider_feed._load_cache", return_value=warm_cache),
+            patch("data.insider_feed._save_cache"),
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            result = get_insider_activity(["AAPL"])
+        mock_get.assert_not_called()
+        self.assertNotIn("AAPL", result)
+
+    def test_partial_cache_hit_only_fetches_missing(self):
+        # AAPL already cached (with data), MSFT missing → only MSFT should be fetched
+        today_key = _TODAY.isoformat()
+        aapl_data = {
+            "insider_cluster": False,
+            "insider_unique_insiders": 1,
+            "insider_transaction_count": 1,
+            "insider_total_shares": 1000.0,
+            "insider_large_buy": False,
+        }
+        partial_cache = {today_key: {"AAPL": aapl_data}}
+        no_filings = {
+            "filings": {
+                "recent": {
+                    "form": ["10-K"],
+                    "filingDate": ["2026-01-15"],
+                    "accessionNumber": ["0000789019-26-000010"],
+                    "primaryDocument": ["10k.htm"],
+                }
+            }
+        }
+        with (
+            patch("data.insider_feed._load_cache", return_value=partial_cache),
+            patch("data.insider_feed._save_cache") as mock_save,
+            patch(
+                "data.insider_feed.requests.get",
+                side_effect=[
+                    _mock_response(json_data=_TICKERS_JSON),
+                    _mock_response(json_data=no_filings),
+                ],
+            ),
+            patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            result = get_insider_activity(["AAPL", "MSFT"])
+        # AAPL returned from cache; MSFT fetched but had no activity
+        self.assertIn("AAPL", result)
+        self.assertNotIn("MSFT", result)
+        mock_save.assert_called_once()
+
+    def test_cache_miss_saves_after_fetch(self):
+        with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache") as mock_save,
+            patch(
+                "data.insider_feed.requests.get",
+                side_effect=[
+                    _mock_response(json_data=_TICKERS_JSON),
+                    _mock_response(
+                        json_data={
+                            "filings": {
+                                "recent": {
+                                    "form": [],
+                                    "filingDate": [],
+                                    "accessionNumber": [],
+                                    "primaryDocument": [],
+                                }
+                            }
+                        }
+                    ),
+                ],
+            ),
+            patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            get_insider_activity(["AAPL"])
+        mock_save.assert_called_once()
+        saved_arg = mock_save.call_args[0][0]
+        self.assertIn(_TODAY.isoformat(), saved_arg)
+
+
+class TestPrefetchInsiderActivity(unittest.TestCase):
+    def setUp(self):
+        _get_cik_map.cache_clear()
+
+    def tearDown(self):
+        _get_cik_map.cache_clear()
+
+    def test_returns_count_of_symbols_fetched(self):
+        no_filings = {
+            "filings": {
+                "recent": {
+                    "form": [],
+                    "filingDate": [],
+                    "accessionNumber": [],
+                    "primaryDocument": [],
+                }
+            }
+        }
+        with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
+            patch(
+                "data.insider_feed.requests.get",
+                side_effect=[
+                    _mock_response(json_data=_TICKERS_JSON),
+                    _mock_response(json_data=no_filings),
+                    _mock_response(json_data=no_filings),
+                ],
+            ),
+            patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            n = prefetch_insider_activity(["AAPL", "MSFT"])
+        self.assertEqual(n, 2)
+
+    def test_warm_cache_returns_zero(self):
+        today_key = _TODAY.isoformat()
+        warm_cache = {today_key: {"AAPL": None, "MSFT": None}}
+        with (
+            patch("data.insider_feed._load_cache", return_value=warm_cache),
+            patch("data.insider_feed._save_cache") as mock_save,
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            n = prefetch_insider_activity(["AAPL", "MSFT"])
+        self.assertEqual(n, 0)
+        mock_get.assert_not_called()
+        mock_save.assert_not_called()
+
+    def test_uses_stock_universe_when_symbols_none(self):
+        with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache"),
+            patch("data.insider_feed._live_fetch", return_value={}) as mock_fetch,
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+            patch("data.insider_feed.STOCK_UNIVERSE", {"AAPL", "MSFT"}),
+        ):
+            prefetch_insider_activity()
+        fetched_syms = set(mock_fetch.call_args[0][0])
+        self.assertEqual(fetched_syms, {"AAPL", "MSFT"})
+
+    def test_saves_today_key_to_cache(self):
+        no_filings = {
+            "filings": {
+                "recent": {
+                    "form": [],
+                    "filingDate": [],
+                    "accessionNumber": [],
+                    "primaryDocument": [],
+                }
+            }
+        }
+        with (
+            patch("data.insider_feed._load_cache", return_value={}),
+            patch("data.insider_feed._save_cache") as mock_save,
+            patch(
+                "data.insider_feed.requests.get",
+                side_effect=[
+                    _mock_response(json_data=_TICKERS_JSON),
+                    _mock_response(json_data=no_filings),
+                ],
+            ),
+            patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            prefetch_insider_activity(["AAPL"])
+        saved_arg = mock_save.call_args[0][0]
+        self.assertIn(_TODAY.isoformat(), saved_arg)
+
+    def test_discards_stale_date_keys(self):
+        # Previous day's cache should be replaced, not merged
+        yesterday_key = (date(2026, 6, 2)).isoformat()
+        stale_cache = {yesterday_key: {"AAPL": None}}
+        no_filings = {
+            "filings": {
+                "recent": {
+                    "form": [],
+                    "filingDate": [],
+                    "accessionNumber": [],
+                    "primaryDocument": [],
+                }
+            }
+        }
+        with (
+            patch("data.insider_feed._load_cache", return_value=stale_cache),
+            patch("data.insider_feed._save_cache") as mock_save,
+            patch(
+                "data.insider_feed.requests.get",
+                side_effect=[
+                    _mock_response(json_data=_TICKERS_JSON),
+                    _mock_response(json_data=no_filings),
+                ],
+            ),
+            patch("data.insider_feed.time.sleep"),
+            patch("data.insider_feed.today_et", return_value=_TODAY),
+        ):
+            prefetch_insider_activity(["AAPL"])
+        saved_arg = mock_save.call_args[0][0]
+        self.assertNotIn(yesterday_key, saved_arg)
+        self.assertIn(_TODAY.isoformat(), saved_arg)
+
+
+class TestLoadSaveCache(unittest.TestCase):
+    def test_load_returns_empty_on_missing_file(self):
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            result = _load_cache()
+        self.assertEqual(result, {})
+
+    def test_load_returns_empty_on_json_error(self):
+        import json as _json
+        from unittest.mock import mock_open
+
+        with (
+            patch("builtins.open", mock_open(read_data="not valid json")),
+            patch("data.insider_feed.json.load", side_effect=_json.JSONDecodeError("err", "", 0)),
+        ):
+            result = _load_cache()
+        self.assertEqual(result, {})
+
+    def test_save_writes_json_on_success(self):
+        from unittest.mock import mock_open
+
+        m = mock_open()
+        with (
+            patch("data.insider_feed.os.makedirs"),
+            patch("builtins.open", m),
+            patch("data.insider_feed.json.dump") as mock_dump,
+        ):
+            _save_cache({"2026-06-03": {"AAPL": None}})
+        mock_dump.assert_called_once()
+
+    def test_save_logs_warning_on_os_error(self):
+        with (
+            patch("data.insider_feed.os.makedirs"),
+            patch("builtins.open", side_effect=OSError("disk full")),
+        ):
+            _save_cache({"2026-06-03": {}})  # should not raise
+
+
+class TestRecentForm4FilingsCutoff(unittest.TestCase):
+    def test_breaks_at_filing_before_cutoff(self):
+        # Form 4 with date older than the lookback window → break, not included
+        cutoff_submissions = {
+            "filings": {
+                "recent": {
+                    "form": ["4", "4"],
+                    "filingDate": [_D1, "2020-01-01"],  # second is ancient
+                    "accessionNumber": ["0000320193-26-000001", "0000320193-20-000001"],
+                    "primaryDocument": ["form4.xml", "form4.xml"],
+                }
+            }
+        }
+        with (
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.time.sleep"),
+        ):
+            mock_get.return_value = _mock_response(json_data=cutoff_submissions)
+            result = _recent_form4_filings("0000320193", lookback_days=10)
+        # Only the recent filing is included; the ancient one triggers break
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["accession"], "000032019326000001")
 
 
 class TestRecentForm4FilingsDateParseError(unittest.TestCase):

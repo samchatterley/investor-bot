@@ -7,9 +7,17 @@ code 'A' is counted — option exercises, RSU vesting, and gifts are excluded.
 
 Cluster definition: ≥2 distinct insiders purchasing within `lookback_days`.
 Single large purchase: 1 insider buying shares worth > `large_buy_usd`.
+
+Cache lives at logs/insider_cache.json and is refreshed once per calendar day.
+Call prefetch_insider_activity() from the 07:00 ET pre-market prefetch job to
+warm all symbols before open_sells runs; get_insider_activity() returns cached
+data instantly when the cache is warm, avoiding 15–20 minute live EDGAR fetches
+during market hours.
 """
 
+import json
 import logging
+import os
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
@@ -17,7 +25,7 @@ from functools import lru_cache
 
 import requests  # type: ignore[import-untyped]
 
-from config import EMAIL_FROM
+from config import EMAIL_FROM, LOG_DIR, STOCK_UNIVERSE, today_et
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,30 @@ _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{doc}"
 _REQ_DELAY = 0.15  # 10 req/s SEC limit → use 6-7/s to stay safe
+_CACHE_PATH = os.path.join(LOG_DIR, "insider_cache.json")
+
+
+# ── cache I/O ─────────────────────────────────────────────────────────────────
+
+
+def _load_cache() -> dict:
+    try:
+        with open(_CACHE_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(_CACHE_PATH, "w") as f:
+            json.dump(cache, f)
+    except OSError as e:
+        logger.warning(f"insider_cache: write error: {e}")
+
+
+# ── CIK lookup ─────────────────────────────────────────────────────────────────
 
 
 @lru_cache(maxsize=1)
@@ -115,32 +147,27 @@ def _parse_form4(cik: str, accession: str, doc: str) -> list[dict]:
     return transactions
 
 
-def get_insider_activity(
+# ── Live fetch (one symbol at a time, no cache) ────────────────────────────────
+
+
+def _live_fetch(
     symbols: list[str],
     lookback_days: int = 10,
     large_buy_usd: float = 100_000.0,
-) -> dict[str, dict]:
-    """Return open-market insider purchase summary for each symbol.
+) -> dict[str, dict | None]:
+    """Fetch insider activity from EDGAR for each symbol.
 
-    Result schema per symbol::
-
-        {
-            "insider_cluster":        bool,   # ≥2 distinct insiders bought
-            "insider_unique_insiders": int,
-            "insider_transaction_count": int,
-            "insider_total_shares":   float,
-            "insider_large_buy":      bool,   # single buy > large_buy_usd
-        }
-
-    Symbols with no Form 4 activity in the window are omitted from the result.
-    All network errors are caught and logged; callers always receive a plain dict.
+    Returns every symbol in the result: data dict when activity exists, None
+    when no open-market purchases were found.  None acts as a "fetched, nothing
+    found" sentinel so repeated calls within a day don't re-query EDGAR.
     """
     cik_map = _get_cik_map()
-    result: dict[str, dict] = {}
+    result: dict[str, dict | None] = {}
 
     for sym in symbols:
         cik = cik_map.get(sym.upper())
         if not cik:
+            result[sym] = None
             continue
 
         filings = _recent_form4_filings(cik, lookback_days)
@@ -149,22 +176,101 @@ def get_insider_activity(
             all_txns.extend(_parse_form4(cik, filing["accession"], filing["doc"]))
 
         if not all_txns:
+            result[sym] = None
             continue
 
         unique_insiders = len({t["reporter"] for t in all_txns})
         total_shares = sum(t["shares"] for t in all_txns)
         max_notional = max((t["shares"] * t["price"] for t in all_txns), default=0.0)
 
-        result[sym] = {
+        data: dict = {
             "insider_cluster": unique_insiders >= 2,
             "insider_unique_insiders": unique_insiders,
             "insider_transaction_count": len(all_txns),
             "insider_total_shares": total_shares,
             "insider_large_buy": max_notional >= large_buy_usd,
         }
+        result[sym] = data
         logger.info(
             f"Insider {sym}: {unique_insiders} insiders, {len(all_txns)} txns, "
-            f"cluster={result[sym]['insider_cluster']}"
+            f"cluster={data['insider_cluster']}"
         )
 
     return result
+
+
+# ── Public prefetch ────────────────────────────────────────────────────────────
+
+
+def prefetch_insider_activity(
+    symbols: list[str] | None = None,
+    lookback_days: int = 10,
+    large_buy_usd: float = 100_000.0,
+) -> int:
+    """Warm the same-day insider activity cache before market open.
+
+    Called from the 07:00 ET pre-market prefetch job.  Safe to call multiple
+    times — already-cached symbols are skipped.  Discards stale date keys so
+    the cache file stays small.
+
+    Returns:
+        Number of symbols newly fetched (0 if cache was already warm).
+    """
+    if symbols is None:
+        symbols = list(STOCK_UNIVERSE)
+    today = today_et().isoformat()
+    cache = _load_cache()
+    today_cache: dict[str, dict | None] = cache.get(today, {})
+
+    missing = [s for s in symbols if s not in today_cache]
+    if not missing:
+        logger.info(f"insider prefetch: cache already warm ({len(today_cache)} symbols)")
+        return 0
+
+    fresh = _live_fetch(missing, lookback_days, large_buy_usd)
+    today_cache.update(fresh)
+    _save_cache({today: today_cache})  # discard previous date keys
+
+    found = sum(1 for v in today_cache.values() if v is not None)
+    logger.info(f"insider prefetch: fetched {len(missing)} symbols, {found} with activity")
+    return len(missing)
+
+
+# ── Public getter ──────────────────────────────────────────────────────────────
+
+
+def get_insider_activity(
+    symbols: list[str],
+    lookback_days: int = 10,
+    large_buy_usd: float = 100_000.0,
+) -> dict[str, dict]:
+    """Return open-market insider purchase summary for each symbol.
+
+    Uses the same-day cache populated by prefetch_insider_activity().  On a
+    cache miss (e.g. symbol added after the prefetch ran), falls back to a live
+    EDGAR fetch and saves the result before returning.
+
+    Result schema per symbol::
+
+        {
+            "insider_cluster":         bool,   # ≥2 distinct insiders bought
+            "insider_unique_insiders":  int,
+            "insider_transaction_count": int,
+            "insider_total_shares":    float,
+            "insider_large_buy":       bool,   # single buy > large_buy_usd
+        }
+
+    Symbols with no Form 4 activity in the window are omitted from the result.
+    All network errors are caught and logged; callers always receive a plain dict.
+    """
+    today = today_et().isoformat()
+    cache = _load_cache()
+    today_cache: dict[str, dict | None] = cache.get(today, {})
+
+    missing = [s for s in symbols if s not in today_cache]
+    if missing:
+        fresh = _live_fetch(missing, lookback_days, large_buy_usd)
+        today_cache.update(fresh)
+        _save_cache({today: today_cache})
+
+    return {sym: v for sym in symbols if (v := today_cache.get(sym)) is not None}
