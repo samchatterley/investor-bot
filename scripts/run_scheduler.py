@@ -68,6 +68,7 @@ config.validate()
 import main as bot  # noqa: E402
 from analysis.performance import get_attribution  # noqa: E402
 from analysis.weekly_review import run_weekly_review  # noqa: E402
+from data.av_sentiment import prefetch_av_sentiment  # noqa: E402
 from data.earnings_surprise import prefetch_earnings_data  # noqa: E402
 from data.insider_feed import prefetch_insider_activity  # noqa: E402
 from data.market_data import prefetch_market_data  # noqa: E402
@@ -114,6 +115,10 @@ def _prefetch():
         prefetch_short_interest()
     except Exception as e:
         logger.error(f"Short interest prefetch failed (non-fatal): {e}", exc_info=True)
+    try:
+        prefetch_av_sentiment()
+    except Exception as e:
+        logger.error(f"AV sentiment prefetch failed (non-fatal): {e}", exc_info=True)
 
 
 def _open_sells():

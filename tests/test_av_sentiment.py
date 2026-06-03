@@ -1,10 +1,20 @@
 """Tests for data/av_sentiment.py — Alpha Vantage news sentiment enrichment."""
 
+import json
 import unittest
-from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import UTC, date, datetime, timedelta
+from unittest.mock import MagicMock, mock_open, patch
 
-from data.av_sentiment import get_av_sentiment
+from data.av_sentiment import (
+    _live_fetch_av_sentiment,
+    _load_cache,
+    _save_cache,
+    get_av_sentiment,
+    prefetch_av_sentiment,
+)
+
+_TODAY_DATE = date(2026, 6, 3)
+_TODAY_KEY = _TODAY_DATE.isoformat()
 
 
 def _ts(hours_ago: float = 1.0) -> str:
@@ -52,10 +62,10 @@ def _make_response(json_data):
     return m
 
 
-class TestGetAvSentiment(unittest.TestCase):
+class TestLiveFetchAvSentiment(unittest.TestCase):
     def test_returns_empty_when_no_api_key(self):
         with patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", None):
-            result = get_av_sentiment(["AAPL"])
+            result = _live_fetch_av_sentiment(["AAPL"])
         self.assertEqual(result, {})
 
     def test_aggregates_scores_for_symbol(self):
@@ -65,23 +75,24 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(_AV_RESPONSE)
-            result = get_av_sentiment(["AAPL", "MSFT"])
+            result = _live_fetch_av_sentiment(["AAPL", "MSFT"])
         self.assertIn("AAPL", result)
-        # avg of 0.45 and 0.25 = 0.35
+        self.assertIsNotNone(result["AAPL"])
         self.assertAlmostEqual(result["AAPL"]["av_sentiment_score"], 0.35, places=2)
         self.assertEqual(result["AAPL"]["av_article_count"], 2)
         self.assertEqual(result["AAPL"]["av_sentiment_label"], "Bullish")
 
-    def test_low_relevance_article_excluded(self):
-        # MSFT relevance=0.20 < _MIN_RELEVANCE=0.30 → excluded
+    def test_low_relevance_article_produces_none_sentinel(self):
         with (
             patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
             patch("data.av_sentiment.requests.get") as mock_get,
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(_AV_RESPONSE)
-            result = get_av_sentiment(["AAPL", "MSFT"])
-        self.assertNotIn("MSFT", result)
+            result = _live_fetch_av_sentiment(["AAPL", "MSFT"])
+        # MSFT relevance 0.20 < _MIN_RELEVANCE 0.30 → None sentinel
+        self.assertIn("MSFT", result)
+        self.assertIsNone(result["MSFT"])
 
     def test_bearish_label_for_negative_score(self):
         with (
@@ -90,30 +101,31 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(_AV_RESPONSE_BEARISH)
-            result = get_av_sentiment(["NVDA"])
-        self.assertIn("NVDA", result)
+            result = _live_fetch_av_sentiment(["NVDA"])
+        self.assertIsNotNone(result["NVDA"])
         self.assertEqual(result["NVDA"]["av_sentiment_label"], "Bearish")
 
-    def test_symbol_absent_when_no_articles(self):
+    def test_none_sentinel_when_no_articles(self):
         with (
             patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
             patch("data.av_sentiment.requests.get") as mock_get,
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response({"feed": []})
-            result = get_av_sentiment(["AAPL"])
-        self.assertNotIn("AAPL", result)
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertIn("AAPL", result)
+        self.assertIsNone(result["AAPL"])
 
-    def test_returns_empty_on_network_failure(self):
+    def test_none_sentinel_on_network_failure(self):
         with (
             patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
             patch("data.av_sentiment.requests.get", side_effect=Exception("timeout")),
             patch("data.av_sentiment.time.sleep"),
         ):
-            result = get_av_sentiment(["AAPL"])
-        self.assertEqual(result, {})
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertEqual(result, {"AAPL": None})
 
-    def test_returns_empty_on_rate_limit_response(self):
+    def test_none_sentinel_on_rate_limit_response(self):
         rate_limit = {"Information": "Thank you for using Alpha Vantage! rate limit reached"}
         with (
             patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
@@ -121,8 +133,8 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(rate_limit)
-            result = get_av_sentiment(["AAPL"])
-        self.assertEqual(result, {})
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertEqual(result, {"AAPL": None})
 
     def test_top_headline_is_first_article_for_symbol(self):
         with (
@@ -131,13 +143,12 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(_AV_RESPONSE)
-            result = get_av_sentiment(["AAPL"])
+            result = _live_fetch_av_sentiment(["AAPL"])
         self.assertEqual(
             result["AAPL"]["av_top_headline"], "Apple hits record high on AI announcement"
         )
 
     def test_batches_symbols_correctly(self):
-        # 12 symbols → 2 batches of 10 and 2
         symbols = [f"SYM{i}" for i in range(12)]
         with (
             patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
@@ -145,7 +156,7 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response({"feed": []})
-            get_av_sentiment(symbols)
+            _live_fetch_av_sentiment(symbols)
         self.assertEqual(mock_get.call_count, 2)
 
     def test_neutral_label_for_near_zero_score(self):
@@ -170,12 +181,10 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(neutral_feed)
-            result = get_av_sentiment(["AAPL"])
+            result = _live_fetch_av_sentiment(["AAPL"])
         self.assertEqual(result["AAPL"]["av_sentiment_label"], "Neutral")
 
     def test_sleep_before_continue_on_exception_with_more_batches(self):
-        # Line 77: time.sleep called before `continue` when exception raised AND more batches remain
-        # Pass 11 symbols → 2 batches; first raises, second succeeds with empty feed
         symbols = [f"SYM{i}" for i in range(11)]
         sleep_mock = MagicMock()
         with (
@@ -186,12 +195,10 @@ class TestGetAvSentiment(unittest.TestCase):
             ),
             patch("data.av_sentiment.time.sleep", sleep_mock),
         ):
-            get_av_sentiment(symbols)
-        # sleep must be called at least once (for the exception path between batches)
+            _live_fetch_av_sentiment(symbols)
         sleep_mock.assert_called()
 
     def test_sleep_before_continue_on_no_feed_with_more_batches(self):
-        # Line 85: time.sleep called before `continue` when "feed" not in data AND more batches remain
         symbols = [f"SYM{i}" for i in range(11)]
         sleep_mock = MagicMock()
         rate_limit = {"Information": "rate limited"}
@@ -203,11 +210,10 @@ class TestGetAvSentiment(unittest.TestCase):
             ),
             patch("data.av_sentiment.time.sleep", sleep_mock),
         ):
-            get_av_sentiment(symbols)
+            _live_fetch_av_sentiment(symbols)
         sleep_mock.assert_called()
 
     def test_skips_article_with_invalid_time_published(self):
-        # Lines 95-96: `continue` in except (ValueError, TypeError) for bad time_published
         bad_time_feed = {
             "feed": [
                 {
@@ -229,12 +235,10 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(bad_time_feed)
-            result = get_av_sentiment(["AAPL"])
-        self.assertNotIn("AAPL", result)
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertIsNone(result["AAPL"])
 
     def test_skips_article_published_before_cutoff(self):
-        # Line 98: `continue` when pub_time < cutoff (article older than lookback_hours)
-        # Default lookback is 24h; publish 48h ago → before cutoff
         old_time = (datetime.now(UTC) - timedelta(hours=48)).strftime("%Y%m%dT%H%M%S")
         old_feed = {
             "feed": [
@@ -257,11 +261,10 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(old_feed)
-            result = get_av_sentiment(["AAPL"])
-        self.assertNotIn("AAPL", result)
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertIsNone(result["AAPL"])
 
     def test_skips_ticker_sentiment_with_invalid_score(self):
-        # Lines 107-108: `continue` in except (ValueError, KeyError, TypeError) for bad score
         bad_score_feed = {
             "feed": [
                 {
@@ -283,11 +286,10 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(bad_score_feed)
-            result = get_av_sentiment(["AAPL"])
-        self.assertNotIn("AAPL", result)
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertIsNone(result["AAPL"])
 
     def test_no_feed_and_no_info_key_skips_silently(self):
-        """Line 82->84: 'feed' not in data and no 'Information'/'Note' key → silent skip."""
         no_feed_no_info = {"status": "OK"}
         with (
             patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
@@ -295,5 +297,198 @@ class TestGetAvSentiment(unittest.TestCase):
             patch("data.av_sentiment.time.sleep"),
         ):
             mock_get.return_value = _make_response(no_feed_no_info)
+            result = _live_fetch_av_sentiment(["AAPL"])
+        self.assertEqual(result, {"AAPL": None})
+
+
+class TestGetAvSentiment(unittest.TestCase):
+    def test_returns_empty_when_no_api_key(self):
+        with patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", None):
             result = get_av_sentiment(["AAPL"])
         self.assertEqual(result, {})
+
+    def test_cache_miss_fetches_and_returns_result(self):
+        with (
+            patch("data.av_sentiment._load_cache", return_value={}),
+            patch("data.av_sentiment._save_cache"),
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            mock_get.return_value = _make_response(_AV_RESPONSE)
+            result = get_av_sentiment(["AAPL", "MSFT"])
+        self.assertIn("AAPL", result)
+        # MSFT below relevance threshold → None sentinel → omitted from result
+        self.assertNotIn("MSFT", result)
+
+    def test_cache_hit_skips_network(self):
+        warm_cache = {
+            _TODAY_KEY: {
+                "AAPL": {
+                    "av_sentiment_score": 0.35,
+                    "av_article_count": 2,
+                    "av_sentiment_label": "Bullish",
+                    "av_top_headline": "cached headline",
+                }
+            }
+        }
+        with (
+            patch("data.av_sentiment._load_cache", return_value=warm_cache),
+            patch("data.av_sentiment._save_cache") as mock_save,
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            result = get_av_sentiment(["AAPL"])
+        mock_get.assert_not_called()
+        mock_save.assert_not_called()
+        self.assertAlmostEqual(result["AAPL"]["av_sentiment_score"], 0.35)
+
+    def test_null_sentinel_omits_symbol(self):
+        warm_cache = {_TODAY_KEY: {"AAPL": None}}
+        with (
+            patch("data.av_sentiment._load_cache", return_value=warm_cache),
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            result = get_av_sentiment(["AAPL"])
+        mock_get.assert_not_called()
+        self.assertNotIn("AAPL", result)
+
+    def test_partial_cache_hit_only_fetches_missing(self):
+        warm_cache = {
+            _TODAY_KEY: {
+                "AAPL": {
+                    "av_sentiment_score": 0.35,
+                    "av_article_count": 2,
+                    "av_sentiment_label": "Bullish",
+                    "av_top_headline": "cached",
+                }
+            }
+        }
+        with (
+            patch("data.av_sentiment._load_cache", return_value=warm_cache),
+            patch("data.av_sentiment._save_cache"),
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            mock_get.return_value = _make_response(_AV_RESPONSE_BEARISH)
+            result = get_av_sentiment(["AAPL", "NVDA"])
+        mock_get.assert_called_once()
+        self.assertIn("AAPL", result)
+        self.assertIn("NVDA", result)
+
+    def test_cache_miss_saves_today_key(self):
+        with (
+            patch("data.av_sentiment._load_cache", return_value={}),
+            patch("data.av_sentiment._save_cache") as mock_save,
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            mock_get.return_value = _make_response({"feed": []})
+            get_av_sentiment(["AAPL"])
+        mock_save.assert_called_once()
+        saved = mock_save.call_args[0][0]
+        self.assertIn(_TODAY_KEY, saved)
+
+
+class TestPrefetchAvSentiment(unittest.TestCase):
+    def test_returns_zero_when_no_api_key(self):
+        with patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", None):
+            n = prefetch_av_sentiment(["AAPL"])
+        self.assertEqual(n, 0)
+
+    def test_returns_count_of_symbols_fetched(self):
+        with (
+            patch("data.av_sentiment._load_cache", return_value={}),
+            patch("data.av_sentiment._save_cache"),
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            mock_get.return_value = _make_response({"feed": []})
+            n = prefetch_av_sentiment(["AAPL", "MSFT"])
+        self.assertEqual(n, 2)
+
+    def test_warm_cache_returns_zero(self):
+        warm = {_TODAY_KEY: {"AAPL": None, "MSFT": None}}
+        with (
+            patch("data.av_sentiment._load_cache", return_value=warm),
+            patch("data.av_sentiment._save_cache") as mock_save,
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            n = prefetch_av_sentiment(["AAPL", "MSFT"])
+        self.assertEqual(n, 0)
+        mock_get.assert_not_called()
+        mock_save.assert_not_called()
+
+    def test_uses_stock_universe_when_symbols_none(self):
+        with (
+            patch("data.av_sentiment._load_cache", return_value={}),
+            patch("data.av_sentiment._save_cache"),
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment._live_fetch_av_sentiment", return_value={}) as mock_fetch,
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+            patch("data.av_sentiment.STOCK_UNIVERSE", {"AAPL", "MSFT"}),
+        ):
+            prefetch_av_sentiment()
+        fetched = set(mock_fetch.call_args[0][0])
+        self.assertEqual(fetched, {"AAPL", "MSFT"})
+
+    def test_saves_today_key(self):
+        with (
+            patch("data.av_sentiment._load_cache", return_value={}),
+            patch("data.av_sentiment._save_cache") as mock_save,
+            patch("data.av_sentiment.ALPHA_VANTAGE_API_KEY", "fake_key"),
+            patch("data.av_sentiment.requests.get") as mock_get,
+            patch("data.av_sentiment.time.sleep"),
+            patch("data.av_sentiment.today_et", return_value=_TODAY_DATE),
+        ):
+            mock_get.return_value = _make_response({"feed": []})
+            prefetch_av_sentiment(["AAPL"])
+        saved = mock_save.call_args[0][0]
+        self.assertIn(_TODAY_KEY, saved)
+
+
+class TestLoadSaveCacheAvSentiment(unittest.TestCase):
+    def test_load_returns_empty_on_missing_file(self):
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            result = _load_cache()
+        self.assertEqual(result, {})
+
+    def test_load_returns_empty_on_json_error(self):
+        with (
+            patch("builtins.open", mock_open(read_data="not valid json")),
+            patch(
+                "data.av_sentiment.json.load",
+                side_effect=json.JSONDecodeError("err", "", 0),
+            ),
+        ):
+            result = _load_cache()
+        self.assertEqual(result, {})
+
+    def test_save_writes_json_on_success(self):
+        m = mock_open()
+        with (
+            patch("data.av_sentiment.os.makedirs"),
+            patch("builtins.open", m),
+            patch("data.av_sentiment.json.dump") as mock_dump,
+        ):
+            _save_cache({_TODAY_KEY: {}})
+        mock_dump.assert_called_once()
+
+    def test_save_logs_warning_on_os_error(self):
+        with (
+            patch("data.av_sentiment.os.makedirs"),
+            patch("builtins.open", side_effect=OSError("disk full")),
+        ):
+            _save_cache({_TODAY_KEY: {}})  # should not raise

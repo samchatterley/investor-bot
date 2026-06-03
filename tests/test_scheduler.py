@@ -17,6 +17,7 @@ def _load_scheduler_module():
         "analysis": MagicMock(),
         "analysis.performance": MagicMock(),
         "analysis.weekly_review": MagicMock(),
+        "data.av_sentiment": MagicMock(),
         "data.earnings_surprise": MagicMock(),
         "data.insider_feed": MagicMock(),
         "data.market_data": MagicMock(),

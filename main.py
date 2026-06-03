@@ -21,6 +21,7 @@ import signal
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import config
@@ -827,12 +828,24 @@ def _manage_existing_positions(
 def _fetch_market_context() -> MarketContext:
     """Fetch market-wide context: VIX, regime, macro, sector, lessons."""
     logger.info("Fetching market context...")
-    vix = market_data.get_vix()
-    regime = stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=vix)
-    macro = macro_calendar.get_macro_risk()
-    sector_perf = sector_data.get_sector_performance()
-    leading_sectors = sector_data.get_leading_sectors(top_n=3)
-    lessons = get_latest_review()
+
+    def _vix_and_regime() -> tuple:
+        v = market_data.get_vix()
+        r = stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=v)
+        return v, r
+
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        fut_vr = ex.submit(_vix_and_regime)
+        fut_macro = ex.submit(macro_calendar.get_macro_risk)
+        fut_sector = ex.submit(sector_data.get_sector_performance)
+        fut_leading = ex.submit(sector_data.get_leading_sectors, top_n=3)
+        fut_lessons = ex.submit(get_latest_review)
+        vix, regime = fut_vr.result()
+        macro = fut_macro.result()
+        sector_perf = fut_sector.result()
+        leading_sectors = fut_leading.result()
+        lessons = fut_lessons.result()
+
     if vix:
         logger.info(f"VIX: {vix}  Regime: {regime.get('regime', 'UNKNOWN')}")
     if macro["is_high_risk"]:

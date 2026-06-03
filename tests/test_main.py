@@ -4423,5 +4423,90 @@ class TestForceCoverIntradayInRunInner(RunInnerBase):
         force_mock.assert_not_called()
 
 
+class TestFetchMarketContext(unittest.TestCase):
+    """_fetch_market_context() runs 5 I/O calls in parallel via ThreadPoolExecutor."""
+
+    def _patches(
+        self, vix=18.5, regime=None, macro=None, sector_perf=None, leading=None, lessons=None
+    ):
+        regime = regime or {"regime": "BULL_TREND"}
+        macro = macro or {"is_high_risk": False, "event": ""}
+        sector_perf = sector_perf or {}
+        leading = leading or ["XLK", "XLY", "XLC"]
+        lessons = lessons or []
+        return {
+            "main.market_data.get_vix": MagicMock(return_value=vix),
+            "main.stock_scanner.get_market_regime": MagicMock(return_value=regime),
+            "main.macro_calendar.get_macro_risk": MagicMock(return_value=macro),
+            "main.sector_data.get_sector_performance": MagicMock(return_value=sector_perf),
+            "main.sector_data.get_leading_sectors": MagicMock(return_value=leading),
+            "main.get_latest_review": MagicMock(return_value=lessons),
+        }
+
+    def test_returns_market_context_with_all_fields(self):
+        from main import _fetch_market_context
+
+        mocks = self._patches()
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            mc = _fetch_market_context()
+
+        self.assertEqual(mc.vix, 18.5)
+        self.assertEqual(mc.regime["regime"], "BULL_TREND")
+        self.assertFalse(mc.macro["is_high_risk"])
+
+    def test_all_five_callables_invoked(self):
+        from main import _fetch_market_context
+
+        mocks = self._patches()
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            _fetch_market_context()
+
+        mocks["main.market_data.get_vix"].assert_called_once()
+        mocks["main.stock_scanner.get_market_regime"].assert_called_once()
+        mocks["main.macro_calendar.get_macro_risk"].assert_called_once()
+        mocks["main.sector_data.get_sector_performance"].assert_called_once()
+        mocks["main.sector_data.get_leading_sectors"].assert_called_once()
+        mocks["main.get_latest_review"].assert_called_once()
+
+    def test_regime_receives_vix_from_get_vix(self):
+        """get_market_regime must be called with the vix value returned by get_vix."""
+        from main import _fetch_market_context
+
+        mocks = self._patches(vix=25.0)
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            _fetch_market_context()
+
+        call_kwargs = mocks["main.stock_scanner.get_market_regime"].call_args.kwargs
+        self.assertEqual(call_kwargs["vix"], 25.0)
+
+    def test_macro_high_risk_logs_warning_and_audits(self):
+        from main import _fetch_market_context
+
+        mocks = self._patches(macro={"is_high_risk": True, "event": "FOMC"})
+        mock_audit = MagicMock()
+        with contextlib.ExitStack() as stack:
+            {k: stack.enter_context(patch(k, v)) for k, v in mocks.items()}
+            stack.enter_context(patch("main.audit_log.log_macro_skip", mock_audit))
+            _fetch_market_context()
+        mock_audit.assert_called_once_with("FOMC")
+
+    def test_none_vix_does_not_log_vix_line(self):
+        from main import _fetch_market_context
+
+        mocks = self._patches(vix=None)
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            mc = _fetch_market_context()
+
+        self.assertIsNone(mc.vix)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
