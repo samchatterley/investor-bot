@@ -142,9 +142,11 @@ _HIGH_VOL_BLOCKED = frozenset(
     }
 )
 # DEFENSIVE_DOWNTREND: mean_reversion has edge here (WR 53%, avg +0.6%, n=112) — kept.
+# rs_leader not blocked here: stock beating SPY by 2%/3%+ in a down/choppy market is genuine
+# relative-strength alpha. Was previously blocked in all regimes (including NEUTRAL_CHOP via
+# inheritance), making it dead code. Unblocked 2026-06-04 to get empirical data.
 _DEFENSIVE_BLOCKED = frozenset(
     {
-        "rs_leader",
         "breakout_52w",
         "momentum_12_1",
         "momentum",

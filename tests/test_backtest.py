@@ -632,6 +632,15 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         result = _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="BEAR_DAY")
         self.assertNotEqual(result, "rs_leader")
 
+    def test_rs_leader_fires_in_neutral_chop(self):
+        # rs_leader was previously blocked in all regimes (DEFENSIVE inherited into NEUTRAL_CHOP).
+        # Fixed 2026-06-04: should now fire when stock strongly outperforms SPY in choppy market.
+        row = _make_row(ret_5d=5.0, ret_10d=7.0, ema9=101, ema21=100, adx=30)
+        self.assertEqual(
+            _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="NEUTRAL_CHOP"),
+            "rs_leader",
+        )
+
     def test_bear_day_blocks_mean_reversion(self):
         row = _make_row(rsi=28, bb_pct=0.15, vol_ratio=1.5)
         self.assertIsNone(_entry_signal(row, regime="BEAR_DAY"))
