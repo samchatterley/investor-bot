@@ -1,0 +1,582 @@
+"""Tests for data/edgar_client.py — 100% coverage."""
+
+from __future__ import annotations
+
+import contextlib
+import os
+from datetime import date, timedelta
+from unittest import TestCase
+from unittest.mock import MagicMock, patch
+
+from data.edgar_client import (
+    _classify_guidance,
+    _fetch_8k_guidance,
+    _fetch_13d_activist,
+    _fetch_filing_text,
+    _fetch_secondary_offering,
+    _get_cik_map,
+    _get_recent_filings,
+    _is_stale,
+    _live_fetch,
+    _load_cache,
+    _save_cache,
+    _today_entry,
+    classify_guidance_text,
+    get_activist_filing,
+    get_edgar_signals,
+    get_guidance_sentiment,
+    get_secondary_offering,
+    prefetch_edgar_data,
+)
+
+# ── Cache helpers ─────────────────────────────────────────────────────────────
+
+
+class TestCacheIO(TestCase):
+    def test_save_load_roundtrip(self):
+        data = {"2026-06-04": {"AAPL": {"guidance": None}}}
+        with patch("data.edgar_client._CACHE_PATH", "/tmp/_edgar_cache.json"):
+            _save_cache(data)
+            loaded = _load_cache()
+        self.assertIn("2026-06-04", loaded)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove("/tmp/_edgar_cache.json")
+
+    def test_load_missing(self):
+        with patch("data.edgar_client._CACHE_PATH", "/tmp/_no_edgar.json"):
+            result = _load_cache()
+        self.assertEqual(result, {})
+
+    def test_load_corrupt(self):
+        with patch("data.edgar_client._CACHE_PATH", "/tmp/_corrupt_edgar.json"):
+            with open("/tmp/_corrupt_edgar.json", "w") as f:
+                f.write("{bad")
+            result = _load_cache()
+        self.assertEqual(result, {})
+        with contextlib.suppress(FileNotFoundError):
+            os.remove("/tmp/_corrupt_edgar.json")
+
+    def test_save_oserror(self):
+        with (
+            patch("data.edgar_client._CACHE_PATH", "/no_dir/x.json"),
+            patch("data.edgar_client.os.makedirs", side_effect=OSError),
+        ):
+            _save_cache({})  # must not raise
+
+    def test_is_stale_true(self):
+        entry = {"_date": "2026-01-01"}
+        with patch("data.edgar_client.today_et") as m:
+            m.return_value = date(2026, 6, 4)
+            self.assertTrue(_is_stale(entry))
+
+    def test_is_stale_false(self):
+        entry = {"_date": "2026-06-04"}
+        with patch("data.edgar_client.today_et") as m:
+            m.return_value = date(2026, 6, 4)
+            self.assertFalse(_is_stale(entry))
+
+
+# ── CIK map ───────────────────────────────────────────────────────────────────
+
+
+class TestGetCikMap(TestCase):
+    def setUp(self):
+        # Clear lru_cache between tests
+        _get_cik_map.cache_clear()
+
+    def tearDown(self):
+        _get_cik_map.cache_clear()
+
+    def test_successful_fetch(self):
+        fake_data = {
+            "0": {"ticker": "AAPL", "cik_str": 320193},
+            "1": {"ticker": "MSFT", "cik_str": 789019},
+        }
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = fake_data
+        with patch("data.edgar_client.requests.get", return_value=mock_resp):
+            result = _get_cik_map()
+        self.assertEqual(result["AAPL"], "0000320193")
+        self.assertEqual(result["MSFT"], "0000789019")
+
+    def test_network_failure(self):
+        with patch("data.edgar_client.requests.get", side_effect=RuntimeError("timeout")):
+            result = _get_cik_map()
+        self.assertEqual(result, {})
+
+
+# ── Recent filings ────────────────────────────────────────────────────────────
+
+
+def _make_submissions_response(
+    forms: list[str],
+    dates: list[str],
+    accessions: list[str],
+    docs: list[str],
+    items: list[str] | None = None,
+) -> MagicMock:
+    if items is None:
+        items = [""] * len(forms)
+    mock = MagicMock()
+    mock.raise_for_status.return_value = None
+    mock.json.return_value = {
+        "filings": {
+            "recent": {
+                "form": forms,
+                "filingDate": dates,
+                "accessionNumber": accessions,
+                "primaryDocument": docs,
+                "items": items,
+            }
+        }
+    }
+    return mock
+
+
+class TestGetRecentFilings(TestCase):
+    def test_returns_matching_forms(self):
+        today = date.today().isoformat()
+        resp = _make_submissions_response(
+            forms=["8-K", "10-Q", "8-K"],
+            dates=[today, today, today],
+            accessions=["0001-23-456789", "0002-34-567890", "0003-45-678901"],
+            docs=["doc1.htm", "doc2.htm", "doc3.htm"],
+            items=["2.02", "N/A", "7.01"],
+        )
+        with (
+            patch("data.edgar_client.requests.get", return_value=resp),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _get_recent_filings("0000320193", ["8-K"], lookback_days=30)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["form"], "8-K")
+
+    def test_stops_at_cutoff(self):
+        old_date = (date.today() - timedelta(days=60)).isoformat()
+        resp = _make_submissions_response(
+            forms=["8-K"],
+            dates=[old_date],
+            accessions=["0001-23-456789"],
+            docs=["doc.htm"],
+        )
+        with (
+            patch("data.edgar_client.requests.get", return_value=resp),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _get_recent_filings("0000320193", ["8-K"], lookback_days=30)
+        self.assertEqual(result, [])
+
+    def test_bad_date_skipped(self):
+        resp = _make_submissions_response(
+            forms=["8-K"],
+            dates=["not-a-date"],
+            accessions=["0001"],
+            docs=["doc.htm"],
+        )
+        with (
+            patch("data.edgar_client.requests.get", return_value=resp),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _get_recent_filings("0000320193", ["8-K"], lookback_days=30)
+        self.assertEqual(result, [])
+
+    def test_network_failure(self):
+        with (
+            patch("data.edgar_client.requests.get", side_effect=RuntimeError),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _get_recent_filings("0000320193", ["8-K"], lookback_days=30)
+        self.assertEqual(result, [])
+
+
+# ── Filing text fetch ─────────────────────────────────────────────────────────
+
+
+class TestFetchFilingText(TestCase):
+    def test_fetches_and_strips_html(self):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.text = "<html><body><p>Raises guidance for full-year revenue.</p></body></html>"
+        with (
+            patch("data.edgar_client.requests.get", return_value=mock_resp),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _fetch_filing_text("320193", "000032019326000001", "doc.htm")
+        self.assertIn("raises guidance", result)
+        self.assertNotIn("<", result)
+
+    def test_network_failure_returns_empty(self):
+        with (
+            patch("data.edgar_client.requests.get", side_effect=RuntimeError),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _fetch_filing_text("320193", "000032019326000001", "doc.htm")
+        self.assertEqual(result, "")
+
+    def test_truncates_at_max_chars(self):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.text = "A" * 20000
+        with (
+            patch("data.edgar_client.requests.get", return_value=mock_resp),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            result = _fetch_filing_text("320193", "000032019326000001", "doc.htm", max_chars=100)
+        self.assertLessEqual(len(result), 200)  # stripped whitespace may be shorter
+
+
+# ── Keyword classifier ────────────────────────────────────────────────────────
+
+
+class TestClassifyGuidance(TestCase):
+    def test_positive_keywords(self):
+        self.assertEqual(_classify_guidance("raises guidance for the year"), "positive")
+        self.assertEqual(_classify_guidance("above consensus estimates"), "positive")
+        self.assertEqual(_classify_guidance("record revenue achieved"), "positive")
+
+    def test_negative_keywords(self):
+        self.assertEqual(_classify_guidance("lowers guidance due to headwinds"), "negative")
+        self.assertEqual(_classify_guidance("revenue shortfall disappointing"), "negative")
+
+    def test_neutral_tie(self):
+        # No keywords → neutral
+        self.assertEqual(_classify_guidance("quarterly results announced"), "neutral")
+
+    def test_public_wrapper(self):
+        result = classify_guidance_text("RAISES GUIDANCE FOR FULL-YEAR")
+        self.assertEqual(result, "positive")
+
+    def test_tie_is_neutral(self):
+        # Equal positive and negative hits → neutral
+        text = "raises guidance but lowers guidance"
+        self.assertEqual(_classify_guidance(text), "neutral")
+
+
+# ── 8-K guidance detection ────────────────────────────────────────────────────
+
+
+class TestFetch8kGuidance(TestCase):
+    def _filing(self, items="2.02") -> dict:
+        return {
+            "form": "8-K",
+            "filing_date": date.today().isoformat(),
+            "accession": "000032019326000001",
+            "doc": "doc.htm",
+            "items": items,
+        }
+
+    def test_positive_guidance_detected(self):
+        with (
+            patch("data.edgar_client._get_recent_filings", return_value=[self._filing("2.02")]),
+            patch(
+                "data.edgar_client._fetch_filing_text",
+                return_value="company raises guidance for full-year revenue",
+            ),
+        ):
+            result = _fetch_8k_guidance("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["sentiment"], "positive")
+        self.assertTrue(result["guidance_positive"])
+        self.assertFalse(result["guidance_negative"])
+
+    def test_negative_guidance_detected(self):
+        with (
+            patch("data.edgar_client._get_recent_filings", return_value=[self._filing("7.01")]),
+            patch(
+                "data.edgar_client._fetch_filing_text",
+                return_value="company lowers guidance headwinds softening demand",
+            ),
+        ):
+            result = _fetch_8k_guidance("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["sentiment"], "negative")
+        self.assertTrue(result["guidance_negative"])
+
+    def test_no_guidance_filings(self):
+        # 8-K with item 1.01 only (not 2.02 or 7.01)
+        with patch(
+            "data.edgar_client._get_recent_filings",
+            return_value=[{**self._filing(), "items": "1.01"}],
+        ):
+            result = _fetch_8k_guidance("AAPL", "0000320193", 30)
+        self.assertIsNone(result)
+
+    def test_empty_text_returns_none(self):
+        with (
+            patch("data.edgar_client._get_recent_filings", return_value=[self._filing("2.02")]),
+            patch("data.edgar_client._fetch_filing_text", return_value=""),
+        ):
+            result = _fetch_8k_guidance("AAPL", "0000320193", 30)
+        self.assertIsNone(result)
+
+    def test_no_recent_filings(self):
+        with patch("data.edgar_client._get_recent_filings", return_value=[]):
+            result = _fetch_8k_guidance("AAPL", "0000320193", 30)
+        self.assertIsNone(result)
+
+
+# ── 13D activist detection ────────────────────────────────────────────────────
+
+
+class TestFetch13dActivist(TestCase):
+    def _filing(self, form="SC 13D") -> dict:
+        return {
+            "form": form,
+            "filing_date": date.today().isoformat(),
+            "accession": "000032019326000001",
+            "doc": "sc13d.htm",
+            "items": "",
+        }
+
+    def test_known_activist_detected(self):
+        with (
+            patch("data.edgar_client._get_recent_filings", return_value=[self._filing()]),
+            patch(
+                "data.edgar_client._fetch_filing_text",
+                return_value="elliott investment management has acquired a 5% stake",
+            ),
+        ):
+            result = _fetch_13d_activist("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["known_activist"])
+        self.assertEqual(result["activist_name"], "Elliott Investment Management")
+
+    def test_unknown_activist_returned(self):
+        with (
+            patch("data.edgar_client._get_recent_filings", return_value=[self._filing()]),
+            patch(
+                "data.edgar_client._fetch_filing_text",
+                return_value="some unknown investor has acquired a 5.5% stake",
+            ),
+        ):
+            result = _fetch_13d_activist("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+        self.assertFalse(result["known_activist"])
+
+    def test_empty_text_skips_then_returns_generic(self):
+        # filing exists but text is empty → loop through all filings → fallback
+        with (
+            patch("data.edgar_client._get_recent_filings", return_value=[self._filing()]),
+            patch("data.edgar_client._fetch_filing_text", return_value=""),
+        ):
+            result = _fetch_13d_activist("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+        self.assertFalse(result["known_activist"])
+
+    def test_no_filings(self):
+        with patch("data.edgar_client._get_recent_filings", return_value=[]):
+            result = _fetch_13d_activist("AAPL", "0000320193", 30)
+        self.assertIsNone(result)
+
+
+# ── Secondary offering detection ──────────────────────────────────────────────
+
+
+class TestFetchSecondaryOffering(TestCase):
+    def test_424b4_detected(self):
+        filing = {
+            "form": "424B4",
+            "filing_date": date.today().isoformat(),
+            "accession": "000032019326000002",
+            "doc": "424b4.htm",
+            "items": "",
+        }
+        with patch("data.edgar_client._get_recent_filings", return_value=[filing]):
+            result = _fetch_secondary_offering("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["offering_detected"])
+        self.assertEqual(result["form"], "424B4")
+
+    def test_s3_detected(self):
+        filing = {
+            "form": "S-3",
+            "filing_date": date.today().isoformat(),
+            "accession": "000032019326000002",
+            "doc": "s3.htm",
+            "items": "",
+        }
+        with patch("data.edgar_client._get_recent_filings", return_value=[filing]):
+            result = _fetch_secondary_offering("AAPL", "0000320193", 30)
+        self.assertIsNotNone(result)
+
+    def test_no_filings(self):
+        with patch("data.edgar_client._get_recent_filings", return_value=[]):
+            result = _fetch_secondary_offering("AAPL", "0000320193", 30)
+        self.assertIsNone(result)
+
+
+# ── _live_fetch ───────────────────────────────────────────────────────────────
+
+
+class TestLiveFetch(TestCase):
+    def setUp(self):
+        _get_cik_map.cache_clear()
+
+    def tearDown(self):
+        _get_cik_map.cache_clear()
+
+    def test_cik_not_found_returns_empty(self):
+        with patch("data.edgar_client._get_cik_map", return_value={}):
+            result = _live_fetch("AAPL", 30)
+        self.assertEqual(result, {})
+
+    def test_full_fetch_with_all_events(self):
+        guidance = {
+            "sentiment": "positive",
+            "filing_date": "2026-06-01",
+            "items": "2.02",
+            "guidance_positive": True,
+            "guidance_negative": False,
+        }
+        activist = {
+            "activist_name": "Starboard Value",
+            "filing_date": "2026-06-01",
+            "known_activist": True,
+            "form": "SC 13D",
+        }
+        offering = {"form": "424B4", "filing_date": "2026-06-01", "offering_detected": True}
+        with (
+            patch("data.edgar_client._get_cik_map", return_value={"AAPL": "0000320193"}),
+            patch("data.edgar_client._fetch_8k_guidance", return_value=guidance),
+            patch("data.edgar_client._fetch_13d_activist", return_value=activist),
+            patch("data.edgar_client._fetch_secondary_offering", return_value=offering),
+        ):
+            result = _live_fetch("AAPL", 30)
+        self.assertIn("guidance", result)
+        self.assertIn("activist", result)
+        self.assertIn("secondary_offering", result)
+
+    def test_no_events_returns_empty_dict(self):
+        with (
+            patch("data.edgar_client._get_cik_map", return_value={"AAPL": "0000320193"}),
+            patch("data.edgar_client._fetch_8k_guidance", return_value=None),
+            patch("data.edgar_client._fetch_13d_activist", return_value=None),
+            patch("data.edgar_client._fetch_secondary_offering", return_value=None),
+        ):
+            result = _live_fetch("AAPL", 30)
+        self.assertEqual(result, {})
+
+
+# ── Prefetch ──────────────────────────────────────────────────────────────────
+
+
+class TestPrefetchEdgarData(TestCase):
+    def test_already_warm_skips(self):
+        today = "2026-06-04"
+        cache = {today: {"AAPL": {}}}
+        with (
+            patch("data.edgar_client._load_cache", return_value=cache),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            n = prefetch_edgar_data(symbols=["AAPL"])
+        self.assertEqual(n, 0)
+
+    def test_fetches_missing_symbols(self):
+        with (
+            patch("data.edgar_client._load_cache", return_value={}),
+            patch("data.edgar_client._save_cache") as mock_save,
+            patch("data.edgar_client._live_fetch", return_value={}),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            n = prefetch_edgar_data(symbols=["AAPL", "MSFT"])
+        self.assertEqual(n, 2)
+        mock_save.assert_called_once()
+
+    def test_default_universe(self):
+        with (
+            patch("data.edgar_client._load_cache", return_value={}),
+            patch("data.edgar_client._save_cache"),
+            patch("data.edgar_client._live_fetch", return_value={}),
+            patch("data.edgar_client.today_et") as m,
+            patch("data.edgar_client.STOCK_UNIVERSE", ["AAPL"]),
+        ):
+            m.return_value = date(2026, 6, 4)
+            n = prefetch_edgar_data()
+        self.assertEqual(n, 1)
+
+
+# ── _today_entry and public getters ──────────────────────────────────────────
+
+
+class TestTodayEntry(TestCase):
+    def test_cache_hit(self):
+        today = "2026-06-04"
+        entry = {"guidance": {"sentiment": "positive", "filing_date": today}}
+        cache = {today: {"AAPL": entry}}
+        with (
+            patch("data.edgar_client._load_cache", return_value=cache),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            result = _today_entry("AAPL", 30)
+        self.assertEqual(result, entry)
+
+    def test_cache_miss_fetches_live(self):
+        with (
+            patch("data.edgar_client._load_cache", return_value={}),
+            patch("data.edgar_client._save_cache"),
+            patch("data.edgar_client._live_fetch", return_value={"activist": {}}),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            result = _today_entry("AAPL", 30)
+        self.assertIn("activist", result)
+
+
+class TestPublicGetters(TestCase):
+    def _mock_entry(self, data: dict) -> None:
+        with patch("data.edgar_client._today_entry", return_value=data):
+            return None
+
+    def test_get_guidance_sentiment_present(self):
+        guidance = {"sentiment": "positive", "guidance_positive": True}
+        with patch("data.edgar_client._today_entry", return_value={"guidance": guidance}):
+            result = get_guidance_sentiment("AAPL")
+        self.assertEqual(result["sentiment"], "positive")
+
+    def test_get_guidance_sentiment_absent(self):
+        with patch("data.edgar_client._today_entry", return_value={}):
+            result = get_guidance_sentiment("AAPL")
+        self.assertIsNone(result)
+
+    def test_get_activist_filing_present(self):
+        activist = {"activist_name": "Starboard", "known_activist": True}
+        with patch("data.edgar_client._today_entry", return_value={"activist": activist}):
+            result = get_activist_filing("AAPL")
+        self.assertEqual(result["activist_name"], "Starboard")
+
+    def test_get_activist_filing_absent(self):
+        with patch("data.edgar_client._today_entry", return_value={}):
+            result = get_activist_filing("AAPL")
+        self.assertIsNone(result)
+
+    def test_get_secondary_offering_present(self):
+        offering = {"form": "424B4", "offering_detected": True}
+        with patch("data.edgar_client._today_entry", return_value={"secondary_offering": offering}):
+            result = get_secondary_offering("AAPL")
+        self.assertEqual(result["form"], "424B4")
+
+    def test_get_secondary_offering_absent(self):
+        with patch("data.edgar_client._today_entry", return_value={}):
+            result = get_secondary_offering("AAPL")
+        self.assertIsNone(result)
+
+    def test_get_edgar_signals_all_present(self):
+        entry = {
+            "guidance": {"sentiment": "positive"},
+            "activist": {"known_activist": True},
+            "secondary_offering": {"offering_detected": True},
+        }
+        with patch("data.edgar_client._today_entry", return_value=entry):
+            result = get_edgar_signals("AAPL")
+        self.assertIn("guidance", result)
+        self.assertIn("activist", result)
+        self.assertIn("secondary_offering", result)
+
+    def test_get_edgar_signals_empty(self):
+        with patch("data.edgar_client._today_entry", return_value={}):
+            result = get_edgar_signals("AAPL")
+        self.assertEqual(result, {})
