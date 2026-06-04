@@ -190,15 +190,15 @@ class TestPrefilterCandidates(unittest.TestCase):
 
     def _bbs_snap(self, **overrides):
         """Minimal valid bb_squeeze snapshot — all new gates satisfied by default."""
-        base = dict(
-            bb_squeeze=True,
-            bb_squeeze_days=5,
-            ema9_above_ema21=True,
-            vol_ratio=1.5,
-            adx=27,
-            rs_rank_pct=70.0,
-            current_price=20.0,
-        )
+        base = {
+            "bb_squeeze": True,
+            "bb_squeeze_days": 5,
+            "ema9_above_ema21": True,
+            "vol_ratio": 1.5,
+            "adx": 27,
+            "rs_rank_pct": 70.0,
+            "current_price": 20.0,
+        }
         base.update(overrides)
         return _snap(**base)
 
