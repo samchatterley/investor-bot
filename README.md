@@ -203,7 +203,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (2513 tests, 100% coverage)
+├── tests/             Unit test suite (3526 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **2513 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **3526 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -809,6 +809,22 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.74 — June 2026 — macro, options, sentiment, and EDGAR data infrastructure
+
+Four new data modules that provide cross-asset and corporate-event signals as inputs for the signal evaluator. All modules use daily caching, degrade gracefully on network failure, and are wired to the 07:00 ET pre-market prefetch job.
+
+- **`data/macro_data.py`** — downloads HYG, LQD, IEF, TLT, CPER, GLD, UUP, SPY daily via yfinance. Computes: HYG/LQD credit spread ROC (10d); TLT vs SPY 5-day spread (`duration_flight`); copper/gold ratio trend (CPER/GLD, 20d, `copper_gold_positive`); USD strength (UUP 20d ROC, `usd_strong`). `MacroSnapshot` dataclass exposed via `get_macro_snapshot()` with daily cache at `logs/macro_data_cache.json`.
+- **`data/options_data.py`** — fetches yfinance option chains for the expiry closest to 30 DTE. Computes ATM IV, 25-delta put/call skew (Black-Scholes delta via scipy), put/call OI ratio, IV vs 20-day realized vol spread. Boolean flags: `iv_cheap`, `iv_expensive`, `unusual_call_oi`, `panic_put_skew`, `call_skew_spike`. `OptionsSnapshot` per symbol, cached daily at `logs/options_data_cache.json`. `get_options_batch()` fetches all symbols in parallel via `ThreadPoolExecutor`.
+- **`data/sentiment_client.py`** — three independent sentiment feeds:
+  - *AAII*: weekly survey downloaded from AAII.com (`get_aaii_sentiment()`), cached up to 7 days. `AAIISentiment` tracks `extreme_bearish` / `extreme_bullish` flags (≥2 or ≥3 consecutive weeks).
+  - *Fear & Greed composite*: 5-component score (SPY momentum vs 125-day SMA, VIX vs 50-day MA, TLT/SPY spread, HYG/IEF trend, optional breadth inputs). `compute_fear_greed()` returns `FearGreedSnapshot` with 0–100 score and `Extreme Fear` / `Fear` / `Neutral` / `Greed` / `Extreme Greed` label.
+  - *Google Trends*: pytrends spike/decline detection per symbol (`get_google_trends()`); degrades gracefully if pytrends unavailable.
+  - `get_sentiment_snapshot()` combines AAII and F&G into `contrarian_long_signal` / `contrarian_short_signal` booleans.
+- **`data/edgar_client.py`** — SEC EDGAR REST API (no auth required). Three filing types: 8-K items 2.02/7.01 (guidance sentiment, keyword-classified positive/negative/neutral); SC 13D/G (activist investor detection against 15 known funds); 424B4/S-3/S-1 (secondary offering supply shock). Results cached daily at `logs/edgar_client_cache.json`. `prefetch_edgar_data()` warms all universe symbols at 07:00 ET.
+- **243 new tests** across `test_edgar_client.py`, `test_macro_data.py`, `test_options_data.py`, `test_sentiment_client.py`. 100% coverage on all four modules. **3526 passing.**
+
+---
 
 ### 1.72 — June 2026 — AV sentiment same-day cache + parallel market context fetch
 
