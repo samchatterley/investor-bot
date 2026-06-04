@@ -128,6 +128,7 @@ def _make_row(**kwargs) -> pd.Series:
         "ret_10d": 0.0,
         "macd_cross": False,
         "bb_squeeze": False,
+        "bb_squeeze_days": 0,
         "pct_vs_ema21": 0.0,
         "price_vs_52w_high_pct": -50.0,
         "is_inside_day": False,
@@ -137,6 +138,7 @@ def _make_row(**kwargs) -> pd.Series:
         "mom_12_1": 0.0,
         "hv_rank": 1.0,
         "rsi_divergence": False,
+        "Close": 20.0,
     }
     defaults.update(kwargs)
     return pd.Series(defaults)
@@ -313,26 +315,43 @@ class TestEntrySignalNewDailySignals(unittest.TestCase):
 
     def test_bb_squeeze_fires_with_ema_up(self):
         self.assertEqual(
-            _entry_signal(_make_row(bb_squeeze=True, vol_ratio=1.3, ema9=101, ema21=100)),
+            _entry_signal(
+                _make_row(bb_squeeze=True, bb_squeeze_days=5, vol_ratio=1.3, ema9=101, ema21=100),
+                rs_rank_pct=70.0,
+            ),
             "bb_squeeze",
         )
 
     def test_bb_squeeze_fires_with_positive_macd(self):
         self.assertEqual(
-            _entry_signal(_make_row(bb_squeeze=True, vol_ratio=1.3, macd_diff=0.1)),
+            _entry_signal(
+                _make_row(bb_squeeze=True, bb_squeeze_days=5, vol_ratio=1.3, macd_diff=0.1),
+                rs_rank_pct=70.0,
+            ),
             "bb_squeeze",
         )
 
     def test_bb_squeeze_requires_directional_confirmation(self):
         self.assertIsNone(
             _entry_signal(
-                _make_row(bb_squeeze=True, vol_ratio=1.3, ema9=99, ema21=100, macd_diff=-0.1)
+                _make_row(
+                    bb_squeeze=True,
+                    bb_squeeze_days=5,
+                    vol_ratio=1.3,
+                    ema9=99,
+                    ema21=100,
+                    macd_diff=-0.1,
+                ),
+                rs_rank_pct=70.0,
             )
         )
 
     def test_bb_squeeze_requires_volume(self):
         self.assertIsNone(
-            _entry_signal(_make_row(bb_squeeze=True, ema9=101, ema21=100, vol_ratio=1.1))
+            _entry_signal(
+                _make_row(bb_squeeze=True, bb_squeeze_days=5, ema9=101, ema21=100, vol_ratio=1.1),
+                rs_rank_pct=70.0,
+            )
         )
 
     def test_inside_day_breakout_fires(self):
@@ -590,26 +609,22 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         row = _make_row(gap_pct=3.0, close_above_open=True, vol_ratio=1.6, adx=25)
         self.assertIsNone(_entry_signal(row, regime="BEAR_DAY"))
 
-    # ── vix_fear_reversion ────────────────────────────────────────────────────
-    def test_vix_fear_reversion_fires(self):
-        self.assertEqual(
-            _entry_signal(_make_row(vol_ratio=1.6), vix_spike=True), "vix_fear_reversion"
-        )
+    # ── vix_fear_reversion (globally disabled) ───────────────────────────────
+    def test_vix_fear_reversion_disabled(self):
+        # Signal is in GLOBALLY_DISABLED — never fires even with vix_spike=True
+        self.assertIsNone(_entry_signal(_make_row(vol_ratio=1.6), vix_spike=True))
 
     def test_vix_fear_reversion_not_fire_without_spike(self):
         self.assertIsNone(_entry_signal(_make_row(vol_ratio=1.6), vix_spike=False))
 
-    def test_vix_fear_reversion_fires_on_bear_day(self):
-        # vix_fear_reversion is not regime-blocked — counter-cyclical
+    def test_vix_fear_reversion_disabled_on_bear_day(self):
         row = _make_row(vol_ratio=1.6)
-        self.assertEqual(
-            _entry_signal(row, regime="BEAR_DAY", vix_spike=True), "vix_fear_reversion"
-        )
+        self.assertIsNone(_entry_signal(row, regime="BEAR_DAY", vix_spike=True))
 
-    def test_vix_fear_reversion_takes_priority_over_mean_reversion(self):
-        # Both could fire — vix_fear_reversion has higher priority
+    def test_mean_reversion_fires_when_vix_fear_reversion_disabled(self):
+        # vix_fear_reversion globally disabled — mean_reversion should fire instead
         row = _make_row(rsi=28, bb_pct=0.10, vol_ratio=1.6)
-        self.assertEqual(_entry_signal(row, vix_spike=True), "vix_fear_reversion")
+        self.assertEqual(_entry_signal(row, vix_spike=True), "mean_reversion")
 
     # ── regime blocking ───────────────────────────────────────────────────────
     def test_bear_day_blocks_rs_leader(self):
@@ -1814,11 +1829,13 @@ class TestSignalPriority(unittest.TestCase):
             "macd_diff": [0.5] * n,
             "ret_5d": [2.0] * n,
             "bb_squeeze": [False] * n,
+            "bb_squeeze_days": [0] * n,
             "macd_cross": [False] * n,
             "ret_10d": [4.0] * n,
             "pct_vs_ema21": [1.0] * n,
             "price_vs_52w_high_pct": [-50.0] * n,
             "is_inside_day": [False] * n,
+            "rs_rank_pct": [70.0] * n,
         }
         defaults.update(signal_row_overrides)
         return pd.DataFrame(defaults, index=idx)
@@ -1831,7 +1848,7 @@ class TestSignalPriority(unittest.TestCase):
         n = len(idx)
 
         # Three symbols all firing bb_squeeze on the same day
-        bb_overrides = {"bb_squeeze": [True] * n}
+        bb_overrides = {"bb_squeeze": [True] * n, "bb_squeeze_days": [5] * n}
         indicators = {f"SYM{i}": self._make_signal_df(idx, bb_overrides) for i in range(3)}
 
         result = _run_simulation(
@@ -1853,7 +1870,7 @@ class TestSignalPriority(unittest.TestCase):
         trading_dates = idx[1:]
         n = len(idx)
 
-        bb_overrides = {"bb_squeeze": [True] * n}
+        bb_overrides = {"bb_squeeze": [True] * n, "bb_squeeze_days": [5] * n}
         indicators = {f"SYM{i}": self._make_signal_df(idx, bb_overrides) for i in range(4)}
 
         result = _run_simulation(
@@ -1876,7 +1893,7 @@ class TestSignalPriority(unittest.TestCase):
         n = len(idx)
 
         # SYM0–SYM1: bb_squeeze; SYM2: mean_reversion (rsi<35, bb_pct<0.15, vol>1.2)
-        bb_overrides = {"bb_squeeze": [True] * n}
+        bb_overrides = {"bb_squeeze": [True] * n, "bb_squeeze_days": [5] * n}
         mr_overrides = {
             "rsi": [28.0] * n,
             "bb_pct": [0.10] * n,

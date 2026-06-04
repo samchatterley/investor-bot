@@ -86,6 +86,9 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "gap_vol_min": 2.0,  # raised from 1.5 in v1.48 — strong vol confirmation for gaps
     # bb_squeeze
     "bbs_vol_min": 1.2,
+    "bbs_squeeze_days_min": 5,  # squeeze must persist ≥5 consecutive days (not a one-day dip)
+    "bbs_adx_min": 25,  # raised from 20 — require more directional conviction
+    "bbs_rs_rank_min": 60.0,  # only top-40% RS stocks (filters low-momentum candidates)
     # inside_day_breakout
     "idb_vol_min": 1.1,
     # trend_pullback
@@ -165,7 +168,9 @@ _BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"}
 # across all analysis runs (Jan 2024 – May 2026):
 #   rsi_divergence: WR 48%, avg -0.9% in NEUTRAL_CHOP (75% of its trades); +0.28–0.31 Sharpe drag.
 #   breakout_52w:   WR 35%, avg -1.5% in BULL_TREND (its only firing regime); drag in every run.
-GLOBALLY_DISABLED: frozenset[str] = frozenset({"rsi_divergence", "breakout_52w"})
+GLOBALLY_DISABLED: frozenset[str] = frozenset(
+    {"rsi_divergence", "breakout_52w", "vix_fear_reversion"}
+)
 
 # ── Short-side signal constants ───────────────────────────────────────────────
 
@@ -451,6 +456,7 @@ def evaluate_signals(
     pct_52w = _f("price_vs_52w_high_pct", -999)
     hv_rank = _f("hv_rank", 1.0)
     bb_squeeze = bool(snapshot.get("bb_squeeze", False))
+    bb_squeeze_days = int(snapshot.get("bb_squeeze_days", 0))
     is_inside_day = bool(snapshot.get("is_inside_day", False))
     gap_pct = _f("gap_pct", 0)
     close_above_open = bool(snapshot.get("close_above_open", False))
@@ -521,11 +527,15 @@ def evaluate_signals(
         matched.append("gap_and_go")
 
     # Bollinger squeeze
+    _bbs_price = snapshot.get("current_price", 10.0)
     if (
         bb_squeeze
+        and bb_squeeze_days >= p["bbs_squeeze_days_min"]
         and vol > p["bbs_vol_min"]
         and (ema_up or macd_diff > 0)
-        and adx >= 20
+        and adx >= p["bbs_adx_min"]
+        and snapshot.get("rs_rank_pct", 0.0) >= p["bbs_rs_rank_min"]
+        and _bbs_price >= 10.0
         and "bb_squeeze" not in blocked
     ):
         matched.append("bb_squeeze")

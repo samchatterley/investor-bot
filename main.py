@@ -861,7 +861,9 @@ def _fetch_market_context() -> MarketContext:
     )
 
 
-def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> DataBundle | None:
+def _build_data_bundle(
+    client, snap: PositionSnapshot, mc: MarketContext, mode: str = "open"
+) -> DataBundle | None:
     """Fetch, enrich, and pre-filter market data. Returns None if no snapshots available."""
     logger.info("Scanning for top movers...")
     top_movers = stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
@@ -938,7 +940,12 @@ def _build_data_bundle(client, snap: PositionSnapshot, mc: MarketContext) -> Dat
     filtered_candidates = stock_scanner.prefilter_candidates(
         candidate_snaps, regime=mc.regime.get("regime")
     )
-    ai_snapshots = held_snaps + filtered_candidates
+    # In exit-only modes (close, open_sells) buys are never executed — skip sending
+    # the full candidate list to Claude; only held positions need AI exit evaluation.
+    if mode in ("close", "open_sells"):
+        ai_snapshots = held_snaps
+    else:
+        ai_snapshots = held_snaps + filtered_candidates
     logger.info(
         f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
     )
@@ -1018,6 +1025,10 @@ def _run_ai_phase(
     executed_symbols: set,
 ) -> dict | None:
     """Run AI analysis, validate, log decisions. Returns the decisions dict or None on failure."""
+    if not db.ai_snapshots:
+        logger.info("AI analysis skipped — no positions to evaluate.")
+        return {"buy_candidates": [], "position_decisions": [], "market_summary": "", "date": ""}
+
     track_record = portfolio_tracker.get_track_record(10)
     logger.info("Running AI analysis...")
     decisions = ai_analyst.get_trading_decisions(
@@ -2156,7 +2167,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     snap = _get_position_snapshot(client)  # refresh after exits
 
     # ── Fetch + enrich market data, pre-filter candidates ────────────────────
-    db = _build_data_bundle(client, snap, mc)
+    db = _build_data_bundle(client, snap, mc, mode)
     if db is None:
         return
 

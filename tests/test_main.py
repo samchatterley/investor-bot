@@ -4508,5 +4508,140 @@ class TestFetchMarketContext(unittest.TestCase):
         self.assertIsNone(mc.vix)
 
 
+class TestRunAiPhaseEmptySnapshots(unittest.TestCase):
+    """_run_ai_phase must return an empty decisions dict without calling Claude when
+    ai_snapshots is empty (close/open_sells mode with no held positions)."""
+
+    def _make_db(self):
+        from models import DataBundle
+
+        return DataBundle(
+            snapshots=[],
+            ai_snapshots=[],
+            filtered_candidates=[],
+            options_sigs={},
+            news={},
+            sentiment={},
+            short_snapshots=[],
+        )
+
+    def test_skips_claude_when_no_snapshots(self):
+        from main import _run_ai_phase
+
+        db = self._make_db()
+        snap = MagicMock()
+        snap.open_positions = []
+        mc = MagicMock()
+        account_now = {"cash": 100_000, "portfolio_value": 100_000}
+
+        with patch("main.ai_analyst.get_trading_decisions") as mock_claude:
+            result = _run_ai_phase(db, snap, mc, account_now, "run-1", "close", set())
+
+        mock_claude.assert_not_called()
+        self.assertEqual(result["buy_candidates"], [])
+        self.assertEqual(result["position_decisions"], [])
+
+    def test_skips_claude_for_open_sells_with_no_snapshots(self):
+        from main import _run_ai_phase
+
+        db = self._make_db()
+        snap = MagicMock()
+        mc = MagicMock()
+        account_now = {"cash": 100_000, "portfolio_value": 100_000}
+
+        with patch("main.ai_analyst.get_trading_decisions") as mock_claude:
+            result = _run_ai_phase(db, snap, mc, account_now, "run-2", "open_sells", set())
+
+        mock_claude.assert_not_called()
+        self.assertIsNotNone(result)
+
+    def test_calls_claude_when_snapshots_present(self):
+        from main import _run_ai_phase
+        from models import DataBundle
+
+        db = DataBundle(
+            snapshots=[{"symbol": "AAPL"}],
+            ai_snapshots=[{"symbol": "AAPL"}],
+            filtered_candidates=[],
+            options_sigs={},
+            news={},
+            sentiment={},
+            short_snapshots=[],
+        )
+        snap = MagicMock()
+        snap.open_positions = []
+        snap.held_symbols = set()
+        snap.position_ages = {}
+        snap.stale = []
+        snap.earnings_risk = {}
+        mc = MagicMock()
+        mc.regime = {}
+        mc.vix = 18.0
+        mc.sector_perf = {}
+        mc.macro = {}
+        mc.leading_sectors = []
+        mc.lessons = ""
+        account_now = {"cash": 100_000, "portfolio_value": 100_000}
+
+        with (
+            patch(
+                "main.ai_analyst.get_trading_decisions", return_value=_decisions()
+            ) as mock_claude,
+            patch("main.validate_ai_response", return_value=(True, [])),
+            patch("main.decision_log.log_decisions"),
+            patch("main.audit_log.log_ai_decision"),
+            patch("main.portfolio_tracker.get_track_record", return_value=[]),
+        ):
+            result = _run_ai_phase(db, snap, mc, account_now, "run-3", "open", set())
+
+        mock_claude.assert_called_once()
+        self.assertIsNotNone(result)
+
+
+class TestCloseModeSuppressesAiCandidates(RunInnerBase):
+    """In close mode with no open positions, the full candidate list must NOT be sent
+    to Claude — ai_snapshots is filtered to held positions only (empty here)."""
+
+    def test_close_mode_no_positions_skips_claude(self):
+        from main import _run_inner
+
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.is_market_open": True,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "TSLA", "matched_signals": ["bb_squeeze"]},
+                    {"symbol": "NVDA", "matched_signals": ["momentum"]},
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "TSLA", "current_price": 200.0},
+                    {"symbol": "NVDA", "current_price": 500.0},
+                ],
+            }
+        )
+        with stack:
+            _run_inner(dry_run=True, mode="close", today="2026-01-15")
+
+        mocks["main.ai_analyst.get_trading_decisions"].assert_not_called()
+
+    def test_open_sells_mode_no_positions_skips_claude(self):
+        from main import _run_inner
+
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.is_market_open": True,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "TSLA", "matched_signals": ["bb_squeeze"]},
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "TSLA", "current_price": 200.0},
+                ],
+            }
+        )
+        with stack:
+            _run_inner(dry_run=True, mode="open_sells", today="2026-01-15")
+
+        mocks["main.ai_analyst.get_trading_decisions"].assert_not_called()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

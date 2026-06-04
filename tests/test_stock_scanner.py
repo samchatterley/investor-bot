@@ -188,21 +188,50 @@ class TestPrefilterCandidates(unittest.TestCase):
 
     # ── bb_squeeze_breakout ──────────────────────────────────────────────────
 
+    def _bbs_snap(self, **overrides):
+        """Minimal valid bb_squeeze snapshot — all new gates satisfied by default."""
+        base = dict(
+            bb_squeeze=True,
+            bb_squeeze_days=5,
+            ema9_above_ema21=True,
+            vol_ratio=1.5,
+            adx=27,
+            rs_rank_pct=70.0,
+            current_price=20.0,
+        )
+        base.update(overrides)
+        return _snap(**base)
+
     def test_bb_squeeze_with_ema_up_and_volume_passes(self):
-        snap = _snap(bb_squeeze=True, ema9_above_ema21=True, vol_ratio=1.5)
+        snap = self._bbs_snap()
         self.assertEqual(len(prefilter_candidates([snap])), 1)
 
     def test_bb_squeeze_with_positive_macd_passes(self):
-        snap = _snap(bb_squeeze=True, macd_diff=0.3, vol_ratio=1.3)
+        snap = self._bbs_snap(ema9_above_ema21=False, macd_diff=0.3, vol_ratio=1.3)
         self.assertEqual(len(prefilter_candidates([snap])), 1)
 
     def test_bb_squeeze_without_directional_confirmation_fails(self):
-        # bb_squeeze True but ema not up and macd_diff <= 0
-        snap = _snap(bb_squeeze=True, ema9_above_ema21=False, macd_diff=-0.1, vol_ratio=1.5)
+        snap = self._bbs_snap(ema9_above_ema21=False, macd_diff=-0.1)
         self.assertEqual(len(prefilter_candidates([snap])), 0)
 
     def test_bb_squeeze_without_volume_fails(self):
-        snap = _snap(bb_squeeze=True, ema9_above_ema21=True, vol_ratio=0.9)
+        snap = self._bbs_snap(vol_ratio=0.9)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_bb_squeeze_insufficient_days_fails(self):
+        snap = self._bbs_snap(bb_squeeze_days=4)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_bb_squeeze_low_rs_rank_fails(self):
+        snap = self._bbs_snap(rs_rank_pct=59.9)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_bb_squeeze_penny_stock_fails(self):
+        snap = self._bbs_snap(current_price=9.99)
+        self.assertEqual(len(prefilter_candidates([snap])), 0)
+
+    def test_bb_squeeze_low_adx_fails(self):
+        snap = self._bbs_snap(adx=24)
         self.assertEqual(len(prefilter_candidates([snap])), 0)
 
     # ── breakout_52w ─────────────────────────────────────────────────────────

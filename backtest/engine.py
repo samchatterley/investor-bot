@@ -227,6 +227,9 @@ def _row_to_snapshot(
         "price_vs_52w_high_pct": float(row.get("price_vs_52w_high_pct", -999)),
         "hv_rank": float(row.get("hv_rank", 1.0)),
         "bb_squeeze": bool(row.get("bb_squeeze", False)),
+        "bb_squeeze_days": int(row.get("bb_squeeze_days", 0)),
+        "current_price": float(row.get("Close", 0.0)),
+        "rs_rank_pct": float(row.get("rs_rank_pct", 50.0)),
         "is_inside_day": bool(row.get("is_inside_day", False)),
         "gap_pct": float(row.get("gap_pct", 0)),
         "close_above_open": bool(row.get("close_above_open", False)),
@@ -278,6 +281,7 @@ def _entry_signal(
     vix_spike: bool = False,
     fundamentals: dict | None = None,
     disabled_signals: frozenset[str] | None = None,
+    rs_rank_pct: float | None = None,
 ) -> str | None:
     """Return the highest-priority matching signal, or None.
 
@@ -295,6 +299,8 @@ def _entry_signal(
         spy_ret_10d=spy_ret_10d,
         fundamentals=fundamentals,
     )
+    if rs_rank_pct is not None:
+        snap["rs_rank_pct"] = rs_rank_pct
     signals = evaluate_signals(
         snap,
         blocked=blocked,
@@ -1013,6 +1019,7 @@ def _run_simulation(
                     fund.update(insider_state_on_date(sym, prev_date, insider_history))
                 fundamentals = fund
 
+            rank_pct: float | None = rs_ranks.get(sym, {}).get(prev_date_str) if rs_ranks else None
             signal = _entry_signal(
                 prev_row,
                 params,
@@ -1023,12 +1030,16 @@ def _run_simulation(
                 vix_spike=vix_spike,
                 fundamentals=fundamentals,
                 disabled_signals=disabled_signals,
+                rs_rank_pct=rank_pct,
             )
             if signal:
-                if rs_ranks is not None and signal not in _RS_EXEMPT_SIGNALS:
-                    rank_pct = rs_ranks.get(sym, {}).get(prev_date_str)
-                    if rank_pct is not None and rank_pct < rs_top_pct * 100:
-                        continue
+                if (
+                    rs_ranks is not None
+                    and signal not in _RS_EXEMPT_SIGNALS
+                    and rank_pct is not None
+                    and rank_pct < rs_top_pct * 100
+                ):
+                    continue
                 candidates.append((sym, signal, float(prev_row["rsi"])))
 
         def _sort_key(item: tuple) -> tuple:
@@ -1864,6 +1875,9 @@ def _run_combined_simulation(
                         fund.update(insider_state_on_date(sym, prev_date, insider_history))
                     fundamentals = fund
 
+                rank_pct: float | None = (
+                    rs_ranks.get(sym, {}).get(prev_date_str) if rs_ranks else None
+                )
                 signal = _entry_signal(
                     prev_row,
                     params,
@@ -1872,12 +1886,16 @@ def _run_combined_simulation(
                     regime=regime,
                     vix_spike=vix_spike,
                     fundamentals=fundamentals,
+                    rs_rank_pct=rank_pct,
                 )
                 if signal:
-                    if rs_ranks is not None and signal not in _RS_EXEMPT_SIGNALS:
-                        rank_pct = rs_ranks.get(sym, {}).get(prev_date_str)
-                        if rank_pct is not None and rank_pct < rs_top_pct * 100:
-                            continue
+                    if (
+                        rs_ranks is not None
+                        and signal not in _RS_EXEMPT_SIGNALS
+                        and rank_pct is not None
+                        and rank_pct < rs_top_pct * 100
+                    ):
+                        continue
                     long_candidates.append((sym, signal, float(prev_row["rsi"])))
 
         def _long_sort_key(item: tuple) -> tuple:

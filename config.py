@@ -87,8 +87,8 @@ MAX_SHORT_HEDGE_RATIO = float(
 MAX_SHORT_HOLD_DAYS = int(os.getenv("MAX_SHORT_HOLD_DAYS", "3"))
 
 # Risk-budget sizing (replaces Kelly)
-RISK_PER_TRADE_PCT = 0.0025  # 0.25% of equity risked per trade
-MAX_POSITION_WEIGHT = 0.05  # 5% of portfolio per position (hard cap)
+RISK_PER_TRADE_PCT = 0.006  # 0.6% of equity risked per trade
+MAX_POSITION_WEIGHT = 0.15  # 15% of portfolio per position (hard cap)
 
 # Risk management
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", "0.07" if _SAM else "0.04"))

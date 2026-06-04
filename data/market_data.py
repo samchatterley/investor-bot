@@ -91,9 +91,17 @@ def fetch_stock_data(
         df["bb_pct"] = bb.bollinger_pband()  # 0=at lower band, 1=at upper band
         df["bb_mid"] = bb.bollinger_mavg()
         df["bb_bandwidth"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
-        # Squeeze: bandwidth in the lowest quintile of the last 20 bars
-        bw_q20 = df["bb_bandwidth"].rolling(20, min_periods=5).quantile(0.2)
+        # Squeeze: bandwidth in the lowest 20th percentile of the last 60 bars (3 months).
+        # Using 60 bars rather than 20 prevents ~20% of days qualifying by construction;
+        # a genuine squeeze requires compression relative to a longer-term baseline.
+        bw_q20 = df["bb_bandwidth"].rolling(60, min_periods=20).quantile(0.2)
         df["bb_squeeze"] = df["bb_bandwidth"] <= bw_q20
+        # Consecutive days in squeeze — evaluator requires ≥5 to filter transient dips.
+        squeeze_int = df["bb_squeeze"].astype(int)
+        # Rolling cumsum trick: count consecutive True streaks.
+        cumsum = squeeze_int.cumsum()
+        reset = cumsum - cumsum.where(~df["bb_squeeze"]).ffill().fillna(0)
+        df["bb_squeeze_days"] = reset.astype(int)
 
         # Volume vs 20-day average
         df["avg_volume_20"] = volume.rolling(20).mean()
@@ -212,6 +220,9 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "bb_squeeze": bool(latest.get("bb_squeeze", False))
         if pd.notna(latest.get("bb_squeeze", False))
         else False,
+        "bb_squeeze_days": int(latest.get("bb_squeeze_days", 0))
+        if pd.notna(latest.get("bb_squeeze_days", 0))
+        else 0,
         "is_inside_day": bool(latest.get("is_inside_day", False))
         if pd.notna(latest.get("is_inside_day", False))
         else False,
