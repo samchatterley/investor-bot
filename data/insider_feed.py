@@ -18,8 +18,10 @@ during market hours.
 import json
 import logging
 import os
+import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from functools import lru_cache
 
@@ -37,7 +39,22 @@ _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{doc}"
 _REQ_DELAY = 0.15  # 10 req/s SEC limit → use 6-7/s to stay safe
+_MAX_WORKERS = 10  # concurrent symbols; rate limiter keeps global req/s in check
 _CACHE_PATH = os.path.join(LOG_DIR, "insider_cache.json")
+
+# Global rate limiter: enforces _REQ_DELAY between all EDGAR requests across threads.
+_rate_lock = threading.Lock()
+_last_req_time: float = 0.0
+
+
+def _edgar_sleep() -> None:
+    global _last_req_time
+    with _rate_lock:
+        now = time.monotonic()
+        gap = _REQ_DELAY - (now - _last_req_time)
+        if gap > 0:
+            time.sleep(gap)
+        _last_req_time = time.monotonic()
 
 
 # ── cache I/O ─────────────────────────────────────────────────────────────────
@@ -78,7 +95,7 @@ def _get_cik_map() -> dict[str, str]:
 def _recent_form4_filings(cik: str, lookback_days: int) -> list[dict]:
     """Return Form 4 filing metadata for the given CIK within the lookback window."""
     try:
-        time.sleep(_REQ_DELAY)
+        _edgar_sleep()
         resp = requests.get(_SUBMISSIONS_URL.format(cik=cik), headers=_HEADERS, timeout=15)
         resp.raise_for_status()
         data = resp.json()
@@ -113,7 +130,7 @@ def _parse_form4(cik: str, accession: str, doc: str) -> list[dict]:
     """Download and parse a Form 4 XML, returning open-market purchase records only."""
     url = _FILING_URL.format(cik_int=int(cik), accession=accession, doc=doc)
     try:
-        time.sleep(_REQ_DELAY)
+        _edgar_sleep()
         resp = requests.get(url, headers=_HEADERS, timeout=15)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
@@ -150,12 +167,49 @@ def _parse_form4(cik: str, accession: str, doc: str) -> list[dict]:
 # ── Live fetch (one symbol at a time, no cache) ────────────────────────────────
 
 
+def _fetch_one(
+    sym: str,
+    cik_map: dict[str, str],
+    lookback_days: int,
+    large_buy_usd: float,
+) -> tuple[str, dict | None]:
+    """Fetch insider activity for a single symbol. Returns (symbol, data|None)."""
+    cik = cik_map.get(sym.upper())
+    if not cik:
+        return sym, None
+
+    filings = _recent_form4_filings(cik, lookback_days)
+    all_txns: list[dict] = []
+    for filing in filings:
+        all_txns.extend(_parse_form4(cik, filing["accession"], filing["doc"]))
+
+    if not all_txns:
+        return sym, None
+
+    unique_insiders = len({t["reporter"] for t in all_txns})
+    total_shares = sum(t["shares"] for t in all_txns)
+    max_notional = max((t["shares"] * t["price"] for t in all_txns), default=0.0)
+
+    data: dict = {
+        "insider_cluster": unique_insiders >= 2,
+        "insider_unique_insiders": unique_insiders,
+        "insider_transaction_count": len(all_txns),
+        "insider_total_shares": total_shares,
+        "insider_large_buy": max_notional >= large_buy_usd,
+    }
+    logger.info(
+        f"Insider {sym}: {unique_insiders} insiders, {len(all_txns)} txns, "
+        f"cluster={data['insider_cluster']}"
+    )
+    return sym, data
+
+
 def _live_fetch(
     symbols: list[str],
     lookback_days: int = 10,
     large_buy_usd: float = 100_000.0,
 ) -> dict[str, dict | None]:
-    """Fetch insider activity from EDGAR for each symbol.
+    """Fetch insider activity from EDGAR for each symbol (parallel, rate-limited).
 
     Returns every symbol in the result: data dict when activity exists, None
     when no open-market purchases were found.  None acts as a "fetched, nothing
@@ -164,37 +218,14 @@ def _live_fetch(
     cik_map = _get_cik_map()
     result: dict[str, dict | None] = {}
 
-    for sym in symbols:
-        cik = cik_map.get(sym.upper())
-        if not cik:
-            result[sym] = None
-            continue
-
-        filings = _recent_form4_filings(cik, lookback_days)
-        all_txns: list[dict] = []
-        for filing in filings:
-            all_txns.extend(_parse_form4(cik, filing["accession"], filing["doc"]))
-
-        if not all_txns:
-            result[sym] = None
-            continue
-
-        unique_insiders = len({t["reporter"] for t in all_txns})
-        total_shares = sum(t["shares"] for t in all_txns)
-        max_notional = max((t["shares"] * t["price"] for t in all_txns), default=0.0)
-
-        data: dict = {
-            "insider_cluster": unique_insiders >= 2,
-            "insider_unique_insiders": unique_insiders,
-            "insider_transaction_count": len(all_txns),
-            "insider_total_shares": total_shares,
-            "insider_large_buy": max_notional >= large_buy_usd,
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = {
+            pool.submit(_fetch_one, sym, cik_map, lookback_days, large_buy_usd): sym
+            for sym in symbols
         }
-        result[sym] = data
-        logger.info(
-            f"Insider {sym}: {unique_insiders} insiders, {len(all_txns)} txns, "
-            f"cluster={data['insider_cluster']}"
-        )
+        for future in as_completed(futures):
+            sym, data = future.result()
+            result[sym] = data
 
     return result
 

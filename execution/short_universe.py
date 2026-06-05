@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import pandas as pd
 import yfinance as yf
@@ -277,26 +278,35 @@ STATIC_SHORT_UNIVERSE: list[str] = list(
 )
 
 
-def get_short_universe(client) -> list[str]:
+def get_short_universe(client, _retries: int = 2, _retry_delay: float = 3.0) -> list[str]:
     """Return tradable easy-to-borrow symbols from Alpaca, filtered to common stock.
 
-    Falls back to STATIC_SHORT_UNIVERSE on any failure.
+    Retries up to _retries times on connection errors before falling back to
+    STATIC_SHORT_UNIVERSE.
     """
-    try:
-        assets = client.get_all_assets()
-        symbols = [
-            a.symbol
-            for a in assets
-            if getattr(a, "tradable", False)
-            and getattr(a, "easy_to_borrow", False)
-            and getattr(a, "exchange", "") not in ("OTC",)
-            and re.match(r"^[A-Z]{1,5}$", a.symbol)  # US common stock pattern
-        ]
-        logger.info(f"Alpaca easy-to-borrow universe: {len(symbols)} symbols")
-        return symbols if symbols else STATIC_SHORT_UNIVERSE
-    except Exception as e:
-        logger.warning(f"Alpaca asset discovery failed, using static universe: {e}")
-        return STATIC_SHORT_UNIVERSE
+    last_exc: Exception | None = None
+    for attempt in range(1 + _retries):
+        try:
+            assets = client.get_all_assets()
+            symbols = [
+                a.symbol
+                for a in assets
+                if getattr(a, "tradable", False)
+                and getattr(a, "easy_to_borrow", False)
+                and getattr(a, "exchange", "") not in ("OTC",)
+                and re.match(r"^[A-Z]{1,5}$", a.symbol)  # US common stock pattern
+            ]
+            logger.info(f"Alpaca easy-to-borrow universe: {len(symbols)} symbols")
+            return symbols if symbols else STATIC_SHORT_UNIVERSE
+        except Exception as e:
+            last_exc = e
+            if attempt < _retries:
+                logger.warning(
+                    f"Alpaca asset discovery attempt {attempt + 1} failed, retrying: {e}"
+                )
+                time.sleep(_retry_delay)
+    logger.warning(f"Alpaca asset discovery failed, using static universe: {last_exc}")
+    return STATIC_SHORT_UNIVERSE
 
 
 def scan_short_universe(

@@ -1076,8 +1076,34 @@ class TestShortUniverseModule(unittest.TestCase):
 
         client = MagicMock()
         client.get_all_assets.side_effect = RuntimeError("Alpaca down")
-        result = get_short_universe(client)
+        result = get_short_universe(client, _retries=0)
         self.assertEqual(result, STATIC_SHORT_UNIVERSE)
+
+    def test_get_short_universe_retries_then_falls_back(self):
+        from execution.short_universe import STATIC_SHORT_UNIVERSE, get_short_universe
+
+        client = MagicMock()
+        client.get_all_assets.side_effect = RuntimeError("connection reset")
+        with patch("execution.short_universe.time.sleep") as mock_sleep:
+            result = get_short_universe(client, _retries=2, _retry_delay=1.0)
+        self.assertEqual(result, STATIC_SHORT_UNIVERSE)
+        self.assertEqual(client.get_all_assets.call_count, 3)  # 1 initial + 2 retries
+        self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_get_short_universe_succeeds_after_retry(self):
+        from execution.short_universe import get_short_universe
+
+        good_asset = MagicMock()
+        good_asset.tradable = True
+        good_asset.easy_to_borrow = True
+        good_asset.exchange = "NASDAQ"
+        good_asset.symbol = "AAPL"
+        client = MagicMock()
+        client.get_all_assets.side_effect = [RuntimeError("transient"), [good_asset]]
+        with patch("execution.short_universe.time.sleep"):
+            result = get_short_universe(client, _retries=1)
+        self.assertIn("AAPL", result)
+        self.assertEqual(client.get_all_assets.call_count, 2)
 
     def test_get_short_universe_filters_non_tradable(self):
         from execution.short_universe import get_short_universe

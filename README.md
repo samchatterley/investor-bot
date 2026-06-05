@@ -203,7 +203,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (3526 tests, 100% coverage)
+├── tests/             Unit test suite (3531 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **3526 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **3531 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -809,6 +809,16 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.75 — June 2026 — parallel insider fetch + Alpaca short-universe retry
+
+Two performance and reliability fixes observed during live runs.
+
+- **`data/insider_feed.py` — parallel EDGAR fetch.** `_live_fetch` was sequential: at 0.15 s/request the 174 symbols that fall outside `STOCK_UNIVERSE` were hitting 15-second EDGAR timeouts serially, adding ~43 minutes to every `open_sells` run (14:51 → 15:37 BST observed 2026-06-05). Fix: extracted `_fetch_one(sym, cik_map, ...)` as a pure per-symbol worker; `_live_fetch` now submits all symbols to `ThreadPoolExecutor(max_workers=10)`. A global `_edgar_sleep()` rate-limiter (`threading.Lock` + `_last_req_time`) serialises sleeps across threads to stay inside EDGAR's 10 req/s ceiling while allowing HTTP calls to overlap. Expected improvement: ~43 min → 2–5 min on cache-miss symbols.
+- **`execution/short_universe.py` — retry on Alpaca `get_all_assets` failure.** `get_short_universe` previously fell back to the 212-symbol static list on the first connection error. `RemoteDisconnected` errors on `client.get_all_assets()` are almost always transient; the fix adds up to 2 retries with a 3-second backoff before falling back. Tests pass `_retries=0` or mock `time.sleep` to stay fast.
+- **5 new tests** (total 3531): `TestEdgarSleep` (3 — sleep branch, no-sleep branch, `_last_req_time` update); `test_get_short_universe_retries_then_falls_back`, `test_get_short_universe_succeeds_after_retry`. **3531 passing, 100% coverage on changed files.**
+
+---
 
 ### 1.74 — June 2026 — macro, options, sentiment, and EDGAR data infrastructure
 

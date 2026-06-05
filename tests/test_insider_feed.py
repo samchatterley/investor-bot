@@ -4,7 +4,9 @@ import unittest
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
+import data.insider_feed as _insider_mod
 from data.insider_feed import (
+    _edgar_sleep,
     _get_cik_map,
     _load_cache,
     _parse_form4,
@@ -716,3 +718,34 @@ class TestParseForm4InvalidPrice(unittest.TestCase):
             txns = _parse_form4("320193", "000032019326000001", "form4.xml")
         # Transaction skipped due to ValueError on float("not-a-number")
         self.assertEqual(txns, [])
+
+
+class TestEdgarSleep(unittest.TestCase):
+    def setUp(self):
+        _insider_mod._last_req_time = 0.0
+
+    def tearDown(self):
+        _insider_mod._last_req_time = 0.0
+
+    def test_sleeps_when_last_request_was_recent(self):
+        with (
+            patch("data.insider_feed.time.monotonic", side_effect=[100.05, 100.10]),
+            patch("data.insider_feed.time.sleep") as mock_sleep,
+        ):
+            _insider_mod._last_req_time = 100.0
+            _edgar_sleep()
+        # gap = 0.15 - (100.05 - 100.0) = 0.10 > 0 → sleep called
+        mock_sleep.assert_called_once()
+        self.assertAlmostEqual(mock_sleep.call_args[0][0], 0.10, places=5)
+
+    def test_no_sleep_when_last_request_was_stale(self):
+        with patch("data.insider_feed.time.sleep") as mock_sleep:
+            _insider_mod._last_req_time = 0.0  # far in the past
+            _edgar_sleep()
+        mock_sleep.assert_not_called()
+
+    def test_updates_last_req_time_after_call(self):
+        before = _insider_mod._last_req_time
+        with patch("data.insider_feed.time.sleep"):
+            _edgar_sleep()
+        self.assertGreater(_insider_mod._last_req_time, before)
