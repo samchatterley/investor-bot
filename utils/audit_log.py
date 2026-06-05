@@ -170,8 +170,12 @@ def has_open_buys_run_today(today: str) -> bool:
 
         with get_db() as conn:
             row = conn.execute(
-                "SELECT 1 FROM audit_events WHERE event='OPEN_BUYS_LOCKED' AND ts LIKE ? LIMIT 1",
-                (f"{today}%",),
+                "SELECT 1 FROM audit_events"
+                " WHERE event='OPEN_BUYS_LOCKED'"
+                " AND ts LIKE ?"
+                " AND json_extract(payload, '$.date') = ?"
+                " LIMIT 1",
+                (f"{today}%", today),
             ).fetchone()
         return row is not None
     except Exception:
