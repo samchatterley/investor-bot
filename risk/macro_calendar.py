@@ -64,7 +64,7 @@ def get_macro_risk(check_date: date | None = None) -> dict:
     if check_date is None:
         check_date = today_et()
 
-    all_risk_dates = FOMC_ANNOUNCEMENT_DATES | CPI_RELEASE_DATES | NFP_RELEASE_DATES
+    all_risk_dates = FOMC_ANNOUNCEMENT_DATES | CPI_RELEASE_DATES
 
     if check_date in all_risk_dates:
         return {"is_high_risk": True, "event": EVENT_LABELS.get(check_date, "Macro event")}

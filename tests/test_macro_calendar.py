@@ -22,10 +22,11 @@ class TestGetMacroRisk(unittest.TestCase):
         self.assertTrue(result["is_high_risk"])
         self.assertIn("CPI", result["event"])
 
-    def test_nfp_date_is_high_risk(self):
+    def test_nfp_date_is_not_high_risk(self):
+        # NFP lands before market open; reaction absorbed by our 10:00 ET buy window.
         nfp_day = next(iter(NFP_RELEASE_DATES))
         result = get_macro_risk(nfp_day)
-        self.assertTrue(result["is_high_risk"])
+        self.assertFalse(result["is_high_risk"])
 
     def test_random_tuesday_is_not_high_risk(self):
         quiet = date(2026, 2, 10)
