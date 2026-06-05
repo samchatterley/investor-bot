@@ -332,6 +332,7 @@ def scan_short_universe(
             interval="1d",
             progress=False,
             auto_adjust=True,
+            threads=False,
         )
     except Exception as e:
         logger.error(f"Short universe download failed: {e}")

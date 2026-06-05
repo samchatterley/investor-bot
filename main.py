@@ -1291,13 +1291,11 @@ def _execute_buy_phase(
     # Same-day open guard: only one buy phase per calendar day in open mode.
     # Prevents duplicate buys when the bot is restarted mid-session or triggered
     # more than once by launchd/manual invocation.
-    if mode == "open" and not dry_run:
-        if audit_log.has_open_buys_run_today(today):
-            logger.warning(
-                "Same-day open guard: open buys already executed today — skipping buy phase."
-            )
-            return open_positions, account_now
-        audit_log.log_open_buys_locked(today)
+    if mode == "open" and not dry_run and audit_log.has_open_buys_run_today(today):
+        logger.warning(
+            "Same-day open guard: open buys already executed today — skipping buy phase."
+        )
+        return open_positions, account_now
 
     daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
     skip_buys = (
@@ -1324,6 +1322,8 @@ def _execute_buy_phase(
             reasons.append("experiment drawdown cap reached")
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
     else:
+        if mode == "open" and not dry_run:
+            audit_log.log_open_buys_locked(today)
         account_now = trader.get_account_info(client)
         open_positions = trader.get_open_positions(client)
         long_positions = [p for p in open_positions if p.get("qty", 0) > 0]
