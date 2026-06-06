@@ -18,7 +18,6 @@ Provides two things:
 from __future__ import annotations
 
 import logging
-import re
 import time
 
 import pandas as pd
@@ -279,25 +278,31 @@ STATIC_SHORT_UNIVERSE: list[str] = list(
 
 
 def get_short_universe(client, _retries: int = 2, _retry_delay: float = 3.0) -> list[str]:
-    """Return tradable easy-to-borrow symbols from Alpaca, filtered to common stock.
+    """Return STATIC_SHORT_UNIVERSE symbols that are currently easy-to-borrow on Alpaca.
 
-    Retries up to _retries times on connection errors before falling back to
-    STATIC_SHORT_UNIVERSE.
+    Uses Alpaca's asset list to filter STATIC_SHORT_UNIVERSE down to symbols that
+    are verified borrowable today. Falls back to the full STATIC_SHORT_UNIVERSE if
+    Alpaca is unavailable.
+
+    Retries up to _retries times on connection errors before falling back.
     """
     last_exc: Exception | None = None
     for attempt in range(1 + _retries):
         try:
             assets = client.get_all_assets()
-            symbols = [
+            etb = {
                 a.symbol
                 for a in assets
                 if getattr(a, "tradable", False)
                 and getattr(a, "easy_to_borrow", False)
                 and getattr(a, "exchange", "") not in ("OTC",)
-                and re.match(r"^[A-Z]{1,5}$", a.symbol)  # US common stock pattern
-            ]
-            logger.info(f"Alpaca easy-to-borrow universe: {len(symbols)} symbols")
-            return symbols if symbols else STATIC_SHORT_UNIVERSE
+            }
+            verified = [s for s in STATIC_SHORT_UNIVERSE if s in etb]
+            logger.info(
+                f"Alpaca easy-to-borrow universe: {len(etb)} symbols"
+                f" — {len(verified)}/{len(STATIC_SHORT_UNIVERSE)} static candidates verified"
+            )
+            return verified if verified else STATIC_SHORT_UNIVERSE
         except Exception as e:
             last_exc = e
             if attempt < _retries:

@@ -810,6 +810,20 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.76 — June 2026 — short universe capped to static list + open-buys guard fixes
+
+Four correctness and performance fixes uncovered during live runs on 2026-06-05.
+
+- **`execution/short_universe.py` — intersect Alpaca ETB with `STATIC_SHORT_UNIVERSE`.** `get_short_universe` was returning all ~4947 Alpaca easy-to-borrow symbols; `yf.download(threads=False)` then spent ~14 minutes downloading them. The scan universe is now capped: Alpaca's ETB list is used only to verify which `STATIC_SHORT_UNIVERSE` symbols (~212) are borrowable today. This cuts download time from ~14 min to <10 s, eliminates thread exhaustion risk, and keeps the universe focused on curated liquid laggards rather than arbitrary small-caps.
+- **`execution/short_universe.py` — `threads=False` in `yf.download`.** Prevents "can't start new thread" errors when called after the parallel insider fetch has many threads in flight.
+- **`risk/macro_calendar.py` — NFP removed from high-risk block.** Non-Farm Payrolls releases at 08:30 ET, before market open; by our 10:00 ET buy window the reaction is absorbed. Treating NFP as high-risk was incorrectly blocking all buys on the first Friday of each month. `get_macro_risk` now only blocks on FOMC and CPI days.
+- **`main.py` + `utils/audit_log.py` — open-buys guard correctness fixes.** Two compounding bugs caused the same-day guard to fire incorrectly:
+  1. `log_open_buys_locked` was written *before* `skip_buys` was evaluated, so macro/circuit-breaker blocks still set the lock preventing all subsequent runs that day. Moved to inside the `else` branch so the lock is only written when buys actually proceed.
+  2. `has_open_buys_run_today` matched rows by `ts LIKE '2026-06-05%'` only; pytest writes `OPEN_BUYS_LOCKED` events with today's wall-clock `ts` but fake payload dates, polluting production DB. Fix: SQL now also checks `json_extract(payload, '$.date') = ?`.
+- **Tests updated**: `test_macro_calendar.py` — NFP assertion flipped to `assertFalse`. `test_short_side.py` — mock symbols updated to `STATIC_SHORT_UNIVERSE` members (INTC/IBM) for intersection tests. **3531 passing, 100% coverage on changed files.**
+
+---
+
 ### 1.75 — June 2026 — parallel insider fetch + Alpaca short-universe retry
 
 Two performance and reliability fixes observed during live runs.

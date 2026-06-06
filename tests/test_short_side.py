@@ -1097,12 +1097,12 @@ class TestShortUniverseModule(unittest.TestCase):
         good_asset.tradable = True
         good_asset.easy_to_borrow = True
         good_asset.exchange = "NASDAQ"
-        good_asset.symbol = "AAPL"
+        good_asset.symbol = "INTC"  # INTC is in STATIC_SHORT_UNIVERSE
         client = MagicMock()
         client.get_all_assets.side_effect = [RuntimeError("transient"), [good_asset]]
         with patch("execution.short_universe.time.sleep"):
             result = get_short_universe(client, _retries=1)
-        self.assertIn("AAPL", result)
+        self.assertIn("INTC", result)
         self.assertEqual(client.get_all_assets.call_count, 2)
 
     def test_get_short_universe_filters_non_tradable(self):
@@ -1112,19 +1112,19 @@ class TestShortUniverseModule(unittest.TestCase):
         tradable.tradable = True
         tradable.easy_to_borrow = True
         tradable.exchange = "NASDAQ"
-        tradable.symbol = "AAPL"
+        tradable.symbol = "INTC"  # INTC is in STATIC_SHORT_UNIVERSE
 
         not_tradable = MagicMock()
         not_tradable.tradable = False
         not_tradable.easy_to_borrow = True
         not_tradable.exchange = "NASDAQ"
-        not_tradable.symbol = "DEAD"
+        not_tradable.symbol = "IBM"  # IBM is in STATIC_SHORT_UNIVERSE but not tradable
 
         client = MagicMock()
         client.get_all_assets.return_value = [tradable, not_tradable]
         result = get_short_universe(client)
-        self.assertIn("AAPL", result)
-        self.assertNotIn("DEAD", result)
+        self.assertIn("INTC", result)
+        self.assertNotIn("IBM", result)
 
     def test_get_short_universe_filters_otc(self):
         from execution.short_universe import get_short_universe
