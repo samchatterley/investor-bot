@@ -203,7 +203,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (3531 tests, 100% coverage)
+├── tests/             Unit test suite (3574 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **3531 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **3574 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -809,6 +809,27 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.77 — June 2026 — infra wiring: macro, options, sentiment, EDGAR data into live pipeline
+
+Four data modules built in v1.74 were fully fetched at prefetch time but never read by any decision logic. This release wires them end-to-end: from cache into snapshot dicts, into signal evaluator, and into market context.
+
+- **`data/edgar_client.py` — `get_edgar_signals_batch()`** Batch cache-first fetch for a list of symbols: loads today's JSON cache once, returns cached entries, live-fetches and back-fills only misses. Called in `_build_data_bundle()` before the prefilter pass so EDGAR signals appear in `matched_signals`.
+- **`models.py` — `MarketContext.cross_asset_macro` and `sentiment_snapshot`** Two new optional dict fields (serialised from `MacroSnapshot` and `SentimentSnapshot` via `asdict()`). Avoid import coupling in models by using plain dicts rather than dataclass references.
+- **`main.py` — `_fetch_market_context()`** Adds two parallel futures to the ThreadPoolExecutor (max_workers raised to 7): `get_macro_snapshot()` and `get_sentiment_snapshot()`. Both are logged at INFO, serialised to dicts, and stored on the `MarketContext` returned to the rest of the pipeline.
+- **`main.py` — `_build_data_bundle()`** Two new enrichment passes:
+  1. **EDGAR signals (pre-filter):** `get_edgar_signals_batch()` called once for all candidate symbols; results merged into each snapshot dict as `guidance_positive`, `guidance_negative`, `activist_filing`, `secondary_offering`. Pre-filter placement ensures these fields appear in `matched_signals` and are visible in decision logs.
+  2. **Options IV (post-filter):** `get_options_batch()` called only for the symbols that passed the prefilter (typically 5–20), not the full 683-symbol universe. Fields `iv_cheap`, `iv_expensive`, `unusual_call_oi`, `panic_put_skew`, `call_skew_spike` merged per symbol.
+- **`signals/evaluator.py` — signal extensions**
+  - `insider_buying`: now fires when `activist_filing=True` even if `insider_cluster=False`
+  - `pead`: now fires when `guidance_positive=True` and `ret_5d > 0` even if `pead_candidate=False`
+  - `iv_compression`: now fires when `iv_cheap=True` regardless of `hv_rank`
+  - New short signal `guidance_downgrade` (priority 9): fires on negative 8-K guidance (`guidance_negative=True`)
+  - New short signal `secondary_offering_short` (priority 10): fires on 424B4/S-3 secondary (`secondary_offering=True`)
+- **`scripts/run_scheduler.py`** — `_prefetch()` now calls `prefetch_edgar_data()`, `get_macro_snapshot()`, and `get_fear_greed_composite()` in the 07:00 ET pre-market job; each wrapped in an independent try/except so failures are non-fatal.
+- **Tests:** 43 new tests. `TestGetEdgarSignalsBatch` (4); `TestActivistFilingSignal`, `TestGuidancePositiveSignal`, `TestIvCheapSignal`, `TestGuidanceDowngradeShortSignal`, `TestSecondaryOfferingShortSignal`, `TestGloballyDisabledSignals` (21 total); `TestPrefetchExceptionPaths` (9 scheduler exception paths + HALT_FILE); `TestFetchMarketContext` extended (fear_greed=None branch); `TestRunInnerBuyFiltering` (correlation filter with live candidate path). Also fixed 3 date-sensitive `test_breadth.py` failures: `pd.bdate_range(..., periods=n)` returns n−1 periods when today is a non-business day — replaced hardcoded list lengths with `len(idx)`. **3574 passing, 100% coverage on changed files.**
+
+---
 
 ### 1.76 — June 2026 — short universe capped to static list + open-buys guard fixes
 
