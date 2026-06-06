@@ -737,3 +737,157 @@ class TestEvaluateSignalsSignalPaths(unittest.TestCase):
         from signals.evaluator import GLOBALLY_DISABLED
 
         self.assertIn("rsi_divergence", GLOBALLY_DISABLED)
+
+
+# ── Extended signal wiring (v1.77) ───────────────────────────────────────────
+
+
+class TestActivistFilingSignal(unittest.TestCase):
+    """activist_filing=True fires insider_buying even when insider_cluster=False."""
+
+    def test_activist_fires_insider_buying(self):
+        snap = _snap(activist_filing=True, insider_cluster=False)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("insider_buying", result[0]["matched_signals"])
+
+    def test_activist_absent_no_signal(self):
+        snap = _snap(activist_filing=False, insider_cluster=False)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 0)
+
+    def test_activist_and_cluster_both_true_fires_once(self):
+        snap = _snap(activist_filing=True, insider_cluster=True)
+        result = prefilter_candidates([snap])
+        signals = result[0]["matched_signals"]
+        self.assertEqual(signals.count("insider_buying"), 1)
+
+
+class TestGuidancePositiveSignal(unittest.TestCase):
+    """guidance_positive=True fires pead when ret_5d > 0."""
+
+    def test_guidance_positive_fires_pead(self):
+        snap = _snap(guidance_positive=True, pead_candidate=False, ret_5d_pct=1.5)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("pead", result[0]["matched_signals"])
+
+    def test_guidance_positive_with_negative_return_no_signal(self):
+        snap = _snap(guidance_positive=True, pead_candidate=False, ret_5d_pct=-1.0)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 0)
+
+    def test_guidance_positive_and_pead_candidate_fires_once(self):
+        snap = _snap(guidance_positive=True, pead_candidate=True, ret_5d_pct=2.0)
+        result = prefilter_candidates([snap])
+        signals = result[0]["matched_signals"]
+        self.assertEqual(signals.count("pead"), 1)
+
+
+class TestIvCheapSignal(unittest.TestCase):
+    """iv_cheap=True fires iv_compression even when hv_rank is above threshold."""
+
+    def test_iv_cheap_fires_iv_compression(self):
+        # hv_rank above threshold but iv_cheap=True — should still fire
+        snap = _snap(hv_rank=0.50, iv_cheap=True, ema9_above_ema21=True, vol_ratio=1.3)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("iv_compression", result[0]["matched_signals"])
+
+    def test_iv_cheap_false_hv_rank_high_no_signal(self):
+        snap = _snap(hv_rank=0.50, iv_cheap=False, ema9_above_ema21=True, vol_ratio=1.3)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 0)
+
+    def test_iv_cheap_without_directional_confirmation_no_signal(self):
+        snap = _snap(
+            hv_rank=0.50, iv_cheap=True, ema9_above_ema21=False, macd_diff=-0.1, vol_ratio=1.3
+        )
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 0)
+
+
+class TestGuidanceDowngradeShortSignal(unittest.TestCase):
+    """guidance_downgrade short signal fires on guidance_negative=True."""
+
+    def test_guidance_downgrade_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"guidance_negative": True}
+        signals = evaluate_short_signals(snap)
+        self.assertIn("guidance_downgrade", signals)
+
+    def test_guidance_downgrade_absent_when_false(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"guidance_negative": False}
+        signals = evaluate_short_signals(snap)
+        self.assertNotIn("guidance_downgrade", signals)
+
+    def test_guidance_downgrade_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"guidance_negative": True}
+        signals = evaluate_short_signals(snap, blocked=frozenset({"guidance_downgrade"}))
+        self.assertNotIn("guidance_downgrade", signals)
+
+    def test_guidance_downgrade_in_short_signal_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("guidance_downgrade", SHORT_SIGNAL_PRIORITY)
+
+
+class TestSecondaryOfferingShortSignal(unittest.TestCase):
+    """secondary_offering_short fires on secondary_offering=True."""
+
+    def test_secondary_offering_short_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"secondary_offering": True}
+        signals = evaluate_short_signals(snap)
+        self.assertIn("secondary_offering_short", signals)
+
+    def test_secondary_offering_short_absent_when_false(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"secondary_offering": False}
+        signals = evaluate_short_signals(snap)
+        self.assertNotIn("secondary_offering_short", signals)
+
+    def test_secondary_offering_short_blocked_when_in_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"secondary_offering": True}
+        signals = evaluate_short_signals(snap, blocked=frozenset({"secondary_offering_short"}))
+        self.assertNotIn("secondary_offering_short", signals)
+
+    def test_secondary_offering_short_in_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("secondary_offering_short", SHORT_SIGNAL_PRIORITY)
+
+
+class TestGloballyDisabledSignals(unittest.TestCase):
+    """Signals in GLOBALLY_DISABLED / SHORT_GLOBALLY_DISABLED never fire."""
+
+    def test_faded_earnings_gap_up_in_short_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertIn("faded_earnings_gap_up", SHORT_GLOBALLY_DISABLED)
+
+    def test_faded_earnings_gap_up_never_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"faded_earnings_gap_up_pct": 6.0, "close_pct_of_range": 0.20, "vol_ratio": 2.0}
+        self.assertNotIn("faded_earnings_gap_up", evaluate_short_signals(snap))
+
+    def test_vix_fear_reversion_in_globally_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("vix_fear_reversion", GLOBALLY_DISABLED)
+
+    def test_vix_fear_reversion_never_fires(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(vol_ratio=2.0)
+        self.assertNotIn("vix_fear_reversion", evaluate_signals(snap, vix_spike=True))

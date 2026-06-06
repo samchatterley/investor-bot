@@ -73,8 +73,11 @@ from analysis.performance import get_attribution  # noqa: E402
 from analysis.weekly_review import run_weekly_review  # noqa: E402
 from data.av_sentiment import prefetch_av_sentiment  # noqa: E402
 from data.earnings_surprise import prefetch_earnings_data  # noqa: E402
+from data.edgar_client import prefetch_edgar_data  # noqa: E402
 from data.insider_feed import prefetch_insider_activity  # noqa: E402
+from data.macro_data import get_macro_snapshot  # noqa: E402
 from data.market_data import prefetch_market_data  # noqa: E402
+from data.sentiment_client import get_fear_greed_composite  # noqa: E402
 from data.short_interest import prefetch_short_interest  # noqa: E402
 from notifications.emailer import send_weekly_review  # noqa: E402
 from scripts.run_diagnostics import run_diagnostics  # noqa: E402
@@ -122,6 +125,18 @@ def _prefetch():
         prefetch_av_sentiment()
     except Exception as e:
         logger.error(f"AV sentiment prefetch failed (non-fatal): {e}", exc_info=True)
+    try:
+        prefetch_edgar_data()
+    except Exception as e:
+        logger.error(f"EDGAR prefetch failed (non-fatal): {e}", exc_info=True)
+    try:
+        get_macro_snapshot()
+    except Exception as e:
+        logger.error(f"Macro data prefetch failed (non-fatal): {e}", exc_info=True)
+    try:
+        get_fear_greed_composite()
+    except Exception as e:
+        logger.error(f"Fear & Greed prefetch failed (non-fatal): {e}", exc_info=True)
 
 
 def _open_sells():

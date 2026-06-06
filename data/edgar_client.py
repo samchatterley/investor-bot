@@ -410,6 +410,40 @@ def prefetch_edgar_data(
 # ── Public getters ────────────────────────────────────────────────────────────
 
 
+def get_edgar_signals_batch(
+    symbols: list[str],
+    lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
+) -> dict[str, dict]:
+    """Return EDGAR signals for all symbols from the daily cache in one read.
+
+    Loads the cache once (avoids N file opens for N symbols).  Symbols missing
+    from the cache are fetched individually only when the cache entry is absent —
+    when the 07:00 prefetch ran, this is a pure in-memory operation.
+
+    Returns {symbol: entry_dict} for every symbol in ``symbols``.  The entry
+    dict has optional keys "guidance", "activist", "secondary_offering".
+    """
+    today = today_et().isoformat()
+    cache = _load_cache()
+    today_cache: dict[str, dict] = cache.get(today, {})
+
+    result: dict[str, dict] = {}
+    newly_fetched: list[str] = []
+    for sym in symbols:
+        if sym in today_cache:
+            result[sym] = today_cache[sym]
+        else:
+            entry = _live_fetch(sym, lookback_days)
+            result[sym] = entry
+            today_cache[sym] = entry
+            newly_fetched.append(sym)
+
+    if newly_fetched:
+        _save_cache({today: today_cache})
+
+    return result
+
+
 def _today_entry(sym: str, lookback_days: int) -> dict:
     """Return today's cached entry for sym, fetching live if missing."""
     today = today_et().isoformat()

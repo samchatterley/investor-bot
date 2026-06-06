@@ -19,8 +19,11 @@ def _load_scheduler_module():
         "analysis.weekly_review": MagicMock(),
         "data.av_sentiment": MagicMock(),
         "data.earnings_surprise": MagicMock(),
+        "data.edgar_client": MagicMock(),
         "data.insider_feed": MagicMock(),
+        "data.macro_data": MagicMock(),
         "data.market_data": MagicMock(),
+        "data.sentiment_client": MagicMock(),
         "data.short_interest": MagicMock(),
         "notifications": MagicMock(),
         "notifications.emailer": MagicMock(),
@@ -545,6 +548,144 @@ class TestStartupPrefetch(unittest.TestCase):
             mod._startup_prefetch()
 
         mock_thread_cls.assert_not_called()
+
+
+class TestPrefetchNewModules(unittest.TestCase):
+    """_prefetch() calls edgar, macro_data, and sentiment_client prefetch functions."""
+
+    def test_edgar_prefetch_called(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_file"
+        mod.prefetch_edgar_data = MagicMock()
+        mod.get_macro_snapshot = MagicMock()
+        mod.get_fear_greed_composite = MagicMock()
+        # Also stub the other prefetch functions to avoid side effects
+        for attr in (
+            "prefetch_market_data",
+            "prefetch_insider_activity",
+            "prefetch_earnings_data",
+            "prefetch_short_interest",
+            "prefetch_av_sentiment",
+        ):
+            setattr(mod, attr, MagicMock())
+        mod.config.STOCK_UNIVERSE = ["AAPL"]
+        mod._prefetch()
+        mod.prefetch_edgar_data.assert_called_once()
+
+    def test_macro_snapshot_prefetch_called(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_file"
+        mod.prefetch_edgar_data = MagicMock()
+        mod.get_macro_snapshot = MagicMock()
+        mod.get_fear_greed_composite = MagicMock()
+        for attr in (
+            "prefetch_market_data",
+            "prefetch_insider_activity",
+            "prefetch_earnings_data",
+            "prefetch_short_interest",
+            "prefetch_av_sentiment",
+        ):
+            setattr(mod, attr, MagicMock())
+        mod.config.STOCK_UNIVERSE = ["AAPL"]
+        mod._prefetch()
+        mod.get_macro_snapshot.assert_called_once()
+
+    def test_fear_greed_prefetch_called(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_file"
+        mod.prefetch_edgar_data = MagicMock()
+        mod.get_macro_snapshot = MagicMock()
+        mod.get_fear_greed_composite = MagicMock()
+        for attr in (
+            "prefetch_market_data",
+            "prefetch_insider_activity",
+            "prefetch_earnings_data",
+            "prefetch_short_interest",
+            "prefetch_av_sentiment",
+        ):
+            setattr(mod, attr, MagicMock())
+        mod.config.STOCK_UNIVERSE = ["AAPL"]
+        mod._prefetch()
+        mod.get_fear_greed_composite.assert_called_once()
+
+
+class TestPrefetchExceptionPaths(unittest.TestCase):
+    """_prefetch() swallows exceptions from each data source independently."""
+
+    def _stub_mod(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_halt_file"
+        mod.config.STOCK_UNIVERSE = ["AAPL"]
+        for attr in (
+            "prefetch_market_data",
+            "prefetch_insider_activity",
+            "prefetch_earnings_data",
+            "prefetch_short_interest",
+            "prefetch_av_sentiment",
+            "prefetch_edgar_data",
+            "get_macro_snapshot",
+            "get_fear_greed_composite",
+        ):
+            setattr(mod, attr, MagicMock())
+        return mod
+
+    def test_halt_file_exists_returns_early(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_halt_file"
+        mod.prefetch_market_data = MagicMock()
+        with patch("os.path.exists", return_value=True):
+            mod._prefetch()
+        mod.prefetch_market_data.assert_not_called()
+
+    def test_market_data_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_market_data.side_effect = RuntimeError("network error")
+        mod._prefetch()
+        mod.prefetch_insider_activity.assert_called_once()
+
+    def test_insider_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_insider_activity.side_effect = RuntimeError("insider boom")
+        mod._prefetch()
+        mod.prefetch_earnings_data.assert_called_once()
+
+    def test_earnings_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_earnings_data.side_effect = RuntimeError("earnings boom")
+        mod._prefetch()
+        mod.prefetch_short_interest.assert_called_once()
+
+    def test_short_interest_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_short_interest.side_effect = RuntimeError("short boom")
+        mod._prefetch()
+        mod.prefetch_av_sentiment.assert_called_once()
+
+    def test_av_sentiment_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_av_sentiment.side_effect = RuntimeError("av boom")
+        mod._prefetch()
+        mod.prefetch_edgar_data.assert_called_once()
+
+    def test_edgar_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_edgar_data.side_effect = RuntimeError("edgar boom")
+        mod._prefetch()
+        mod.get_macro_snapshot.assert_called_once()
+
+    def test_macro_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.get_macro_snapshot.side_effect = RuntimeError("macro boom")
+        mod._prefetch()
+        mod.get_fear_greed_composite.assert_called_once()
+
+    def test_fear_greed_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.get_fear_greed_composite.side_effect = RuntimeError("fg boom")
+        try:
+            mod._prefetch()
+        except RuntimeError:  # pragma: no cover
+            self.fail("_prefetch should not propagate fear_greed exception")
 
 
 if __name__ == "__main__":  # pragma: no cover

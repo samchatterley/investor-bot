@@ -201,10 +201,8 @@ class TestComputeBreadth(unittest.TestCase):
         from data.breadth import compute_breadth
 
         # Object-dtype "Close" column — rolling().mean() raises TypeError, triggers except block
-        bad_df = pd.DataFrame(
-            {"Close": ["bad"] * 260},
-            index=pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=260),
-        )
+        _idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=260)
+        bad_df = pd.DataFrame({"Close": ["bad"] * len(_idx)}, index=_idx)
         up_df = _make_df(n=260)
         snap = compute_breadth({"bad": bad_df, "good": up_df})
         self.assertEqual(snap.symbols_counted, 1)
@@ -212,10 +210,11 @@ class TestComputeBreadth(unittest.TestCase):
     def test_single_bar_skips_52w_block(self):
         from data.breadth import compute_breadth
 
-        # n=1 — `if n >= 2:` is False, covering branch 149->160
+        # n=1 — `if n >= 2:` is False, covering branch (False path skips 52w window).
+        # Use a fixed past business day so the index is non-empty regardless of today's weekday.
         one_bar_df = pd.DataFrame(
             {"Close": [100.0], "High": [101.0], "Low": [99.0]},
-            index=pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=1),
+            index=pd.bdate_range("2024-01-02", periods=1),
         )
         snap = compute_breadth({"A": one_bar_df})
         self.assertEqual(snap.new_highs_52w, 0)
@@ -254,12 +253,12 @@ class TestComputeBreadth(unittest.TestCase):
         # To guarantee a thrust we need ~20 bars of thrust_window data.
         # Use min_bars_sma50=55 + thrust_window(20) = 75 minimum, so n >= 80
         # Build first 55+20 bars as downtrend, last portion uptrend:
-        n_total = 260
-        idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=n_total)
+        idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=260)
+        n_actual = len(idx)
         # Prices: start high at index 0 (old), fall sharply, then rise in last 10 bars
         # SMA50 of the last bar will be compared to close.
         # Simpler: create price series that is below SMA50 in early recent bars, then jumps
-        prices_down = [200.0 - i * 0.5 for i in range(n_total - 10)]
+        prices_down = [200.0 - i * 0.5 for i in range(n_actual - 10)]
         prices_up = [prices_down[-1] + i * 20 for i in range(1, 11)]
         prices = prices_down + prices_up
         df = pd.DataFrame(
@@ -582,7 +581,7 @@ class TestDownloadPriceData(unittest.TestCase):
         # xs returns all-NaN rows → dropna(how="all") empties it → branch 328->324
         df_a = _make_df(n=100)
         nan_df = pd.DataFrame(
-            {col: [float("nan")] * 100 for col in ["Close", "High", "Low"]},
+            {col: [float("nan")] * len(df_a) for col in ["Close", "High", "Low"]},
             index=df_a.index,
         )
         raw = pd.concat({"A": nan_df}, axis=1)
@@ -619,5 +618,5 @@ class TestDownloadPriceData(unittest.TestCase):
         self.assertEqual(result, {})
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

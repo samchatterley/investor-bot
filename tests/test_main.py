@@ -28,6 +28,34 @@ def _macro(high_risk=False):
     return {"is_high_risk": high_risk, "event": ""}
 
 
+def _macro_snapshot():
+    from data.macro_data import MacroSnapshot
+
+    return MacroSnapshot(
+        credit_spread_roc=None,
+        credit_stress=False,
+        tlt_spy_spread_5d=None,
+        duration_flight=False,
+        copper_gold_trend_20d=None,
+        copper_gold_positive=False,
+        usd_trend_20d=None,
+        usd_strong=False,
+        hyg_ief_roc_10d=None,
+        data_available=False,
+    )
+
+
+def _sentiment_snapshot():
+    from data.sentiment_client import FearGreedSnapshot, SentimentSnapshot
+
+    fg = FearGreedSnapshot(
+        score=50.0, label="Neutral", extreme_fear=False, extreme_greed=False, components={}
+    )
+    return SentimentSnapshot(
+        aaii=None, fear_greed=fg, contrarian_long_signal=False, contrarian_short_signal=False
+    )
+
+
 def _decisions(buys=None, sells=None):
     return {
         "market_summary": "Test summary",
@@ -821,6 +849,8 @@ class RunInnerBase(unittest.TestCase):
             "main.stock_scanner.get_top_movers": [],
             "main.stock_scanner.prefilter_candidates": [],
             "main.macro_calendar.get_macro_risk": _macro(),
+            "main.get_macro_snapshot": _macro_snapshot(),
+            "main.get_sentiment_snapshot": _sentiment_snapshot(),
             "main.sector_data.get_sector_performance": {},
             "main.sector_data.get_leading_sectors": [],
             "main.get_latest_review": "",
@@ -873,6 +903,8 @@ class RunInnerBase(unittest.TestCase):
             "main.earnings_surprise.get_earnings_surprise": {},
             "main.earnings_surprise.get_earnings_miss": {},
             "main.short_interest.get_short_interest": {},
+            "main.edgar_client.get_edgar_signals_batch": {},
+            "main.options_data_module.get_options_batch": {},
             "main.audit_log.has_open_buys_run_today": False,
             "main.audit_log.log_open_buys_locked": None,
             "main.get_short_universe": [],
@@ -1342,6 +1374,35 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         stack, mocks = self._patch_all(
             **{
                 "main.ai_analyst.get_trading_decisions": decisions,
+                "main.correlation.correlated_with_held": True,
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+
+    def test_correlation_filter_executes_log_and_continue(self):
+        """Lines 1446-1447: correlated_with_held=True logs and continues when candidate is real."""
+        buy_mock = MagicMock()
+        candidate = {
+            "symbol": "AAPL",
+            "current_price": 150.0,
+            "confidence": 9,
+            "key_signal": "momentum",
+            "matched_signals": ["momentum"],
+            "rsi_14": 50,
+            "vol_ratio": 1.5,
+            "avg_volume": 1_000_000,
+        }
+        stack, mocks = self._patch_all(
+            **{
+                "main.stock_scanner.prefilter_candidates": [candidate],
+                "main.ai_analyst.get_trading_decisions": _decisions(
+                    buys=[{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}]
+                ),
                 "main.correlation.correlated_with_held": True,
                 "main.trader.place_buy_order": buy_mock,
             }
@@ -4429,15 +4490,38 @@ class TestFetchMarketContext(unittest.TestCase):
     def _patches(
         self, vix=18.5, regime=None, macro=None, sector_perf=None, leading=None, lessons=None
     ):
+        from data.macro_data import MacroSnapshot
+        from data.sentiment_client import FearGreedSnapshot, SentimentSnapshot
+
         regime = regime or {"regime": "BULL_TREND"}
         macro = macro or {"is_high_risk": False, "event": ""}
         sector_perf = sector_perf or {}
         leading = leading or ["XLK", "XLY", "XLC"]
         lessons = lessons or []
+        _macro_snap = MacroSnapshot(
+            credit_spread_roc=None,
+            credit_stress=False,
+            tlt_spy_spread_5d=None,
+            duration_flight=False,
+            copper_gold_trend_20d=None,
+            copper_gold_positive=False,
+            usd_trend_20d=None,
+            usd_strong=False,
+            hyg_ief_roc_10d=None,
+            data_available=False,
+        )
+        _fg = FearGreedSnapshot(
+            score=50.0, label="Neutral", extreme_fear=False, extreme_greed=False, components={}
+        )
+        _sent_snap = SentimentSnapshot(
+            aaii=None, fear_greed=_fg, contrarian_long_signal=False, contrarian_short_signal=False
+        )
         return {
             "main.market_data.get_vix": MagicMock(return_value=vix),
             "main.stock_scanner.get_market_regime": MagicMock(return_value=regime),
             "main.macro_calendar.get_macro_risk": MagicMock(return_value=macro),
+            "main.get_macro_snapshot": MagicMock(return_value=_macro_snap),
+            "main.get_sentiment_snapshot": MagicMock(return_value=_sent_snap),
             "main.sector_data.get_sector_performance": MagicMock(return_value=sector_perf),
             "main.sector_data.get_leading_sectors": MagicMock(return_value=leading),
             "main.get_latest_review": MagicMock(return_value=lessons),
@@ -4456,7 +4540,7 @@ class TestFetchMarketContext(unittest.TestCase):
         self.assertEqual(mc.regime["regime"], "BULL_TREND")
         self.assertFalse(mc.macro["is_high_risk"])
 
-    def test_all_five_callables_invoked(self):
+    def test_all_callables_invoked(self):
         from main import _fetch_market_context
 
         mocks = self._patches()
@@ -4468,9 +4552,25 @@ class TestFetchMarketContext(unittest.TestCase):
         mocks["main.market_data.get_vix"].assert_called_once()
         mocks["main.stock_scanner.get_market_regime"].assert_called_once()
         mocks["main.macro_calendar.get_macro_risk"].assert_called_once()
+        mocks["main.get_macro_snapshot"].assert_called_once()
+        mocks["main.get_sentiment_snapshot"].assert_called_once()
         mocks["main.sector_data.get_sector_performance"].assert_called_once()
         mocks["main.sector_data.get_leading_sectors"].assert_called_once()
         mocks["main.get_latest_review"].assert_called_once()
+
+    def test_market_context_has_cross_asset_and_sentiment_fields(self):
+        from main import _fetch_market_context
+
+        mocks = self._patches()
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            mc = _fetch_market_context()
+
+        self.assertIsNotNone(mc.cross_asset_macro)
+        self.assertIsNotNone(mc.sentiment_snapshot)
+        self.assertIn("credit_stress", mc.cross_asset_macro)
+        self.assertIn("contrarian_long_signal", mc.sentiment_snapshot)
 
     def test_regime_receives_vix_from_get_vix(self):
         """get_market_regime must be called with the vix value returned by get_vix."""
@@ -4506,6 +4606,27 @@ class TestFetchMarketContext(unittest.TestCase):
             mc = _fetch_market_context()
 
         self.assertIsNone(mc.vix)
+
+    def test_fear_greed_none_skips_log(self):
+        """Line 874→882: when fear_greed is None the log block is skipped."""
+        from data.sentiment_client import SentimentSnapshot
+        from main import _fetch_market_context
+
+        mocks = self._patches()
+        mocks["main.get_sentiment_snapshot"] = MagicMock(
+            return_value=SentimentSnapshot(
+                aaii=None,
+                fear_greed=None,
+                contrarian_long_signal=False,
+                contrarian_short_signal=False,
+            )
+        )
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            mc = _fetch_market_context()
+
+        self.assertIsNotNone(mc.sentiment_snapshot)
 
 
 class TestRunAiPhaseEmptySnapshots(unittest.TestCase):

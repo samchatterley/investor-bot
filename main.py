@@ -30,6 +30,7 @@ from analysis.weekly_review import get_latest_review
 from data import (
     av_sentiment,
     earnings_surprise,
+    edgar_client,
     insider_feed,
     market_data,
     news_fetcher,
@@ -37,7 +38,14 @@ from data import (
     sector_data,
     short_interest,
 )
-from data import sentiment as sentiment_module
+from data import (
+    options_data as options_data_module,
+)
+from data import (
+    sentiment as sentiment_module,
+)
+from data.macro_data import get_macro_snapshot
+from data.sentiment_client import get_sentiment_snapshot
 from execution import short_risk, stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.short_universe import get_short_universe, scan_short_universe
@@ -826,7 +834,7 @@ def _manage_existing_positions(
 
 
 def _fetch_market_context() -> MarketContext:
-    """Fetch market-wide context: VIX, regime, macro, sector, lessons."""
+    """Fetch market-wide context: VIX, regime, macro, sector, lessons, cross-asset, sentiment."""
     logger.info("Fetching market context...")
 
     def _vix_and_regime() -> tuple:
@@ -834,14 +842,18 @@ def _fetch_market_context() -> MarketContext:
         r = stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=v)
         return v, r
 
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=7) as ex:
         fut_vr = ex.submit(_vix_and_regime)
         fut_macro = ex.submit(macro_calendar.get_macro_risk)
+        fut_cross_asset = ex.submit(get_macro_snapshot)
+        fut_sentiment = ex.submit(get_sentiment_snapshot)
         fut_sector = ex.submit(sector_data.get_sector_performance)
         fut_leading = ex.submit(sector_data.get_leading_sectors, top_n=3)
         fut_lessons = ex.submit(get_latest_review)
         vix, regime = fut_vr.result()
         macro = fut_macro.result()
+        cross_asset = fut_cross_asset.result()
+        sentiment_snap = fut_sentiment.result()
         sector_perf = fut_sector.result()
         leading_sectors = fut_leading.result()
         lessons = fut_lessons.result()
@@ -851,6 +863,24 @@ def _fetch_market_context() -> MarketContext:
     if macro["is_high_risk"]:
         logger.warning(f"Macro risk: {macro['event']}")
         audit_log.log_macro_skip(macro["event"])
+    if cross_asset.data_available:
+        logger.info(
+            "Cross-asset macro: credit_stress=%s duration_flight=%s copper_gold=%s usd_strong=%s",
+            cross_asset.credit_stress,
+            cross_asset.duration_flight,
+            cross_asset.copper_gold_positive,
+            cross_asset.usd_strong,
+        )
+    if sentiment_snap.fear_greed is not None:
+        logger.info(
+            "Fear & Greed: %.0f (%s) — contrarian_long=%s contrarian_short=%s",
+            sentiment_snap.fear_greed.score,
+            sentiment_snap.fear_greed.label,
+            sentiment_snap.contrarian_long_signal,
+            sentiment_snap.contrarian_short_signal,
+        )
+    from dataclasses import asdict
+
     return MarketContext(
         vix=vix,
         regime=regime,
@@ -858,6 +888,8 @@ def _fetch_market_context() -> MarketContext:
         sector_perf=sector_perf,
         leading_sectors=leading_sectors,
         lessons=lessons,
+        cross_asset_macro=asdict(cross_asset),
+        sentiment_snapshot=asdict(sentiment_snap),
     )
 
 
@@ -918,6 +950,21 @@ def _build_data_bundle(
         if s["symbol"] in si_data:
             s.update(si_data[s["symbol"]])
 
+    # ── EDGAR corporate events (guidance, activist, secondary offering) ────────
+    # Must run before prefilter so guidance_positive and activist_filing appear
+    # in matched_signals. Cache warmed at 07:00 ET; this is a single JSON read.
+    logger.info("Fetching EDGAR corporate event signals...")
+    edgar_batch = edgar_client.get_edgar_signals_batch([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        entry = edgar_batch.get(s["symbol"], {})
+        guidance = entry.get("guidance") or {}
+        activist = entry.get("activist") or {}
+        offering = entry.get("secondary_offering") or {}
+        s["guidance_positive"] = bool(guidance.get("guidance_positive", False))
+        s["guidance_negative"] = bool(guidance.get("guidance_negative", False))
+        s["activist_filing"] = bool((activist or {}).get("known_activist", False))
+        s["secondary_offering"] = bool((offering or {}).get("offering_detected", False))
+
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]
     candidate_snaps = [s for s in snapshots if s["symbol"] not in snap.held_symbols]
@@ -976,11 +1023,26 @@ def _build_data_bundle(
     # top_movers that never made it through the pre-filter.
     ai_known_symbols = {s["symbol"] for s in ai_snapshots}
 
-    # ── Options flow ──────────────────────────────────────────────────────────
+    # ── Options flow (basic put/call from options_scanner) ───────────────────
     options_syms = [s["symbol"] for s in filtered_candidates]
     options_sigs = options_scanner.get_options_signals(options_syms) if options_syms else {}
     if options_sigs:
         logger.info(f"Options signals fetched for: {list(options_sigs.keys())}")
+
+    # ── Options IV surface (richer signals from options_data with daily cache) ─
+    # Run after prefilter — only enriches filtered candidates to keep latency low.
+    # iv_cheap, iv_expensive, unusual_call_oi, panic_put_skew, call_skew_spike.
+    if options_syms:
+        logger.info("Fetching options IV surface for %d candidates...", len(options_syms))
+        iv_batch = options_data_module.get_options_batch(options_syms)
+        for s in filtered_candidates:
+            iv_snap = iv_batch.get(s["symbol"])
+            if iv_snap is not None:
+                s["iv_cheap"] = iv_snap.iv_cheap
+                s["iv_expensive"] = iv_snap.iv_expensive
+                s["unusual_call_oi"] = iv_snap.unusual_call_oi
+                s["panic_put_skew"] = iv_snap.panic_put_skew
+                s["call_skew_spike"] = iv_snap.call_skew_spike
 
     # ── News (sanitized against prompt injection) ─────────────────────────────
     # Restrict to symbols the AI actually received snapshots for — sending news

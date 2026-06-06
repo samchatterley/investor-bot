@@ -211,6 +211,8 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "overbought_downtrend": 6,  # Relief rally fade — RSI cross below sma200 (active, redesigned v1.63)
     "parabolic_exhaustion": 7,  # Momentum crash — up 80%+ in 60d, vol drying, RSI extended (active)
     "high_short_interest": 8,  # Crowded short + low lendable supply (live-only, not backtestable)
+    "guidance_downgrade": 9,  # Negative 8-K guidance — management lowering outlook (live-only)
+    "secondary_offering_short": 10,  # 424B4/S-3 secondary — supply shock dilution (live-only)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -305,7 +307,7 @@ def evaluate_short_signals(
         and snapshot.get("close_pct_of_range", 0.5) <= p["fegu_range_max"]
         and snapshot.get("vol_ratio", 0.0) >= p["fegu_vol_min"]
     ):
-        matched.append("faded_earnings_gap_up")
+        matched.append("faded_earnings_gap_up")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
 
     # overbought_downtrend: stock is below its 200-day SMA (confirmed major downtrend) but has
     # staged a relief rally that pushed RSI above ordt_rsi_entry.  Signal fires when RSI
@@ -381,6 +383,18 @@ def evaluate_short_signals(
 
     if "high_short_interest" not in blocked and snapshot.get("high_short_interest"):
         matched.append("high_short_interest")
+
+    # guidance_downgrade: management explicitly lowered guidance in a recent 8-K.
+    # Fires on negative 8-K keyword classification (data/edgar_client.py).
+    # Live-only — SEC filings are not replayed in the daily-bar backtest.
+    if "guidance_downgrade" not in blocked and snapshot.get("guidance_negative", False):
+        matched.append("guidance_downgrade")
+
+    # secondary_offering_short: company filed a 424B4/S-3/S-1 secondary prospectus.
+    # New share supply dilutes existing holders; tends to weigh on price 5–20 days post-filing.
+    # Live-only — filing history is not replayed in the daily-bar backtest.
+    if "secondary_offering_short" not in blocked and snapshot.get("secondary_offering", False):
+        matched.append("secondary_offering_short")
 
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched
@@ -463,7 +477,10 @@ def evaluate_signals(
     gap_pct = _f("gap_pct", 0)
     close_above_open = bool(snapshot.get("close_above_open", False))
     insider_cluster = bool(snapshot.get("insider_cluster", False))
+    activist_filing = bool(snapshot.get("activist_filing", False))
     pead_candidate = bool(snapshot.get("pead_candidate", False))
+    guidance_positive = bool(snapshot.get("guidance_positive", False))
+    iv_cheap = bool(snapshot.get("iv_cheap", False))
     # mom_12_1_pct absent → momentum_12_1 signal not evaluated
     _m121 = snapshot.get("mom_12_1_pct")
     mom_12_1: float | None = float(_m121) if _m121 is not None else None
@@ -478,12 +495,12 @@ def evaluate_signals(
 
     # Counter-cyclical — fires during fear spikes; never regime-blocked
     if vix_spike and vol > p["vfr_vol_min"] and "vix_fear_reversion" not in blocked:
-        matched.append("vix_fear_reversion")
+        matched.append("vix_fear_reversion")  # pragma: no cover — in GLOBALLY_DISABLED
 
     # Fundamental conviction — bypass regime filter
-    if insider_cluster and "insider_buying" not in blocked:
+    if (insider_cluster or activist_filing) and "insider_buying" not in blocked:
         matched.append("insider_buying")
-    if pead_candidate and ret_5d > 0 and "pead" not in blocked:
+    if (pead_candidate or guidance_positive) and ret_5d > 0 and "pead" not in blocked:
         matched.append("pead")
 
     # Relative strength leader (requires SPY data; engine-only unless caller provides)
@@ -563,9 +580,9 @@ def evaluate_signals(
     ):
         matched.append("trend_pullback")
 
-    # IV compression
+    # IV compression: historical vol compressed (hv_rank) OR options market pricing IV cheap vs RV
     if (
-        hv_rank < p["ivc_hv_rank_max"]
+        (hv_rank < p["ivc_hv_rank_max"] or iv_cheap)
         and (ema_up or macd_diff > 0)
         and vol > p["ivc_vol_min"]
         and "iv_compression" not in blocked

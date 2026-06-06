@@ -189,6 +189,10 @@ class MarketContext:
     sector_perf: dict
     leading_sectors: list
     lessons: str | None
+    cross_asset_macro: dict | None = (
+        None  # from data/macro_data.py (credit, duration, copper/gold, USD)
+    )
+    sentiment_snapshot: dict | None = None  # from data/sentiment_client.py (AAII, Fear & Greed)
 
 
 @dataclass(frozen=True)

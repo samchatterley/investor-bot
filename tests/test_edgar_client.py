@@ -24,6 +24,7 @@ from data.edgar_client import (
     classify_guidance_text,
     get_activist_filing,
     get_edgar_signals,
+    get_edgar_signals_batch,
     get_guidance_sentiment,
     get_secondary_offering,
     prefetch_edgar_data,
@@ -527,10 +528,6 @@ class TestTodayEntry(TestCase):
 
 
 class TestPublicGetters(TestCase):
-    def _mock_entry(self, data: dict) -> None:
-        with patch("data.edgar_client._today_entry", return_value=data):
-            return None
-
     def test_get_guidance_sentiment_present(self):
         guidance = {"sentiment": "positive", "guidance_positive": True}
         with patch("data.edgar_client._today_entry", return_value={"guidance": guidance}):
@@ -579,4 +576,64 @@ class TestPublicGetters(TestCase):
     def test_get_edgar_signals_empty(self):
         with patch("data.edgar_client._today_entry", return_value={}):
             result = get_edgar_signals("AAPL")
+        self.assertEqual(result, {})
+
+
+# ── get_edgar_signals_batch ───────────────────────────────────────────────────
+
+
+class TestGetEdgarSignalsBatch(TestCase):
+    def test_all_cache_hits_no_live_fetch(self):
+        today = "2026-06-04"
+        entry = {"guidance": {"guidance_positive": True}}
+        cache = {today: {"AAPL": entry, "MSFT": entry}}
+        with (
+            patch("data.edgar_client._load_cache", return_value=cache),
+            patch("data.edgar_client._save_cache") as mock_save,
+            patch("data.edgar_client._live_fetch") as mock_live,
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            result = get_edgar_signals_batch(["AAPL", "MSFT"])
+        self.assertEqual(result["AAPL"], entry)
+        self.assertEqual(result["MSFT"], entry)
+        mock_live.assert_not_called()
+        mock_save.assert_not_called()
+
+    def test_cache_miss_triggers_live_fetch(self):
+        live_entry = {"activist": {"known_activist": True}}
+        with (
+            patch("data.edgar_client._load_cache", return_value={}),
+            patch("data.edgar_client._save_cache") as mock_save,
+            patch("data.edgar_client._live_fetch", return_value=live_entry),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            result = get_edgar_signals_batch(["AAPL"])
+        self.assertEqual(result["AAPL"], live_entry)
+        mock_save.assert_called_once()
+
+    def test_mixed_hit_miss(self):
+        today = "2026-06-04"
+        cached_entry = {"guidance": {"guidance_positive": False}}
+        live_entry = {"secondary_offering": {"offering_detected": True}}
+        cache = {today: {"AAPL": cached_entry}}
+        with (
+            patch("data.edgar_client._load_cache", return_value=cache),
+            patch("data.edgar_client._save_cache"),
+            patch("data.edgar_client._live_fetch", return_value=live_entry),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            result = get_edgar_signals_batch(["AAPL", "TSLA"])
+        self.assertEqual(result["AAPL"], cached_entry)
+        self.assertEqual(result["TSLA"], live_entry)
+
+    def test_empty_symbols_returns_empty_dict(self):
+        with (
+            patch("data.edgar_client._load_cache", return_value={}),
+            patch("data.edgar_client.today_et") as m,
+        ):
+            m.return_value = date(2026, 6, 4)
+            result = get_edgar_signals_batch([])
         self.assertEqual(result, {})
