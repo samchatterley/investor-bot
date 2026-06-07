@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.81 — June 2026 — pairs trading infrastructure + FinBERT NLP pipeline
+
+Added two new data-layer modules as Phase 2 infrastructure, required by upcoming signal work.
+
+- **`data/pairs.py`** — sector-grouped cointegration engine using Engle-Granger (statsmodels `coint`, p<0.05), OLS hedge ratio, spread z-score computation, and a 7-day disk cache at `logs/pairs_cache.json`. Public API: `get_cointegrated_pairs`, `compute_zscore`, `refresh_pairs`. Required by `sector_pair_mean_reversion` and future spread-trading signals.
+- **`data/finbert.py`** — lazy-loaded FinBERT wrapper (ProsusAI/finbert via HuggingFace `transformers.pipeline`). Normalises three-label scores (positive/negative/neutral), truncates to 2000 chars, degrades gracefully when `transformers`/`torch` are absent. Required by `guidance_change_signal` and EDGAR 8-K classification. Public API: `is_available`, `classify_text`, `classify_texts`.
+- **`requirements.txt`** updated: `statsmodels==0.14.6` (required), `transformers>=4.40.0` and `torch>=2.0.0` (optional, for FinBERT).
+- **Tests:** 50 new tests across `tests/test_pairs.py` (27 tests, 100% coverage) and `tests/test_finbert.py` (23 tests, 100% coverage). **3675 passing, 100% coverage on new files.**
+
+---
+
 ### 1.80 — June 2026 — parabolic_exhaustion and overbought_downtrend disabled
 
 Backward elimination analysis of the June 2026 9-year backtest suite identified two short signals as net destroyers of Sharpe. Both are now added to `SHORT_GLOBALLY_DISABLED`.
