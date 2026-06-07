@@ -810,6 +810,18 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.82 — June 2026 — iv_compression loosened + momentum_12_1 pullback filter
+
+Signal quality improvements to two long signals, plus a new disabled short signal.
+
+- **`iv_compression` threshold loosened** — `ivc_hv_rank_max` raised from 0.10 → 0.15; moderate vol compression is still predictive (extreme-only threshold was too restrictive).
+- **`momentum_12_1` pullback filter** — new `mom12_1_pullback_ret5d_max: 1.0` param; signal now requires 1-week return ≤ 1% to ensure we buy on a retracement in a strong trend, not chase an already-extended move.
+- **`iv_compression_short` added (disabled)** — mirror of the long setup: price below SMA200, EMA9 < EMA21, HV compressed. Added to `SHORT_GLOBALLY_DISABLED` pending initial backtest validation.
+- **Pre-existing coverage gap closed** — `guidance_downgrade` and `secondary_offering_short` append paths were never tested; 4 new tests cover both branches.
+- **Tests:** 24 new tests (13 momentum_12_1/iv_compression in `test_backtest.py`, 9 `TestIVCompressionShortSignal` + 4 live-signal gap fixes in `test_short_side.py`); 100% coverage on `signals/evaluator.py`. **3699 passing.**
+
+---
+
 ### 1.81 — June 2026 — pairs trading infrastructure + FinBERT NLP pipeline
 
 Added two new data-layer modules as Phase 2 infrastructure, required by upcoming signal work.

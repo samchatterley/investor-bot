@@ -802,6 +802,36 @@ class TestEvaluateShortSignals(unittest.TestCase):
             evaluate_short_signals(snap, blocked=frozenset({"failed_breakout"})),
         )
 
+    def test_guidance_downgrade_fires_when_flag_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"guidance_negative": True}
+        self.assertIn("guidance_downgrade", evaluate_short_signals(snap))
+
+    def test_guidance_downgrade_blocked_by_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"guidance_negative": True}
+        self.assertNotIn(
+            "guidance_downgrade",
+            evaluate_short_signals(snap, blocked=frozenset({"guidance_downgrade"})),
+        )
+
+    def test_secondary_offering_short_fires_when_flag_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"secondary_offering": True}
+        self.assertIn("secondary_offering_short", evaluate_short_signals(snap))
+
+    def test_secondary_offering_short_blocked_by_blocked_set(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"secondary_offering": True}
+        self.assertNotIn(
+            "secondary_offering_short",
+            evaluate_short_signals(snap, blocked=frozenset({"secondary_offering_short"})),
+        )
+
 
 # ── DB migration 5: side column ───────────────────────────────────────────────
 
@@ -2068,6 +2098,73 @@ class TestFadedEarningsGapUpSignal(unittest.TestCase):
         self.assertLess(
             SHORT_SIGNAL_PRIORITY["earnings_gap_down"],
             SHORT_SIGNAL_PRIORITY["faded_earnings_gap_up"],
+        )
+
+
+class TestIVCompressionShortSignal(unittest.TestCase):
+    """Tests for iv_compression_short in evaluate_short_signals (disabled pending backtest)."""
+
+    def _snap(self, **kwargs):
+        base = {
+            "price_below_sma200": True,
+            "ema9_above_ema21": False,  # EMA9 below EMA21 — confirmed downtrend
+            "hv_rank": 0.08,
+            "vol_ratio": 1.2,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_does_not_fire_when_globally_disabled(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertNotIn("iv_compression_short", evaluate_short_signals(self._snap()))
+
+    def test_in_short_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertIn("iv_compression_short", SHORT_GLOBALLY_DISABLED)
+
+    def test_in_short_signal_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertIn("iv_compression_short", SHORT_SIGNAL_PRIORITY)
+
+    def test_params_in_defaults(self):
+        from signals.evaluator import DEFAULT_SHORT_SIGNAL_PARAMS
+
+        self.assertIn("ivcs_hv_rank_max", DEFAULT_SHORT_SIGNAL_PARAMS)
+        self.assertIn("ivcs_vol_min", DEFAULT_SHORT_SIGNAL_PARAMS)
+
+    def test_blocked_when_above_sma200(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(price_below_sma200=False)
+        self.assertNotIn("iv_compression_short", evaluate_short_signals(snap))
+
+    def test_blocked_when_ema_uptrend(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(ema9_above_ema21=True)
+        self.assertNotIn("iv_compression_short", evaluate_short_signals(snap))
+
+    def test_blocked_when_hv_rank_too_high(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(hv_rank=0.50)  # above ivcs_hv_rank_max (0.15)
+        self.assertNotIn("iv_compression_short", evaluate_short_signals(snap))
+
+    def test_blocked_when_vol_too_low(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = self._snap(vol_ratio=0.3)  # below ivcs_vol_min (1.0)
+        self.assertNotIn("iv_compression_short", evaluate_short_signals(snap))
+
+    def test_priority_lower_than_secondary_offering_short(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        self.assertGreater(
+            SHORT_SIGNAL_PRIORITY["iv_compression_short"],
+            SHORT_SIGNAL_PRIORITY["secondary_offering_short"],
         )
 
 

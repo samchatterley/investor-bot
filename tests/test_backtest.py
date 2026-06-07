@@ -867,6 +867,25 @@ class TestMomentum121Signal(unittest.TestCase):
         self.assertLess(_SIGNAL_PRIORITY["breakout_52w"], _SIGNAL_PRIORITY["momentum_12_1"])
         self.assertLess(_SIGNAL_PRIORITY["momentum_12_1"], _SIGNAL_PRIORITY["gap_and_go"])
 
+    def test_pullback_filter_blocks_chasing_momentum(self):
+        # ret_5d=5.0 > mom12_1_pullback_ret5d_max (1.0) — chasing; should not fire
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25, ret_5d=5.0)
+        self.assertIsNone(_entry_signal(row))
+
+    def test_fires_on_pullback(self):
+        # ret_5d=-2.0 ≤ 1.0 — genuine pullback in strong trend
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25, ret_5d=-2.0)
+        self.assertEqual(_entry_signal(row), "momentum_12_1")
+
+    def test_custom_pullback_threshold(self):
+        # ret_5d=3.0 above default 1.0; fires when threshold relaxed to 5.0
+        row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25, ret_5d=3.0)
+        self.assertIsNone(_entry_signal(row))
+        self.assertEqual(
+            _entry_signal(row, params={"mom12_1_pullback_ret5d_max": 5.0}),
+            "momentum_12_1",
+        )
+
     def test_signals_not_tested_excludes_momentum_12_1_when_column_present(self):
         idx = pd.bdate_range("2025-01-02", periods=3)
         n = len(idx)
@@ -2171,9 +2190,14 @@ class TestIvCompressionSignal(unittest.TestCase):
         row = _make_row(hv_rank=0.05, ema9=99, ema21=100, macd_diff=0.1, vol_ratio=1.3)
         self.assertEqual(_entry_signal(row), "iv_compression")
 
+    def test_fires_with_hv_rank_in_new_range(self):
+        # hv_rank=0.12 was above old threshold (0.10) but below new threshold (0.15) — now fires
+        row = _make_row(hv_rank=0.12, ema9=101, ema21=100, vol_ratio=1.3)
+        self.assertEqual(_entry_signal(row), "iv_compression")
+
     def test_no_fire_when_hv_rank_above_threshold(self):
         row = _make_row(hv_rank=0.25, ema9=101, ema21=100, vol_ratio=1.5)
-        # hv_rank=0.25 is above 0.20 → no iv_compression; other signals also absent
+        # hv_rank=0.25 is above 0.15 threshold → no iv_compression; other signals also absent
         self.assertIsNone(_entry_signal(row))
 
     def test_no_fire_without_directional_confirmation(self):

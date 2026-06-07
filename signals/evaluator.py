@@ -69,6 +69,7 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "mom_vol_threshold": 1.3,
     "mom_ret5d_threshold": 1.0,
     "mom12_1_threshold": 10.0,
+    "mom12_1_pullback_ret5d_max": 1.0,  # 1w return ≤ this confirms pullback entry, not chasing
     # rsi_divergence
     "rsi_div_rsi_max": 45.0,
     "rsi_div_vol_min": 1.0,
@@ -98,7 +99,7 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "tp_rsi_hi": 58.0,  # RSI ceiling (not overbought)
     "tp_vol_min": 1.0,
     # iv_compression
-    "ivc_hv_rank_max": 0.10,  # tightened from 0.20 in v1.48 — only extreme vol compression
+    "ivc_hv_rank_max": 0.15,  # loosened from 0.10 in v1.82 — moderate compression still predictive
     "ivc_vol_min": 1.2,  # raised from 1.1 in v1.48
     # range_reversion
     "rr_adx_max": 20.0,  # ADX below this = range-bound
@@ -200,6 +201,7 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "faded_earnings_gap_up",  # mean Sharpe -0.201, 2/9 folds; 2020-21 fold -35% catastrophic
         "overbought_downtrend",  # backward elimination: ΔSharpe +0.060 drag — removed v1.80
         "parabolic_exhaustion",  # backward elimination: ΔSharpe +0.570, -99.5% return — removed v1.80
+        "iv_compression_short",  # new signal — disabled pending initial backtest validation (v1.82)
     }
 )
 
@@ -215,6 +217,7 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "high_short_interest": 8,  # Crowded short + low lendable supply (live-only, not backtestable)
     "guidance_downgrade": 9,  # Negative 8-K guidance — management lowering outlook (live-only)
     "secondary_offering_short": 10,  # 424B4/S-3 secondary — supply shock dilution (live-only)
+    "iv_compression_short": 11,  # HV compression in downtrend (disabled pending backtest)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -246,6 +249,9 @@ DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     "rs_det_lag_min": 65.0,  # rs_rank_pct_10d_ago must exceed this (was in top 35%)
     "rs_det_current_max": 45.0,  # rs_rank_pct today must be below this (now below median)
     "rs_det_ret5d_max": -2.0,  # ret_5d_pct must be below this (falling > 2% in 5 days)
+    # iv_compression_short thresholds (HV compression in confirmed downtrend)
+    "ivcs_hv_rank_max": 0.15,  # same compression threshold as long-side iv_compression
+    "ivcs_vol_min": 1.0,  # vol confirmation — lower floor; downtrends can be quiet
 }
 
 
@@ -398,6 +404,17 @@ def evaluate_short_signals(
     if "secondary_offering_short" not in blocked and snapshot.get("secondary_offering", False):
         matched.append("secondary_offering_short")
 
+    # iv_compression_short: stock below SMA200, EMA in downtrend, and HV compressed — coiling
+    # for continuation lower.  Mirror of the long-side iv_compression setup.
+    if (
+        "iv_compression_short" not in blocked
+        and snapshot.get("price_below_sma200", False)
+        and not snapshot.get("ema9_above_ema21", True)
+        and snapshot.get("hv_rank", 1.0) < p["ivcs_hv_rank_max"]
+        and snapshot.get("vol_ratio", 0.0) >= p["ivcs_vol_min"]
+    ):
+        matched.append("iv_compression_short")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
+
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched
 
@@ -528,9 +545,12 @@ def evaluate_signals(
         matched.append("breakout_52w")  # pragma: no cover — breakout_52w in GLOBALLY_DISABLED
 
     # 12-month momentum (skipped when mom_12_1_pct field absent)
+    # Pullback filter: require recent 1-week return ≤ mom12_1_pullback_ret5d_max so we buy
+    # on a retracement in a strong trend rather than chasing an already-extended move.
     if (
         mom_12_1 is not None
         and mom_12_1 > p["mom12_1_threshold"]
+        and ret_5d <= p["mom12_1_pullback_ret5d_max"]
         and ema_up
         and adx >= 20
         and "momentum_12_1" not in blocked
