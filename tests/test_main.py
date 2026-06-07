@@ -909,6 +909,10 @@ class RunInnerBase(unittest.TestCase):
             "main.audit_log.log_open_buys_locked": None,
             "main.get_short_universe": [],
             "main.scan_short_universe": [],
+            "main._fetch_adverse_vol_for_held": {},
+            "main.exit_optimiser.compute_atr_pct": None,
+            "main.position_sizer.get_signal_size_multiplier": 1.0,
+            "main.position_sizer.cofiring_boost": 1.0,
         }
         # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
         if "main.run_startup_health_check" not in overrides:
@@ -4628,6 +4632,32 @@ class TestFetchMarketContext(unittest.TestCase):
 
         self.assertIsNotNone(mc.sentiment_snapshot)
 
+    def test_cross_asset_data_available_logs_info(self):
+        """Line 1019: when cross_asset.data_available=True the logger.info block executes."""
+        from data.macro_data import MacroSnapshot
+        from main import _fetch_market_context
+
+        mocks = self._patches()
+        _macro_snap_available = MacroSnapshot(
+            credit_spread_roc=0.05,
+            credit_stress=True,
+            tlt_spy_spread_5d=0.01,
+            duration_flight=False,
+            copper_gold_trend_20d=0.02,
+            copper_gold_positive=True,
+            usd_trend_20d=-0.01,
+            usd_strong=False,
+            hyg_ief_roc_10d=0.03,
+            data_available=True,
+        )
+        mocks["main.get_macro_snapshot"] = MagicMock(return_value=_macro_snap_available)
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            mc = _fetch_market_context()
+
+        self.assertTrue(mc.cross_asset_macro.get("data_available"))
+
 
 class TestRunAiPhaseEmptySnapshots(unittest.TestCase):
     """_run_ai_phase must return an empty decisions dict without calling Claude when
@@ -4762,6 +4792,840 @@ class TestCloseModeSuppressesAiCandidates(RunInnerBase):
             _run_inner(dry_run=True, mode="open_sells", today="2026-01-15")
 
         mocks["main.ai_analyst.get_trading_decisions"].assert_not_called()
+
+
+# ── v1.78 wiring tests ────────────────────────────────────────────────────────
+
+
+class TestCheckRuleBasedStopsRsDecay(unittest.TestCase):
+    """RS decay exit wired into _check_rule_based_stops."""
+
+    _LEVELS = {"stop_pct": -7.0, "apply_timedecay": False, "timedecay_stop_pct": 0.0}
+
+    def _run(self, signal, entry_rs, current_rs, snapshots_by_symbol=None):
+        from main import _check_rule_based_stops
+
+        pos = {"symbol": "AAPL", "unrealized_plpc": 2.0}
+        meta = {"signal": signal, "rs_rank_pct": entry_rs}
+        with (
+            patch("main.RiskConfig.from_config") as mock_rc,
+            patch("main.trader.get_position_meta", return_value=meta),
+            patch("main.exit_optimiser.compute_exit_levels", return_value=self._LEVELS),
+        ):
+            rc = MagicMock()
+            rc.stop_loss_pct = 0.07
+            rc.take_profit_pct = 0.20
+            mock_rc.return_value = rc
+            snap_map = snapshots_by_symbol if snapshots_by_symbol is not None else {}
+            return _check_rule_based_stops(
+                positions=[pos],
+                position_ages={"AAPL": 3},
+                atr_by_symbol={},
+                snapshots_by_symbol=snap_map,
+            )
+
+    def test_rs_decay_triggers_exit(self):
+        result = self._run(
+            "momentum",
+            entry_rs=80.0,
+            current_rs=50.0,
+            snapshots_by_symbol={"AAPL": {"rs_rank_pct": 50.0}},
+        )
+        self.assertIn("AAPL", result)
+
+    def test_rs_decay_insufficient_drop_no_exit(self):
+        result = self._run(
+            "momentum",
+            entry_rs=80.0,
+            current_rs=60.0,
+            snapshots_by_symbol={"AAPL": {"rs_rank_pct": 60.0}},
+        )
+        self.assertNotIn("AAPL", result)
+
+    def test_rs_decay_no_entry_rs_skips(self):
+        result = self._run(
+            "momentum",
+            entry_rs=None,
+            current_rs=50.0,
+            snapshots_by_symbol={"AAPL": {"rs_rank_pct": 50.0}},
+        )
+        self.assertNotIn("AAPL", result)
+
+    def test_rs_decay_symbol_not_in_snapshots_skips(self):
+        result = self._run(
+            "momentum",
+            entry_rs=80.0,
+            current_rs=50.0,
+            snapshots_by_symbol={},
+        )
+        self.assertNotIn("AAPL", result)
+
+    def test_non_momentum_signal_skips_rs_check(self):
+        result = self._run(
+            "pead",
+            entry_rs=80.0,
+            current_rs=50.0,
+            snapshots_by_symbol={"AAPL": {"rs_rank_pct": 50.0}},
+        )
+        self.assertNotIn("AAPL", result)
+
+    def test_no_snapshots_param_skips_rs_check(self):
+        result = self._run(
+            "rs_leader",
+            entry_rs=80.0,
+            current_rs=50.0,
+            snapshots_by_symbol=None,
+        )
+        self.assertNotIn("AAPL", result)
+
+    def test_rs_leader_signal_also_checked(self):
+        result = self._run(
+            "rs_leader",
+            entry_rs=90.0,
+            current_rs=60.0,
+            snapshots_by_symbol={"AAPL": {"rs_rank_pct": 60.0}},
+        )
+        self.assertIn("AAPL", result)
+
+
+class TestFetchAdverseVolForHeld(unittest.TestCase):
+    """Tests for _fetch_adverse_vol_for_held helper."""
+
+    def test_empty_held_returns_empty_dict(self):
+        from main import _fetch_adverse_vol_for_held
+
+        self.assertEqual(_fetch_adverse_vol_for_held(set()), {})
+
+    def test_happy_path_returns_vol_and_returns(self):
+        import pandas as pd
+
+        from main import _fetch_adverse_vol_for_held
+
+        idx = pd.bdate_range("2024-01-02", periods=25)
+        volumes = [1_000_000] * 20 + [3_000_000, 3_000_000, 3_000_000, 3_000_000, 3_000_000]
+        closes = [100.0 + i * 0.5 for i in range(25)]
+        df = pd.DataFrame({"Volume": volumes, "Close": closes}, index=idx)
+        with patch("yfinance.download", return_value=df):
+            result = _fetch_adverse_vol_for_held({"AAPL"})
+        self.assertIn("AAPL", result)
+        self.assertIn("vol_ratio_today", result["AAPL"])
+        self.assertIn("ret_today", result["AAPL"])
+        self.assertIn("vol_ratio_yday", result["AAPL"])
+        self.assertIn("ret_yday", result["AAPL"])
+
+    def test_yfinance_exception_skips_symbol(self):
+        from main import _fetch_adverse_vol_for_held
+
+        with patch("yfinance.download", side_effect=RuntimeError("network error")):
+            result = _fetch_adverse_vol_for_held({"AAPL"})
+        self.assertEqual(result, {})
+
+    def test_insufficient_rows_skips_symbol(self):
+        import pandas as pd
+
+        from main import _fetch_adverse_vol_for_held
+
+        df = pd.DataFrame(
+            {"Volume": [1_000_000, 2_000_000], "Close": [100.0, 101.0]},
+            index=pd.bdate_range("2024-01-02", periods=2),
+        )
+        with patch("yfinance.download", return_value=df):
+            result = _fetch_adverse_vol_for_held({"AAPL"})
+        self.assertEqual(result, {})
+
+    def test_none_df_skips_symbol(self):
+        from main import _fetch_adverse_vol_for_held
+
+        with patch("yfinance.download", return_value=None):
+            result = _fetch_adverse_vol_for_held({"AAPL"})
+        self.assertEqual(result, {})
+
+    def test_zero_avg_vol_skips_symbol(self):
+        import pandas as pd
+
+        from main import _fetch_adverse_vol_for_held
+
+        idx = pd.bdate_range("2024-01-02", periods=25)
+        df = pd.DataFrame(
+            {"Volume": [0] * 25, "Close": [100.0 + i for i in range(25)]},
+            index=idx,
+        )
+        with patch("yfinance.download", return_value=df):
+            result = _fetch_adverse_vol_for_held({"AAPL"})
+        self.assertEqual(result, {})
+
+    def test_multiindex_columns_are_flattened(self):
+        import pandas as pd
+
+        from main import _fetch_adverse_vol_for_held
+
+        idx = pd.bdate_range("2024-01-02", periods=25)
+        volumes = [1_000_000] * 25
+        closes = [100.0 + i for i in range(25)]
+        mi = pd.MultiIndex.from_tuples([("Volume", ""), ("Close", "")], names=["", ""])
+        df = pd.DataFrame(
+            {("Volume", ""): volumes, ("Close", ""): closes},
+            index=idx,
+            columns=mi,
+        )
+        with patch("yfinance.download", return_value=df):
+            result = _fetch_adverse_vol_for_held({"AAPL"})
+        self.assertIn("AAPL", result)
+
+
+class TestExecuteSellPhaseAdverseVolume(unittest.TestCase):
+    """Adverse volume exit wired into _execute_sell_phase."""
+
+    def _snap(self, positions=None, held_symbols=None, open_shorts=None):
+        from models import PositionSnapshot
+
+        positions = positions or []
+        held = held_symbols or {p["symbol"] for p in positions}
+        return PositionSnapshot(
+            open_positions=positions,
+            held_symbols=held,
+            position_ages={p["symbol"]: 3 for p in positions},
+            stale=[],
+            open_shorts_db=open_shorts or set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+
+    def _run(self, positions, vol_hist, open_shorts=None, snapshots=None, regime="BULL_TREND"):
+        from main import _execute_sell_phase
+
+        snap = self._snap(positions, open_shorts=open_shorts)
+        all_trades = []
+        with patch("main._fetch_adverse_vol_for_held", return_value=vol_hist):
+            _execute_sell_phase(
+                client=MagicMock(),
+                snap=snap,
+                decisions={"position_decisions": []},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=True,
+                _live_shadow=False,
+                snapshots=snapshots or [],
+                regime_name=regime,
+            )
+        return [t["symbol"] for t in all_trades]
+
+    def test_adverse_volume_adds_symbol_to_sell(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 2.0, "qty": 10, "market_value": 1500.0}
+        vol_hist = {
+            "AAPL": {
+                "vol_ratio_today": 3.0,
+                "ret_today": -2.0,
+                "vol_ratio_yday": 3.0,
+                "ret_yday": -2.0,
+            }
+        }
+        with patch("main.exit_optimiser.adverse_volume_triggered", return_value=True):
+            sold = self._run([pos], vol_hist)
+        self.assertIn("AAPL", sold)
+
+    def test_no_adverse_volume_not_sold(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 2.0, "qty": 10, "market_value": 1500.0}
+        vol_hist = {
+            "AAPL": {
+                "vol_ratio_today": 1.0,
+                "ret_today": 0.5,
+                "vol_ratio_yday": 1.0,
+                "ret_yday": 0.5,
+            }
+        }
+        with patch("main.exit_optimiser.adverse_volume_triggered", return_value=False):
+            sold = self._run([pos], vol_hist)
+        self.assertNotIn("AAPL", sold)
+
+    def test_short_position_skipped_by_adverse_volume(self):
+        pos = {"symbol": "TSLA", "unrealized_plpc": -1.0, "qty": -5, "market_value": -1000.0}
+        vol_hist = {
+            "TSLA": {
+                "vol_ratio_today": 3.0,
+                "ret_today": -2.0,
+                "vol_ratio_yday": 3.0,
+                "ret_yday": -2.0,
+            }
+        }
+        with patch("main.exit_optimiser.adverse_volume_triggered", return_value=True):
+            sold = self._run([pos], vol_hist, open_shorts={"TSLA"})
+        self.assertNotIn("TSLA", sold)
+
+    def test_symbol_missing_from_vol_hist_not_sold(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 2.0, "qty": 10, "market_value": 1500.0}
+        with patch("main.exit_optimiser.adverse_volume_triggered", return_value=False) as mock_av:
+            self._run([pos], vol_hist={})
+        mock_av.assert_called_once_with(0.0, 0.0, 0.0, 0.0)
+
+
+class TestExecuteSellPhaseRegimeChange(unittest.TestCase):
+    """Regime-change exit wired into _execute_sell_phase."""
+
+    def _snap(self, positions, days_held_map, open_shorts=None):
+        from models import PositionSnapshot
+
+        return PositionSnapshot(
+            open_positions=positions,
+            held_symbols={p["symbol"] for p in positions},
+            position_ages=days_held_map,
+            stale=[],
+            open_shorts_db=open_shorts or set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+
+    def _run(self, positions, days_held_map, regime, open_shorts=None):
+        from main import _execute_sell_phase
+
+        snap = self._snap(positions, days_held_map, open_shorts)
+        all_trades = []
+        with (
+            patch("main._fetch_adverse_vol_for_held", return_value={}),
+            patch("main.exit_optimiser.adverse_volume_triggered", return_value=False),
+        ):
+            _execute_sell_phase(
+                client=MagicMock(),
+                snap=snap,
+                decisions={"position_decisions": []},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=True,
+                _live_shadow=False,
+                snapshots=[],
+                regime_name=regime,
+            )
+        return [t["symbol"] for t in all_trades]
+
+    def test_defensive_regime_exits_new_long(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 1.0, "qty": 10, "market_value": 1500.0}
+        sold = self._run([pos], {"AAPL": 1}, "DEFENSIVE_DOWNTREND")
+        self.assertIn("AAPL", sold)
+
+    def test_bear_market_exits_new_long(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 1.0, "qty": 10, "market_value": 1500.0}
+        sold = self._run([pos], {"AAPL": 1}, "BEAR_MARKET")
+        self.assertIn("AAPL", sold)
+
+    def test_older_long_not_force_exited(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 5.0, "qty": 10, "market_value": 1500.0}
+        sold = self._run([pos], {"AAPL": 3}, "DEFENSIVE_DOWNTREND")
+        self.assertNotIn("AAPL", sold)
+
+    def test_bull_regime_no_regime_exit(self):
+        pos = {"symbol": "AAPL", "unrealized_plpc": 1.0, "qty": 10, "market_value": 1500.0}
+        sold = self._run([pos], {"AAPL": 1}, "BULL_TREND")
+        self.assertNotIn("AAPL", sold)
+
+    def test_short_not_regime_exited(self):
+        pos = {"symbol": "TSLA", "unrealized_plpc": -1.0, "qty": -5, "market_value": -1000.0}
+        sold = self._run([pos], {"TSLA": 1}, "DEFENSIVE_DOWNTREND", open_shorts={"TSLA"})
+        self.assertNotIn("TSLA", sold)
+
+    def test_days_held_2_no_exit_no_advisory(self):
+        # days_held=2 falls in neither days_held<2 nor days_held>=3 → no action
+        pos = {"symbol": "AAPL", "unrealized_plpc": 3.0, "qty": 10, "market_value": 1500.0}
+        sold = self._run([pos], {"AAPL": 2}, "DEFENSIVE_DOWNTREND")
+        self.assertNotIn("AAPL", sold)
+
+
+class TestManageExistingPositionsProfitAcceleration(unittest.TestCase):
+    """profit_acceleration_triggered wired into _manage_existing_positions."""
+
+    def _snap(self, positions):
+        from models import PositionSnapshot
+
+        return PositionSnapshot(
+            open_positions=positions,
+            held_symbols={p["symbol"] for p in positions},
+            position_ages={p["symbol"]: 1 for p in positions},
+            stale=[],
+            open_shorts_db=set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+
+    def _run(self, positions, meta, pa_return, dry_run=True, mode="midday"):
+        from main import _manage_existing_positions
+
+        snap = self._snap(positions)
+        all_trades = []
+        close_result = MagicMock()
+        close_result.is_success = True
+        partial_result = MagicMock()
+        partial_result.is_success = True
+        partial_result.broker_order_id = "ord123"
+        with (
+            patch("main._handle_partial_exits", return_value=[]),
+            patch("main.earnings_calendar.get_earnings_risk_positions", return_value={}),
+            patch("main.trader.get_open_positions", return_value=positions),
+            patch(
+                "main.trader.get_position_ages", return_value={p["symbol"]: 1 for p in positions}
+            ),
+            patch("main.trader.get_position_meta", return_value=meta),
+            patch("main.exit_optimiser.profit_acceleration_triggered", return_value=pa_return),
+            patch("main.trader.close_position", return_value=close_result),
+            patch("main.trader.place_partial_sell", return_value=partial_result),
+            patch("main.trader.record_sell"),
+            patch("main.trader.record_partial_exit"),
+            patch("main.performance.record_trade_outcome"),
+            patch("main.audit_log.log_position_closed"),
+            patch("main.audit_log.log_order_placed"),
+            patch("main.sector_data.get_sector", return_value="Technology"),
+        ):
+            _manage_existing_positions(
+                client=MagicMock(), dry_run=dry_run, all_trades=all_trades, snap=snap, mode=mode
+            )
+        return all_trades
+
+    def _pos(self, symbol, plpc=8.5):
+        return {"symbol": symbol, "unrealized_plpc": plpc, "qty": 10.0, "market_value": 1500.0}
+
+    def test_full_exit_on_rapid_gain_dry_run(self):
+        trades = self._run(
+            [self._pos("AAPL")],
+            {"signal": "mean_reversion", "regime": "BULL_TREND", "confidence": 8},
+            "full_exit",
+        )
+        symbols = [t["symbol"] for t in trades]
+        self.assertIn("AAPL", symbols)
+        actions = [t["action"] for t in trades if t["symbol"] == "AAPL"]
+        # dry_run=True — action is still appended but close not called
+        self.assertIn("SELL", actions)
+
+    def test_partial_exit_on_rapid_gain_dry_run(self):
+        trades = self._run(
+            [self._pos("AAPL", plpc=5.5)],
+            {"signal": "mean_reversion", "regime": "BULL_TREND", "confidence": 8},
+            "partial_exit",
+        )
+        symbols = [t["symbol"] for t in trades]
+        self.assertIn("AAPL", symbols)
+        actions = [t["action"] for t in trades if t["symbol"] == "AAPL"]
+        self.assertIn("PARTIAL SELL", actions)
+
+    def test_hold_returns_nothing(self):
+        trades = self._run(
+            [self._pos("AAPL", plpc=2.0)],
+            {"signal": "mean_reversion", "regime": "BULL_TREND", "confidence": 8},
+            "hold",
+        )
+        self.assertEqual(trades, [])
+
+    def test_close_mode_skips_profit_accel(self):
+        trades = self._run(
+            [self._pos("AAPL")],
+            {"signal": "mean_reversion"},
+            "full_exit",
+            mode="close",
+        )
+        # close mode should skip profit accel → no trades appended by profit accel
+        profit_accel_trades = [t for t in trades if "profit acceleration" in t.get("detail", "")]
+        self.assertEqual(profit_accel_trades, [])
+
+    def test_partial_already_taken_skips_second_partial(self):
+        trades = self._run(
+            [self._pos("AAPL")],
+            {"signal": "mean_reversion", "partial_exit_taken_at": "2026-01-15T10:00:00"},
+            "partial_exit",
+        )
+        profit_partial = [t for t in trades if t.get("action") == "PARTIAL SELL"]
+        self.assertEqual(profit_partial, [])
+
+    def test_symbol_removed_during_partials_skipped(self):
+        """Symbol closed by partial exit is absent from post_partial_positions → profit accel skipped."""
+        from main import _manage_existing_positions
+
+        pos = self._pos("AAPL")
+        snap = self._snap([pos])
+        pa_mock = MagicMock(return_value="full_exit")
+        all_trades = []
+        with (
+            patch("main._handle_partial_exits", return_value=[]),
+            patch("main.earnings_calendar.get_earnings_risk_positions", return_value={}),
+            patch("main.trader.get_open_positions", return_value=[]),  # AAPL gone after partial
+            patch("main.trader.get_position_ages", return_value={"AAPL": 1}),
+            patch("main.exit_optimiser.profit_acceleration_triggered", pa_mock),
+        ):
+            _manage_existing_positions(
+                client=MagicMock(), dry_run=True, all_trades=all_trades, snap=snap, mode="midday"
+            )
+        # No profit accel trade — symbol not in post_partial_positions
+        pa_mock.assert_not_called()
+
+    def test_full_exit_live_success_records_trade(self):
+        """Lines 914-928: full_exit live path records trade via record_sell."""
+        pos = self._pos("AAPL")
+        trades = self._run(
+            [pos],
+            {"signal": "mean_reversion", "regime": "BULL_TREND", "confidence": 8},
+            "full_exit",
+            dry_run=False,
+        )
+        self.assertIn("AAPL", [t["symbol"] for t in trades])
+        detail = next(t["detail"] for t in trades if t["symbol"] == "AAPL")
+        self.assertIn("profit acceleration", detail)
+        self.assertNotIn("dry run", detail)
+
+    def test_partial_exit_live_places_partial_sell(self):
+        """Lines 959-969: partial_exit live path calls place_partial_sell."""
+        from main import _manage_existing_positions
+
+        pos = self._pos("AAPL", plpc=5.5)
+        snap = self._snap([pos])
+        all_trades = []
+        close_result = MagicMock()
+        close_result.is_success = True
+        partial_result = MagicMock()
+        partial_result.is_success = True
+        partial_result.broker_order_id = "ord999"
+        partial_mock = MagicMock(return_value=partial_result)
+        with (
+            patch("main._handle_partial_exits", return_value=[]),
+            patch("main.earnings_calendar.get_earnings_risk_positions", return_value={}),
+            patch("main.trader.get_open_positions", return_value=[pos]),
+            patch("main.trader.get_position_ages", return_value={"AAPL": 1}),
+            patch("main.trader.get_position_meta", return_value={"signal": "mean_reversion"}),
+            patch("main.exit_optimiser.profit_acceleration_triggered", return_value="partial_exit"),
+            patch("main.trader.close_position", return_value=close_result),
+            patch("main.trader.place_partial_sell", partial_mock),
+            patch("main.trader.record_partial_exit"),
+            patch("main.audit_log.log_order_placed"),
+            patch("main.sector_data.get_sector", return_value="Technology"),
+        ):
+            _manage_existing_positions(
+                client=MagicMock(), dry_run=False, all_trades=all_trades, snap=snap, mode="midday"
+            )
+        partial_mock.assert_called_once()
+        self.assertIn("AAPL", [t["symbol"] for t in all_trades])
+
+    def test_full_exit_close_fail_logs_error(self):
+        from main import _manage_existing_positions
+
+        pos = self._pos("AAPL")
+        snap = self._snap([pos])
+        close_result = MagicMock()
+        close_result.is_success = False
+        close_result.rejection_reason = "broker error"
+        with (
+            patch("main._handle_partial_exits", return_value=[]),
+            patch("main.earnings_calendar.get_earnings_risk_positions", return_value={}),
+            patch("main.trader.get_open_positions", return_value=[pos]),
+            patch("main.trader.get_position_ages", return_value={"AAPL": 1}),
+            patch("main.trader.get_position_meta", return_value={"signal": "mean_reversion"}),
+            patch("main.exit_optimiser.profit_acceleration_triggered", return_value="full_exit"),
+            patch("main.trader.close_position", return_value=close_result),
+            patch("main.trader.record_sell") as mock_record,
+        ):
+            all_trades = []
+            _manage_existing_positions(
+                client=MagicMock(), dry_run=False, all_trades=all_trades, snap=snap, mode="midday"
+            )
+        mock_record.assert_not_called()
+
+    def test_partial_exit_live_order_fail_no_trade(self):
+        """Line 961 false branch: place_partial_sell returns None → no trade recorded."""
+        from main import _manage_existing_positions
+
+        pos = self._pos("AAPL", plpc=5.5)
+        snap = self._snap([pos])
+        all_trades = []
+        with (
+            patch("main._handle_partial_exits", return_value=[]),
+            patch("main.earnings_calendar.get_earnings_risk_positions", return_value={}),
+            patch("main.trader.get_open_positions", return_value=[pos]),
+            patch("main.trader.get_position_ages", return_value={"AAPL": 1}),
+            patch("main.trader.get_position_meta", return_value={"signal": "mean_reversion"}),
+            patch("main.exit_optimiser.profit_acceleration_triggered", return_value="partial_exit"),
+            patch("main.trader.close_position"),
+            patch("main.trader.place_partial_sell", return_value=None),
+            patch("main.trader.record_partial_exit") as mock_record,
+            patch("main.audit_log.log_order_placed"),
+            patch("main.sector_data.get_sector", return_value="Technology"),
+        ):
+            _manage_existing_positions(
+                client=MagicMock(), dry_run=False, all_trades=all_trades, snap=snap, mode="midday"
+            )
+        mock_record.assert_not_called()
+        self.assertEqual(all_trades, [])
+
+
+class TestBuyLoopATRSizing(RunInnerBase):
+    """atr_position_size wired into buy loop — used when ATR available, fallback otherwise."""
+
+    def _candidate(self, **extra):
+        return {
+            "symbol": "AAPL",
+            "confidence": 8,
+            "key_signal": "momentum",
+            "reasoning": "test",
+            "matched_signals": ["momentum"],
+            **extra,
+        }
+
+    def test_atr_sizing_called_when_atr_available(self):
+        atr_mock = MagicMock(return_value=300.0)
+        rb_mock = MagicMock(return_value=500.0)
+        decisions = _decisions(buys=[self._candidate()])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": 3.5,
+                "main.position_sizer.atr_position_size": atr_mock,
+                "main.position_sizer.risk_budget_size": rb_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        atr_mock.assert_called()
+        rb_mock.assert_not_called()
+
+    def test_risk_budget_fallback_when_no_atr(self):
+        atr_mock = MagicMock(return_value=300.0)
+        rb_mock = MagicMock(return_value=500.0)
+        decisions = _decisions(buys=[self._candidate()])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.position_sizer.atr_position_size": atr_mock,
+                "main.position_sizer.risk_budget_size": rb_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        atr_mock.assert_not_called()
+        rb_mock.assert_called()
+
+
+class TestBuyLoopSignalMultipliers(RunInnerBase):
+    """get_signal_size_multiplier and cofiring_boost applied in buy loop."""
+
+    def _candidate(self, matched_signals=None, key_signal="momentum"):
+        return {
+            "symbol": "AAPL",
+            "confidence": 8,
+            "key_signal": key_signal,
+            "reasoning": "test",
+            "matched_signals": matched_signals or [key_signal],
+        }
+
+    def test_signal_multiplier_function_called(self):
+        sig_mock = MagicMock(return_value=1.5)
+        cofire_mock = MagicMock(return_value=1.0)
+        decisions = _decisions(buys=[self._candidate(key_signal="iv_compression")])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {
+                        "symbol": "AAPL",
+                        "current_price": 150.0,
+                        "matched_signals": ["iv_compression"],
+                    }
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.position_sizer.get_signal_size_multiplier": sig_mock,
+                "main.position_sizer.cofiring_boost": cofire_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        sig_mock.assert_called_with("iv_compression")
+
+    def test_cofiring_boost_applied_for_two_signals(self):
+        cofire_mock = MagicMock(return_value=1.5)
+        decisions = _decisions(buys=[self._candidate(matched_signals=["momentum", "rs_leader"])])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {
+                        "symbol": "AAPL",
+                        "current_price": 150.0,
+                        "matched_signals": ["momentum", "rs_leader"],
+                    }
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.position_sizer.cofiring_boost": cofire_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        cofire_mock.assert_called_with(2)
+
+    def test_rs_rank_pct_passed_to_record_buy(self):
+        record_mock = MagicMock()
+        decisions = _decisions(buys=[{**self._candidate(), "rs_rank_pct": 85.5}])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0, "rs_rank_pct": 85.5}
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.trader.record_buy": record_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        record_mock.assert_called_once()
+        _, kwargs = record_mock.call_args
+        self.assertEqual(kwargs.get("rs_rank_pct"), 85.5)
+
+
+class TestRecordBuyRsRankPct(unittest.TestCase):
+    """record_buy stores rs_rank_pct; get_position_meta retrieves it."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = [
+            patch("utils.db._DB_PATH", os.path.join(self.tmpdir, "test.db")),
+            patch("utils.db._initialized", False),
+            patch("utils.db._migrate_json_state", lambda: None),
+        ]
+        for p in self.patchers:
+            p.start()
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_rs_rank_pct_stored_and_retrieved(self):
+        from execution.trader import get_position_meta, record_buy
+
+        record_buy("AAPL", 180.0, signal="momentum", rs_rank_pct=75.3)
+        meta = get_position_meta("AAPL")
+        self.assertAlmostEqual(meta["rs_rank_pct"], 75.3, places=1)
+
+    def test_rs_rank_pct_none_stored_as_null(self):
+        from execution.trader import get_position_meta, record_buy
+
+        record_buy("AAPL", 180.0, signal="momentum", rs_rank_pct=None)
+        meta = get_position_meta("AAPL")
+        self.assertIsNone(meta.get("rs_rank_pct"))
+
+    def test_rs_rank_pct_default_is_none(self):
+        from execution.trader import get_position_meta, record_buy
+
+        record_buy("TSLA", 250.0, signal="pead")
+        meta = get_position_meta("TSLA")
+        self.assertIsNone(meta.get("rs_rank_pct"))
+
+
+class TestBuildDataBundleOptionsIV(unittest.TestCase):
+    """Lines 1193-1197: when get_options_batch returns a non-None OptionsSnapshot, iv fields
+    are set on the filtered candidate."""
+
+    def test_iv_fields_set_on_filtered_candidate(self):
+        from data.options_data import OptionsSnapshot
+        from main import _build_data_bundle
+        from models import MarketContext, PositionSnapshot
+
+        snap = PositionSnapshot(
+            open_positions=[],
+            held_symbols=set(),
+            position_ages={},
+            stale=[],
+            open_shorts_db=set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+        mc = MarketContext(
+            vix=18.0,
+            regime={"regime": "BULL_TREND"},
+            macro={"is_high_risk": False, "event": ""},
+            sector_perf={},
+            leading_sectors=[],
+            lessons=None,
+        )
+        iv_snap = OptionsSnapshot(
+            atm_iv=0.3,
+            skew_25d=1.0,
+            put_call_oi_ratio=1.0,
+            iv_rv_spread=-0.1,
+            iv_cheap=True,
+            iv_expensive=False,
+            unusual_call_oi=True,
+            panic_put_skew=False,
+            call_skew_spike=False,
+        )
+        candidate = {"symbol": "AAPL", "current_price": 50.0, "matched_signals": ["momentum"]}
+        patches = [
+            patch("main.stock_scanner.get_top_movers", return_value=[]),
+            patch("main.build_scan_universe", return_value=[]),
+            patch(
+                "main.market_data.get_market_snapshots",
+                return_value=[{"symbol": "AAPL", "current_price": 50.0}],
+            ),
+            patch("main.market_data.get_intraday_data", return_value={}),
+            patch("main.insider_feed.get_insider_activity", return_value={}),
+            patch("main.av_sentiment.get_av_sentiment", return_value={}),
+            patch("main.earnings_surprise.get_earnings_surprise", return_value={}),
+            patch("main.earnings_surprise.get_earnings_miss", return_value={}),
+            patch("main.short_interest.get_short_interest", return_value={}),
+            patch("main.edgar_client.get_edgar_signals_batch", return_value={}),
+            patch("main.stock_scanner.prefilter_candidates", return_value=[candidate]),
+            patch("main.audit_log.log_event", return_value=None),
+            patch("main.options_scanner.get_options_signals", return_value={}),
+            patch("main.options_data_module.get_options_batch", return_value={"AAPL": iv_snap}),
+            patch("main.news_fetcher.fetch_news", return_value={}),
+            patch("main.sanitize_headlines", return_value={}),
+            patch("main.sentiment_module.get_sentiment", return_value={}),
+            patch("main.get_short_universe", return_value=[]),
+            patch("main.scan_short_universe", return_value=[]),
+        ]
+        try:
+            for p in patches:
+                p.start()
+            db = _build_data_bundle(MagicMock(), snap, mc)
+        finally:
+            for p in patches:
+                p.stop()
+
+        self.assertIsNotNone(db)
+        self.assertEqual(len(db.filtered_candidates), 1)
+        cand = db.filtered_candidates[0]
+        self.assertTrue(cand["iv_cheap"])
+        self.assertFalse(cand["iv_expensive"])
+        self.assertTrue(cand["unusual_call_oi"])
+        self.assertFalse(cand["panic_put_skew"])
+        self.assertFalse(cand["call_skew_spike"])
 
 
 if __name__ == "__main__":  # pragma: no cover

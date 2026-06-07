@@ -256,6 +256,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (5, "ALTER TABLE positions ADD COLUMN side TEXT NOT NULL DEFAULT 'long'"),
     (6, "ALTER TABLE positions ADD COLUMN track TEXT NOT NULL DEFAULT 'multiday'"),
     (7, "ALTER TABLE trades ADD COLUMN track TEXT NOT NULL DEFAULT 'multiday'"),
+    (8, "ALTER TABLE positions ADD COLUMN rs_rank_pct REAL"),
 ]
 
 

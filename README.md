@@ -203,7 +203,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (3574 tests, 100% coverage)
+├── tests/             Unit test suite (3593 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **3574 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **3593 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -809,6 +809,22 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.78 — June 2026 — exit optimiser and position-sizer wired into live pipeline
+
+Seven signal-based controls built in v1.74–1.77 were unit-tested but not yet called from the live pipeline. This release completes the wiring end-to-end.
+
+- **RS-decay exit** (`exit_optimiser.rs_decay_triggered`) — fires when a position's RS percentile rank drops >25 points from entry. Only applies to RS-momentum signals (`rs_leader`, `momentum`, `momentum_12_1`). Entry RS rank is now stored via a new `rs_rank_pct` column in the `positions` table (DB migration 8) and passed through `record_buy`.
+- **Adverse-volume exit** (`exit_optimiser.adverse_volume_triggered`) — fires when two consecutive days show vol_ratio ≥ 2.5 with return ≤ −1.5%. New `_fetch_adverse_vol_for_held` helper fetches 30-day yfinance data for held long positions and computes rolling 20-day average volume to derive ratios.
+- **Profit-acceleration exit** (`exit_optimiser.profit_acceleration_triggered`) — fires for mean-reversion/range-reversion signals only; returns `full_exit`, `partial_exit`, or `hold` based on unrealised gain and days held. Evaluated in `open` and `midday` modes inside `_manage_existing_positions`.
+- **Regime-change exit** — when regime is `DEFENSIVE_DOWNTREND` or `BEAR_MARKET`: positions held <2 days are exited immediately; positions held ≥3 days receive an advisory log. Wired into `_execute_sell_phase` via a new `regime_name` parameter.
+- **ATR-based position sizing** (`position_sizer.atr_position_size`) — in the buy loop, `compute_atr_pct` is called for each candidate; when non-None the ATR-derived notional replaces `risk_budget_size` as the base. Falls back to `risk_budget_size` on data failure.
+- **Signal Sharpe multiplier** (`position_sizer.get_signal_size_multiplier`) — applied to base notional at buy time; scales down low-Sharpe signals and up high-Sharpe ones.
+- **Co-firing boost** (`position_sizer.cofiring_boost`) — returns 1.5× when ≥2 signals fire simultaneously; drawn from `candidate["matched_signals"]`.
+- **Dead code removed** — `_manage_existing_positions` had a guard `if symbol not in post_partial_held: continue` inside a loop over `post_partial_positions` (where `post_partial_held` is derived from the same list). This was unreachable; removed.
+- **Tests:** 19 new tests. `TestCheckRuleBasedStopsRsDecay` (7); `TestFetchAdverseVolForHeld` (7); `TestExecuteSellPhaseAdverseVolume` (4); `TestExecuteSellPhaseRegimeChange` (6); `TestManageExistingPositionsProfitAcceleration` (8 + 1 new); `TestBuyLoopATRSizing` (2); `TestBuyLoopSignalMultipliers` (3); `TestRecordBuyRsRankPct` (3); `TestFetchMarketContext` extended (cross_asset data_available branch); `TestBuildDataBundleOptionsIV` (options IV field enrichment). Also added `RunInnerBase` default mocks for `_fetch_adverse_vol_for_held`, `compute_atr_pct`, `get_signal_size_multiplier`, `cofiring_boost` to isolate existing tests from new buy-loop calls. **3593 passing, 100% coverage on changed files.**
+
+---
 
 ### 1.77 — June 2026 — infra wiring: macro, options, sentiment, EDGAR data into live pipeline
 

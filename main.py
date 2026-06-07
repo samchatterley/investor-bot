@@ -438,12 +438,53 @@ def _fetch_atr_for_held(held_symbols: set) -> dict:
     return {sym: exit_optimiser.compute_atr_pct(sym) for sym in held_symbols}
 
 
+_RS_DECAY_SIGNALS = frozenset({"rs_leader", "momentum", "momentum_12_1"})
+_DEFENSIVE_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "BEAR_MARKET"})
+
+
+def _fetch_adverse_vol_for_held(held_symbols: set) -> dict:
+    """Return per-symbol vol_ratio and daily return for today and yesterday.
+
+    Used by adverse_volume_triggered to detect two consecutive institutional-selling days.
+    Requires 30d of daily bars to compute a proper 20-day volume average.
+    Returns {} for any symbol where data is unavailable.
+    """
+    result = {}
+    for sym in held_symbols:
+        try:
+            import pandas as pd
+            import yfinance as yf
+
+            df = yf.download(sym, period="30d", interval="1d", progress=False, auto_adjust=True)
+            if df is None or len(df) < 3:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            close = df["Close"]
+            volume = df["Volume"]
+            avg_vol = volume.rolling(20).mean()
+            today_avg = float(avg_vol.iloc[-1])
+            yday_avg = float(avg_vol.iloc[-2])
+            if today_avg <= 0 or yday_avg <= 0 or today_avg != today_avg or yday_avg != yday_avg:
+                continue
+            result[sym] = {
+                "vol_ratio_today": round(float(volume.iloc[-1]) / today_avg, 2),
+                "ret_today": round(float((close.iloc[-1] / close.iloc[-2] - 1) * 100), 2),
+                "vol_ratio_yday": round(float(volume.iloc[-2]) / yday_avg, 2),
+                "ret_yday": round(float((close.iloc[-2] / close.iloc[-3] - 1) * 100), 2),
+            }
+        except Exception as e:
+            logger.debug(f"_fetch_adverse_vol_for_held({sym}): {e}")
+    return result
+
+
 def _check_rule_based_stops(
     positions: list,
     position_ages: dict,
     atr_by_symbol: dict,
+    snapshots_by_symbol: dict | None = None,
 ) -> set:
-    """Return symbols that breach the hard stop or time-decay stop right now."""
+    """Return symbols that breach the hard stop, time-decay stop, or RS decay threshold."""
     rc = RiskConfig.from_config()
     symbols_to_exit: set = set()
     for pos in positions:
@@ -471,6 +512,20 @@ def _check_rule_based_stops(
                 f"(day {days_held}/{max_hold})"
             )
             symbols_to_exit.add(symbol)
+        elif signal in _RS_DECAY_SIGNALS and snapshots_by_symbol and symbol not in symbols_to_exit:
+            entry_rs = meta.get("rs_rank_pct")
+            current_snap = snapshots_by_symbol.get(symbol)
+            current_rs = current_snap.get("rs_rank_pct") if current_snap else None
+            if (
+                entry_rs is not None
+                and current_rs is not None
+                and exit_optimiser.rs_decay_triggered(current_rs, entry_rs)
+            ):
+                logger.info(
+                    f"RS decay exit: {symbol} rs_rank {entry_rs:.1f}% → {current_rs:.1f}% "
+                    f"(>25pt drop) [{signal}]"
+                )
+                symbols_to_exit.add(symbol)
     return symbols_to_exit
 
 
@@ -782,9 +837,9 @@ def _get_position_snapshot(client) -> PositionSnapshot:
 
 
 def _manage_existing_positions(
-    client, dry_run: bool, all_trades: list, snap: PositionSnapshot
+    client, dry_run: bool, all_trades: list, snap: PositionSnapshot, mode: str = "open"
 ) -> None:
-    """Execute partial exits then earnings-risk exits on currently held positions."""
+    """Execute partial exits, earnings-risk exits, and profit-acceleration exits."""
     partials = _handle_partial_exits(client, snap.open_positions, snap.atr_by_symbol, dry_run)
     all_trades.extend(partials)
 
@@ -831,6 +886,97 @@ def _manage_existing_positions(
                     f"  Earnings exit FAILED {symbol} — "
                     f"{result.rejection_reason or 'close failed after retries'}"
                 )
+
+    # Profit acceleration — fast exit for mean-reversion signals with rapid early gains.
+    # Only evaluated in open and midday modes; close mode handles EOD exits separately.
+    if mode in ("open", "midday"):
+        for pos in post_partial_positions:
+            symbol = pos["symbol"]
+            meta = trader.get_position_meta(symbol)
+            signal = meta.get("signal", "unknown")
+            days_held = position_ages.get(symbol, 1)
+            unrealised_pct = pos.get("unrealized_plpc", 0.0)
+            action = exit_optimiser.profit_acceleration_triggered(unrealised_pct, days_held, signal)
+            if action == "full_exit":
+                logger.info(
+                    f"Profit acceleration full exit: {symbol} +{unrealised_pct:.1f}% "
+                    f"in {days_held}d [{signal}]"
+                )
+                if not dry_run:
+                    result = trader.close_position(client, symbol)
+                    if result.is_success:
+                        performance.record_trade_outcome(
+                            signal,
+                            unrealised_pct,
+                            regime=meta.get("regime", "UNKNOWN"),
+                            confidence=meta.get("confidence", 0),
+                            sector=sector_data.get_sector(symbol),
+                            hold_days=days_held,
+                            symbol=symbol,
+                            entry_date=meta.get("entry_date"),
+                            entry_price=meta.get("entry_price"),
+                            exit_reason="profit_acceleration",
+                        )
+                        audit_log.log_position_closed(symbol, "profit_acceleration", unrealised_pct)
+                        trader.record_sell(symbol)
+                        all_trades.append(
+                            {
+                                "symbol": symbol,
+                                "action": "SELL",
+                                "detail": f"profit acceleration +{unrealised_pct:.1f}% in {days_held}d",
+                                "decision_type": "rule_based",
+                            }
+                        )
+                    else:
+                        logger.error(
+                            f"  Profit acceleration SELL FAILED {symbol} — "
+                            f"{result.rejection_reason or 'close failed'}"
+                        )
+                else:
+                    all_trades.append(
+                        {
+                            "symbol": symbol,
+                            "action": "SELL",
+                            "detail": f"profit acceleration +{unrealised_pct:.1f}% in {days_held}d [dry run]",
+                            "decision_type": "rule_based",
+                        }
+                    )
+            elif action == "partial_exit":
+                if meta.get("partial_exit_taken_at"):
+                    logger.info(f"  Partial already taken for {symbol} — skipping profit accel")
+                    continue
+                logger.info(
+                    f"Profit acceleration partial exit: {symbol} +{unrealised_pct:.1f}% "
+                    f"in {days_held}d [{signal}]"
+                )
+                if not dry_run:
+                    half_qty = pos["qty"] / 2
+                    result = trader.place_partial_sell(client, symbol, half_qty)
+                    if result and result.is_success:
+                        audit_log.log_order_placed(
+                            symbol,
+                            "SELL_PARTIAL",
+                            pos["market_value"] / 2,
+                            result.broker_order_id or "",
+                        )
+                        trader.record_partial_exit(symbol)
+                        all_trades.append(
+                            {
+                                "symbol": symbol,
+                                "action": "PARTIAL SELL",
+                                "detail": f"profit acceleration 50% at +{unrealised_pct:.1f}%",
+                                "decision_type": "rule_based",
+                            }
+                        )
+                else:
+                    all_trades.append(
+                        {
+                            "symbol": symbol,
+                            "action": "PARTIAL SELL",
+                            "detail": f"profit acceleration 50% at +{unrealised_pct:.1f}% [dry run]",
+                            "decision_type": "rule_based",
+                        }
+                    )
 
 
 def _fetch_market_context() -> MarketContext:
@@ -1197,8 +1343,16 @@ def _execute_sell_phase(
     executed_symbols: set,
     dry_run: bool,
     _live_shadow: bool,
+    snapshots: list | None = None,
+    regime_name: str = "UNKNOWN",
 ) -> None:
     """Execute AI sell decisions, stale-long exits, rule-based stops, and stale short covers."""
+    snap_by_symbol = {s["symbol"]: s for s in (snapshots or [])}
+
+    # Adverse volume — two consecutive institutional-selling days trigger exit
+    long_held = snap.held_symbols - snap.open_shorts_db
+    vol_hist = _fetch_adverse_vol_for_held(long_held)
+
     symbols_to_sell = {
         d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
     }
@@ -1206,8 +1360,48 @@ def _execute_sell_phase(
         sym for sym in snap.stale if sym in snap.held_symbols and sym not in snap.open_shorts_db
     }
     symbols_to_sell |= _check_rule_based_stops(
-        snap.open_positions, snap.position_ages, snap.atr_by_symbol
+        snap.open_positions,
+        snap.position_ages,
+        snap.atr_by_symbol,
+        snapshots_by_symbol=snap_by_symbol,
     )
+
+    for pos in snap.open_positions:
+        symbol = pos["symbol"]
+        if symbol in snap.open_shorts_db or symbol in symbols_to_sell:
+            continue
+        vh = vol_hist.get(symbol, {})
+        if exit_optimiser.adverse_volume_triggered(
+            vh.get("vol_ratio_today", 0.0),
+            vh.get("ret_today", 0.0),
+            vh.get("vol_ratio_yday", 0.0),
+            vh.get("ret_yday", 0.0),
+        ):
+            logger.info(
+                f"Adverse volume exit: {symbol} — "
+                f"vol×{vh['vol_ratio_today']:.1f}/{vh['vol_ratio_yday']:.1f} "
+                f"ret {vh['ret_today']:.1f}%/{vh['ret_yday']:.1f}%"
+            )
+            symbols_to_sell.add(symbol)
+
+    # Regime-change exit — close new longs immediately on DEFENSIVE/BEAR downgrade
+    if regime_name in _DEFENSIVE_REGIMES:
+        for pos in snap.open_positions:
+            symbol = pos["symbol"]
+            if symbol in snap.open_shorts_db or symbol in symbols_to_sell:
+                continue
+            days_held = snap.position_ages.get(symbol, 1)
+            if days_held < 2:
+                logger.info(
+                    f"Regime-change exit: {symbol} — {regime_name} with {days_held} day(s) held"
+                )
+                symbols_to_sell.add(symbol)
+            elif days_held >= 3:
+                logger.info(
+                    f"Regime-change stop advisory: {symbol} — {regime_name}, "
+                    f"{days_held} days held (manual stop tighten to 2% recommended)"
+                )
+
     # Exclude any short positions from the sell set (handled separately below)
     symbols_to_sell -= snap.open_shorts_db
 
@@ -1440,6 +1634,10 @@ def _execute_buy_phase(
                     break
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
+                key_signal = candidate.get("key_signal", "unknown")
+                n_signals = len(candidate.get("matched_signals") or [key_signal])
+                sig_multiplier = position_sizer.get_signal_size_multiplier(key_signal)
+                cofire_multiplier = position_sizer.cofiring_boost(n_signals)
 
                 # Correlation filter — skip if returns too closely track an existing position
                 if correlation.correlated_with_held(symbol, {p["symbol"] for p in open_positions}):
@@ -1490,14 +1688,22 @@ def _execute_buy_phase(
                         available_cash,
                     )
                 else:
-                    notional = min(
-                        position_sizer.risk_budget_size(
+                    # ATR-based equal-risk sizing when available; falls back to risk_budget_size
+                    _cand_atr = exit_optimiser.compute_atr_pct(symbol)
+                    if _cand_atr is not None:
+                        _base = position_sizer.atr_position_size(
+                            account_now["portfolio_value"], _cand_atr
+                        )
+                        logger.debug(f"  ATR sizing {symbol}: atr={_cand_atr:.2f}% → ${_base:.2f}")
+                    else:
+                        _base = position_sizer.risk_budget_size(
                             account_now["portfolio_value"],
                             confidence,
-                            signal=candidate.get("key_signal", "unknown"),
+                            signal=key_signal,
                             regime=mc.regime.get("regime", "UNKNOWN"),
                         )
-                        * _dd_scalar,
+                    notional = min(
+                        _base * _dd_scalar * sig_multiplier * cofire_multiplier,
                         available_cash,
                     )
 
@@ -1527,7 +1733,10 @@ def _execute_buy_phase(
                     logger.warning(f"  Pre-trade check failed: {rejection_reason}")
                     continue
 
-                logger.info(f"  BUY {symbol}: ${notional:.2f} | conf={confidence}")
+                logger.info(
+                    f"  BUY {symbol}: ${notional:.2f} | conf={confidence} | "
+                    f"sig×{sig_multiplier:.1f} cofire×{cofire_multiplier:.1f}"
+                )
 
                 qg = None  # populated by quote gate in live mode; used for execution quality log
                 # Live quote gate — validates real-time conditions before order submission.
@@ -1589,6 +1798,7 @@ def _execute_buy_phase(
                                 regime=mc.regime.get("regime", "UNKNOWN"),
                                 confidence=confidence,
                                 track="intraday" if _signal in INTRADAY_SIGNALS else "multiday",
+                                rs_rank_pct=candidate.get("rs_rank_pct"),
                             )
                             audit_log.log_order_placed(
                                 symbol, "BUY", notional, buy_result.broker_order_id or ""
@@ -2225,7 +2435,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
 
     # ── Position state + managed exits ───────────────────────────────────────
     snap = _get_position_snapshot(client)
-    _manage_existing_positions(client, dry_run, all_trades, snap)
+    _manage_existing_positions(client, dry_run, all_trades, snap, mode=mode)
     snap = _get_position_snapshot(client)  # refresh after exits
 
     # ── Fetch + enrich market data, pre-filter candidates ────────────────────
@@ -2245,7 +2455,15 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
 
     # ── Execute sells / covers ────────────────────────────────────────────────
     _execute_sell_phase(
-        client, snap, decisions, all_trades, executed_symbols, dry_run, _live_shadow
+        client,
+        snap,
+        decisions,
+        all_trades,
+        executed_symbols,
+        dry_run,
+        _live_shadow,
+        snapshots=db.snapshots,
+        regime_name=mc.regime.get("regime", "UNKNOWN"),
     )
 
     # ── Execute buys ────────────────────────────────────────────────────────────

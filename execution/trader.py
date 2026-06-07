@@ -498,11 +498,13 @@ def record_buy(
     regime: str = "UNKNOWN",
     confidence: int = 0,
     track: str = "multiday",
+    rs_rank_pct: float | None = None,
 ):
     with _db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO positions (symbol, entry_date, entry_price, signal, regime, confidence, track) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO positions "
+            "(symbol, entry_date, entry_price, signal, regime, confidence, track, rs_rank_pct) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (
                 symbol,
                 today_et().isoformat(),
@@ -511,6 +513,7 @@ def record_buy(
                 regime,
                 confidence,
                 track,
+                rs_rank_pct,
             ),
         )
 
