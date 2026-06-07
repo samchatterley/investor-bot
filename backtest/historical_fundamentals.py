@@ -3,7 +3,7 @@
 Enables point-in-time simulation of two fundamental signals that cannot be
 computed from OHLCV data alone:
 
-  pead          — EPS surprise ≥ 5% within the last 30 days
+  pead          — EPS surprise ≥ 10% within the last 7 days
                   Source: yfinance earnings_dates (free, ~8 quarters history)
 
   insider_buying — ≥2 corporate insiders made open-market Form 4 purchases
@@ -43,7 +43,9 @@ from data.insider_feed import _get_cik_map, _parse_form4, _recent_form4_filings
 
 logger = logging.getLogger(__name__)
 
-_PEAD_MIN_SURPRISE = 5.0  # EPS beat threshold (%) — mirrors data/earnings_surprise.py
+_PEAD_MIN_SURPRISE = (
+    10.0  # EPS beat threshold (%) — raised from 5% in v1.83; mirrors data/earnings_surprise.py
+)
 _MISS_MAX_SURPRISE = -5.0  # EPS miss threshold (%) — mirrors data/earnings_surprise.py
 _YF_DELAY = 0.05  # yfinance is not key-gated; modest courtesy delay
 
@@ -102,7 +104,7 @@ def pead_active_on_date(
     sym: str,
     sim_date: date,
     earnings_history: dict[str, list[dict]],
-    lookback_days: int = 30,
+    lookback_days: int = 7,
     min_surprise: float = _PEAD_MIN_SURPRISE,
 ) -> bool:
     """Return True if sym had a qualifying EPS beat in the window

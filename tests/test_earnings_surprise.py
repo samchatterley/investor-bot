@@ -204,7 +204,7 @@ class TestGetEarningsSurprise(unittest.TestCase):
 
     def test_custom_min_surprise_threshold(self):
         df = _make_earnings_df(
-            [{"date": _recent_date(5), "estimate": 1.50, "reported": 1.58, "surprise": 5.33}]
+            [{"date": _recent_date(5), "estimate": 1.50, "reported": 1.68, "surprise": 12.0}]
         )
         with (
             patch("data.earnings_surprise._load_cache", return_value={}),
@@ -214,7 +214,7 @@ class TestGetEarningsSurprise(unittest.TestCase):
             patch("data.earnings_surprise.today_et", return_value=_TODAY_DATE),
         ):
             mock_ticker.return_value.earnings_dates = df
-            result_excluded = get_earnings_surprise(["AAPL"], min_surprise=10.0)
+            result_excluded = get_earnings_surprise(["AAPL"], min_surprise=15.0)
             result_included = get_earnings_surprise(["AAPL"], min_surprise=3.0)
         self.assertNotIn("AAPL", result_excluded)
         self.assertIn("AAPL", result_included)

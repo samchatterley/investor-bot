@@ -7,10 +7,12 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from backtest.historical_fundamentals import (
+    earnings_miss_active_on_date,
     insider_state_on_date,
     pead_active_on_date,
     prefetch_earnings_history,
     prefetch_insider_history,
+    recent_earnings_date,
 )
 
 
@@ -183,12 +185,12 @@ class TestPeadActiveOnDate(unittest.TestCase):
     _BASE = date(2025, 6, 1)
 
     def _hist(self, **kwargs):
-        days_ago = kwargs.get("days_ago", 10)
-        surprise = kwargs.get("surprise", 8.0)
+        days_ago = kwargs.get("days_ago", 5)
+        surprise = kwargs.get("surprise", 12.0)
         return {"AAPL": [{"date": self._BASE - timedelta(days=days_ago), "surprise_pct": surprise}]}
 
     def test_returns_true_within_window(self):
-        self.assertTrue(pead_active_on_date("AAPL", self._BASE, self._hist(days_ago=10)))
+        self.assertTrue(pead_active_on_date("AAPL", self._BASE, self._hist(days_ago=5)))
 
     def test_returns_false_outside_window(self):
         self.assertFalse(pead_active_on_date("AAPL", self._BASE, self._hist(days_ago=35)))
@@ -209,7 +211,7 @@ class TestPeadActiveOnDate(unittest.TestCase):
         self.assertFalse(pead_active_on_date("AAPL", self._BASE, {}))
 
     def test_custom_lookback(self):
-        hist = {"AAPL": [{"date": self._BASE - timedelta(days=7), "surprise_pct": 8.0}]}
+        hist = {"AAPL": [{"date": self._BASE - timedelta(days=7), "surprise_pct": 12.0}]}
         self.assertFalse(pead_active_on_date("AAPL", self._BASE, hist, lookback_days=5))
         self.assertTrue(pead_active_on_date("AAPL", self._BASE, hist, lookback_days=10))
 
@@ -221,11 +223,89 @@ class TestPeadActiveOnDate(unittest.TestCase):
     def test_picks_up_any_qualifying_event_in_window(self):
         hist = {
             "AAPL": [
-                {"date": self._BASE - timedelta(days=25), "surprise_pct": 2.0},
-                {"date": self._BASE - timedelta(days=15), "surprise_pct": 9.0},
+                {
+                    "date": self._BASE - timedelta(days=6),
+                    "surprise_pct": 8.0,
+                },  # in window, below threshold
+                {"date": self._BASE - timedelta(days=3), "surprise_pct": 12.0},  # qualifies
             ]
         }
         self.assertTrue(pead_active_on_date("AAPL", self._BASE, hist))
+
+
+# ── earnings_miss_active_on_date ──────────────────────────────────────────────
+
+
+class TestEarningsMissActiveOnDate(unittest.TestCase):
+    _BASE = date(2025, 6, 1)
+
+    def _hist(self, days_ago: int = 5, surprise: float = -8.0):
+        return {"AAPL": [{"date": self._BASE - timedelta(days=days_ago), "surprise_pct": surprise}]}
+
+    def test_returns_true_within_window(self):
+        self.assertTrue(earnings_miss_active_on_date("AAPL", self._BASE, self._hist(days_ago=5)))
+
+    def test_returns_false_when_history_empty(self):
+        self.assertFalse(earnings_miss_active_on_date("AAPL", self._BASE, {}))
+
+    def test_returns_false_when_symbol_missing(self):
+        self.assertFalse(earnings_miss_active_on_date("MSFT", self._BASE, self._hist()))
+
+    def test_returns_false_outside_window(self):
+        self.assertFalse(earnings_miss_active_on_date("AAPL", self._BASE, self._hist(days_ago=15)))
+
+    def test_returns_false_when_miss_not_bad_enough(self):
+        self.assertFalse(
+            earnings_miss_active_on_date("AAPL", self._BASE, self._hist(days_ago=5, surprise=-3.0))
+        )
+
+    def test_returns_false_on_exact_sim_date(self):
+        hist = {"AAPL": [{"date": self._BASE, "surprise_pct": -10.0}]}
+        self.assertFalse(earnings_miss_active_on_date("AAPL", self._BASE, hist))
+
+    def test_custom_max_miss(self):
+        hist = {"AAPL": [{"date": self._BASE - timedelta(days=5), "surprise_pct": -3.0}]}
+        self.assertFalse(earnings_miss_active_on_date("AAPL", self._BASE, hist, max_miss=-5.0))
+        self.assertTrue(earnings_miss_active_on_date("AAPL", self._BASE, hist, max_miss=-2.0))
+
+
+# ── recent_earnings_date ──────────────────────────────────────────────────────
+
+
+class TestRecentEarningsDate(unittest.TestCase):
+    _BASE = date(2025, 6, 1)
+
+    def _hist(self, days_ago: int = 2):
+        return {"AAPL": [{"date": self._BASE - timedelta(days=days_ago), "surprise_pct": 5.0}]}
+
+    def test_returns_none_when_symbol_missing(self):
+        self.assertIsNone(recent_earnings_date("MSFT", self._BASE, {}))
+
+    def test_returns_date_within_window(self):
+        ed = self._BASE - timedelta(days=2)
+        self.assertEqual(recent_earnings_date("AAPL", self._BASE, self._hist(days_ago=2)), ed)
+
+    def test_returns_none_when_event_too_old(self):
+        self.assertIsNone(recent_earnings_date("AAPL", self._BASE, self._hist(days_ago=10)))
+
+    def test_returns_none_when_event_after_sim_date(self):
+        hist = {"AAPL": [{"date": self._BASE + timedelta(days=1), "surprise_pct": 5.0}]}
+        self.assertIsNone(recent_earnings_date("AAPL", self._BASE, hist))
+
+    def test_returns_most_recent_of_multiple_events(self):
+        hist = {
+            "AAPL": [
+                {"date": self._BASE - timedelta(days=3), "surprise_pct": 5.0},
+                {"date": self._BASE - timedelta(days=1), "surprise_pct": 5.0},
+            ]
+        }
+        self.assertEqual(
+            recent_earnings_date("AAPL", self._BASE, hist), self._BASE - timedelta(days=1)
+        )
+
+    def test_includes_event_on_sim_date(self):
+        hist = {"AAPL": [{"date": self._BASE, "surprise_pct": 5.0}]}
+        self.assertEqual(recent_earnings_date("AAPL", self._BASE, hist), self._BASE)
 
 
 # ── prefetch_insider_history ──────────────────────────────────────────────────

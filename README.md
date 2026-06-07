@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.83 — June 2026 — pead tightened: 10% EPS threshold, 7-day entry window
+
+Tightened the `pead` signal in both the live scanner and the backtester to focus on high-conviction beats with rapid entry.
+
+- **EPS beat threshold raised 5% → 10%** — `_PEAD_MIN_SURPRISE` in `backtest/historical_fundamentals.py` and `_MIN_SURPRISE_PCT` in `data/earnings_surprise.py`; weaker beats have less predictive value for the drift effect.
+- **Entry window reduced 30 → 7 days** — `pead_active_on_date` default `lookback_days` and `_PEAD_WINDOW_DAYS`; constrains entries to the initial drift period (≈5 trading days) where the anomaly is strongest.
+- **Pre-existing coverage gap closed** — `earnings_miss_active_on_date` and `recent_earnings_date` had no tests; 13 new tests cover both functions fully.
+- **Tests:** 13 new tests in `test_historical_fundamentals.py`; 100% coverage on both changed modules. **3712 passing.**
+
+---
+
 ### 1.82 — June 2026 — iv_compression loosened + momentum_12_1 pullback filter
 
 Signal quality improvements to two long signals, plus a new disabled short signal.

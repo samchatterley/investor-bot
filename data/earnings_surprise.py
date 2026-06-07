@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 # yfinance logs at ERROR when no earnings exist (normal for ETFs) — suppress that noise
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
-_MIN_SURPRISE_PCT = 5.0  # EPS beat threshold (%)
-_PEAD_WINDOW_DAYS = 30  # only consider surprises within this many days
+_MIN_SURPRISE_PCT = 10.0  # EPS beat threshold (%) — raised from 5% in v1.83
+_PEAD_WINDOW_DAYS = 7  # only consider surprises within this many days — reduced from 30 in v1.83
 _MAX_MISS_PCT = -5.0  # EPS miss threshold — surprise must be at most this negative
 _REQ_DELAY = 0.05  # modest delay — yfinance is not rate-limited by key
 _CACHE_PATH = os.path.join(LOG_DIR, "earnings_cache.json")
