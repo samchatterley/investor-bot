@@ -1831,11 +1831,11 @@ class TestOverboughtDowntrendSignal(unittest.TestCase):
         base.update(kwargs)
         return base
 
-    def test_fires_when_rsi_crosses_below_threshold(self):
+    def test_does_not_fire_when_globally_disabled(self):
         from signals.evaluator import evaluate_short_signals
 
         result = evaluate_short_signals(self._snap())
-        self.assertIn("overbought_downtrend", result)
+        self.assertNotIn("overbought_downtrend", result)
 
     def test_blocked_when_not_below_sma200(self):
         from signals.evaluator import evaluate_short_signals
@@ -1870,10 +1870,10 @@ class TestOverboughtDowntrendSignal(unittest.TestCase):
             evaluate_short_signals(snap, blocked=frozenset({"overbought_downtrend"})),
         )
 
-    def test_not_in_short_globally_disabled(self):
+    def test_in_short_globally_disabled(self):
         from signals.evaluator import SHORT_GLOBALLY_DISABLED
 
-        self.assertNotIn("overbought_downtrend", SHORT_GLOBALLY_DISABLED)
+        self.assertIn("overbought_downtrend", SHORT_GLOBALLY_DISABLED)
 
     def test_in_short_signal_priority(self):
         from signals.evaluator import SHORT_SIGNAL_PRIORITY
@@ -1915,11 +1915,11 @@ class TestParabolicExhaustionSignal(unittest.TestCase):
         base.update(kwargs)
         return base
 
-    def test_fires_with_valid_conditions(self):
+    def test_does_not_fire_when_globally_disabled(self):
         from signals.evaluator import evaluate_short_signals
 
         result = evaluate_short_signals(self._snap())
-        self.assertIn("parabolic_exhaustion", result)
+        self.assertNotIn("parabolic_exhaustion", result)
 
     def test_blocked_when_ret60d_too_low(self):
         from signals.evaluator import evaluate_short_signals
@@ -1948,10 +1948,10 @@ class TestParabolicExhaustionSignal(unittest.TestCase):
             evaluate_short_signals(snap, blocked=frozenset({"parabolic_exhaustion"})),
         )
 
-    def test_not_in_short_globally_disabled(self):
+    def test_in_short_globally_disabled(self):
         from signals.evaluator import SHORT_GLOBALLY_DISABLED
 
-        self.assertNotIn("parabolic_exhaustion", SHORT_GLOBALLY_DISABLED)
+        self.assertIn("parabolic_exhaustion", SHORT_GLOBALLY_DISABLED)
 
     def test_in_short_signal_priority(self):
         from signals.evaluator import SHORT_SIGNAL_PRIORITY
@@ -1965,11 +1965,11 @@ class TestParabolicExhaustionSignal(unittest.TestCase):
         self.assertIn("pe_rsi_min", DEFAULT_SHORT_SIGNAL_PARAMS)
         self.assertIn("pe_vol_ratio_max", DEFAULT_SHORT_SIGNAL_PARAMS)
 
-    def test_exactly_at_ret60d_threshold_fires(self):
+    def test_does_not_fire_even_at_exact_threshold(self):
         from signals.evaluator import evaluate_short_signals
 
-        snap = self._snap(ret_60d_pct=80.0)  # exactly at threshold (>=)
-        self.assertIn("parabolic_exhaustion", evaluate_short_signals(snap))
+        snap = self._snap(ret_60d_pct=80.0)  # at threshold but globally disabled
+        self.assertNotIn("parabolic_exhaustion", evaluate_short_signals(snap))
 
     def test_custom_threshold_respected(self):
         from signals.evaluator import evaluate_short_signals

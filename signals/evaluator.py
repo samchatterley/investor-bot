@@ -198,6 +198,8 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "earnings_miss",
         "rs_deterioration",  # 0/11 profitable walk-forward folds, mean Sharpe -0.872 — no edge
         "faded_earnings_gap_up",  # mean Sharpe -0.201, 2/9 folds; 2020-21 fold -35% catastrophic
+        "overbought_downtrend",  # backward elimination: ΔSharpe +0.060 drag — removed v1.80
+        "parabolic_exhaustion",  # backward elimination: ΔSharpe +0.570, -99.5% return — removed v1.80
     }
 )
 
@@ -208,8 +210,8 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "rs_deterioration": 3,  # Leader-to-laggard rotation (disabled — no edge)
     "failed_breakout": 4,  # Bull trap: broke 20d high yesterday, failed back below today (disabled)
     "high_vol_reversal": 5,  # Distribution bar (disabled)
-    "overbought_downtrend": 6,  # Relief rally fade — RSI cross below sma200 (active, redesigned v1.63)
-    "parabolic_exhaustion": 7,  # Momentum crash — up 80%+ in 60d, vol drying, RSI extended (active)
+    "overbought_downtrend": 6,  # Relief rally fade — RSI cross below sma200 (disabled v1.80 — backward elim)
+    "parabolic_exhaustion": 7,  # Momentum crash — up 80%+ in 60d, vol drying, RSI extended (disabled v1.80 — backward elim)
     "high_short_interest": 8,  # Crowded short + low lendable supply (live-only, not backtestable)
     "guidance_downgrade": 9,  # Negative 8-K guidance — management lowering outlook (live-only)
     "secondary_offering_short": 10,  # 424B4/S-3 secondary — supply shock dilution (live-only)
@@ -321,7 +323,7 @@ def evaluate_short_signals(
         and snapshot.get("rsi_14", 50.0) < p["ordt_rsi_exit"]
         and snapshot.get("vol_ratio", 0.0) >= p["ordt_vol_min"]
     ):
-        matched.append("overbought_downtrend")
+        matched.append("overbought_downtrend")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
 
     # parabolic_exhaustion: stock up >pe_ret60d_min% in 60 trading days (~3 months) with
     # RSI in overbought territory and volume drying up — buyers exhausted.  Targets the
@@ -334,7 +336,7 @@ def evaluate_short_signals(
         and snapshot.get("rsi_14", 50.0) >= p["pe_rsi_min"]
         and snapshot.get("vol_ratio", 1.0) <= p["pe_vol_ratio_max"]
     ):
-        matched.append("parabolic_exhaustion")
+        matched.append("parabolic_exhaustion")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
 
     # rs_deterioration: cross-sectional signal — leader-to-laggard rotation.
     # Stock was in the top 35% of the universe 10 trading days ago but has now

@@ -810,6 +810,16 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.80 — June 2026 — parabolic_exhaustion and overbought_downtrend disabled
+
+Backward elimination analysis of the June 2026 9-year backtest suite identified two short signals as net destroyers of Sharpe. Both are now added to `SHORT_GLOBALLY_DISABLED`.
+
+- **`parabolic_exhaustion` disabled** — ΔSharpe +0.570 when removed from the short portfolio; contributed -99.5% return over the 9-year period. Added to `SHORT_GLOBALLY_DISABLED` in `signals/evaluator.py`.
+- **`overbought_downtrend` disabled** — ΔSharpe +0.060 drag; only `earnings_gap_down` survives short backward elimination (Sharpe 0.720, 152 trades, +227.1% return). Added to `SHORT_GLOBALLY_DISABLED`.
+- **Tests:** 7 tests updated (5 in `test_short_side.py`, 2 in `test_backtest.py`) to reflect disabled status — fire-assertion tests flipped to assertNotIn; `assertNotIn(…, SHORT_GLOBALLY_DISABLED)` flipped to `assertIn`. **3625 passing, 100% coverage on changed files.**
+
+---
+
 ### 1.79 — June 2026 — rs_leader live-system bug fixed
 
 `rs_leader` was firing 0 times in live runs despite meeting all technical conditions. Root cause: `prefilter_candidates` called `evaluate_signals` without passing `spy_ret_5d` / `spy_ret_10d`, so the signal's first guard (`spy_ret_5d is not None`) was always `False`.

@@ -7377,13 +7377,13 @@ class TestRunShortSimulationOverboughtDowntrend(unittest.TestCase):
         spy_ind = _compute_indicators(spy_df)
         return ind, spy_ind, idx
 
-    def test_overbought_downtrend_triggers_entry(self):
+    def test_no_entry_when_globally_disabled(self):
+        # overbought_downtrend is in SHORT_GLOBALLY_DISABLED — no trades even with perfect setup
         ind, spy_ind, idx = self._build()
         bar = len(ind) - 10
-        # Force price_below_sma200=True: set sma200 ABOVE close
         ind.loc[ind.index[bar], "sma200"] = ind.iloc[bar]["Close"] * 1.25
-        ind.loc[ind.index[bar], "rsi"] = 57.0  # below ordt_rsi_exit (60.0)
-        ind.loc[ind.index[bar], "rsi_prev"] = 68.0  # above ordt_rsi_entry (65.0)
+        ind.loc[ind.index[bar], "rsi"] = 57.0
+        ind.loc[ind.index[bar], "rsi_prev"] = 68.0
         ind.loc[ind.index[bar], "vol_ratio"] = 1.0
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
         regime_by_date = dict.fromkeys(all_dates, "STRESS_RISK_OFF")
@@ -7396,7 +7396,7 @@ class TestRunShortSimulationOverboughtDowntrend(unittest.TestCase):
             rs_ranks=rs_ranks,
             regime_by_date=regime_by_date,
         )
-        self.assertGreater(result["total_trades"], 0)
+        self.assertEqual(result["total_trades"], 0)
 
     def test_no_entry_when_price_above_sma200(self):
         ind, spy_ind, idx = self._build()
@@ -7440,8 +7440,8 @@ class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
         spy_ind = _compute_indicators(spy_df)
         return ind, spy_ind, idx
 
-    def test_parabolic_exhaustion_triggers_entry_in_bull_trend(self):
-        # Parabolic exhaustion is regime-agnostic — must fire in BULL_TREND too
+    def test_no_entry_when_globally_disabled(self):
+        # parabolic_exhaustion is in SHORT_GLOBALLY_DISABLED — no trades even with perfect setup
         ind, spy_ind, idx = self._build()
         bar = len(ind) - 5
         ind.loc[ind.index[bar], "ret_60d"] = 90.0
@@ -7449,7 +7449,7 @@ class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
         ind.loc[ind.index[bar], "rsi_prev"] = 77.0
         ind.loc[ind.index[bar], "vol_ratio"] = 0.6
         all_dates = [ts.strftime("%Y-%m-%d") for ts in ind.index]
-        regime_by_date = dict.fromkeys(all_dates, "BULL_TREND")  # the whole point of the redesign
+        regime_by_date = dict.fromkeys(all_dates, "BULL_TREND")
         rs_ranks = {"STOCK": dict.fromkeys(all_dates, 75.0)}
         sim_start = ind.index[bar].strftime("%Y-%m-%d")
         result = _run_short_simulation(
@@ -7459,7 +7459,7 @@ class TestRunShortSimulationParabolicExhaustion(unittest.TestCase):
             rs_ranks=rs_ranks,
             regime_by_date=regime_by_date,
         )
-        self.assertGreater(result["total_trades"], 0)
+        self.assertEqual(result["total_trades"], 0)
 
     def test_no_entry_when_rsi_too_low(self):
         ind, spy_ind, idx = self._build()
