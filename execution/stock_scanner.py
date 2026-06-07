@@ -203,7 +203,12 @@ def _passes_quality_screen(snapshot: dict) -> bool:
     return not (debt_to_equity is not None and debt_to_equity > 300)
 
 
-def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> list[dict]:
+def prefilter_candidates(
+    snapshots: list[dict],
+    regime: str | None = None,
+    spy_ret_5d: float | None = None,
+    spy_ret_10d: float | None = None,
+) -> list[dict]:
     """
     Rule-based screen applied before Claude analysis.
     Signal logic delegated to signals.evaluator — single canonical implementation
@@ -221,7 +226,9 @@ def prefilter_candidates(snapshots: list[dict], regime: str | None = None) -> li
         if not _passes_quality_screen(s):
             continue
 
-        matched = evaluate_signals(s, blocked=_blocked)
+        matched = evaluate_signals(
+            s, blocked=_blocked, spy_ret_5d=spy_ret_5d, spy_ret_10d=spy_ret_10d
+        )
 
         if not matched:
             continue

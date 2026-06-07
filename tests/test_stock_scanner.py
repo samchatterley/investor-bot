@@ -346,6 +346,63 @@ class TestInsiderBuyingSignal(unittest.TestCase):
         self.assertEqual(len(result), 1)
 
 
+class TestRsLeaderSignal(unittest.TestCase):
+    """rs_leader signal in prefilter_candidates — requires SPY return data to fire."""
+
+    def _rs_snap(self, **overrides):
+        base = {
+            "ret_5d_pct": 5.0,  # 5d: 5% stock vs 1.5% SPY → excess 3.5% > threshold 2.0
+            "ret_10d_pct": 7.0,  # 10d: 7% stock vs 2.5% SPY → excess 4.5% > threshold 3.0
+            "ema9_above_ema21": True,
+            "adx": 25,
+        }
+        base.update(overrides)
+        return _snap(**base)
+
+    def test_rs_leader_fires_when_spy_data_provided(self):
+        snap = self._rs_snap()
+        result = prefilter_candidates([snap], spy_ret_5d=1.5, spy_ret_10d=2.5)
+        self.assertEqual(len(result), 1)
+        self.assertIn("rs_leader", result[0]["matched_signals"])
+
+    def test_rs_leader_silent_when_spy_data_absent(self):
+        snap = self._rs_snap()
+        result = prefilter_candidates([snap])
+        # With no SPY data, rs_leader condition is always False; the snap also has no
+        # other qualifying signals by default, so it should be filtered out entirely.
+        self.assertEqual(len(result), 0)
+
+    def test_rs_leader_blocked_in_bull_trend(self):
+        snap = self._rs_snap()
+        result = prefilter_candidates([snap], regime="BULL_TREND", spy_ret_5d=1.5, spy_ret_10d=2.5)
+        self.assertEqual(len(result), 0)
+
+    def test_rs_leader_allowed_in_neutral_chop(self):
+        snap = self._rs_snap()
+        result = prefilter_candidates(
+            [snap], regime="NEUTRAL_CHOP", spy_ret_5d=1.5, spy_ret_10d=2.5
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIn("rs_leader", result[0]["matched_signals"])
+
+    def test_rs_leader_insufficient_5d_excess_fails(self):
+        # Stock 5d excess only 1.0% — below rsl_excess_5d_min=2.0
+        snap = self._rs_snap(ret_5d_pct=2.4)  # 2.4 - 1.5 = 0.9 < 2.0
+        result = prefilter_candidates([snap], spy_ret_5d=1.5, spy_ret_10d=2.5)
+        self.assertEqual(len(result), 0)
+
+    def test_rs_leader_insufficient_10d_excess_fails(self):
+        # Stock 10d excess only 1.5% — below rsl_excess_10d_min=3.0
+        snap = self._rs_snap(ret_10d_pct=4.0)  # 4.0 - 2.5 = 1.5 < 3.0
+        result = prefilter_candidates([snap], spy_ret_5d=1.5, spy_ret_10d=2.5)
+        self.assertEqual(len(result), 0)
+
+    def test_rs_leader_ema_not_up_fails(self):
+        snap = self._rs_snap(ema9_above_ema21=False)
+        result = prefilter_candidates([snap], spy_ret_5d=1.5, spy_ret_10d=2.5)
+        self.assertEqual(len(result), 0)
+
+
 class TestMatchedSignals(unittest.TestCase):
     """prefilter_candidates annotates each result with matched_signals."""
 

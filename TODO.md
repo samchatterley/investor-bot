@@ -1,85 +1,27 @@
 # Pending Work
 
-### In Progress
-- [ ] Wait for full backtest suite runs 12–13 to complete (currently on run 11/13 walk-forward fold 2/16)
-
 ### Pending
-- [ ] Analyse backtest results — especially bb_squeeze dominance, signal isolation rankings, backward elimination survivors, zero-trade signal bugs
-- [ ] FIX vix_fear_reversion — disable or redesign: standalone Sharpe -0.380, return -28.5%, WR 44%; worst signal in suite by far
-- [ ] FIX zero-trade signals — debug why rs_leader, insider_buying, breakout_52w, rsi_divergence, orb_breakout, vwap_reclaim, intraday_momentum all fire 0 times across 509 symbols × 9 years
-- [ ] Monitor tomorrow's 07:00 ET prefetch (first live test of cache warming)
-- [ ] Build data/fundamental_cache.py — weekly yfinance info/financials/balance_sheet/cashflow cache for all 509 symbols; expose gross margin trend, FCF, shares outstanding
-- [ ] Build data/edgar_client.py — EDGAR full-text search REST API client; parsers for Form 4 (insider), 8-K (guidance/results), 13D (activist), S-3/424B4 (secondary offerings)
-- [ ] Build data/options_data.py — yfinance option_chain fetcher with daily cache; compute IV surface, put/call OI ratio, 25-delta skew, ATM IV vs realised vol spread
-- [ ] Build data/sentiment_client.py — AAII weekly bull/bear scraper, Fear & Greed composite (7 computable components), pytrends Google Trends queries by ticker
-- [ ] Build data/pairs.py — sector cointegration testing (Engle-Granger), z-score tracking, pair selection and refresh logic for sector-neutral long/short
-- [ ] Set up local FinBERT NLP pipeline — install transformers + torch (CPU), download ProsusAI/finbert, build inference wrapper for EDGAR 8-K text classification (positive/negative/neutral)
-- [ ] Improve bb_squeeze — add 5-day consecutive squeeze duration requirement, raise ADX floor to 25, add RS rank gate (top 40% of universe), add $10 minimum price filter
-- [ ] Improve pead — add EPS surprise >10% threshold, require revenue beat in same direction, restrict entry to within 5 days of earnings date, add sector context gate
-- [ ] Improve iv_compression — loosen hv_rank_max from 0.10 to 0.15 and backtest Sharpe sensitivity; add short-side variant (below SMA200 + IV compression = downside vol squeeze)
-- [ ] Improve insider_buying (form4_enhanced) — distinguish open-market purchase from option exercise, scale conviction by purchase size vs annual compensation, require ≥3 distinct insiders within 5 trading days for highest tier
-- [ ] Improve momentum_12_1 — add 1-week pullback filter (stock must be in bottom 40% of 1-week return within universe while being top 20% of 12-1m return)
-- [ ] Implement breadth_thrust signal — Zweig: % of S&P 500 stocks above 50d SMA rises from <40% to >60% within 10 trading days; fire as high-conviction long gate
-- [ ] Implement new_high_low_ratio gate — NH/NL ratio from universe; >2.0 for 3 days boosts momentum signals; <0.5 dampens all longs and boosts shorts
-- [ ] Implement obv_divergence gate — OBV 20d trend vs price direction; accumulation (OBV high, price flat) = long confirmation; distribution (OBV low, price flat) = short confirmation
-- [ ] Implement volume_climax_reversal — 3+ days with vol_ratio >2.5 at price extremes = exhaustion; long at lows, short at highs; adds conviction to mean_reversion and parabolic_exhaustion
-- [ ] Implement golden_death_cross signal — SMA50 cross above/below SMA200; long on golden cross, short on death cross; 10–20 day hold; compute from daily close already available
-- [ ] Implement candle_exhaustion signal — hammer/bullish engulfing at 20d low with vol_ratio >1.5 (long); shooting star/bearish engulfing at 20d high with vol_ratio >1.5 (short)
-- [ ] Implement options_skew_signal — 25-delta put IV / 25-delta call IV; >1.4 = panic hedging = contrarian long; call skew spike >1.3x week-prior = informed upside positioning
-- [ ] Implement iv_vs_rv_spread — replace hv_rank with actual near-ATM implied vol vs 20d realised vol; IV/RV <0.7 = cheap vol long; IV/RV >1.8 = premium seller edge
-- [ ] Implement put_call_ratio_gate — stock-level total put OI / call OI; >2.5 = crowded bearish = contrarian long; <0.4 = complacent = dampen longs; index-level P/C feeds regime
-- [ ] Implement unusual_options_activity signal — single-day OTM call OI change >300% of prior 5-day average on strikes >10% OTM = informed long positioning ahead of catalyst
-- [ ] Implement credit_spread_gate — HYG/LQD price ratio 10d ROC; falling >2% in 10 days = credit stress = suppress all longs; feeds regime model as leading indicator
-- [ ] Implement duration_flight_signal — TLT 5d return outperforming SPY by >3% = flight-to-safety active = DEFENSIVE_DOWNTREND confirmation; adds cross-asset confirmation to regime
-- [ ] Implement yield_curve_regime gate — compute ^TNX minus ^IRX spread; inversion >20 days = late-cycle flag, dampen momentum longs at 50% size; steepening after inversion = recovery boost
-- [ ] Implement pmi_regime_signal — FRED NAPM series; PMI 3-month trend >55 boosts cyclical signals; <45 suppresses all longs and dampens position sizes; feeds regime modifier
-- [ ] Implement yield_curve_macro — FRED T10Y2Y series; sustained <0 for >60 trading days = recession risk weighting in regime; >1.5 and rising = expansion phase boost for cyclicals
-- [ ] Implement earnings_revision_cycle — compute weekly: % of universe with rising vs falling analyst EPS estimates (yfinance); >55% rising = revision tailwind; >55% falling = headwind modifier
-- [ ] Implement initial_claims_trend — FRED ICSA series; 4-week MA rising for ≥6 consecutive weeks = labour deterioration signal -> shift regime weight toward DEFENSIVE_DOWNTREND
-- [ ] Implement sector_momentum_rank gate — rank 11 SPDR ETFs by composite momentum (1m×0.3 + 3m×0.4 + 6m×0.3); only allow longs in top 4 sectors, shorts in bottom 3; directly suppresses bb_squeeze noise
-- [ ] Implement copper_gold_ratio signal — CPER/GLD 20d trend; positive = economic expansion = boost cyclical sectors; negative = risk-off = boost defensives; feeds sector rotation logic
-- [ ] Implement dollar_strength_gate — UUP 20d trend; strong USD = dampen long signals on stocks with >40% international revenue (flag in fundamental cache)
-- [ ] Implement gross_margin_trend_gate — current quarter GM vs 4-quarter average from fundamental cache; long gate requires stable/improving GM; short supplement on >3pp deterioration
-- [ ] Implement piotroski_f_score — 9-point quality score (profitability 4pts, leverage 3pts, efficiency 2pts); F≥7 required gate for value signals; F≤2 = standalone short candidate
-- [ ] Implement altman_z_score distress filter — Z>2.6 required for all long entries; Z<1.1 = distress zone = short candidate when combined with technical short signal
-- [ ] Implement accruals_quality_gate — (net income - OCF) / total assets; >0.10 = earnings quality concern, suppress longs; >0.15 + stock extended = quality short setup (Sloan 1996)
-- [ ] Implement fcf_yield_signal — FCF / market cap from fundamental cache; >5% + rising trend = undervalued cash generator; add as conviction boost to pead and iv_compression entries
-- [ ] Implement forward_pe_gate — yfinance info forwardPE; suppress momentum/breakout long entries on P/E >60; does not apply to mean_reversion or pead (different alpha mechanisms)
-- [ ] Implement earnings_yield_vs_bonds — forward earnings yield (1/forwardPE) minus ^TNX/100; ERP <1% = dampen all longs 50%; ERP >4% = boost long scoring (equities cheap vs bonds)
-- [ ] Implement relative_pe_gate — stock forward P/E vs sector median P/E; >2x sector median = suppress momentum signals; <0.7x sector median + positive momentum = value+momentum boost
-- [ ] Implement short_interest_trend signal — FINRA bi-monthly scraper; SI% of float rising >20% in one period = bearish momentum; SI falling >30% from peak while price rising = squeeze setup long
-- [ ] Implement activist_13d_signal — EDGAR SC 13D filing from known activist list; long catalyst signal; enter within 5 days of filing; hold for catalyst resolution (board change, sale, restructuring)
-- [ ] Implement guidance_change_signal — EDGAR 8-K item 2.02/7.01 fetcher + FinBERT classification; positive score >0.7 = guidance raise long; negative score >0.7 = guidance cut short
-- [ ] Implement secondary_offering_short — EDGAR 424B4/S-3 prospectus detector; new secondary priced = supply shock short; target offering price as resistance; 5–10 day hold
-- [ ] Implement lockup_expiry_short — 180-day IPO lockup calendar from first trading date; short setup 5–10 days before expiry; only applies to stocks <2 years old in S&P 500
-- [ ] Implement analyst_revision_signal — yfinance recommendations_summary; consensus shift Hold->Buy majority = long; Buy->Hold/Underperform = short; 30-day window for transition
-- [ ] Implement index_rebalance_signal — scrape S&P 500 add/delete announcements; long addition stocks at close on announcement day; short deletion stocks immediately; exit at effective date
-- [ ] Implement aaii_sentiment_signal — weekly AAII bull/bear survey scraper; bears >50% for 2+ weeks = contrarian long gate; bulls >60% for 3+ weeks = dampen all longs
-- [ ] Implement fear_greed_composite — 7-component index computed from free data (SPY vs 125d MA, AD line, SPY P/C ratio, VIX vs 50d MA, TLT vs SPY, HYG/IEF ratio, NH/NL ratio); <20 = extreme fear long; >80 = extreme greed caution
-- [ ] Implement google_trends_signal — pytrends weekly queries by company name; search spike + positive context = long supplement; spike + negative terms (recall, SEC, investigation) = short supplement
-- [ ] Implement turn_of_month_gate — trading days -2 to +3 around month-end; boost all long signal priority scoring; dampen bb_squeeze specifically in this window (noise-prone)
-- [ ] Implement opex_week_context — week of 3rd Friday each month; dampen gap_and_go and momentum during OPEX pinning; boost post-OPEX directional release (following Monday)
-- [ ] Implement halloween_regime_modifier — Nov 1–Apr 30 seasonally strong: lower confidence hurdle for all longs; May 1–Oct 31 seasonally weak: raise hurdle, dampen momentum signals (Bouman & Jacobsen 2002)
-- [ ] Implement quarter_end_window_dressing — last 5 trading days of each quarter; boost rs_leader and momentum_12_1 conviction (institutional managers buy existing winners)
-- [ ] Implement tax_loss_reversal — track stocks down >30% YTD in November/December; flag for January long entry (tax-loss selling pressure clears at year-end)
-- [ ] Implement pre_holiday_boost — trading day immediately before NYSE holidays; apply small long-side scoring boost (institutional hedge reduction, historically bullish drift)
-- [ ] Implement garch_vol_forecast for position sizing — arch library GARCH(1,1) per symbol; scale position size down when GARCH vol elevated vs historical; dynamic stop width = GARCH vol × 2
-- [ ] Implement correlation_regime_gate — rolling 20-day within-sector return correlation; >0.75 = sector risk dominates, dampen individual stock signal confidence; <0.35 = stock selection regime, boost confidence
-- [ ] Implement vol_of_vol_signal — rolling 10-day std dev of daily VIX changes; >3.5 = regime instability, reduce all position sizes 30%; <1.0 = compressed/stable, allow normal or boosted sizing
-- [ ] Implement momentum_quality_score — composite 0–3 score (cross-sectional momentum rank + Piotroski F-score + EPS revision direction); score 3 = 1.5x normal size; score 0 = suppress all longs
-- [ ] Implement sector_pair_mean_reversion — within each GICS sub-industry, long top-quartile RS / short bottom-quartile RS when spread exceeds 1.5x historical std dev; market-neutral within sector
-- [ ] Implement amihud_illiquidity_gate — |daily return| / dollar volume averaged 20 days; top 10% of universe (illiquid) = reduce position size 50%; filters stocks where $25k causes meaningful impact
-- [ ] Implement premarket_gap_quality — yfinance prepost=True pre-market prices; gap-and-go quality improves if pre-market vol confirms gap; suppress gap_and_go if gap retraces >50% by 09:35
-- [ ] Implement spread_proxy_gate — (High-Low)/midpoint as bid-ask proxy (Corwin & Schultz 2012); 20d average >0.5% = round-trip cost too high for short-hold signals (mean_reversion, gap_and_go)
-- [ ] Implement obv_acceleration signal — OBV 5d slope vs OBV 20d slope; 5d >> 20d = volume accelerating into price (accumulation, long); 5d << 20d = volume accelerating on down moves (distribution, short)
-- [ ] Extend regime model v2 — add credit spread (HYG/LQD), breadth (% above 50d SMA), T10Y2Y yield curve, and Fear & Greed composite as additional classification inputs alongside existing price/VIX model
-- [ ] Add RECOVERY, LATE_CYCLE_BULL, and CREDIT_STRESS regime states — RECOVERY post-stress for mean-reversion boost; LATE_CYCLE_BULL yield-curve-aware; CREDIT_STRESS for early credit deterioration warning
-- [ ] Implement signal_invalidation_exit — store entry snapshot conditions per position; re-evaluate daily; exit immediately when entry conditions fully reverse (not just partial)
-- [ ] Wire rs_decay_triggered() into scheduler exit logic — function built in exit_optimiser.py; needs daily RS rank re-check per open position and close on >25pt rank drop
-- [ ] Wire adverse_volume_triggered() into scheduler exit logic — function built in exit_optimiser.py; needs per-position daily vol_ratio + return check before standard exit evaluation
-- [ ] Wire profit_acceleration_triggered() into scheduler exit logic — function built in exit_optimiser.py; needs per-position unrealised_pct + days_held check at midday job
-- [ ] Implement regime_change_exit — on regime downgrade to DEFENSIVE or worse: close all longs with hold_days <2; tighten trailing stop to 2% on positions with hold_days ≥3; block new longs until 2-bar NEUTRAL_CHOP recovery
-- [ ] Wire atr_position_size() into buy logic — function built in position_sizer.py; needs ATR_20d computed per symbol at buy time and passed in; replaces flat RISK_PER_TRADE_PCT
-- [ ] Wire get_signal_size_multiplier() into buy scoring — function built in position_sizer.py; multiply computed position size by signal Sharpe multiplier before capping at MAX_POSITION_WEIGHT
-- [ ] Wire cofiring_boost() into buy scoring — function built in position_sizer.py; count simultaneous signals per symbol per day and apply 1.5x boost when n_signals >= 2
+- [ ] FIX zero-trade signals — debug why rs_leader, insider_buying, breakout_52w, rsi_divergence, orb_breakout, vwap_reclaim, intraday_momentum fire 0 times across 509 symbols × 9 years
+- [ ] FIX vix_fear_reversion — disable or redesign: standalone Sharpe -0.380, return -28.5%, WR 44%
+- [ ] Analyse backtest results — bb_squeeze dominance, signal isolation rankings, backward elimination survivors
+- [ ] Extend regime model v2 — add credit spread, breadth, T10Y2Y, Fear & Greed composite as classification inputs
+- [ ] Add RECOVERY, LATE_CYCLE_BULL, CREDIT_STRESS regime states
+- [ ] Implement signal_invalidation_exit — re-evaluate entry conditions daily; exit when fully reversed
+- [ ] Improve bb_squeeze — 5-day consecutive squeeze duration, ADX floor 25, RS rank gate top 40%, $10 min price
+- [ ] Improve pead — EPS surprise >10%, revenue beat required, entry within 5 days, sector context gate
+- [ ] Improve momentum_12_1 — add 1-week pullback filter (bottom 40% 1w return while top 20% 12-1m)
+- [ ] Implement sector_momentum_rank gate — rank 11 SPDR ETFs; only allow longs in top 4, shorts in bottom 3
+- [ ] Implement garch_vol_forecast for position sizing — GARCH(1,1) per symbol; scale down when vol elevated
+- [ ] Implement momentum_quality_score — composite 0-3 score (momentum rank + Piotroski + EPS revision); score 3 = 1.5x size
+- [ ] Build data/fundamental_cache.py — weekly yfinance financials cache for 509 symbols
+- [ ] Implement breadth_thrust signal — Zweig % above 50d SMA from <40% to >60% in 10 days
+- [ ] Implement golden_death_cross signal — SMA50 cross above/below SMA200
+- [ ] Implement candle_exhaustion signal — hammer/engulfing at 20d extremes with vol_ratio >1.5
+- [ ] Implement options_skew_signal — 25-delta put/call IV ratio; >1.4 panic hedging, call spike = informed upside
+- [ ] Implement short_interest_trend signal — SI% rising >20% = bearish; falling >30% + price rising = squeeze long
+- [ ] Implement aaii_sentiment_signal — bears >50% for 2+ weeks = contrarian long gate
+- [ ] Implement turn_of_month_gate — days -2 to +3 around month-end boost long priority
+- [ ] Implement halloween_regime_modifier — Nov-Apr lower confidence hurdle; May-Oct raise hurdle
+- [ ] Implement sector_pair_mean_reversion — long top-quartile RS / short bottom-quartile RS within sub-industry
+- [ ] Implement amihud_illiquidity_gate — reduce position size 50% for top 10% illiquid symbols
 

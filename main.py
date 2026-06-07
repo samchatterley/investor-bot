@@ -1130,8 +1130,13 @@ def _build_data_bundle(
             f"{before_price_filter} → {len(candidate_snaps)} candidates"
         )
 
+    spy_ret_5d = market_data.get_spy_5d_return()
+    spy_ret_10d = market_data.get_spy_10d_return()
     filtered_candidates = stock_scanner.prefilter_candidates(
-        candidate_snaps, regime=mc.regime.get("regime")
+        candidate_snaps,
+        regime=mc.regime.get("regime"),
+        spy_ret_5d=spy_ret_5d,
+        spy_ret_10d=spy_ret_10d,
     )
     # In exit-only modes (close, open_sells) buys are never executed — skip sending
     # the full candidate list to Claude; only held positions need AI exit evaluation.

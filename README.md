@@ -203,7 +203,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (3593 tests, 100% coverage)
+├── tests/             Unit test suite (3625 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +766,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **3593 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **3625 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -809,6 +809,17 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.79 — June 2026 — rs_leader live-system bug fixed
+
+`rs_leader` was firing 0 times in live runs despite meeting all technical conditions. Root cause: `prefilter_candidates` called `evaluate_signals` without passing `spy_ret_5d` / `spy_ret_10d`, so the signal's first guard (`spy_ret_5d is not None`) was always `False`.
+
+- **Bug fixed** — `prefilter_candidates` in `execution/stock_scanner.py` now accepts `spy_ret_5d: float | None = None` and `spy_ret_10d: float | None = None` and passes them to `evaluate_signals`.
+- **Caller updated** — `_build_data_bundle` in `main.py` now calls `market_data.get_spy_5d_return()` and `market_data.get_spy_10d_return()` after `get_market_snapshots` and forwards the results to `prefilter_candidates`. The backtest engine already passed these correctly; this was live-only.
+- **Investigation** — confirmed the other zero-trade signals are by design: `rsi_divergence`, `breakout_52w`, `vix_fear_reversion` are in `GLOBALLY_DISABLED`; `orb_breakout`, `vwap_reclaim`, `intraday_momentum` require Alpaca minute bars (`INTRADAY_SIGNALS`); `insider_buying` is live-only (EDGAR API ~2yr window, backtest runs use `--use-earnings-only`).
+- **Tests:** 9 new tests. `TestRsLeaderSignal` (7): fires with SPY data, silent without, blocked in BULL_TREND, allowed in NEUTRAL_CHOP, insufficient 5d/10d excess, EMA-down guard. `RunInnerBase` base mocks extended with `get_spy_5d_return` and `get_spy_10d_return`; `TestBuildDataBundleOptionsIV` patch list updated. **3625 passing, 100% coverage on changed files.**
+
+---
 
 ### 1.78 — June 2026 — exit optimiser and position-sizer wired into live pipeline
 
