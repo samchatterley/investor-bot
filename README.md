@@ -810,6 +810,15 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.84 — June 2026 — DEF 14A executive compensation fetcher
+
+New data infrastructure module for contextualising insider purchase sizes relative to compensation.
+
+- **`data/proxy_comp.py`** — parses the SEC EDGAR Summary Compensation Table from annual proxy statements (DEF 14A). Locates the most recent filing via the submissions JSON, downloads the primary HTML document, extracts name→total USD pairs using BeautifulSoup, and caches for 90 days. Public API: `get_exec_compensation(cik)` and `match_compensation(reporter, comp_map)` (token Jaccard fuzzy-match for Form 4 name strings). Required by the `insider_buying` signal improvement for purchase-size-to-compensation scaling.
+- **Tests:** 49 new tests in `tests/test_proxy_comp.py`; 100% coverage on `data/proxy_comp.py`. **3761 passing.**
+
+---
+
 ### 1.83 — June 2026 — pead tightened: 10% EPS threshold, 7-day entry window
 
 Tightened the `pead` signal in both the live scanner and the backtester to focus on high-conviction beats with rapid entry.
