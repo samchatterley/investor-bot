@@ -2243,9 +2243,9 @@ class TestIvCompressionSignal(unittest.TestCase):
 class TestFundamentalSignals(unittest.TestCase):
     """insider_buying and pead signals via the fundamentals kwarg."""
 
-    def test_insider_buying_fires_when_cluster(self):
+    def test_insider_buying_fires_when_strong_cluster(self):
         row = _make_row()
-        sig = _entry_signal(row, fundamentals={"insider_cluster": True})
+        sig = _entry_signal(row, fundamentals={"insider_strong_cluster": True})
         self.assertEqual(sig, "insider_buying")
 
     def test_pead_fires_when_active_and_positive_5d(self):
@@ -2260,8 +2260,28 @@ class TestFundamentalSignals(unittest.TestCase):
 
     def test_insider_buying_priority_above_pead(self):
         row = _make_row(ret_5d=2.0)
-        sig = _entry_signal(row, fundamentals={"insider_cluster": True, "pead_active": True})
+        sig = _entry_signal(row, fundamentals={"insider_strong_cluster": True, "pead_active": True})
         self.assertEqual(sig, "insider_buying")
+
+    def test_insider_buying_fires_on_activist_filing(self):
+        row = _make_row()
+        sig = _entry_signal(row, fundamentals={"activist_filing": True})
+        self.assertEqual(sig, "insider_buying")
+
+    def test_insider_buying_fires_on_cluster_with_large_buy(self):
+        row = _make_row()
+        sig = _entry_signal(row, fundamentals={"insider_cluster": True, "insider_large_buy": True})
+        self.assertEqual(sig, "insider_buying")
+
+    def test_insider_buying_fires_on_cluster_with_high_comp_ratio(self):
+        row = _make_row()
+        sig = _entry_signal(row, fundamentals={"insider_cluster": True, "insider_comp_ratio": 0.05})
+        self.assertEqual(sig, "insider_buying")
+
+    def test_insider_buying_suppressed_on_weak_cluster_alone(self):
+        row = _make_row()
+        sig = _entry_signal(row, fundamentals={"insider_cluster": True})
+        self.assertIsNone(sig)
 
     def test_no_fundamental_signal_without_fundamentals_arg(self):
         row = _make_row(ret_5d=2.0)
@@ -5331,6 +5351,55 @@ class TestShortEntrySignalExtraBranches(unittest.TestCase):
         row = self._declining_row()
         result = _short_entry_signal(row, rs_rank_pct=10.0, spy_ret_20d=0.0, fundamentals=None)
         self.assertTrue(result is None or isinstance(result, list))
+
+    def test_parabolic_path_returns_early_on_guidance_signal(self):
+        """Line 388: parabolic path returns pe_sigs when guidance_downgrade fires."""
+        row = self._declining_row()
+        row = row.copy()
+        row["ret_60d"] = 85.0  # crosses pe_ret60d_min=80.0 threshold
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=10.0,
+            spy_ret_20d=0.0,
+            fundamentals={"guidance_negative": True},
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("guidance_downgrade", result)
+
+    def test_ordt_path_returns_ordt_sigs_on_guidance_signal(self):
+        """Line 429: overbought_downtrend path returns ordt_sigs when guidance fires."""
+        row = self._declining_row()
+        row = row.copy()
+        # Ensure price_below_sma200 by setting sma200 above Close
+        row["Close"] = 50.0
+        row["sma200"] = 100.0
+        row["ret_60d"] = 5.0  # below parabolic threshold so that path doesn't intercept
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=10.0,
+            spy_ret_20d=0.0,
+            regime="STRESS_RISK_OFF",
+            fundamentals={"guidance_negative": True},
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("guidance_downgrade", result)
+
+    def test_secondary_offering_propagated_from_fundamentals(self):
+        """Line 365: secondary_offering from fundamentals is set in snap."""
+        row = self._declining_row()
+        row = row.copy()
+        row["Close"] = 50.0
+        row["sma200"] = 100.0
+        row["ret_60d"] = 5.0
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=10.0,
+            spy_ret_20d=0.0,
+            regime="STRESS_RISK_OFF",
+            fundamentals={"secondary_offering": True},
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("secondary_offering_short", result)
 
 
 class TestRunShortSimulationExtraBranches(unittest.TestCase):

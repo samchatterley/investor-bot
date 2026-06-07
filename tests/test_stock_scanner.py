@@ -313,11 +313,23 @@ class TestPrefilterCandidates(unittest.TestCase):
 class TestInsiderBuyingSignal(unittest.TestCase):
     """insider_buying signal in prefilter_candidates."""
 
-    def test_passes_and_signals_when_cluster_true(self):
-        snap = _snap(insider_cluster=True)
+    def test_passes_and_signals_when_strong_cluster(self):
+        snap = _snap(insider_strong_cluster=True)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
         self.assertIn("insider_buying", result[0]["matched_signals"])
+
+    def test_passes_when_cluster_with_large_buy(self):
+        snap = _snap(insider_cluster=True, insider_large_buy=True)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 1)
+        self.assertIn("insider_buying", result[0]["matched_signals"])
+
+    def test_no_signal_when_cluster_alone_without_conviction(self):
+        # Standard cluster alone no longer fires — requires strong_cluster, large_buy, or comp ratio
+        snap = _snap(insider_cluster=True)
+        result = prefilter_candidates([snap])
+        self.assertEqual(len(result), 0)
 
     def test_no_signal_when_cluster_false(self):
         snap = _snap(insider_cluster=False)
@@ -330,8 +342,8 @@ class TestInsiderBuyingSignal(unittest.TestCase):
         self.assertEqual(len(result), 0)
 
     def test_insider_buying_combined_with_technical_signal(self):
-        # insider_cluster AND mean_reversion both fire → both appear in matched_signals
-        snap = _snap(insider_cluster=True, rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
+        # insider_strong_cluster AND mean_reversion both fire → both appear in matched_signals
+        snap = _snap(insider_strong_cluster=True, rsi_14=30, bb_pct=0.10, vol_ratio=1.3)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
         signals = result[0]["matched_signals"]
@@ -341,7 +353,7 @@ class TestInsiderBuyingSignal(unittest.TestCase):
     def test_weekly_trend_filter_does_not_block_insider_buying(self):
         # insider_buying is standalone — weekly trend guard applies only when
         # no matched signals pass, but insider_buying passes so the stock is kept.
-        snap = _snap(insider_cluster=True, weekly_trend_up=False, rsi_14=50)
+        snap = _snap(insider_strong_cluster=True, weekly_trend_up=False, rsi_14=50)
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
 

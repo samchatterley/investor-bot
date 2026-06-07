@@ -28,6 +28,7 @@ from functools import lru_cache
 import requests  # type: ignore[import-untyped]
 
 from config import EMAIL_FROM, LOG_DIR, STOCK_UNIVERSE, today_et
+from data.proxy_comp import get_exec_compensation, match_compensation
 
 logger = logging.getLogger(__name__)
 
@@ -190,12 +191,33 @@ def _fetch_one(
     total_shares = sum(t["shares"] for t in all_txns)
     max_notional = max((t["shares"] * t["price"] for t in all_txns), default=0.0)
 
+    # Strong cluster: ≥3 distinct insiders in last 5 calendar days
+    five_ago = date.today() - timedelta(days=5)
+    recent_txns = []
+    for t in all_txns:
+        try:
+            if date.fromisoformat(t.get("date", "")) >= five_ago:
+                recent_txns.append(t)
+        except ValueError:
+            pass
+    strong_cluster = len({t["reporter"] for t in recent_txns}) >= 3
+
+    # Compensation ratio: max (purchase notional / annual comp) across all transactions
+    comp_map = get_exec_compensation(cik)
+    comp_ratio = 0.0
+    for t in all_txns:
+        comp = match_compensation(t["reporter"], comp_map)
+        if comp and comp > 0:
+            comp_ratio = max(comp_ratio, (t["shares"] * t["price"]) / comp)
+
     data: dict = {
         "insider_cluster": unique_insiders >= 2,
         "insider_unique_insiders": unique_insiders,
         "insider_transaction_count": len(all_txns),
         "insider_total_shares": total_shares,
         "insider_large_buy": max_notional >= large_buy_usd,
+        "insider_strong_cluster": strong_cluster,
+        "insider_comp_ratio": comp_ratio,
     }
     logger.info(
         f"Insider {sym}: {unique_insiders} insiders, {len(all_txns)} txns, "
@@ -284,11 +306,13 @@ def get_insider_activity(
     Result schema per symbol::
 
         {
-            "insider_cluster":         bool,   # ≥2 distinct insiders bought
+            "insider_cluster":          bool,   # ≥2 distinct insiders bought
             "insider_unique_insiders":  int,
             "insider_transaction_count": int,
-            "insider_total_shares":    float,
-            "insider_large_buy":       bool,   # single buy > large_buy_usd
+            "insider_total_shares":     float,
+            "insider_large_buy":        bool,   # single buy > large_buy_usd
+            "insider_strong_cluster":   bool,   # ≥3 distinct insiders in last 5 days
+            "insider_comp_ratio":       float,  # max(notional / annual_comp) across txns
         }
 
     Symbols with no Form 4 activity in the window are omitted from the result.

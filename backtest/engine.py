@@ -258,6 +258,10 @@ def _row_to_snapshot(
     if fundamentals:
         snap["insider_cluster"] = bool(fundamentals.get("insider_cluster", False))
         snap["pead_candidate"] = bool(fundamentals.get("pead_active", False))
+        snap["insider_strong_cluster"] = bool(fundamentals.get("insider_strong_cluster", False))
+        snap["insider_comp_ratio"] = float(fundamentals.get("insider_comp_ratio", 0.0))
+        snap["activist_filing"] = bool(fundamentals.get("activist_filing", False))
+        snap["insider_large_buy"] = bool(fundamentals.get("insider_large_buy", False))
     if intraday:
         snap.update(
             {
@@ -355,6 +359,10 @@ def _short_entry_signal(
             snap["earnings_gap_pct"] = fundamentals["earnings_gap_pct"]
         if "faded_earnings_gap_up_pct" in fundamentals:
             snap["faded_earnings_gap_up_pct"] = fundamentals["faded_earnings_gap_up_pct"]
+        if "guidance_negative" in fundamentals:
+            snap["guidance_negative"] = bool(fundamentals["guidance_negative"])
+        if "secondary_offering" in fundamentals:
+            snap["secondary_offering"] = bool(fundamentals["secondary_offering"])
 
     # Parabolic exhaustion path — regime-agnostic and VIX-gate-agnostic.
     # Parabolic stocks (up ≥80% in 60d) exist in bull markets; gating behind STRESS_RISK_OFF

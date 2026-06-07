@@ -101,6 +101,8 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     # iv_compression
     "ivc_hv_rank_max": 0.15,  # loosened from 0.10 in v1.82 — moderate compression still predictive
     "ivc_vol_min": 1.2,  # raised from 1.1 in v1.48
+    # insider_buying
+    "ib_comp_ratio_min": 0.02,  # standard cluster requires purchase ≥2% of annual comp
     # range_reversion
     "rr_adx_max": 20.0,  # ADX below this = range-bound
     "rr_bb_max": 0.10,  # price in extreme lower band
@@ -496,6 +498,9 @@ def evaluate_signals(
     gap_pct = _f("gap_pct", 0)
     close_above_open = bool(snapshot.get("close_above_open", False))
     insider_cluster = bool(snapshot.get("insider_cluster", False))
+    insider_strong_cluster = bool(snapshot.get("insider_strong_cluster", False))
+    insider_comp_ratio = _f("insider_comp_ratio", 0.0)
+    insider_large_buy = bool(snapshot.get("insider_large_buy", False))
     activist_filing = bool(snapshot.get("activist_filing", False))
     pead_candidate = bool(snapshot.get("pead_candidate", False))
     guidance_positive = bool(snapshot.get("guidance_positive", False))
@@ -517,7 +522,11 @@ def evaluate_signals(
         matched.append("vix_fear_reversion")  # pragma: no cover — in GLOBALLY_DISABLED
 
     # Fundamental conviction — bypass regime filter
-    if (insider_cluster or activist_filing) and "insider_buying" not in blocked:
+    if (
+        activist_filing
+        or insider_strong_cluster
+        or (insider_cluster and (insider_comp_ratio >= p["ib_comp_ratio_min"] or insider_large_buy))
+    ) and "insider_buying" not in blocked:
         matched.append("insider_buying")
     if (pead_candidate or guidance_positive) and ret_5d > 0 and "pead" not in blocked:
         matched.append("pead")

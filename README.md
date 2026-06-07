@@ -810,6 +810,19 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.85 — June 2026 — insider_buying three-tier conviction filter
+
+Raises the bar for the `insider_buying` signal by introducing a three-tier firing hierarchy, eliminating weak cluster signals that lack supporting conviction.
+
+- **Three-tier firing logic** — `activist_filing` always fires (activist disclosure is unconditional conviction). `insider_strong_cluster` (≥3 distinct insiders buying open-market within 5 calendar days) always fires. Standard cluster (≥2 insiders / 10 days) fires only when `insider_comp_ratio ≥ 0.02` (purchase ≥ 2% of annual compensation) OR `insider_large_buy` (single transaction > $100k). Bare cluster alone no longer fires.
+- **`data/insider_feed.py`** — `_fetch_one` now computes `insider_strong_cluster` (3+ unique insiders in the last 5 days) and `insider_comp_ratio` (max purchase notional / annual comp via `get_exec_compensation` + `match_compensation` from `data/proxy_comp.py`). Both fields added to the returned dict.
+- **`backtest/historical_fundamentals.py`** — `insider_state_on_date` extended to compute the 5-day strong-cluster sub-window. `insider_strong_cluster` and `insider_comp_ratio` (always 0.0 in backtest — no historical comp data) added to all return paths.
+- **`backtest/engine.py`** — `_row_to_snapshot` now propagates `insider_strong_cluster`, `insider_comp_ratio`, `activist_filing`, `insider_large_buy` from the fundamentals dict into the simulation snapshot. `_short_entry_signal` propagates `guidance_negative` and `secondary_offering` (closing two pre-existing coverage gaps at lines 388 and 429).
+- **`signals/evaluator.py`** — New param `ib_comp_ratio_min: 0.02` in `DEFAULT_SIGNAL_PARAMS`. `evaluate_signals` reads `insider_strong_cluster`, `insider_comp_ratio`, `insider_large_buy` from snapshot; updated firing condition implements the three-tier logic.
+- **Tests:** 18 new tests across `test_backtest.py` (7: strong-cluster path, activist-filing path, cluster+large-buy, cluster+comp-ratio, suppressed weak cluster, 2 engine propagation paths), `test_insider_feed.py` (7: `TestFetchOneNewFields`), `test_historical_fundamentals.py` (4: strong-cluster true/false, comp-ratio always zero, empty-state fields), `test_stock_scanner.py` (2: cluster+large-buy pass, cluster-alone suppressed). **3747 passing.**
+
+---
+
 ### 1.84 — June 2026 — DEF 14A executive compensation fetcher
 
 New data infrastructure module for contextualising insider purchase sizes relative to compensation.

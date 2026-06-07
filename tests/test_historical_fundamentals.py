@@ -591,3 +591,78 @@ class TestInsiderStateOnDate(unittest.TestCase):
         state = insider_state_on_date("AAPL", self._BASE, hist)
         self.assertFalse(state["insider_cluster"])
         self.assertEqual(state["insider_unique_insiders"], 1)
+
+    def test_strong_cluster_true_when_three_insiders_in_five_days(self):
+        hist = self._hist(
+            [
+                {
+                    "filing_date": self._BASE - timedelta(days=2),
+                    "reporter": "CEO A",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+                {
+                    "filing_date": self._BASE - timedelta(days=3),
+                    "reporter": "CFO B",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+                {
+                    "filing_date": self._BASE - timedelta(days=4),
+                    "reporter": "COO C",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+            ]
+        )
+        state = insider_state_on_date("AAPL", self._BASE, hist)
+        self.assertTrue(state["insider_strong_cluster"])
+
+    def test_strong_cluster_false_when_old_transactions_outside_five_days(self):
+        # Insiders at days=7 are within the 10-day lookback but outside the 5-day strong window
+        hist = self._hist(
+            [
+                {
+                    "filing_date": self._BASE - timedelta(days=7),
+                    "reporter": "CEO A",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+                {
+                    "filing_date": self._BASE - timedelta(days=7),
+                    "reporter": "CFO B",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+                {
+                    "filing_date": self._BASE - timedelta(days=7),
+                    "reporter": "COO C",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+            ]
+        )
+        state = insider_state_on_date("AAPL", self._BASE, hist)
+        self.assertTrue(state["insider_cluster"])
+        self.assertFalse(state["insider_strong_cluster"])
+
+    def test_comp_ratio_always_zero_in_backtest(self):
+        hist = self._hist(
+            [
+                {
+                    "filing_date": self._BASE - timedelta(days=3),
+                    "reporter": "CEO A",
+                    "shares": 100.0,
+                    "price": 100.0,
+                },
+            ]
+        )
+        state = insider_state_on_date("AAPL", self._BASE, hist)
+        self.assertEqual(state["insider_comp_ratio"], 0.0)
+
+    def test_new_fields_present_in_empty_state(self):
+        state = insider_state_on_date("MSFT", self._BASE, {})
+        self.assertIn("insider_strong_cluster", state)
+        self.assertIn("insider_comp_ratio", state)
+        self.assertFalse(state["insider_strong_cluster"])
+        self.assertEqual(state["insider_comp_ratio"], 0.0)

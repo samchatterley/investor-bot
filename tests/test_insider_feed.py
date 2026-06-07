@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import data.insider_feed as _insider_mod
 from data.insider_feed import (
     _edgar_sleep,
+    _fetch_one,
     _get_cik_map,
     _load_cache,
     _parse_form4,
@@ -252,6 +253,7 @@ class TestGetInsiderActivity(unittest.TestCase):
             patch("data.insider_feed.requests.get", side_effect=self._mock_two_insiders()),
             patch("data.insider_feed.time.sleep"),
             patch("data.insider_feed.today_et", return_value=_TODAY),
+            patch("data.insider_feed.get_exec_compensation", return_value={}),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertIn("AAPL", result)
@@ -282,6 +284,7 @@ class TestGetInsiderActivity(unittest.TestCase):
             ),
             patch("data.insider_feed.time.sleep"),
             patch("data.insider_feed.today_et", return_value=_TODAY),
+            patch("data.insider_feed.get_exec_compensation", return_value={}),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertIn("AAPL", result)
@@ -312,6 +315,7 @@ class TestGetInsiderActivity(unittest.TestCase):
             ),
             patch("data.insider_feed.time.sleep"),
             patch("data.insider_feed.today_et", return_value=_TODAY),
+            patch("data.insider_feed.get_exec_compensation", return_value={}),
         ):
             result = get_insider_activity(["AAPL"])
         self.assertTrue(result["AAPL"]["insider_large_buy"])
@@ -749,3 +753,69 @@ class TestEdgarSleep(unittest.TestCase):
         with patch("data.insider_feed.time.sleep"):
             _edgar_sleep()
         self.assertGreater(_insider_mod._last_req_time, before)
+
+
+class TestFetchOneNewFields(unittest.TestCase):
+    """Tests for insider_strong_cluster and insider_comp_ratio in _fetch_one."""
+
+    def setUp(self):
+        _get_cik_map.cache_clear()
+
+    def tearDown(self):
+        _get_cik_map.cache_clear()
+
+    def _run(self, txns, comp_map=None):
+        cik_map = {"AAPL": "0000320193"}
+        filings = [{"filing_date": _D1, "accession": "000032019326000001", "doc": "form4.xml"}]
+        with (
+            patch("data.insider_feed._recent_form4_filings", return_value=filings),
+            patch("data.insider_feed._parse_form4", return_value=txns),
+            patch("data.insider_feed.get_exec_compensation", return_value=comp_map or {}),
+        ):
+            _, data = _fetch_one("AAPL", cik_map, 10, 100_000.0)
+        return data
+
+    def _recent_txn(self, reporter, shares=100.0, price=10.0, days_ago=2):
+        d = (date.today() - timedelta(days=days_ago)).isoformat()
+        return {"reporter": reporter, "shares": shares, "price": price, "date": d}
+
+    def test_strong_cluster_true_when_three_recent_insiders(self):
+        txns = [self._recent_txn("Alice"), self._recent_txn("Bob"), self._recent_txn("Carol")]
+        self.assertTrue(self._run(txns)["insider_strong_cluster"])
+
+    def test_strong_cluster_false_when_only_two_recent_insiders(self):
+        txns = [self._recent_txn("Alice"), self._recent_txn("Bob")]
+        self.assertFalse(self._run(txns)["insider_strong_cluster"])
+
+    def test_strong_cluster_false_when_three_insiders_all_old(self):
+        txns = [
+            self._recent_txn("Alice", days_ago=8),
+            self._recent_txn("Bob", days_ago=9),
+            self._recent_txn("Carol", days_ago=10),
+        ]
+        self.assertFalse(self._run(txns)["insider_strong_cluster"])
+
+    def test_strong_cluster_skips_bad_dates(self):
+        # Alice's date is unparseable → only 2 valid recent insiders → False
+        txns = [
+            {"reporter": "Alice", "shares": 100.0, "price": 10.0, "date": "not-a-date"},
+            self._recent_txn("Bob"),
+            self._recent_txn("Carol"),
+        ]
+        self.assertFalse(self._run(txns)["insider_strong_cluster"])
+
+    def test_comp_ratio_computed_when_comp_data_available(self):
+        # TIM COOK buys 1000 × $100 = $100k; annual comp $1M → ratio = 0.1
+        txns = [self._recent_txn("TIM COOK", shares=1000.0, price=100.0)]
+        comp_map = {"TIM COOK": 1_000_000.0}
+        self.assertAlmostEqual(self._run(txns, comp_map)["insider_comp_ratio"], 0.1)
+
+    def test_comp_ratio_zero_when_no_comp_data(self):
+        txns = [self._recent_txn("UNKNOWN EXEC")]
+        self.assertEqual(self._run(txns, {})["insider_comp_ratio"], 0.0)
+
+    def test_result_includes_both_new_fields(self):
+        txns = [self._recent_txn("Alice")]
+        data = self._run(txns)
+        self.assertIn("insider_strong_cluster", data)
+        self.assertIn("insider_comp_ratio", data)

@@ -261,19 +261,37 @@ def insider_state_on_date(
     """
     txns = insider_history.get(sym, [])
     if not txns:
-        return {"insider_cluster": False, "insider_large_buy": False, "insider_unique_insiders": 0}
+        return {
+            "insider_cluster": False,
+            "insider_large_buy": False,
+            "insider_unique_insiders": 0,
+            "insider_strong_cluster": False,
+            "insider_comp_ratio": 0.0,
+        }
 
     cutoff = sim_date - timedelta(days=lookback_days)
     window = [t for t in txns if cutoff <= t["filing_date"] < sim_date]
 
     if not window:
-        return {"insider_cluster": False, "insider_large_buy": False, "insider_unique_insiders": 0}
+        return {
+            "insider_cluster": False,
+            "insider_large_buy": False,
+            "insider_unique_insiders": 0,
+            "insider_strong_cluster": False,
+            "insider_comp_ratio": 0.0,
+        }
 
     unique_insiders = len({t["reporter"] for t in window})
     max_notional = max(t["shares"] * t["price"] for t in window)
+
+    five_day_cutoff = sim_date - timedelta(days=5)
+    strong_window = [t for t in window if t["filing_date"] >= five_day_cutoff]
+    strong_unique = len({t["reporter"] for t in strong_window})
 
     return {
         "insider_cluster": unique_insiders >= 2,
         "insider_large_buy": max_notional >= large_buy_usd,
         "insider_unique_insiders": unique_insiders,
+        "insider_strong_cluster": strong_unique >= 3,
+        "insider_comp_ratio": 0.0,
     }
