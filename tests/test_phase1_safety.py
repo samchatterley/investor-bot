@@ -310,6 +310,9 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         import contextlib
         from unittest.mock import MagicMock, patch
 
+        from conftest import make_test_deps
+        from utils.health import HealthReport, HealthStatus
+
         buy_mock = MagicMock(
             return_value=OrderResult(
                 status=OrderStatus.FILLED,
@@ -323,130 +326,165 @@ class TestMaxOrdersPerRun(unittest.TestCase):
             for i in range(n_candidates)
         ]
         account = {
-            "portfolio_value": 100_000,
-            "cash": 50_000,
-            "buying_power": 100_000,
-            "equity": 100_000,
-        }
-        record = {
-            "date": "2026-01-15",
-            "daily_pnl": 0.0,
-            "account_before": account,
-            "account_after": account,
-            "market_summary": "test",
-            "trades_executed": [],
-            "stop_losses_triggered": [],
+            "portfolio_value": 100_000.0,
+            "cash": 50_000.0,
+            "buying_power": 100_000.0,
+            "equity": 100_000.0,
         }
 
-        def _validate(decisions, known, held_symbols=None):
-            return True, []
+        deps = make_test_deps()
+        deps.trader.get_client.return_value = MagicMock()
+        deps.trader.is_market_open.return_value = True
+        deps.trader.get_account_info.return_value = account
+        deps.trader.get_open_positions.return_value = []
+        deps.trader.reconcile_positions.return_value = set()
+        deps.trader.ensure_stops_attached.return_value = None
+        deps.trader.get_position_ages.return_value = {}
+        deps.trader.get_intraday_positions.return_value = []
+        deps.trader.record_buy.return_value = None
+        deps.trader.record_sell.return_value = None
+        deps.trader.close_position.return_value = OrderResult(status=OrderStatus.FILLED, symbol="X")
+        deps.trader.place_buy_order = buy_mock
+        deps.trader.place_trailing_stop.return_value = None
+        deps.trader.has_pending_buy.return_value = False
+        deps.trader.get_total_open_exposure.return_value = 0.0
+        deps.trader.get_daily_notional.return_value = 0.0
+        deps.trader.add_daily_notional.return_value = None
+        deps.trader.get_open_shorts.return_value = set()
+        deps.trader.get_long_notional.return_value = 0.0
+        deps.trader.get_short_notional.return_value = 0.0
+        deps.portfolio_tracker.load_history.return_value = []
+        deps.portfolio_tracker.get_track_record.return_value = []
+        deps.portfolio_tracker.save_daily_run.return_value = {
+            "date": "2026-01-15", "daily_pnl": 0.0,
+            "account_before": account, "account_after": account,
+            "market_summary": "test", "trades_executed": [], "stop_losses_triggered": [],
+        }
+        deps.portfolio_tracker.print_summary.return_value = None
+        deps.portfolio_tracker.save_daily_baseline.return_value = None
+        deps.portfolio_tracker.load_daily_baseline.return_value = None
+        deps.risk_manager.check_circuit_breaker.return_value = (False, 0.0)
+        deps.risk_manager.check_daily_loss.return_value = (False, 0.0)
+        deps.risk_manager.validate_buy_candidates.side_effect = lambda c, **kw: c
+        deps.risk_manager.check_vix_stop_adjustment.return_value = 5.0
+        deps.position_sizer.risk_budget_size.return_value = 500.0
+        deps.position_sizer.get_max_positions.return_value = 10
+        deps.position_sizer.get_signal_size_multiplier.return_value = 1.0
+        deps.position_sizer.cofiring_boost.return_value = 1.0
+        deps.position_sizer.momentum_quality_score.return_value = 0
+        deps.position_sizer.mqr_size_multiplier.return_value = 1.0
+        deps.position_sizer.amihud_size_scalar.return_value = 1.0
+        deps.position_sizer.drawdown_scalar.return_value = 1.0
+        deps.market_data.get_vix.return_value = 15.0
+        deps.market_data.get_spy_5d_return.return_value = 1.5
+        deps.market_data.get_spy_10d_return.return_value = 2.5
+        deps.market_data.get_market_snapshots.return_value = [
+            {"symbol": f"SYM{i}", "current_price": 100.0} for i in range(n_candidates)
+        ]
+        deps.market_data.get_intraday_data.return_value = {}
+        deps.stock_scanner.get_market_regime.return_value = {
+            "regime": "BULL_TRENDING", "is_bearish": False
+        }
+        deps.stock_scanner.get_top_movers.return_value = []
+        deps.stock_scanner.prefilter_candidates.return_value = candidates
+        deps.stock_scanner.score_candidate.return_value = 0
+        deps.stock_scanner.scan_short_candidates.return_value = []
+        from data.macro_data import MacroSnapshot
+        from data.sentiment_client import FearGreedSnapshot, SentimentSnapshot
 
-        patches = {
-            "main.trader.get_client": MagicMock(),
-            "main.trader.is_market_open": True,
-            "main.trader.get_account_info": account,
-            "main.trader.get_open_positions": [],
-            "main.trader.reconcile_positions": set(),
-            "main.trader.ensure_stops_attached": None,
-            "main.trader.get_position_ages": {},
-            "main.trader.get_stale_positions": [],
-            "main.trader.record_buy": None,
-            "main.trader.record_sell": None,
-            "main.trader.close_position": OrderResult(status=OrderStatus.FILLED, symbol="X"),
-            "main.trader.place_buy_order": buy_mock,
-            "main.trader.place_trailing_stop": OrderResult(
-                status=OrderStatus.FILLED, symbol="X", stop_order_id="stop-1"
+        deps.macro_calendar.get_macro_risk.return_value = {"is_high_risk": False, "event": ""}
+        deps.get_macro_snapshot.return_value = MacroSnapshot(
+            credit_spread_roc=None, credit_stress=False, tlt_spy_spread_5d=None,
+            duration_flight=False, copper_gold_trend_20d=None, copper_gold_positive=False,
+            usd_trend_20d=None, usd_strong=False, hyg_ief_roc_10d=None, data_available=False,
+        )
+        deps.get_sentiment_snapshot.return_value = SentimentSnapshot(
+            aaii=None,
+            fear_greed=FearGreedSnapshot(
+                score=50.0, label="Neutral", extreme_fear=False, extreme_greed=False, components={}
             ),
-            "main.portfolio_tracker.load_history": [],
-            "main.portfolio_tracker.get_track_record": [],
-            "main.portfolio_tracker.save_daily_run": record,
-            "main.portfolio_tracker.print_summary": None,
-            "main.portfolio_tracker.save_daily_baseline": None,
-            "main.portfolio_tracker.load_daily_baseline": None,
-            "main.risk_manager.check_circuit_breaker": (False, 0.0),
-            "main.risk_manager.check_daily_loss": (False, 0.0),
-            "main.risk_manager.validate_buy_candidates": lambda c, **kw: c,
-            "main.position_sizer.kelly_fraction": 0.1,
-            "main.position_sizer.get_max_positions": 10,
-            "main.market_data.get_vix": 15.0,
-            "main.stock_scanner.get_market_regime": {
-                "regime": "BULL_TRENDING",
-                "is_bearish": False,
-            },
-            "main.stock_scanner.get_top_movers": [],
-            "main.stock_scanner.prefilter_candidates": candidates,
-            "main.macro_calendar.get_macro_risk": {"is_high_risk": False, "event": ""},
-            "main.sector_data.get_sector_performance": {},
-            "main.sector_data.get_leading_sectors": [],
-            "main.get_latest_review": [],
-            "main.earnings_calendar.get_earnings_risk_positions": {},
-            "main._handle_partial_exits": [],
-            "main.market_data.get_market_snapshots": [
-                {"symbol": f"SYM{i}", "current_price": 100.0} for i in range(n_candidates)
-            ],
-            "main.options_scanner.get_options_signals": {},
-            "main.news_fetcher.fetch_news": {},
-            "main.sanitize_headlines": {},
-            "main.sentiment_module.get_sentiment": {},
-            "main.ai_analyst.get_trading_decisions": {
-                "market_summary": "ok",
-                "buy_candidates": candidates,
-                "position_decisions": [],
-            },
-            "main.validate_ai_response": _validate,
-            "main.check_pre_trade": (True, ""),
-            "main.decision_log.log_decisions": None,
-            "main.audit_log.log_ai_decision": None,
-            "main.audit_log.log_run_start": None,
-            "main.audit_log.log_run_end": None,
-            "main.audit_log.log_order_placed": None,
-            "main.audit_log.log_order_filled": None,
-            "main.audit_log.log_position_closed": None,
-            "main.audit_log.log_validation_failure": None,
-            "main.audit_log.log_circuit_breaker": None,
-            "main.audit_log.log_daily_loss_limit": None,
-            "main.audit_log.log_macro_skip": None,
-            "main.audit_log.log_earnings_exit": None,
-            "main.alerts.alert_circuit_breaker": None,
-            "main.alerts.alert_daily_loss": None,
-            "main.alerts.alert_error": None,
-            "main.performance.generate_dashboard": None,
-            "main.performance.record_trade_outcome": None,
-            "main.get_day_summary": None,
-            "main.emailer.send_summary": None,
-            "main.audit_log.log_event": None,
-            "main.trader.has_pending_buy": False,
-            "main.trader.get_total_open_exposure": 0.0,
-            "main.trader.get_daily_notional": 0.0,
-            "main.trader.add_daily_notional": None,
-            "main.build_scan_universe": [],
-            "main.save_experiment_baseline": None,
-            "main.load_experiment_baseline": None,
+            contrarian_long_signal=False,
+            contrarian_short_signal=False,
+        )
+        deps.sector_data.get_sector_performance.return_value = {}
+        deps.sector_data.get_leading_sectors.return_value = []
+        deps.sector_data.get_sector.return_value = "Technology"
+        deps.get_latest_review.return_value = ""
+        deps.earnings_calendar.get_earnings_risk_positions.return_value = {}
+        deps.options_scanner.get_options_signals.return_value = {}
+        deps.news_fetcher.fetch_news.return_value = {}
+        deps.sanitize_headlines.return_value = {}
+        deps.sentiment.get_sentiment.return_value = {}
+        deps.ai_analyst.get_trading_decisions.return_value = {
+            "market_summary": "ok",
+            "buy_candidates": candidates,
+            "position_decisions": [],
         }
-
-        from utils.health import HealthReport, HealthStatus
-
-        patches["main.run_startup_health_check"] = HealthReport(
+        deps.validate_ai_response.return_value = (True, [])
+        deps.check_pre_trade.return_value = (True, "")
+        deps.check_quote_gate.return_value = MagicMock(approved=True)
+        deps.decision_log.log_decisions.return_value = None
+        deps.audit_log.log_ai_decision.return_value = None
+        deps.audit_log.log_run_start.return_value = None
+        deps.audit_log.log_run_end.return_value = None
+        deps.audit_log.log_order_placed.return_value = None
+        deps.audit_log.log_order_filled.return_value = None
+        deps.audit_log.log_position_closed.return_value = None
+        deps.audit_log.log_validation_failure.return_value = None
+        deps.audit_log.log_circuit_breaker.return_value = None
+        deps.audit_log.log_daily_loss_limit.return_value = None
+        deps.audit_log.log_macro_skip.return_value = None
+        deps.audit_log.log_earnings_exit.return_value = None
+        deps.audit_log.log_event.return_value = None
+        deps.audit_log.has_open_buys_run_today.return_value = False
+        deps.audit_log.log_open_buys_locked.return_value = None
+        deps.audit_log.set_run_id.return_value = None
+        deps.decision_log.set_run_id.return_value = None
+        deps.alerts.alert_circuit_breaker.return_value = None
+        deps.alerts.alert_daily_loss.return_value = None
+        deps.alerts.alert_error.return_value = None
+        deps.performance.generate_dashboard.return_value = None
+        deps.performance.record_trade_outcome.return_value = None
+        deps.get_day_summary.return_value = {
+            "date": "2026-01-15",
+            "account_before": account, "account_after": account, "daily_pnl": 0.0,
+        }
+        deps.build_scan_universe.return_value = []
+        deps.save_experiment_baseline.return_value = None
+        deps.load_experiment_baseline.return_value = None
+        deps.get_short_universe.return_value = []
+        deps.scan_short_universe.return_value = []
+        deps.run_startup_health_check.return_value = HealthReport(
             status=HealthStatus.GREEN, issues=[], metrics={}
         )
+        deps.emailer.send_summary.return_value = None
+        deps.insider_feed.get_insider_activity.return_value = {}
+        deps.av_sentiment.get_av_sentiment.return_value = {}
+        deps.earnings_surprise.get_earnings_surprise.return_value = {}
+        deps.earnings_surprise.get_earnings_miss.return_value = {}
+        deps.short_interest.get_short_interest.return_value = {}
+        deps.edgar_client.get_edgar_signals_batch.return_value = {}
+        deps.options_data.get_options_batch.return_value = {}
+        deps.exit_optimiser.compute_atr_pct.return_value = None
+        deps.exit_optimiser.compute_garch_vol_scalar.return_value = 1.0
+        deps.exit_optimiser.signal_invalidated.return_value = False
+        deps.exit_optimiser.profit_acceleration_triggered.return_value = None
+        deps.exit_optimiser.adverse_volume_triggered.return_value = False
+        deps.sector_momentum.get_sector_momentum_ranks.return_value = {}
+        deps.sector_momentum.sector_allowed_long.return_value = True
+        deps.correlation.correlated_with_held.return_value = False
 
         stack = contextlib.ExitStack()
-        for target, val in patches.items():
-            if val is None:
-                stack.enter_context(patch(target, return_value=None))
-            elif callable(val) and not isinstance(val, MagicMock):
-                stack.enter_context(patch(target, side_effect=val))
-            elif isinstance(val, MagicMock):
-                stack.enter_context(patch(target, new=val))
-            else:
-                stack.enter_context(patch(target, return_value=val))
-        # Scalars must use new= so comparisons like >= work without MagicMock wrapping
+        stack.enter_context(patch("main._fetch_atr_for_held", return_value={}))
+        stack.enter_context(patch("main._handle_partial_exits", return_value=[]))
+        stack.enter_context(patch("main._check_rule_based_stops", return_value=set()))
+        stack.enter_context(patch("main._fetch_adverse_vol_for_held", return_value={}))
         stack.enter_context(patch("main.config.MAX_ORDERS_PER_RUN", new=max_orders))
 
         with stack:
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
         return buy_mock.call_count
 

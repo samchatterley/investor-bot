@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 import config
 from analysis import ai_analyst, performance
 from analysis.weekly_review import get_latest_review
+from core.deps import TradingDeps
 from data import (
     av_sentiment,
     earnings_surprise,
@@ -79,7 +80,6 @@ from utils.health import HealthStatus, run_startup_health_check
 from utils.portfolio_tracker import (
     get_day_summary,
     load_experiment_baseline,
-    save_experiment_baseline,
 )
 from utils.validators import check_pre_trade, sanitize_headlines, validate_ai_response
 
@@ -340,7 +340,7 @@ def _run_live_shadow(mode: str):
 # ── Broker account safety assertions ─────────────────────────────────────────
 
 
-def _assert_account_safety(client) -> None:
+def _assert_account_safety(client, deps: TradingDeps | None = None) -> None:
     """Verify broker account type matches safety config. Raises RuntimeError if violated.
 
     Only enforced in live mode (IS_PAPER=False). Paper accounts may not expose
@@ -376,18 +376,22 @@ def _assert_account_safety(client) -> None:
 # ── Stop failure → flatten helper ────────────────────────────────────────────
 
 
-def _handle_stop_failure(client, symbol: str, dry_run: bool) -> None:
+def _handle_stop_failure(
+    client, symbol: str, dry_run: bool, deps: TradingDeps | None = None
+) -> None:
     """When stop placement fails, alert immediately and flatten in live mode.
 
     In paper/dry-run mode: alert only (no real money at risk).
     In live mode: flatten the position immediately. If flatten also fails,
     write a halt file — a live unprotected position is a fatal condition.
     """
+    _trader = deps.trader if deps is not None else trader
+    _alerts = deps.alerts if deps is not None else alerts
     if dry_run:
         logger.warning(f"  [DRY RUN] Stop failed for {symbol} — would flatten in live mode")
         return
     logger.error(f"Stop placement FAILED for {symbol} — position unprotected!")
-    alerts.alert_error(
+    _alerts.alert_error(
         "STOP FAILED",
         f"{symbol}: trailing stop placement failed after buy — position has no downside protection.",
     )
@@ -396,15 +400,15 @@ def _handle_stop_failure(client, symbol: str, dry_run: bool) -> None:
     logger.critical(
         f"Stop placement FAILED for {symbol} — attempting emergency flatten to remove exposure"
     )
-    alerts.alert_error(
+    _alerts.alert_error(
         "STOP FAILED — FLATTENING",
         f"{symbol}: trailing stop placement failed after buy. Attempting to flatten position.",
     )
-    flatten_result = trader.close_position(client, symbol)
+    flatten_result = _trader.close_position(client, symbol)
     if flatten_result.is_success:
-        trader.record_sell(symbol)
+        _trader.record_sell(symbol)
         logger.critical(f"  Emergency flatten of {symbol} succeeded — position closed")
-        alerts.alert_error(
+        _alerts.alert_error(
             "POSITION FLATTENED",
             f"{symbol}: emergency flatten succeeded after stop failure.",
         )
@@ -424,7 +428,7 @@ def _handle_stop_failure(client, symbol: str, dry_run: bool) -> None:
         with open(config.HALT_FILE, "w") as f:
             json.dump(halt_data, f, indent=2)
             f.write("\n")
-        alerts.alert_error(
+        _alerts.alert_error(
             "HALT — UNPROTECTED POSITION",
             f"{symbol}: stop failed AND flatten failed. Bot halted. "
             "Check broker immediately — position may still be open.",
@@ -434,9 +438,10 @@ def _handle_stop_failure(client, symbol: str, dry_run: bool) -> None:
 # ── Partial exits ─────────────────────────────────────────────────────────────
 
 
-def _fetch_atr_for_held(held_symbols: set) -> dict:
+def _fetch_atr_for_held(held_symbols: set, deps: TradingDeps | None = None) -> dict:
     """Return {symbol: atr_pct_or_None} for every currently held symbol."""
-    return {sym: exit_optimiser.compute_atr_pct(sym) for sym in held_symbols}
+    _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
+    return {sym: _exit_optimiser.compute_atr_pct(sym) for sym in held_symbols}
 
 
 _RS_DECAY_SIGNALS = frozenset({"rs_leader", "momentum", "momentum_12_1"})
@@ -484,17 +489,21 @@ def _check_rule_based_stops(
     position_ages: dict,
     atr_by_symbol: dict,
     snapshots_by_symbol: dict | None = None,
+    *,
+    deps: TradingDeps | None = None,
 ) -> set:
     """Return symbols that breach the hard stop, time-decay stop, or RS decay threshold."""
+    _trader = deps.trader if deps is not None else trader
+    _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
     rc = RiskConfig.from_config()
     symbols_to_exit: set = set()
     for pos in positions:
         symbol = pos["symbol"]
-        meta = trader.get_position_meta(symbol)
+        meta = _trader.get_position_meta(symbol)
         signal = meta.get("signal", "unknown")
         max_hold = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
         days_held = position_ages.get(symbol, 1)
-        levels = exit_optimiser.compute_exit_levels(
+        levels = _exit_optimiser.compute_exit_levels(
             rc.stop_loss_pct,
             rc.take_profit_pct,
             atr_by_symbol.get(symbol),
@@ -520,7 +529,7 @@ def _check_rule_based_stops(
             if (
                 entry_rs is not None
                 and current_rs is not None
-                and exit_optimiser.rs_decay_triggered(current_rs, entry_rs)
+                and _exit_optimiser.rs_decay_triggered(current_rs, entry_rs)
             ):
                 logger.info(
                     f"RS decay exit: {symbol} rs_rank {entry_rs:.1f}% → {current_rs:.1f}% "
@@ -530,17 +539,22 @@ def _check_rule_based_stops(
     return symbols_to_exit
 
 
-def _handle_partial_exits(client, positions: list, atr_by_symbol: dict, dry_run: bool) -> list:
+def _handle_partial_exits(
+    client, positions: list, atr_by_symbol: dict, dry_run: bool, deps: TradingDeps | None = None
+) -> list:
     """Sell half of any position that has reached the dynamic partial-exit threshold."""
+    _trader = deps.trader if deps is not None else trader
+    _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
+    _audit_log = deps.audit_log if deps is not None else audit_log
     rc = RiskConfig.from_config()
     executed = []
     for pos in positions:
         symbol = pos["symbol"]
-        meta = trader.get_position_meta(symbol)
+        meta = _trader.get_position_meta(symbol)
         signal = meta.get("signal", "unknown")
         max_hold = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
         days_held = 0  # partial exits evaluated before position_ages computed
-        levels = exit_optimiser.compute_exit_levels(
+        levels = _exit_optimiser.compute_exit_levels(
             rc.stop_loss_pct,
             rc.take_profit_pct,
             atr_by_symbol.get(symbol),
@@ -556,20 +570,20 @@ def _handle_partial_exits(client, positions: list, atr_by_symbol: dict, dry_run:
                 f"Partial exit: {symbol} +{pos['unrealized_plpc']:.1f}% — selling {half_qty:.6f} shares"
             )
             if not dry_run:
-                trader.cancel_open_orders(client, symbol)
-                result = trader.place_partial_sell(client, symbol, half_qty)
+                _trader.cancel_open_orders(client, symbol)
+                result = _trader.place_partial_sell(client, symbol, half_qty)
                 if result and result.is_success:
-                    audit_log.log_order_placed(
+                    _audit_log.log_order_placed(
                         symbol,
                         "SELL_PARTIAL",
                         pos["market_value"] / 2,
                         result.broker_order_id or "",
                     )
-                    audit_log.log_order_filled(
+                    _audit_log.log_order_filled(
                         symbol, result.broker_order_id or "", result.filled_qty
                     )
-                    trader.record_partial_exit(symbol)
-                    trader.place_trailing_stop(
+                    _trader.record_partial_exit(symbol)
+                    _trader.place_trailing_stop(
                         client, symbol, pos["qty"] - half_qty, current_price=pos["current_price"]
                     )
                     executed.append(
@@ -603,6 +617,7 @@ def _execute_shorts(
     executed_symbols: set,
     dry_run: bool,
     _live_shadow: bool,
+    deps: TradingDeps | None = None,
 ) -> None:
     """Scan for and execute short positions (bottom-quartile RS, rule-gated).
 
@@ -611,6 +626,15 @@ def _execute_shorts(
     - Each position sized at SHORT_SIZE_SCALE × standard long size (whole shares only).
     - Regime gate: BULL_TREND or NEUTRAL_CHOP only.
     """
+    _trader = deps.trader if deps is not None else trader
+    _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
+    _sector_data = deps.sector_data if deps is not None else sector_data
+    _sector_momentum = deps.sector_momentum if deps is not None else sector_momentum
+    _correlation = deps.correlation if deps is not None else correlation
+    _short_risk = deps.short_risk if deps is not None else short_risk
+    _position_sizer = deps.position_sizer if deps is not None else position_sizer
+    _audit_log = deps.audit_log if deps is not None else audit_log
+
     regime_name = regime.get("regime", "UNKNOWN")
 
     # VIX term structure gate: only enter shorts when near-term fear (VIX9D) exceeds
@@ -622,21 +646,21 @@ def _execute_shorts(
         return
 
     held_symbols = {p["symbol"] for p in open_positions}
-    short_candidates = stock_scanner.scan_short_candidates(snapshots, regime_name, held_symbols)
+    short_candidates = _stock_scanner.scan_short_candidates(snapshots, regime_name, held_symbols)
     if not short_candidates:
         return
 
-    open_shorts = trader.get_open_shorts()
+    open_shorts = _trader.get_open_shorts()
     short_slots = config.MAX_SHORT_POSITIONS - len(open_shorts)
     if short_slots <= 0:
         logger.info(f"Short slots full: {len(open_shorts)}/{config.MAX_SHORT_POSITIONS}")
         return
 
-    long_notional = trader.get_long_notional(client)
+    long_notional = _trader.get_long_notional(client)
     if long_notional == 0:
         logger.info("No long positions — skipping short scan (shorts are hedges only)")
         return
-    short_notional = trader.get_short_notional(client)
+    short_notional = _trader.get_short_notional(client)
     hedge_cap = long_notional * config.MAX_SHORT_HEDGE_RATIO
     if short_notional >= hedge_cap:
         logger.info(
@@ -650,7 +674,7 @@ def _execute_shorts(
         f"slots={short_slots} | hedge {short_notional:.0f}/{hedge_cap:.0f}"
     )
 
-    _sector_ranks_short = sector_momentum.get_sector_momentum_ranks()
+    _sector_ranks_short = _sector_momentum.get_sector_momentum_ranks()
 
     shorts_placed = 0
     portfolio_value = account_now["portfolio_value"]
@@ -662,8 +686,8 @@ def _execute_shorts(
             continue
 
         # Sector momentum gate — only allow shorts in bottom 3 sectors by 20d return
-        _short_sector = sector_data.get_sector(symbol)
-        if not sector_momentum.sector_allowed_short(_short_sector, _sector_ranks_short):
+        _short_sector = _sector_data.get_sector(symbol)
+        if not _sector_momentum.sector_allowed_short(_short_sector, _sector_ranks_short):
             logger.info(
                 f"  Short skip {symbol}: sector '{_short_sector}' not in bottom-3 momentum"
                 f" (rank={_sector_ranks_short.get(_short_sector, '?')})"
@@ -671,13 +695,13 @@ def _execute_shorts(
             continue
 
         # Correlation gate — skip if correlated with any held position
-        if correlation.correlated_with_held(symbol, held_symbols):
+        if _correlation.correlated_with_held(symbol, held_symbols):
             logger.info(f"  Short skip {symbol}: correlated with existing position")
             continue
 
         # Squeeze risk gate — blocks crowded shorts and stocks in active squeezes
-        _squeeze_info = short_risk.fetch_squeeze_info(symbol)
-        _squeeze_blocked, _squeeze_reason = short_risk.is_squeeze_risk(
+        _squeeze_info = _short_risk.fetch_squeeze_info(symbol)
+        _squeeze_blocked, _squeeze_reason = _short_risk.is_squeeze_risk(
             symbol, candidate, **_squeeze_info
         )
         if _squeeze_blocked:
@@ -693,7 +717,7 @@ def _execute_shorts(
         matched_signals = candidate.get("matched_signals", [])
 
         # Size: SHORT_SIZE_SCALE × standard long notional → whole shares
-        base_notional = position_sizer.risk_budget_size(
+        base_notional = _position_sizer.risk_budget_size(
             portfolio_value,
             confidence=confidence,
             signal=key_signal,
@@ -723,7 +747,7 @@ def _execute_shorts(
         reasoning = f"{signals_str} (RS rank {candidate.get('rs_rank_pct'):.1f}%) in {regime_name}"
 
         if not dry_run and not _live_shadow:
-            short_result = trader.place_short_order(client, symbol, qty_shares)
+            short_result = _trader.place_short_order(client, symbol, qty_shares)
             if short_result and short_result.broker_order_id:
                 # Order reached the broker — consume the slot regardless of fill confirmation.
                 # Timeout orders will be reconciled by _reconcile_late_fills on the next run.
@@ -731,26 +755,26 @@ def _execute_shorts(
                 short_notional += order_notional
             if short_result and short_result.is_success:
                 entry_price = short_result.filled_avg_price or current_price
-                trader.record_short(
+                _trader.record_short(
                     symbol,
                     entry_price,
                     signal=key_signal,
                     regime=regime_name,
                     confidence=confidence,
                 )
-                audit_log.log_order_placed(
+                _audit_log.log_order_placed(
                     symbol, "SHORT", order_notional, short_result.broker_order_id or ""
                 )
                 if short_result.filled_qty:
-                    cover_result = trader.place_short_cover_stop(
+                    cover_result = _trader.place_short_cover_stop(
                         client, symbol, short_result.filled_qty
                     )
                     if cover_result is None or not cover_result.is_success:
                         logger.error(
                             f"  SHORT {symbol}: cover stop FAILED — closing position immediately"
                         )
-                        trader.close_position(client, symbol)
-                        trader.record_cover(symbol)
+                        _trader.close_position(client, symbol)
+                        _trader.record_cover(symbol)
                         short_notional -= order_notional
                         continue
                 executed_symbols.add(symbol)
@@ -770,7 +794,7 @@ def _execute_shorts(
                     }
                 )
         elif _live_shadow:
-            audit_log.log_event(
+            _audit_log.log_event(
                 "WOULD_SHORT",
                 {
                     "symbol": symbol,
@@ -814,12 +838,14 @@ def _execute_shorts(
 # ── Pipeline phase helpers ────────────────────────────────────────────────────
 
 
-def _get_position_snapshot(client) -> PositionSnapshot:
+def _get_position_snapshot(client, deps: TradingDeps | None = None) -> PositionSnapshot:
     """Fetch a point-in-time view of all broker positions and derived state."""
-    open_positions = trader.get_open_positions(client)
+    _trader = deps.trader if deps is not None else trader
+    _earnings_calendar = deps.earnings_calendar if deps is not None else earnings_calendar
+    open_positions = _trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
-    position_ages = trader.get_position_ages()
-    open_shorts_db = trader.get_open_shorts()
+    position_ages = _trader.get_position_ages()
+    open_shorts_db = _trader.get_open_shorts()
     stale = [
         sym
         for sym, age in position_ages.items()
@@ -828,12 +854,12 @@ def _get_position_snapshot(client) -> PositionSnapshot:
             config.MAX_SHORT_HOLD_DAYS
             if sym in open_shorts_db
             else config.SIGNAL_MAX_HOLD_DAYS.get(
-                trader.get_position_meta(sym).get("signal", "unknown"),
+                _trader.get_position_meta(sym).get("signal", "unknown"),
                 config.MAX_HOLD_DAYS,
             )
         )
     ]
-    earnings_risk = earnings_calendar.get_earnings_risk_positions(
+    earnings_risk = _earnings_calendar.get_earnings_risk_positions(
         list(held_symbols), config.EARNINGS_WARNING_DAYS
     )
     atr_by_symbol = _fetch_atr_for_held(held_symbols)
@@ -849,42 +875,55 @@ def _get_position_snapshot(client) -> PositionSnapshot:
 
 
 def _manage_existing_positions(
-    client, dry_run: bool, all_trades: list, snap: PositionSnapshot, mode: str = "open"
+    client,
+    dry_run: bool,
+    all_trades: list,
+    snap: PositionSnapshot,
+    mode: str = "open",
+    *,
+    deps: TradingDeps | None = None,
 ) -> None:
     """Execute partial exits, earnings-risk exits, and profit-acceleration exits."""
-    partials = _handle_partial_exits(client, snap.open_positions, snap.atr_by_symbol, dry_run)
+    _trader = deps.trader if deps is not None else trader
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    _performance = deps.performance if deps is not None else performance
+    _sector_data = deps.sector_data if deps is not None else sector_data
+    _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
+    partials = _handle_partial_exits(
+        client, snap.open_positions, snap.atr_by_symbol, dry_run, deps=deps
+    )
     all_trades.extend(partials)
 
     # Refresh after partial exits before earnings checks
-    post_partial_positions = trader.get_open_positions(client)
+    post_partial_positions = _trader.get_open_positions(client)
     post_partial_held = {p["symbol"] for p in post_partial_positions}
-    position_ages = trader.get_position_ages()
+    position_ages = _trader.get_position_ages()
 
     for symbol, ed in snap.earnings_risk.items():
         if symbol not in post_partial_held:
             continue
         logger.warning(f"Exiting {symbol} — earnings on {ed}")
-        audit_log.log_earnings_exit(symbol, str(ed))
+        _audit_log.log_earnings_exit(symbol, str(ed))
         if not dry_run:
-            result = trader.close_position(client, symbol)
+            result = _trader.close_position(client, symbol)
             if result.is_success:
-                meta = trader.get_position_meta(symbol)
+                meta = _trader.get_position_meta(symbol)
                 pos = next((p for p in post_partial_positions if p["symbol"] == symbol), None)
                 if pos:  # pragma: no branch
-                    performance.record_trade_outcome(
+                    _performance.record_trade_outcome(
                         meta["signal"],
                         pos["unrealized_plpc"],
                         regime=meta["regime"],
                         confidence=meta["confidence"],
-                        sector=sector_data.get_sector(symbol),
+                        sector=_sector_data.get_sector(symbol),
                         hold_days=position_ages.get(symbol, 1),
                         symbol=symbol,
                         entry_date=meta.get("entry_date"),
                         entry_price=meta.get("entry_price"),
                         exit_reason="earnings_exit",
                     )
-                    audit_log.log_position_closed(symbol, "earnings_exit", pos["unrealized_plpc"])
-                trader.record_sell(symbol)
+                    _audit_log.log_position_closed(symbol, "earnings_exit", pos["unrealized_plpc"])
+                _trader.record_sell(symbol)
                 all_trades.append(
                     {
                         "symbol": symbol,
@@ -904,33 +943,37 @@ def _manage_existing_positions(
     if mode in ("open", "midday"):
         for pos in post_partial_positions:
             symbol = pos["symbol"]
-            meta = trader.get_position_meta(symbol)
+            meta = _trader.get_position_meta(symbol)
             signal = meta.get("signal", "unknown")
             days_held = position_ages.get(symbol, 1)
             unrealised_pct = pos.get("unrealized_plpc", 0.0)
-            action = exit_optimiser.profit_acceleration_triggered(unrealised_pct, days_held, signal)
+            action = _exit_optimiser.profit_acceleration_triggered(
+                unrealised_pct, days_held, signal
+            )
             if action == "full_exit":
                 logger.info(
                     f"Profit acceleration full exit: {symbol} +{unrealised_pct:.1f}% "
                     f"in {days_held}d [{signal}]"
                 )
                 if not dry_run:
-                    result = trader.close_position(client, symbol)
+                    result = _trader.close_position(client, symbol)
                     if result.is_success:
-                        performance.record_trade_outcome(
+                        _performance.record_trade_outcome(
                             signal,
                             unrealised_pct,
                             regime=meta.get("regime", "UNKNOWN"),
                             confidence=meta.get("confidence", 0),
-                            sector=sector_data.get_sector(symbol),
+                            sector=_sector_data.get_sector(symbol),
                             hold_days=days_held,
                             symbol=symbol,
                             entry_date=meta.get("entry_date"),
                             entry_price=meta.get("entry_price"),
                             exit_reason="profit_acceleration",
                         )
-                        audit_log.log_position_closed(symbol, "profit_acceleration", unrealised_pct)
-                        trader.record_sell(symbol)
+                        _audit_log.log_position_closed(
+                            symbol, "profit_acceleration", unrealised_pct
+                        )
+                        _trader.record_sell(symbol)
                         all_trades.append(
                             {
                                 "symbol": symbol,
@@ -963,15 +1006,15 @@ def _manage_existing_positions(
                 )
                 if not dry_run:
                     half_qty = pos["qty"] / 2
-                    result = trader.place_partial_sell(client, symbol, half_qty)
+                    result = _trader.place_partial_sell(client, symbol, half_qty)
                     if result and result.is_success:
-                        audit_log.log_order_placed(
+                        _audit_log.log_order_placed(
                             symbol,
                             "SELL_PARTIAL",
                             pos["market_value"] / 2,
                             result.broker_order_id or "",
                         )
-                        trader.record_partial_exit(symbol)
+                        _trader.record_partial_exit(symbol)
                         all_trades.append(
                             {
                                 "symbol": symbol,
@@ -993,37 +1036,37 @@ def _manage_existing_positions(
     # Signal invalidation exit — runs at midday only (data settled; avoids open-session noise).
     # Re-fetches a live snapshot per position and exits when the entry signal no longer fires.
     if mode == "midday":
-        for pos in trader.get_open_positions(client):
+        for pos in _trader.get_open_positions(client):
             symbol = pos["symbol"]
-            meta = trader.get_position_meta(symbol)
+            meta = _trader.get_position_meta(symbol)
             signal = meta.get("signal", "unknown")
             days_held = position_ages.get(symbol, 1)
             entry_snap = meta.get("entry_snapshot")
-            if exit_optimiser.signal_invalidated(symbol, signal, entry_snap, days_held):
+            if _exit_optimiser.signal_invalidated(symbol, signal, entry_snap, days_held):
                 logger.info(
                     f"Signal invalidation exit: {symbol} [{signal}] no longer active"
                     f" after {days_held}d"
                 )
-                audit_log.log_earnings_exit(symbol, "signal_invalidated")
+                _audit_log.log_earnings_exit(symbol, "signal_invalidated")
                 if not dry_run:
-                    result = trader.close_position(client, symbol)
+                    result = _trader.close_position(client, symbol)
                     if result.is_success:
-                        performance.record_trade_outcome(
+                        _performance.record_trade_outcome(
                             signal,
                             pos.get("unrealized_plpc", 0.0),
                             regime=meta.get("regime", "UNKNOWN"),
                             confidence=meta.get("confidence", 0),
-                            sector=sector_data.get_sector(symbol),
+                            sector=_sector_data.get_sector(symbol),
                             hold_days=days_held,
                             symbol=symbol,
                             entry_date=meta.get("entry_date"),
                             entry_price=meta.get("entry_price"),
                             exit_reason="signal_invalidated",
                         )
-                        audit_log.log_position_closed(
+                        _audit_log.log_position_closed(
                             symbol, "signal_invalidated", pos.get("unrealized_plpc", 0.0)
                         )
-                        trader.record_sell(symbol)
+                        _trader.record_sell(symbol)
                         all_trades.append(
                             {
                                 "symbol": symbol,
@@ -1048,23 +1091,33 @@ def _manage_existing_positions(
                     )
 
 
-def _fetch_market_context() -> MarketContext:
+def _fetch_market_context(deps: TradingDeps | None = None) -> MarketContext:
     """Fetch market-wide context: VIX, regime, macro, sector, lessons, cross-asset, sentiment."""
+    _market_data = deps.market_data if deps is not None else market_data
+    _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
+    _macro_calendar = deps.macro_calendar if deps is not None else macro_calendar
+    _get_macro_snapshot = deps.get_macro_snapshot if deps is not None else get_macro_snapshot
+    _get_sentiment_snapshot = (
+        deps.get_sentiment_snapshot if deps is not None else get_sentiment_snapshot
+    )
+    _sector_data = deps.sector_data if deps is not None else sector_data
+    _get_latest_review = deps.get_latest_review if deps is not None else get_latest_review
+    _audit_log = deps.audit_log if deps is not None else audit_log
     logger.info("Fetching market context...")
 
     def _vix_and_regime() -> tuple:
-        v = market_data.get_vix()
-        r = stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=v)
+        v = _market_data.get_vix()
+        r = _stock_scanner.get_market_regime(config.BEAR_MARKET_SPY_THRESHOLD, vix=v)
         return v, r
 
     with ThreadPoolExecutor(max_workers=7) as ex:
         fut_vr = ex.submit(_vix_and_regime)
-        fut_macro = ex.submit(macro_calendar.get_macro_risk)
-        fut_cross_asset = ex.submit(get_macro_snapshot)
-        fut_sentiment = ex.submit(get_sentiment_snapshot)
-        fut_sector = ex.submit(sector_data.get_sector_performance)
-        fut_leading = ex.submit(sector_data.get_leading_sectors, top_n=3)
-        fut_lessons = ex.submit(get_latest_review)
+        fut_macro = ex.submit(_macro_calendar.get_macro_risk)
+        fut_cross_asset = ex.submit(_get_macro_snapshot)
+        fut_sentiment = ex.submit(_get_sentiment_snapshot)
+        fut_sector = ex.submit(_sector_data.get_sector_performance)
+        fut_leading = ex.submit(_sector_data.get_leading_sectors, top_n=3)
+        fut_lessons = ex.submit(_get_latest_review)
         vix, regime = fut_vr.result()
         macro = fut_macro.result()
         cross_asset = fut_cross_asset.result()
@@ -1077,7 +1130,7 @@ def _fetch_market_context() -> MarketContext:
         logger.info(f"VIX: {vix}  Regime: {regime.get('regime', 'UNKNOWN')}")
     if macro["is_high_risk"]:
         logger.warning(f"Macro risk: {macro['event']}")
-        audit_log.log_macro_skip(macro["event"])
+        _audit_log.log_macro_skip(macro["event"])
     if cross_asset.data_available:
         logger.info(
             "Cross-asset macro: credit_stress=%s duration_flight=%s copper_gold=%s usd_strong=%s",
@@ -1109,22 +1162,43 @@ def _fetch_market_context() -> MarketContext:
 
 
 def _build_data_bundle(
-    client, snap: PositionSnapshot, mc: MarketContext, mode: str = "open"
+    client,
+    snap: PositionSnapshot,
+    mc: MarketContext,
+    mode: str = "open",
+    *,
+    deps: TradingDeps | None = None,
 ) -> DataBundle | None:
     """Fetch, enrich, and pre-filter market data. Returns None if no snapshots available."""
+    _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
+    _build_scan_universe = deps.build_scan_universe if deps is not None else build_scan_universe
+    _market_data = deps.market_data if deps is not None else market_data
+    _insider_feed = deps.insider_feed if deps is not None else insider_feed
+    _av_sentiment = deps.av_sentiment if deps is not None else av_sentiment
+    _earnings_surprise = deps.earnings_surprise if deps is not None else earnings_surprise
+    _short_interest = deps.short_interest if deps is not None else short_interest
+    _edgar_client = deps.edgar_client if deps is not None else edgar_client
+    _options_scanner = deps.options_scanner if deps is not None else options_scanner
+    _options_data = deps.options_data if deps is not None else options_data_module
+    _news_fetcher = deps.news_fetcher if deps is not None else news_fetcher
+    _sanitize_headlines = deps.sanitize_headlines if deps is not None else sanitize_headlines
+    _sentiment = deps.sentiment if deps is not None else sentiment_module
+    _get_short_universe = deps.get_short_universe if deps is not None else get_short_universe
+    _scan_short_universe = deps.scan_short_universe if deps is not None else scan_short_universe
+    _audit_log = deps.audit_log if deps is not None else audit_log
     logger.info("Scanning for top movers...")
-    top_movers = stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
-    scan_symbols = list(set(build_scan_universe(client)) | snap.held_symbols | set(top_movers))
+    top_movers = _stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
+    scan_symbols = list(set(_build_scan_universe(client)) | snap.held_symbols | set(top_movers))
     logger.info(f"Scanning {len(scan_symbols)} symbols")
 
     logger.info("Fetching market data...")
-    snapshots = market_data.get_market_snapshots(scan_symbols, config.LOOKBACK_DAYS)
+    snapshots = _market_data.get_market_snapshots(scan_symbols, config.LOOKBACK_DAYS)
     if not snapshots:
         logger.error("No market data. Aborting.")
         return None
 
     # ── Intraday enrichment (VWAP, ORB, gap, intraday momentum) ─────────────
-    intraday = market_data.get_intraday_data([s["symbol"] for s in snapshots])
+    intraday = _market_data.get_intraday_data([s["symbol"] for s in snapshots])
     if intraday:  # pragma: no branch
         for s in snapshots:  # pragma: no cover
             if s["symbol"] in intraday:
@@ -1132,35 +1206,35 @@ def _build_data_bundle(
 
     # ── Insider activity (SEC EDGAR Form 4 — open-market cluster purchases) ──
     logger.info("Fetching insider activity...")
-    insider_data = insider_feed.get_insider_activity([s["symbol"] for s in snapshots])
+    insider_data = _insider_feed.get_insider_activity([s["symbol"] for s in snapshots])
     for s in snapshots:
         if s["symbol"] in insider_data:
             s.update(insider_data[s["symbol"]])
 
     # ── News sentiment (Alpha Vantage structured scores) ─────────────────────
     logger.info("Fetching AV news sentiment...")
-    av_data = av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])
+    av_data = _av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])
     for s in snapshots:
         if s["symbol"] in av_data:
             s.update(av_data[s["symbol"]])
 
     # ── PEAD (Post-Earnings Announcement Drift) candidates ───────────────────
     logger.info("Fetching earnings surprise data...")
-    pead_data = earnings_surprise.get_earnings_surprise([s["symbol"] for s in snapshots])
+    pead_data = _earnings_surprise.get_earnings_surprise([s["symbol"] for s in snapshots])
     for s in snapshots:
         if s["symbol"] in pead_data:
             s.update(pead_data[s["symbol"]])
 
     # ── Negative PEAD (earnings miss) — bearish short signal ─────────────────
     logger.info("Fetching earnings miss data...")
-    miss_data = earnings_surprise.get_earnings_miss([s["symbol"] for s in snapshots])
+    miss_data = _earnings_surprise.get_earnings_miss([s["symbol"] for s in snapshots])
     for s in snapshots:
         if s["symbol"] in miss_data:
             s.update(miss_data[s["symbol"]])
 
     # ── Short interest (live-only — not backtestable) ─────────────────────────
     logger.info("Fetching short interest data...")
-    si_data = short_interest.get_short_interest([s["symbol"] for s in snapshots])
+    si_data = _short_interest.get_short_interest([s["symbol"] for s in snapshots])
     for s in snapshots:
         if s["symbol"] in si_data:
             s.update(si_data[s["symbol"]])
@@ -1169,7 +1243,7 @@ def _build_data_bundle(
     # Must run before prefilter so guidance_positive and activist_filing appear
     # in matched_signals. Cache warmed at 07:00 ET; this is a single JSON read.
     logger.info("Fetching EDGAR corporate event signals...")
-    edgar_batch = edgar_client.get_edgar_signals_batch([s["symbol"] for s in snapshots])
+    edgar_batch = _edgar_client.get_edgar_signals_batch([s["symbol"] for s in snapshots])
     for s in snapshots:
         entry = edgar_batch.get(s["symbol"], {})
         guidance = entry.get("guidance") or {}
@@ -1199,9 +1273,9 @@ def _build_data_bundle(
             f"{before_price_filter} → {len(candidate_snaps)} candidates"
         )
 
-    spy_ret_5d = market_data.get_spy_5d_return()
-    spy_ret_10d = market_data.get_spy_10d_return()
-    filtered_candidates = stock_scanner.prefilter_candidates(
+    spy_ret_5d = _market_data.get_spy_5d_return()
+    spy_ret_10d = _market_data.get_spy_10d_return()
+    filtered_candidates = _stock_scanner.prefilter_candidates(
         candidate_snaps,
         regime=mc.regime.get("regime"),
         spy_ret_5d=spy_ret_5d,
@@ -1217,7 +1291,7 @@ def _build_data_bundle(
         f"Pre-filter: {len(candidate_snaps)} candidates → {len(filtered_candidates)} passed"
     )
     _filtered_syms = {c["symbol"] for c in filtered_candidates}
-    audit_log.log_event(
+    _audit_log.log_event(
         "PREFILTER_CANDIDATES",
         {
             "total_candidates": len(candidate_snaps),
@@ -1245,7 +1319,7 @@ def _build_data_bundle(
 
     # ── Options flow (basic put/call from options_scanner) ───────────────────
     options_syms = [s["symbol"] for s in filtered_candidates]
-    options_sigs = options_scanner.get_options_signals(options_syms) if options_syms else {}
+    options_sigs = _options_scanner.get_options_signals(options_syms) if options_syms else {}
     if options_sigs:
         logger.info(f"Options signals fetched for: {list(options_sigs.keys())}")
 
@@ -1254,7 +1328,7 @@ def _build_data_bundle(
     # iv_cheap, iv_expensive, unusual_call_oi, panic_put_skew, call_skew_spike.
     if options_syms:
         logger.info("Fetching options IV surface for %d candidates...", len(options_syms))
-        iv_batch = options_data_module.get_options_batch(options_syms)
+        iv_batch = _options_data.get_options_batch(options_syms)
         for s in filtered_candidates:
             iv_snap = iv_batch.get(s["symbol"])
             if iv_snap is not None:
@@ -1270,17 +1344,17 @@ def _build_data_bundle(
     # having no snapshot data, producing validator rejections on every run.
     logger.info("Fetching news and sentiment...")
     news_symbols = list(ai_known_symbols)
-    raw_news = news_fetcher.fetch_news(news_symbols)
-    news = sanitize_headlines(raw_news)
+    raw_news = _news_fetcher.fetch_news(news_symbols)
+    news = _sanitize_headlines(raw_news)
 
-    sent = sentiment_module.get_sentiment(list(snap.held_symbols) + top_movers[:10])
+    sent = _sentiment.get_sentiment(list(snap.held_symbols) + top_movers[:10])
 
     # ── Short universe (expanded beyond the long scan) ───────────────────────
     # Alpaca easy-to-borrow list or static fallback; RS ranks computed cross-sectionally.
     logger.info("Building short universe...")
-    short_syms = get_short_universe(client)
-    short_snapshots = scan_short_universe(short_syms)
-    si_short = short_interest.get_short_interest([s["symbol"] for s in short_snapshots])
+    short_syms = _get_short_universe(client)
+    short_snapshots = _scan_short_universe(short_syms)
+    si_short = _short_interest.get_short_interest([s["symbol"] for s in short_snapshots])
     for s in short_snapshots:
         if s["symbol"] in si_short:
             s.update(si_short[s["symbol"]])
@@ -1305,15 +1379,23 @@ def _run_ai_phase(
     run_id: str,
     mode: str,
     executed_symbols: set,
+    deps: TradingDeps | None = None,
 ) -> dict | None:
     """Run AI analysis, validate, log decisions. Returns the decisions dict or None on failure."""
+    _portfolio_tracker = deps.portfolio_tracker if deps is not None else portfolio_tracker
+    _ai_analyst = deps.ai_analyst if deps is not None else ai_analyst
+    _validate_ai_response = deps.validate_ai_response if deps is not None else validate_ai_response
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    _alerts = deps.alerts if deps is not None else alerts
+    _decision_log = deps.decision_log if deps is not None else decision_log
+    _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
     if not db.ai_snapshots:
         logger.info("AI analysis skipped — no positions to evaluate.")
         return {"buy_candidates": [], "position_decisions": [], "market_summary": "", "date": ""}
 
-    track_record = portfolio_tracker.get_track_record(10)
+    track_record = _portfolio_tracker.get_track_record(10)
     logger.info("Running AI analysis...")
-    decisions = ai_analyst.get_trading_decisions(
+    decisions = _ai_analyst.get_trading_decisions(
         snapshots=db.ai_snapshots,
         current_positions=snap.open_positions,
         available_cash=account_now["cash"],
@@ -1340,11 +1422,11 @@ def _run_ai_phase(
 
     # ── Validate AI response before acting ───────────────────────────────────
     ai_known_symbols = {s["symbol"] for s in db.ai_snapshots}
-    is_valid, validation_errors = validate_ai_response(
+    is_valid, validation_errors = _validate_ai_response(
         decisions, ai_known_symbols, held_symbols=snap.held_symbols
     )
     if not is_valid:
-        audit_log.log_validation_failure(validation_errors)
+        _audit_log.log_validation_failure(validation_errors)
         buy_domain_only = validation_errors and all(
             e.startswith("BUY candidate '") or e.startswith("buy_candidates")
             for e in validation_errors
@@ -1363,7 +1445,7 @@ def _run_ai_phase(
                 f"AI response validation failed ({len(validation_errors)} structural error(s)) — "
                 f"blocking all Claude-driven decisions: {validation_errors}"
             )
-            alerts.alert_error(
+            _alerts.alert_error(
                 "VALIDATION FAILURE",
                 f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
             )
@@ -1371,15 +1453,15 @@ def _run_ai_phase(
             decisions["position_decisions"] = []
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
-    decision_log.log_decisions(decisions, mode, executed_symbols)
-    audit_log.log_ai_decision(
+    _decision_log.log_decisions(decisions, mode, executed_symbols)
+    _audit_log.log_ai_decision(
         decisions.get("market_summary", ""),
         len(decisions.get("buy_candidates", [])),
         sum(1 for d in decisions.get("position_decisions", []) if d.get("action") == "SELL"),
     )
     _selected_syms = {b["symbol"] for b in decisions.get("buy_candidates", [])}
-    _ranked = sorted(db.filtered_candidates, key=stock_scanner.score_candidate, reverse=True)
-    audit_log.log_event(
+    _ranked = sorted(db.filtered_candidates, key=_stock_scanner.score_candidate, reverse=True)
+    _audit_log.log_event(
         "CANDIDATE_SELECTION",
         {
             "prefiltered_count": len(db.filtered_candidates),
@@ -1398,7 +1480,7 @@ def _run_ai_phase(
             "not_selected": [
                 {
                     "symbol": c["symbol"],
-                    "deterministic_score": stock_scanner.score_candidate(c),
+                    "deterministic_score": _stock_scanner.score_candidate(c),
                     "matched_signals": c.get("matched_signals", []),
                 }
                 for c in db.filtered_candidates
@@ -1419,8 +1501,16 @@ def _execute_sell_phase(
     _live_shadow: bool,
     snapshots: list | None = None,
     regime_name: str = "UNKNOWN",
+    *,
+    deps: TradingDeps | None = None,
 ) -> None:
     """Execute AI sell decisions, stale-long exits, rule-based stops, and stale short covers."""
+    _trader = deps.trader if deps is not None else trader
+    _performance = deps.performance if deps is not None else performance
+    _sector_data = deps.sector_data if deps is not None else sector_data
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    _alerts = deps.alerts if deps is not None else alerts
+    _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
     snap_by_symbol = {s["symbol"]: s for s in (snapshots or [])}
 
     # Adverse volume — two consecutive institutional-selling days trigger exit
@@ -1438,6 +1528,7 @@ def _execute_sell_phase(
         snap.position_ages,
         snap.atr_by_symbol,
         snapshots_by_symbol=snap_by_symbol,
+        deps=deps,
     )
 
     for pos in snap.open_positions:
@@ -1445,7 +1536,7 @@ def _execute_sell_phase(
         if symbol in snap.open_shorts_db or symbol in symbols_to_sell:
             continue
         vh = vol_hist.get(symbol, {})
-        if exit_optimiser.adverse_volume_triggered(
+        if _exit_optimiser.adverse_volume_triggered(
             vh.get("vol_ratio_today", 0.0),
             vh.get("ret_today", 0.0),
             vh.get("vol_ratio_yday", 0.0),
@@ -1488,30 +1579,30 @@ def _execute_sell_phase(
         if decision:
             reason = decision["reasoning"]
         else:
-            signal = trader.get_position_meta(symbol).get("signal", "unknown")
+            signal = _trader.get_position_meta(symbol).get("signal", "unknown")
             limit = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
             reason = f"Time-based exit (≥{limit} days for {signal} signal)"
         logger.info(f"  SELL {symbol} — {reason}")
         if not dry_run:
             pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
-            result = trader.close_position(client, symbol)
+            result = _trader.close_position(client, symbol)
             if result.is_success:
                 if pos:
-                    meta = trader.get_position_meta(symbol)
-                    performance.record_trade_outcome(
+                    meta = _trader.get_position_meta(symbol)
+                    _performance.record_trade_outcome(
                         meta["signal"],
                         pos["unrealized_plpc"],
                         regime=meta["regime"],
                         confidence=meta["confidence"],
-                        sector=sector_data.get_sector(symbol),
+                        sector=_sector_data.get_sector(symbol),
                         hold_days=snap.position_ages.get(symbol, 1),
                         symbol=symbol,
                         entry_date=meta.get("entry_date"),
                         entry_price=meta.get("entry_price"),
                         exit_reason="ai_sell" if decision else "time_exit",
                     )
-                    audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
-                trader.record_sell(symbol)
+                    _audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
+                _trader.record_sell(symbol)
                 executed_symbols.add(symbol)
                 all_trades.append(
                     {
@@ -1526,10 +1617,10 @@ def _execute_sell_phase(
             else:
                 fail_detail = result.rejection_reason or "close failed after retries"
                 logger.error(f"  SELL FAILED {symbol} — {fail_detail}. Manual review required.")
-                alerts.alert_error("SELL FAILED", f"{symbol}: {fail_detail}")
+                _alerts.alert_error("SELL FAILED", f"{symbol}: {fail_detail}")
         else:
             if _live_shadow:
-                audit_log.log_event("WOULD_SELL", {"symbol": symbol, "reason": reason[:80]})
+                _audit_log.log_event("WOULD_SELL", {"symbol": symbol, "reason": reason[:80]})
                 all_trades.append(
                     {
                         "symbol": symbol,
@@ -1559,12 +1650,12 @@ def _execute_sell_phase(
         logger.info(f"  COVER {symbol} — {reason}")
         if not dry_run:
             pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
-            result = trader.close_position(client, symbol)
+            result = _trader.close_position(client, symbol)
             if result.is_success:
-                audit_log.log_position_closed(
+                _audit_log.log_position_closed(
                     symbol, reason[:50], -(pos["unrealized_plpc"]) if pos else 0.0
                 )
-                trader.record_cover(symbol)
+                _trader.record_cover(symbol)
                 executed_symbols.add(symbol)
                 all_trades.append(
                     {
@@ -1579,7 +1670,7 @@ def _execute_sell_phase(
             else:
                 fail_detail = result.rejection_reason or "cover failed"
                 logger.error(f"  COVER FAILED {symbol} — {fail_detail}. Manual review required.")
-                alerts.alert_error("COVER FAILED", f"{symbol}: {fail_detail}")
+                _alerts.alert_error("COVER FAILED", f"{symbol}: {fail_detail}")
         else:
             all_trades.append(
                 {
@@ -1612,8 +1703,20 @@ def _execute_buy_phase(
     _live_shadow: bool,
     all_trades: list,
     executed_symbols: set,
+    deps: TradingDeps | None = None,
 ) -> tuple[list, dict]:
     """Execute the buy loop. Returns (open_positions, account_now) for use by execute_shorts."""
+    _trader = deps.trader if deps is not None else trader
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    _position_sizer = deps.position_sizer if deps is not None else position_sizer
+    _risk_manager = deps.risk_manager if deps is not None else risk_manager
+    _sector_data = deps.sector_data if deps is not None else sector_data
+    _sector_momentum = deps.sector_momentum if deps is not None else sector_momentum
+    _correlation = deps.correlation if deps is not None else correlation
+    _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
+    _alerts = deps.alerts if deps is not None else alerts
+    _check_pre_trade = deps.check_pre_trade if deps is not None else check_pre_trade
+    _check_quote_gate = deps.check_quote_gate if deps is not None else check_quote_gate
     # Initialised from the post-exit snapshot; overwritten with a fresher fetch
     # inside the else branch when buys are not skipped.
     open_positions = snap.open_positions
@@ -1621,13 +1724,13 @@ def _execute_buy_phase(
     # Same-day open guard: only one buy phase per calendar day in open mode.
     # Prevents duplicate buys when the bot is restarted mid-session or triggered
     # more than once by launchd/manual invocation.
-    if mode == "open" and not dry_run and audit_log.has_open_buys_run_today(today):
+    if mode == "open" and not dry_run and _audit_log.has_open_buys_run_today(today):
         logger.warning(
             "Same-day open guard: open buys already executed today — skipping buy phase."
         )
         return open_positions, account_now
 
-    daily_notional_spent = trader.get_daily_notional(today)  # persisted across runs on same date
+    daily_notional_spent = _trader.get_daily_notional(today)  # persisted across runs on same date
     skip_buys = (
         mode in ("close", "open_sells")
         or cb_triggered
@@ -1653,13 +1756,13 @@ def _execute_buy_phase(
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
     else:
         if mode == "open" and not dry_run:
-            audit_log.log_open_buys_locked(today)
-        account_now = trader.get_account_info(client)
-        open_positions = trader.get_open_positions(client)
+            _audit_log.log_open_buys_locked(today)
+        account_now = _trader.get_account_info(client)
+        open_positions = _trader.get_open_positions(client)
         long_positions = [p for p in open_positions if p.get("qty", 0) > 0]
         available_cash = account_now["cash"] * (1 - config.CASH_RESERVE_PCT)
         max_positions = min(
-            position_sizer.get_max_positions(account_now["portfolio_value"]),
+            _position_sizer.get_max_positions(account_now["portfolio_value"]),
             config.MAX_POSITIONS,
         )
         slots = max_positions - len(long_positions)
@@ -1682,24 +1785,24 @@ def _execute_buy_phase(
             raw_candidates = [
                 c for c in decisions.get("buy_candidates", []) if c["confidence"] >= min_confidence
             ]
-            valid_candidates = risk_manager.validate_buy_candidates(
+            valid_candidates = _risk_manager.validate_buy_candidates(
                 raw_candidates,
                 held_symbols={p["symbol"] for p in open_positions},
-                sector_map_fn=sector_data.get_sector,
+                sector_map_fn=_sector_data.get_sector,
                 max_per_sector=config.MAX_SECTOR_POSITIONS,
             )
             valid_candidates.sort(key=lambda x: x["confidence"], reverse=True)
             valid_candidates = valid_candidates[:slots]
 
             # VIX-adjusted trail percent — wider stops in high-vol regimes
-            vix_trail_pct = risk_manager.check_vix_stop_adjustment(mc.vix)
+            vix_trail_pct = _risk_manager.check_vix_stop_adjustment(mc.vix)
             if abs(vix_trail_pct - config.TRAILING_STOP_PCT) > 0.01:
                 logger.info(
                     f"VIX-adjusted trail: {config.TRAILING_STOP_PCT}% → {vix_trail_pct}% "
                     f"(VIX={mc.vix})"
                 )
 
-            _sector_ranks = sector_momentum.get_sector_momentum_ranks()
+            _sector_ranks = _sector_momentum.get_sector_momentum_ranks()
 
             orders_placed = 0
             for candidate in valid_candidates:
@@ -1712,17 +1815,17 @@ def _execute_buy_phase(
                 confidence = candidate["confidence"]
                 key_signal = candidate.get("key_signal", "unknown")
                 n_signals = len(candidate.get("matched_signals") or [key_signal])
-                sig_multiplier = position_sizer.get_signal_size_multiplier(key_signal)
-                cofire_multiplier = position_sizer.cofiring_boost(n_signals)
-                _mqs = position_sizer.momentum_quality_score(candidate)
-                _mqr_multiplier = position_sizer.mqr_size_multiplier(_mqs)
-                _amihud_scalar = position_sizer.amihud_size_scalar(
+                sig_multiplier = _position_sizer.get_signal_size_multiplier(key_signal)
+                cofire_multiplier = _position_sizer.cofiring_boost(n_signals)
+                _mqs = _position_sizer.momentum_quality_score(candidate)
+                _mqr_multiplier = _position_sizer.mqr_size_multiplier(_mqs)
+                _amihud_scalar = _position_sizer.amihud_size_scalar(
                     candidate.get("amihud_illiquid", False)
                 )
 
                 # Sector momentum gate — only allow longs in top 4 sectors by 20d return
-                _sym_sector = sector_data.get_sector(symbol)
-                if not sector_momentum.sector_allowed_long(_sym_sector, _sector_ranks):
+                _sym_sector = _sector_data.get_sector(symbol)
+                if not _sector_momentum.sector_allowed_long(_sym_sector, _sector_ranks):
                     logger.info(
                         f"Skipping {symbol}: sector '{_sym_sector}' not in top-4 momentum"
                         f" (rank={_sector_ranks.get(_sym_sector, '?')})"
@@ -1730,7 +1833,7 @@ def _execute_buy_phase(
                     continue
 
                 # Correlation filter — skip if returns too closely track an existing position
-                if correlation.correlated_with_held(symbol, {p["symbol"] for p in open_positions}):
+                if _correlation.correlated_with_held(symbol, {p["symbol"] for p in open_positions}):
                     logger.info(f"Skipping {symbol}: correlated with an existing position")
                     continue
 
@@ -1749,14 +1852,14 @@ def _execute_buy_phase(
                     pass
                 except OrderLedgerUnavailable as e:
                     logger.error(f"Order ledger unavailable — suspending all buys this run: {e}")
-                    alerts.alert_error("ORDER LEDGER UNAVAILABLE", str(e))
+                    _alerts.alert_error("ORDER LEDGER UNAVAILABLE", str(e))
                     break
 
                 # Pending-order guard — prevents duplicate buys after timeout/restart.
                 # BrokerStateUnavailable means we cannot verify safety → suspend all buys.
                 if should_run_live_gates:
                     try:
-                        if trader.has_pending_buy(client, symbol):
+                        if _trader.has_pending_buy(client, symbol):
                             logger.warning(
                                 f"  Skipping {symbol}: broker already has a pending buy order for this symbol"
                             )
@@ -1765,13 +1868,13 @@ def _execute_buy_phase(
                         logger.error(
                             f"Broker state unavailable — suspending all buys this run: {e}"
                         )
-                        alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
+                        _alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
                         break
 
                 # Size order
                 if config.SMALL_ACCOUNT_MODE:
                     notional = min(
-                        position_sizer.small_account_size(
+                        _position_sizer.small_account_size(
                             account_now["portfolio_value"],
                             max_single_order=config.MAX_SINGLE_ORDER_USD,
                         ),
@@ -1779,20 +1882,20 @@ def _execute_buy_phase(
                     )
                 else:
                     # ATR-based equal-risk sizing when available; falls back to risk_budget_size
-                    _cand_atr = exit_optimiser.compute_atr_pct(symbol)
+                    _cand_atr = _exit_optimiser.compute_atr_pct(symbol)
                     if _cand_atr is not None:
-                        _base = position_sizer.atr_position_size(
+                        _base = _position_sizer.atr_position_size(
                             account_now["portfolio_value"], _cand_atr
                         )
                         logger.debug(f"  ATR sizing {symbol}: atr={_cand_atr:.2f}% → ${_base:.2f}")
                     else:
-                        _base = position_sizer.risk_budget_size(
+                        _base = _position_sizer.risk_budget_size(
                             account_now["portfolio_value"],
                             confidence,
                             signal=key_signal,
                             regime=mc.regime.get("regime", "UNKNOWN"),
                         )
-                    _garch_scalar = exit_optimiser.compute_garch_vol_scalar(symbol)
+                    _garch_scalar = _exit_optimiser.compute_garch_vol_scalar(symbol)
                     if _garch_scalar < 1.0:
                         logger.info(
                             f"  GARCH vol gate: {symbol} forecast vol elevated"
@@ -1823,16 +1926,16 @@ def _execute_buy_phase(
                 # BrokerStateUnavailable means we cannot verify exposure → suspend all buys.
                 if should_run_live_gates:
                     try:
-                        open_exposure = trader.get_total_open_exposure(client)
+                        open_exposure = _trader.get_total_open_exposure(client)
                     except BrokerStateUnavailable as e:
                         logger.error(
                             f"Cannot query open exposure — suspending all buys this run: {e}"
                         )
-                        alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
+                        _alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
                         break
                 else:
                     open_exposure = 0.0
-                approved, rejection_reason = check_pre_trade(
+                approved, rejection_reason = _check_pre_trade(
                     symbol,
                     notional,
                     daily_notional_spent,
@@ -1855,10 +1958,10 @@ def _execute_buy_phase(
                 # Runs in live mode and live-shadow mode; skipped in dry-run and paper mode.
                 if should_run_live_gates and not config.IS_PAPER:
                     try:
-                        qg = check_quote_gate(symbol, notional)
+                        qg = _check_quote_gate(symbol, notional)
                         if not qg.approved:
                             logger.warning(f"  Quote gate rejected {symbol}: {qg.reject_reason}")
-                            audit_log.log_event(
+                            _audit_log.log_event(
                                 "QUOTE_GATE_REJECTED",
                                 {
                                     "symbol": symbol,
@@ -1877,7 +1980,7 @@ def _execute_buy_phase(
                         logger.error(
                             f"Quote gate data API unavailable — suspending all buys this run: {e}"
                         )
-                        alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
+                        _alerts.alert_error("BROKER STATE UNAVAILABLE", str(e))
                         break
 
                 sym_snap = next(
@@ -1894,16 +1997,16 @@ def _execute_buy_phase(
                         continue
                     if not dry_run:
                         t_buy_submit = time.monotonic()
-                        buy_result = trader.place_buy_order(client, symbol, notional)
+                        buy_result = _trader.place_buy_order(client, symbol, notional)
                         t_fill = time.monotonic()
                         if buy_result and buy_result.is_success:
                             fill_latency_ms = round((t_fill - t_buy_submit) * 1000)
                             orders_placed += 1
                             daily_notional_spent += notional
-                            trader.add_daily_notional(today, notional)
+                            _trader.add_daily_notional(today, notional)
                             entry_price = sym_snap["current_price"] if sym_snap else 0.0
                             _signal = candidate.get("key_signal", "unknown")
-                            trader.record_buy(
+                            _trader.record_buy(
                                 symbol,
                                 entry_price,
                                 signal=_signal,
@@ -1913,11 +2016,11 @@ def _execute_buy_phase(
                                 rs_rank_pct=candidate.get("rs_rank_pct"),
                                 entry_snapshot=candidate,
                             )
-                            audit_log.log_order_placed(
+                            _audit_log.log_order_placed(
                                 symbol, "BUY", notional, buy_result.broker_order_id or ""
                             )
                             if buy_result.filled_qty:
-                                audit_log.log_order_filled(
+                                _audit_log.log_order_filled(
                                     symbol, buy_result.broker_order_id or "", buy_result.filled_qty
                                 )
                                 current_price = sym_snap["current_price"] if sym_snap else None
@@ -1925,7 +2028,7 @@ def _execute_buy_phase(
                                 stop_qty = int(math.floor(buy_result.filled_qty))
                                 t_stop_submit = time.monotonic()
                                 stop_result = (
-                                    trader.place_trailing_stop(
+                                    _trader.place_trailing_stop(
                                         client,
                                         symbol,
                                         stop_qty,
@@ -1938,7 +2041,7 @@ def _execute_buy_phase(
                                 t_stop_accept = time.monotonic()
                                 unprotected_ms = round((t_stop_submit - t_fill) * 1000)
                                 stop_latency_ms = round((t_stop_accept - t_stop_submit) * 1000)
-                                audit_log.log_event(
+                                _audit_log.log_event(
                                     "ORDER_TIMING",
                                     {
                                         "symbol": symbol,
@@ -1955,7 +2058,7 @@ def _execute_buy_phase(
                                     slippage_bps = (
                                         round((fill_avg - mid) / mid * 10_000, 1) if mid else None
                                     )
-                                    audit_log.log_event(
+                                    _audit_log.log_event(
                                         "ORDER_EXEC_QUALITY",
                                         {
                                             "symbol": symbol,
@@ -1969,7 +2072,7 @@ def _execute_buy_phase(
                                         },
                                     )
                                 if stop_result is None or not stop_result.is_success:
-                                    _handle_stop_failure(client, symbol, dry_run)
+                                    _handle_stop_failure(client, symbol, dry_run, deps=deps)
                                     # Position may now be closed or halted — don't count as successful trade
                                     continue
                             executed_symbols.add(symbol)
@@ -1997,7 +2100,7 @@ def _execute_buy_phase(
                                 f"filled_qty={buy_result.filled_qty} — "
                                 "running immediate stop coverage check"
                             )
-                            audit_log.log_event(
+                            _audit_log.log_event(
                                 "ORDER_AMBIGUOUS",
                                 {
                                     "symbol": symbol,
@@ -2006,17 +2109,17 @@ def _execute_buy_phase(
                                     "broker_order_id": buy_result.broker_order_id,
                                 },
                             )
-                            alerts.alert_error(
+                            _alerts.alert_error(
                                 "ORDER AMBIGUOUS",
                                 f"{symbol} buy returned {buy_result.status.name} — "
                                 "checking stop coverage now.",
                             )
-                            immediate_stops_ok = trader.ensure_stops_attached(client)
+                            immediate_stops_ok = _trader.ensure_stops_attached(client)
                             if not immediate_stops_ok:
-                                _handle_stop_failure(client, symbol, dry_run)
+                                _handle_stop_failure(client, symbol, dry_run, deps=deps)
                     else:
                         if _live_shadow:
-                            audit_log.log_event(
+                            _audit_log.log_event(
                                 "WOULD_BUY",
                                 {
                                     "symbol": symbol,
@@ -2130,24 +2233,28 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
         _current_lock_fd = None
 
 
-def _force_cover_intraday_positions(client, dry_run: bool, all_trades: list) -> None:
+def _force_cover_intraday_positions(
+    client, dry_run: bool, all_trades: list, deps: TradingDeps | None = None
+) -> None:
     """Market-sell / cover all positions tagged track='intraday' before close."""
-    symbols = trader.get_intraday_positions()
+    _trader = deps.trader if deps is not None else trader
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    symbols = _trader.get_intraday_positions()
     if not symbols:
         return
     logger.info(f"Force-covering {len(symbols)} intraday position(s): {symbols}")
     for symbol in symbols:
         try:
-            meta = trader.get_position_meta(symbol)
+            meta = _trader.get_position_meta(symbol)
             is_short = meta.get("side", "long") == "short"
             action_label = "COVER" if is_short else "SELL"
             if not dry_run:
-                result = trader.close_position(client, symbol)
+                result = _trader.close_position(client, symbol)
                 if result and result.is_success:
                     if is_short:
-                        trader.record_cover(symbol)
+                        _trader.record_cover(symbol)
                     else:
-                        trader.record_sell(symbol)
+                        _trader.record_sell(symbol)
                     all_trades.append(
                         {
                             "symbol": symbol,
@@ -2155,7 +2262,7 @@ def _force_cover_intraday_positions(client, dry_run: bool, all_trades: list) -> 
                             "detail": "intraday force-cover at close",
                         }
                     )
-                    audit_log.log_event(
+                    _audit_log.log_event(
                         "INTRADAY_FORCE_COVER",
                         {"symbol": symbol, "side": "short" if is_short else "long"},
                     )
@@ -2183,10 +2290,13 @@ def _reconcile_late_fills(
     executed_symbols: set,
     all_trades: list,
     dry_run: bool,
+    deps: TradingDeps | None = None,
 ) -> None:
     """Attach missing stops and reconcile buy orders that filled after wait_for_fill timed out."""
+    _trader = deps.trader if deps is not None else trader
+    _audit_log = deps.audit_log if deps is not None else audit_log
     if not dry_run:
-        trader.ensure_stops_attached(client)
+        _trader.ensure_stops_attached(client)
 
     if not dry_run:
         try:
@@ -2204,7 +2314,7 @@ def _reconcile_late_fills(
                 i for i in get_unresolved_intents(trade_date=today) if i["status"] == "timeout"
             ]
             if timeout_intents:
-                current_live = trader.get_open_positions(client)
+                current_live = _trader.get_open_positions(client)
                 live_pos_map = {p["symbol"]: p for p in current_live}
                 for intent in timeout_intents:
                     sym = intent["symbol"]
@@ -2216,7 +2326,7 @@ def _reconcile_late_fills(
                     entry_price = pos["avg_entry_price"]
                     is_short = intent.get("side", "BUY") == "SHORT"
                     if is_short:
-                        stored = trader.get_position_meta(sym)
+                        stored = _trader.get_position_meta(sym)
                         signal = stored.get("signal") or "rs_short"
                         confidence = stored.get("confidence", 0)
                     else:
@@ -2224,10 +2334,10 @@ def _reconcile_late_fills(
                             (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
                             {},
                         )
-                        signal = candidate.get("key_signal") or trader.get_position_meta(sym).get(
+                        signal = candidate.get("key_signal") or _trader.get_position_meta(sym).get(
                             "signal", "unknown"
                         )
-                        confidence = candidate.get("confidence") or trader.get_position_meta(
+                        confidence = candidate.get("confidence") or _trader.get_position_meta(
                             sym
                         ).get("confidence", 0)
                     action_label = "SHORT" if is_short else "BUY"
@@ -2243,7 +2353,7 @@ def _reconcile_late_fills(
                         broker_order_id=intent.get("broker_order_id"),
                     )
                     if is_short:
-                        trader.record_short(
+                        _trader.record_short(
                             sym,
                             entry_price,
                             signal=signal,
@@ -2252,7 +2362,7 @@ def _reconcile_late_fills(
                             track="intraday" if signal in INTRADAY_SHORT_SIGNALS else "multiday",
                         )
                     else:
-                        trader.record_buy(
+                        _trader.record_buy(
                             sym,
                             entry_price,
                             signal=signal,
@@ -2271,7 +2381,7 @@ def _reconcile_late_fills(
                             ),
                         }
                     )
-                    audit_log.log_event(
+                    _audit_log.log_event(
                         "ORDER_LATE_FILL_RECONCILED",
                         {
                             "symbol": sym,
@@ -2295,11 +2405,18 @@ def _finalise(
     run_id: str,
     dry_run: bool,
     _live_shadow: bool,
+    deps: TradingDeps | None = None,
 ) -> None:
     """Save run record, print summary, generate dashboard, send close-mode email."""
-    account_after = trader.get_account_info(client)
+    _trader = deps.trader if deps is not None else trader
+    _portfolio_tracker = deps.portfolio_tracker if deps is not None else portfolio_tracker
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    _performance = deps.performance if deps is not None else performance
+    _get_day_summary = deps.get_day_summary if deps is not None else get_day_summary
+    _emailer = deps.emailer if deps is not None else emailer
+    account_after = _trader.get_account_info(client)
     save_date = today if mode == "open" else f"{today}-{mode}"
-    record = portfolio_tracker.save_daily_run(
+    record = _portfolio_tracker.save_daily_run(
         date=save_date,
         account_before=account_before,
         account_after=account_after,
@@ -2311,7 +2428,7 @@ def _finalise(
     if _live_shadow:
         would_buys = [t for t in all_trades if t["action"] == "WOULD_BUY"]
         would_sells = [t for t in all_trades if t["action"] == "WOULD_SELL"]
-        audit_log.log_event(
+        _audit_log.log_event(
             "LIVE_SHADOW_COMPLETE",
             {
                 "mode": mode,
@@ -2326,26 +2443,43 @@ def _finalise(
             f"{len(would_sells)} WOULD_SELL (no orders placed)"
         )
 
-    portfolio_tracker.print_summary(record)
-    performance.generate_dashboard(portfolio_tracker.load_history())
-    audit_log.log_run_end(
+    _portfolio_tracker.print_summary(record)
+    _performance.generate_dashboard(_portfolio_tracker.load_history())
+    _audit_log.log_run_end(
         mode, record["daily_pnl"], len(all_trades), account_after["portfolio_value"]
     )
     if mode == "close" and not dry_run:
-        day_summary = get_day_summary(today)
+        day_summary = _get_day_summary(today)
         if day_summary:
-            emailer.send_summary(day_summary)
+            _emailer.send_summary(day_summary)
 
 
-def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFlags | None:
+def _evaluate_risk_limits(
+    client,
+    account_before: dict,
+    dry_run: bool,
+    deps: TradingDeps | None = None,
+) -> RiskFlags | None:
     """Run startup health, circuit breaker, daily loss, and experiment drawdown checks.
 
     Returns None when the daily loss limit is hit (positions are closed inside this function;
     the caller must immediately return so no further trading occurs).
     """
-    health = run_startup_health_check(client)
+    _run_startup_health_check = (
+        deps.run_startup_health_check if deps is not None else run_startup_health_check
+    )
+    _audit_log = deps.audit_log if deps is not None else audit_log
+    _portfolio_tracker = deps.portfolio_tracker if deps is not None else portfolio_tracker
+    _position_sizer = deps.position_sizer if deps is not None else position_sizer
+    _risk_manager = deps.risk_manager if deps is not None else risk_manager
+    _alerts = deps.alerts if deps is not None else alerts
+    _trader = deps.trader if deps is not None else trader
+    _load_experiment_baseline = (
+        deps.load_experiment_baseline if deps is not None else load_experiment_baseline
+    )
+    health = _run_startup_health_check(client)
     health.log()
-    audit_log.log_event(
+    _audit_log.log_event(
         "STARTUP_HEALTH",
         {"status": health.status, "issues": health.issues, "metrics": health.metrics},
     )
@@ -2354,7 +2488,7 @@ def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFl
             f"Startup health check RED ({len(health.issues)} issue(s)) — "
             "new buys suspended this run. Resolve issues and restart."
         )
-        alerts.alert_error(
+        _alerts.alert_error(
             "STARTUP HEALTH RED",
             f"{len(health.issues)} safety issue(s) at startup: " + "; ".join(health.issues[:3]),
         )
@@ -2367,17 +2501,17 @@ def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFl
         )
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
-    history = portfolio_tracker.load_history()
-    _dd_scalar = position_sizer.drawdown_scalar(history)
-    cb_triggered, cb_drawdown = risk_manager.check_circuit_breaker(history)
+    history = _portfolio_tracker.load_history()
+    _dd_scalar = _position_sizer.drawdown_scalar(history)
+    cb_triggered, cb_drawdown = _risk_manager.check_circuit_breaker(history)
     if cb_triggered:
-        audit_log.log_circuit_breaker(cb_drawdown)
-        alerts.alert_circuit_breaker(cb_drawdown)
+        _audit_log.log_circuit_breaker(cb_drawdown)
+        _alerts.alert_circuit_breaker(cb_drawdown)
         logger.warning("Circuit breaker active — no new buys today.")
 
     # ── Daily loss check ───────────────────────────────────────────────────────
-    _baseline = portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
-    dl_triggered, dl_pct = risk_manager.check_daily_loss(
+    _baseline = _portfolio_tracker.load_daily_baseline() or account_before["portfolio_value"]
+    dl_triggered, dl_pct = _risk_manager.check_daily_loss(
         _baseline, account_before["portfolio_value"]
     )
     # Dollar-denominated daily loss cap (active when MAX_DAILY_LOSS_USD > 0)
@@ -2391,22 +2525,22 @@ def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFl
                 f"${config.MAX_DAILY_LOSS_USD:.2f}"
             )
     if dl_triggered:
-        audit_log.log_daily_loss_limit(dl_pct)
-        alerts.alert_daily_loss(dl_pct)
+        _audit_log.log_daily_loss_limit(dl_pct)
+        _alerts.alert_daily_loss(dl_pct)
         logger.warning("Daily loss limit hit — closing all positions.")
         if not dry_run:
-            for pos in trader.get_open_positions(client):
-                trader.close_position(client, pos["symbol"])
-                audit_log.log_position_closed(
+            for pos in _trader.get_open_positions(client):
+                _trader.close_position(client, pos["symbol"])
+                _audit_log.log_position_closed(
                     pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
                 )
-                trader.record_sell(pos["symbol"])
+                _trader.record_sell(pos["symbol"])
         return None
 
     # ── Experiment drawdown cap ───────────────────────────────────────────────
     _exp_drawdown_triggered = False
     if config.MAX_EXPERIMENT_DRAWDOWN_USD > 0:
-        _exp_baseline = load_experiment_baseline()
+        _exp_baseline = _load_experiment_baseline()
         if _exp_baseline is not None:
             _exp_loss = _exp_baseline - account_before["portfolio_value"]
             if _exp_loss >= config.MAX_EXPERIMENT_DRAWDOWN_USD:
@@ -2417,7 +2551,7 @@ def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFl
                     f"(limit ${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f}) — "
                     "new buys blocked for remainder of experiment."
                 )
-                audit_log.log_event(
+                _audit_log.log_event(
                     "EXPERIMENT_DRAWDOWN_CAP",
                     {
                         "start_equity": _exp_baseline,
@@ -2426,7 +2560,7 @@ def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFl
                         "limit_usd": config.MAX_EXPERIMENT_DRAWDOWN_USD,
                     },
                 )
-                alerts.alert_error(
+                _alerts.alert_error(
                     "EXPERIMENT DRAWDOWN CAP",
                     f"Total experiment loss ${_exp_loss:.2f} >= "
                     f"${config.MAX_EXPERIMENT_DRAWDOWN_USD:.2f} limit — no new buys.",
@@ -2442,22 +2576,30 @@ def _evaluate_risk_limits(client, account_before: dict, dry_run: bool) -> RiskFl
     )
 
 
-def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False):
+def _run_inner(
+    dry_run: bool,
+    mode: str,
+    today: str,
+    _live_shadow: bool = False,
+    deps: TradingDeps | None = None,
+):
+    if deps is None:
+        deps = TradingDeps.production()
     run_id = str(uuid.uuid4())
-    audit_log.set_run_id(run_id)
-    decision_log.set_run_id(run_id)
+    deps.audit_log.set_run_id(run_id)
+    deps.decision_log.set_run_id(run_id)
     logger.info(f"run_id={run_id}")
 
     # True when this run should exercise live safety gates even though no orders are placed.
     # Covers both real live runs and --live-shadow (full-pipeline validation mode).
     should_run_live_gates = (not dry_run) or _live_shadow
 
-    client = trader.get_client()
+    client = deps.trader.get_client()
 
     # ── Broker account safety assertions (live only) ──────────────────────────
     if not config.IS_PAPER and should_run_live_gates:
         try:
-            _assert_account_safety(client)
+            _assert_account_safety(client, deps=deps)
         except RuntimeError as e:
             logger.critical(f"Account safety check failed: {e}")
             sys.exit(1)
@@ -2467,36 +2609,36 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     # regardless of market hours — stale entries from JSON migration are pruned here.
     # reconcile_positions returns symbols that exist at the broker but had no
     # local record — unexpected positions detected BEFORE they are normalised.
-    unexpected_positions = trader.reconcile_positions(client)
+    unexpected_positions = deps.trader.reconcile_positions(client)
 
-    if not trader.is_market_open(client):
+    if not deps.trader.is_market_open(client):
         logger.info("Market is closed. Nothing to do.")
         return
 
     # ── Account snapshot ──────────────────────────────────────────────────────
-    account_before = trader.get_account_info(client)
+    account_before = deps.trader.get_account_info(client)
     logger.info(
         f"Portfolio: ${account_before['portfolio_value']:.2f}  Cash: ${account_before['cash']:.2f}"
     )
-    audit_log.log_run_start(
+    deps.audit_log.log_run_start(
         mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER
     )
 
     if mode == "open":
-        portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
+        deps.portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
 
     # Set the experiment-start equity once, on the first live open run.
     # Never overwritten — used to enforce MAX_EXPERIMENT_DRAWDOWN_USD for the lifetime of the run.
     if not config.IS_PAPER and not dry_run and mode == "open":
-        save_experiment_baseline(account_before["portfolio_value"])
+        deps.save_experiment_baseline(account_before["portfolio_value"])
     if unexpected_positions and not config.IS_PAPER and should_run_live_gates:
         msg = (
             f"Unexpected broker position(s) with no local record: {sorted(unexpected_positions)}. "
             "These have been added as placeholders. Verify origin before continuing."
         )
         logger.critical(msg)
-        audit_log.log_event("UNEXPECTED_POSITIONS", {"symbols": sorted(unexpected_positions)})
-        alerts.alert_error("UNEXPECTED BROKER POSITIONS", msg)
+        deps.audit_log.log_event("UNEXPECTED_POSITIONS", {"symbols": sorted(unexpected_positions)})
+        deps.alerts.alert_error("UNEXPECTED BROKER POSITIONS", msg)
         # Write halt — unknown positions means broker state cannot be trusted
         os.makedirs(config.LOG_DIR, exist_ok=True)
         with open(config.HALT_FILE, "w") as _hf:
@@ -2513,7 +2655,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
             _hf.write("\n")
         sys.exit(1)
 
-    stops_ok = trader.ensure_stops_attached(client)
+    stops_ok = deps.trader.ensure_stops_attached(client)
     if not stops_ok and not config.IS_PAPER and not dry_run:
         logger.critical(
             "ensure_stops_attached reported uncovered live positions — halting to prevent "
@@ -2528,7 +2670,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         with open(config.HALT_FILE, "w") as f:
             json.dump(halt_data, f, indent=2)
             f.write("\n")
-        alerts.alert_error(
+        deps.alerts.alert_error(
             "HALT — UNCOVERED POSITIONS",
             "Bot halted at startup: one or more live positions have no stop protection. "
             "Attach stops manually, then run --clear-halt.",
@@ -2536,7 +2678,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         sys.exit(1)
 
     # ── Risk limits (health, circuit breaker, daily loss, experiment drawdown) ─
-    flags = _evaluate_risk_limits(client, account_before, dry_run)
+    flags = _evaluate_risk_limits(client, account_before, dry_run, deps=deps)
     if flags is None:
         return
 
@@ -2544,27 +2686,27 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
     executed_symbols: set[str] = set()
 
     # ── Market context ────────────────────────────────────────────────────────
-    mc = _fetch_market_context()
+    mc = _fetch_market_context(deps=deps)
 
     # ── Position state + managed exits ───────────────────────────────────────
-    snap = _get_position_snapshot(client)
-    _manage_existing_positions(client, dry_run, all_trades, snap, mode=mode)
-    snap = _get_position_snapshot(client)  # refresh after exits
+    snap = _get_position_snapshot(client, deps=deps)
+    _manage_existing_positions(client, dry_run, all_trades, snap, mode=mode, deps=deps)
+    snap = _get_position_snapshot(client, deps=deps)  # refresh after exits
 
     # ── Fetch + enrich market data, pre-filter candidates ────────────────────
-    db = _build_data_bundle(client, snap, mc, mode)
+    db = _build_data_bundle(client, snap, mc, mode, deps=deps)
     if db is None:
         return
 
     # ── AI analysis + validation + decision logging ───────────────────────────
-    account_now = trader.get_account_info(client)
-    decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols)
+    account_now = deps.trader.get_account_info(client)
+    decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols, deps=deps)
     if decisions is None:
         return
 
     # ── Force-cover intraday positions (close pass only) ─────────────────────
     if mode == "close":
-        _force_cover_intraday_positions(client, dry_run, all_trades)
+        _force_cover_intraday_positions(client, dry_run, all_trades, deps=deps)
 
     # ── Execute sells / covers ────────────────────────────────────────────────
     _execute_sell_phase(
@@ -2577,6 +2719,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         _live_shadow,
         snapshots=db.snapshots,
         regime_name=mc.regime.get("regime", "UNKNOWN"),
+        deps=deps,
     )
 
     # ── Execute buys ────────────────────────────────────────────────────────────
@@ -2598,6 +2741,7 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         _live_shadow=_live_shadow,
         all_trades=all_trades,
         executed_symbols=executed_symbols,
+        deps=deps,
     )
 
     # ── Execute shorts ────────────────────────────────────────────────────────
@@ -2611,14 +2755,26 @@ def _run_inner(dry_run: bool, mode: str, today: str, _live_shadow: bool = False)
         executed_symbols=executed_symbols,
         dry_run=dry_run,
         _live_shadow=_live_shadow,
+        deps=deps,
     )
 
     # ── Attach stops + late-fill reconciliation ──────────────────────────────
-    _reconcile_late_fills(client, today, mode, mc, decisions, executed_symbols, all_trades, dry_run)
+    _reconcile_late_fills(
+        client, today, mode, mc, decisions, executed_symbols, all_trades, dry_run, deps=deps
+    )
 
     # ── Finalise ──────────────────────────────────────────────────────────────
     _finalise(
-        client, today, mode, account_before, decisions, all_trades, run_id, dry_run, _live_shadow
+        client,
+        today,
+        mode,
+        account_before,
+        decisions,
+        all_trades,
+        run_id,
+        dry_run,
+        _live_shadow,
+        deps=deps,
     )
 
 

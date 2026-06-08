@@ -806,7 +806,7 @@ class TestRunGuards(unittest.TestCase):
 
 
 class RunInnerBase(unittest.TestCase):
-    """Provides _patch_all() context manager that stubs every external dependency."""
+    """Provides _make_deps() helper that builds a TradingDeps with MagicMock fields."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -814,193 +814,254 @@ class RunInnerBase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
 
-    def _patch_all(self, **overrides):
-        """Return an ExitStack with all _run_inner dependencies patched."""
-        defaults = {
-            "main.trader.get_client": MagicMock(),
-            "main.trader.is_market_open": True,
-            "main.trader.get_account_info": _account(),
-            "main.trader.get_open_positions": [],
-            "main.trader.reconcile_positions": set(),
-            "main.trader.ensure_stops_attached": None,
-            "main.trader.get_position_ages": {},
-            "main.trader.get_stale_positions": [],
-            "main.trader.get_intraday_positions": [],
-            "main.trader.record_buy": None,
-            "main.trader.record_sell": None,
-            "main.trader.close_position": OrderResult(status=OrderStatus.FILLED, symbol="X"),
-            "main.trader.place_buy_order": OrderResult(
-                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
-            ),
-            "main.trader.place_trailing_stop": None,
-            "main.portfolio_tracker.load_history": [],
-            "main.portfolio_tracker.get_track_record": [],
-            "main.portfolio_tracker.save_daily_run": _saved_record(),
-            "main.portfolio_tracker.print_summary": None,
-            "main.portfolio_tracker.save_daily_baseline": None,
-            "main.portfolio_tracker.load_daily_baseline": None,
-            "main.risk_manager.check_circuit_breaker": (False, 0.0),
-            "main.risk_manager.check_daily_loss": (False, 0.0),
-            "main.risk_manager.validate_buy_candidates": lambda c, **kw: c,
-            "main.position_sizer.risk_budget_size": 500.0,
-            "main.position_sizer.get_max_positions": 5,
-            "main.market_data.get_vix": 18.0,
-            "main.market_data.get_spy_5d_return": 1.5,
-            "main.market_data.get_spy_10d_return": 2.5,
-            "main.stock_scanner.get_market_regime": _regime(),
-            "main.stock_scanner.get_top_movers": [],
-            "main.stock_scanner.prefilter_candidates": [],
-            "main.macro_calendar.get_macro_risk": _macro(),
-            "main.get_macro_snapshot": _macro_snapshot(),
-            "main.get_sentiment_snapshot": _sentiment_snapshot(),
-            "main.sector_data.get_sector_performance": {},
-            "main.sector_data.get_leading_sectors": [],
-            "main.get_latest_review": "",
-            "main.earnings_calendar.get_earnings_risk_positions": {},
-            "main._fetch_atr_for_held": {},
-            "main._check_rule_based_stops": set(),
-            "main._handle_partial_exits": [],
-            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
-            "main.options_scanner.get_options_signals": {},
-            "main.news_fetcher.fetch_news": {},
-            "main.sanitize_headlines": {},
-            "main.sentiment_module.get_sentiment": {},
-            "main.ai_analyst.get_trading_decisions": _decisions(),
-            "main.validate_ai_response": (True, []),
-            "main.check_pre_trade": (True, ""),
-            "main.decision_log.log_decisions": None,
-            "main.audit_log.log_ai_decision": None,
-            "main.audit_log.log_run_start": None,
-            "main.audit_log.log_run_end": None,
-            "main.audit_log.log_order_placed": None,
-            "main.audit_log.log_order_filled": None,
-            "main.audit_log.log_position_closed": None,
-            "main.audit_log.log_validation_failure": None,
-            "main.audit_log.log_circuit_breaker": None,
-            "main.audit_log.log_daily_loss_limit": None,
-            "main.audit_log.log_macro_skip": None,
-            "main.audit_log.log_earnings_exit": None,
-            "main.alerts.alert_circuit_breaker": None,
-            "main.alerts.alert_daily_loss": None,
-            "main.alerts.alert_error": None,
-            "main.performance.generate_dashboard": None,
-            "main.performance.record_trade_outcome": None,
-            "main.get_day_summary": {
+    def _make_deps(self, **overrides):
+        """Return a TradingDeps whose fields are MagicMocks with sensible defaults.
+
+        Keyword args use double-underscore notation to set return_values on sub-attributes:
+            trader__is_market_open=True  →  deps.trader.is_market_open.return_value = True
+        Or pass a whole mock object directly:
+            trader=my_trader_mock        →  deps.trader = my_trader_mock
+        """
+        from conftest import make_test_deps
+        from utils.health import HealthReport, HealthStatus
+
+        # ── Flat field overrides (whole objects) ──────────────────────────────
+        flat_overrides = {k: v for k, v in overrides.items() if "__" not in k}
+        deps = make_test_deps(**flat_overrides)
+
+        # ── Wire sensible defaults on sub-attributes ──────────────────────────
+        deps.trader.get_client.return_value = MagicMock()
+        deps.trader.is_market_open.return_value = True
+        deps.trader.get_account_info.return_value = _account()
+        deps.trader.get_open_positions.return_value = []
+        deps.trader.reconcile_positions.return_value = set()
+        deps.trader.ensure_stops_attached.return_value = None
+        deps.trader.get_position_ages.return_value = {}
+        deps.trader.get_intraday_positions.return_value = []
+        deps.trader.record_buy.return_value = None
+        deps.trader.record_sell.return_value = None
+        deps.trader.close_position.return_value = OrderResult(status=OrderStatus.FILLED, symbol="X")
+        deps.trader.place_buy_order.return_value = OrderResult(
+            status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+        )
+        deps.trader.place_trailing_stop.return_value = None
+        deps.trader.has_pending_buy.return_value = False
+        deps.trader.get_total_open_exposure.return_value = 0.0
+        deps.trader.get_daily_notional.return_value = 0.0
+        deps.trader.add_daily_notional.return_value = None
+        deps.trader.get_open_shorts.return_value = set()
+        deps.trader.get_long_notional.return_value = 0.0
+        deps.trader.get_short_notional.return_value = 0.0
+        deps.portfolio_tracker.load_history.return_value = []
+        deps.portfolio_tracker.get_track_record.return_value = []
+        deps.portfolio_tracker.save_daily_run.return_value = _saved_record()
+        deps.portfolio_tracker.print_summary.return_value = None
+        deps.portfolio_tracker.save_daily_baseline.return_value = None
+        deps.portfolio_tracker.load_daily_baseline.return_value = None
+        deps.risk_manager.check_circuit_breaker.return_value = (False, 0.0)
+        deps.risk_manager.check_daily_loss.return_value = (False, 0.0)
+        deps.risk_manager.validate_buy_candidates.side_effect = lambda c, **kw: c
+        deps.risk_manager.check_vix_stop_adjustment.return_value = 5.0
+        deps.position_sizer.risk_budget_size.return_value = 500.0
+        deps.position_sizer.get_max_positions.return_value = 5
+        deps.position_sizer.get_signal_size_multiplier.return_value = 1.0
+        deps.position_sizer.cofiring_boost.return_value = 1.0
+        deps.position_sizer.momentum_quality_score.return_value = 0
+        deps.position_sizer.mqr_size_multiplier.return_value = 1.0
+        deps.position_sizer.amihud_size_scalar.return_value = 1.0
+        deps.position_sizer.drawdown_scalar.return_value = 1.0
+        deps.market_data.get_vix.return_value = 18.0
+        deps.market_data.get_spy_5d_return.return_value = 1.5
+        deps.market_data.get_spy_10d_return.return_value = 2.5
+        deps.market_data.get_market_snapshots.return_value = [
+            {"symbol": "AAPL", "current_price": 150.0}
+        ]
+        deps.market_data.get_intraday_data.return_value = {}
+        deps.stock_scanner.get_market_regime.return_value = _regime()
+        deps.stock_scanner.get_top_movers.return_value = []
+        deps.stock_scanner.prefilter_candidates.return_value = []
+        deps.stock_scanner.score_candidate.return_value = 0
+        deps.stock_scanner.scan_short_candidates.return_value = []
+        deps.macro_calendar.get_macro_risk.return_value = _macro()
+        deps.get_macro_snapshot.return_value = _macro_snapshot()
+        deps.get_sentiment_snapshot.return_value = _sentiment_snapshot()
+        deps.sector_data.get_sector_performance.return_value = {}
+        deps.sector_data.get_leading_sectors.return_value = []
+        deps.sector_data.get_sector.return_value = "Technology"
+        deps.get_latest_review.return_value = ""
+        deps.earnings_calendar.get_earnings_risk_positions.return_value = {}
+        deps.options_scanner.get_options_signals.return_value = {}
+        deps.news_fetcher.fetch_news.return_value = {}
+        deps.sanitize_headlines.return_value = {}
+        deps.sentiment.get_sentiment.return_value = {}
+        deps.ai_analyst.get_trading_decisions.return_value = _decisions()
+        # Only set defaults for callable fields when they haven't been replaced by flat overrides
+        if "validate_ai_response" not in flat_overrides:
+            deps.validate_ai_response.return_value = (True, [])
+        if "check_pre_trade" not in flat_overrides:
+            deps.check_pre_trade.return_value = (True, "")
+        if "check_quote_gate" not in flat_overrides:
+            deps.check_quote_gate.return_value = MagicMock(approved=True)
+        deps.decision_log.log_decisions.return_value = None
+        deps.audit_log.log_ai_decision.return_value = None
+        deps.audit_log.log_run_start.return_value = None
+        deps.audit_log.log_run_end.return_value = None
+        deps.audit_log.log_order_placed.return_value = None
+        deps.audit_log.log_order_filled.return_value = None
+        deps.audit_log.log_position_closed.return_value = None
+        deps.audit_log.log_validation_failure.return_value = None
+        deps.audit_log.log_circuit_breaker.return_value = None
+        deps.audit_log.log_daily_loss_limit.return_value = None
+        deps.audit_log.log_macro_skip.return_value = None
+        deps.audit_log.log_earnings_exit.return_value = None
+        deps.audit_log.log_event.return_value = None
+        deps.audit_log.has_open_buys_run_today.return_value = False
+        deps.audit_log.log_open_buys_locked.return_value = None
+        deps.audit_log.set_run_id.return_value = None
+        deps.decision_log.set_run_id.return_value = None
+        deps.alerts.alert_circuit_breaker.return_value = None
+        deps.alerts.alert_daily_loss.return_value = None
+        deps.alerts.alert_error.return_value = None
+        deps.performance.generate_dashboard.return_value = None
+        deps.performance.record_trade_outcome.return_value = None
+        # Callable fields: only set default if not overridden by flat overrides
+        _callable_defaults = {
+            "get_day_summary": {
                 "date": "2026-01-15",
                 "account_before": _account(),
                 "account_after": _account(),
                 "daily_pnl": 0.0,
             },
-            "main.emailer.send_summary": None,
-            "main.audit_log.log_event": None,
-            "main.trader.has_pending_buy": False,
-            "main.trader.get_total_open_exposure": 0.0,
-            "main.trader.get_daily_notional": 0.0,
-            "main.trader.add_daily_notional": None,
-            "main.build_scan_universe": [],
-            "main.save_experiment_baseline": None,
-            "main.load_experiment_baseline": None,
-            "main.insider_feed.get_insider_activity": {},
-            "main.av_sentiment.get_av_sentiment": {},
-            "main.earnings_surprise.get_earnings_surprise": {},
-            "main.earnings_surprise.get_earnings_miss": {},
-            "main.short_interest.get_short_interest": {},
-            "main.edgar_client.get_edgar_signals_batch": {},
-            "main.options_data_module.get_options_batch": {},
-            "main.audit_log.has_open_buys_run_today": False,
-            "main.audit_log.log_open_buys_locked": None,
-            "main.get_short_universe": [],
-            "main.scan_short_universe": [],
-            "main._fetch_adverse_vol_for_held": {},
-            "main.exit_optimiser.compute_atr_pct": None,
-            "main.position_sizer.get_signal_size_multiplier": 1.0,
-            "main.position_sizer.cofiring_boost": 1.0,
-            "main.sector_momentum.get_sector_momentum_ranks": {},
-            "main.exit_optimiser.compute_garch_vol_scalar": 1.0,
-            "main.exit_optimiser.signal_invalidated": False,
-        }
-        # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
-        if "main.run_startup_health_check" not in overrides:
-            from utils.health import HealthReport, HealthStatus
-
-            defaults["main.run_startup_health_check"] = HealthReport(
+            "build_scan_universe": [],
+            "save_experiment_baseline": None,
+            "load_experiment_baseline": None,
+            "get_short_universe": [],
+            "scan_short_universe": [],
+            "run_startup_health_check": HealthReport(
                 status=HealthStatus.GREEN, issues=[], metrics={}
-            )
-        defaults.update(overrides)
+            ),
+        }
+        for _fname, _fval in _callable_defaults.items():
+            if _fname in flat_overrides:
+                continue
+            getattr(deps, _fname).return_value = _fval
+        deps.emailer.send_summary.return_value = None
+        deps.insider_feed.get_insider_activity.return_value = {}
+        deps.av_sentiment.get_av_sentiment.return_value = {}
+        deps.earnings_surprise.get_earnings_surprise.return_value = {}
+        deps.earnings_surprise.get_earnings_miss.return_value = {}
+        deps.short_interest.get_short_interest.return_value = {}
+        deps.edgar_client.get_edgar_signals_batch.return_value = {}
+        deps.options_data.get_options_batch.return_value = {}
+        deps.exit_optimiser.compute_atr_pct.return_value = None
+        deps.exit_optimiser.compute_garch_vol_scalar.return_value = 1.0
+        deps.exit_optimiser.signal_invalidated.return_value = False
+        deps.exit_optimiser.profit_acceleration_triggered.return_value = None
+        deps.exit_optimiser.adverse_volume_triggered.return_value = False
+        deps.sector_momentum.get_sector_momentum_ranks.return_value = {}
+        deps.sector_momentum.sector_allowed_long.return_value = True
+        deps.correlation.correlated_with_held.return_value = False
 
-        stack = contextlib.ExitStack()
-        mocks = {}
-        for target, return_val in defaults.items():
-            if isinstance(return_val, Exception):
-                m = stack.enter_context(patch(target, side_effect=return_val))
-            elif isinstance(return_val, MagicMock):
-                # Use new= so callers can assert directly on the passed mock object
-                m = stack.enter_context(patch(target, new=return_val))
-            elif callable(return_val):
-                m = stack.enter_context(patch(target, side_effect=return_val))
-            elif return_val is None:
-                m = stack.enter_context(patch(target, return_value=None))
-            elif ".config." in target:
-                # Config attributes are scalars, not callables — must use new= so the
-                # attribute itself holds the value rather than a MagicMock wrapper.
-                m = stack.enter_context(patch(target, new=return_val))
+        # ── Double-underscore attribute overrides ──────────────────────────────
+        for key, val in overrides.items():
+            if "__" not in key:
+                continue
+            field, _, attr = key.partition("__")
+            target_mock = getattr(deps, field)
+            if isinstance(val, MagicMock):
+                # Replace the attribute directly so tests can assert on the mock itself
+                setattr(target_mock, attr, val)
             else:
-                m = stack.enter_context(patch(target, return_value=return_val))
-            mocks[target] = m
-        return stack, mocks
+                sub_mock = getattr(target_mock, attr)
+                if isinstance(val, Exception) or (callable(val) and not isinstance(val, MagicMock)):
+                    sub_mock.side_effect = val
+                else:
+                    sub_mock.return_value = val
+                    sub_mock.side_effect = None
+
+        return deps
+
+    def _inner_patches(self, **overrides):
+        """Return an ExitStack patching the module-level internal helpers.
+
+        These helpers (_fetch_atr_for_held, _handle_partial_exits,
+        _check_rule_based_stops, _fetch_adverse_vol_for_held) are still called
+        as bare functions inside pipeline phases and are not on TradingDeps.
+        """
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            patch("main._fetch_atr_for_held", return_value=overrides.get("_fetch_atr_for_held", {}))
+        )
+        stack.enter_context(
+            patch(
+                "main._handle_partial_exits",
+                return_value=overrides.get("_handle_partial_exits", []),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "main._check_rule_based_stops",
+                return_value=overrides.get("_check_rule_based_stops", set()),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "main._fetch_adverse_vol_for_held",
+                return_value=overrides.get("_fetch_adverse_vol_for_held", {}),
+            )
+        )
+        return stack
 
 
 class TestRunInnerMarketClosed(RunInnerBase):
     def test_returns_early_without_saving(self):
         save_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.is_market_open": False,
-                "main.portfolio_tracker.save_daily_run": save_mock,
-            }
+        deps = self._make_deps(
+            trader__is_market_open=False,
+            portfolio_tracker__save_daily_run=save_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         save_mock.assert_not_called()
 
 
 class TestRunInnerMiddayClose(RunInnerBase):
     def test_midday_does_not_send_email(self):
         email_mock = MagicMock()
-        stack, mocks = self._patch_all(**{"main.emailer.send_summary": email_mock})
-        with stack:
+        deps = self._make_deps(emailer__send_summary=email_mock)
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
         email_mock.assert_not_called()
 
     def test_close_sends_email(self):
         email_mock = MagicMock()
-        stack, mocks = self._patch_all(**{"main.emailer.send_summary": email_mock})
-        with stack:
+        deps = self._make_deps(emailer__send_summary=email_mock)
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="close", today="2026-01-15")
+            _run_inner(dry_run=False, mode="close", today="2026-01-15", deps=deps)
         email_mock.assert_called_once()
 
     def test_close_dry_run_does_not_send_email(self):
         email_mock = MagicMock()
-        stack, mocks = self._patch_all(**{"main.emailer.send_summary": email_mock})
-        with stack:
+        deps = self._make_deps(emailer__send_summary=email_mock)
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="close", today="2026-01-15")
+            _run_inner(dry_run=True, mode="close", today="2026-01-15", deps=deps)
         email_mock.assert_not_called()
 
     def test_midday_saves_record(self):
         save_mock = MagicMock(return_value=_saved_record(mode="midday"))
-        stack, mocks = self._patch_all(**{"main.portfolio_tracker.save_daily_run": save_mock})
-        with stack:
+        deps = self._make_deps(portfolio_tracker__save_daily_run=save_mock)
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
         save_mock.assert_called_once()
 
 
@@ -1008,34 +1069,28 @@ class TestRunInnerCircuitBreaker(RunInnerBase):
     def test_circuit_breaker_blocks_buys(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.risk_manager.check_circuit_breaker": (True, -15.0),
-                "main.trader.place_buy_order": buy_mock,
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            risk_manager__check_circuit_breaker=(True, -15.0),
+            trader__place_buy_order=buy_mock,
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_circuit_breaker_sends_alert(self):
         alert_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.risk_manager.check_circuit_breaker": (True, -15.0),
-                "main.alerts.alert_circuit_breaker": alert_mock,
-            }
+        deps = self._make_deps(
+            risk_manager__check_circuit_breaker=(True, -15.0),
+            alerts__alert_circuit_breaker=alert_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         alert_mock.assert_called_once()
 
 
@@ -1052,17 +1107,15 @@ class TestRunInnerDailyLoss(RunInnerBase):
             }
         ]
         close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        stack, mocks = self._patch_all(
-            **{
-                "main.risk_manager.check_daily_loss": (True, -6.0),
-                "main.trader.get_open_positions": positions,
-                "main.trader.close_position": close_mock,
-            }
+        deps = self._make_deps(
+            risk_manager__check_daily_loss=(True, -6.0),
+            trader__get_open_positions=positions,
+            trader__close_position=close_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_called_once()
 
     def test_daily_loss_dry_run_skips_close(self):
@@ -1077,64 +1130,54 @@ class TestRunInnerDailyLoss(RunInnerBase):
             }
         ]
         close_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.risk_manager.check_daily_loss": (True, -6.0),
-                "main.trader.get_open_positions": positions,
-                "main.trader.close_position": close_mock,
-            }
+        deps = self._make_deps(
+            risk_manager__check_daily_loss=(True, -6.0),
+            trader__get_open_positions=positions,
+            trader__close_position=close_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_not_called()
 
     def test_daily_loss_sends_alert(self):
         alert_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.risk_manager.check_daily_loss": (True, -6.0),
-                "main.alerts.alert_daily_loss": alert_mock,
-            }
+        deps = self._make_deps(
+            risk_manager__check_daily_loss=(True, -6.0),
+            alerts__alert_daily_loss=alert_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         alert_mock.assert_called_once()
 
 
 class TestRunInnerOpenAborts(RunInnerBase):
     def test_no_snapshots_aborts_without_saving(self):
         save_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.market_data.get_market_snapshots": [],
-                "main.portfolio_tracker.save_daily_run": save_mock,
-            }
+        deps = self._make_deps(
+            market_data__get_market_snapshots=[],
+            portfolio_tracker__save_daily_run=save_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         save_mock.assert_not_called()
 
     def test_ai_returns_none_aborts_without_saving(self):
         save_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": None,
-                "main.portfolio_tracker.save_daily_run": save_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=None,
+            portfolio_tracker__save_daily_run=save_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         save_mock.assert_not_called()
 
 
@@ -1146,23 +1189,21 @@ class TestRunInnerBuyFiltering(RunInnerBase):
         decisions = _decisions(
             buys=[{"symbol": "GHOST", "confidence": 8, "key_signal": "momentum"}]
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.validate_ai_response": (
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            validate_ai_response=MagicMock(
+                return_value=(
                     False,
                     ["BUY candidate 'GHOST' not in scanned universe — rejecting"],
-                ),
-                "main.trader.place_buy_order": buy_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+                )
+            ),
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_validation_failure_blocks_all_claude_buys(self):
@@ -1174,23 +1215,21 @@ class TestRunInnerBuyFiltering(RunInnerBase):
                 {"symbol": "GHOST", "confidence": 7, "key_signal": "momentum"},
             ]
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.validate_ai_response": (
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            validate_ai_response=MagicMock(
+                return_value=(
                     False,
                     ["BUY candidate 'GHOST' not in scanned universe — rejecting"],
-                ),
-                "main.trader.place_buy_order": buy_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+                )
+            ),
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_structural_validation_failure_blocks_claude_driven_sells(self):
@@ -1207,24 +1246,22 @@ class TestRunInnerBuyFiltering(RunInnerBase):
                 }
             ],
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [
-                    {"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}
-                ],
-                "main.ai_analyst.get_trading_decisions": decisions,
-                # Structural error (Pydantic field path) — not a "BUY candidate '" prefix
-                "main.validate_ai_response": (
+        deps = self._make_deps(
+            trader__get_open_positions=[{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
+            ai_analyst__get_trading_decisions=decisions,
+            # Structural error (Pydantic field path) — not a "BUY candidate '" prefix
+            validate_ai_response=MagicMock(
+                return_value=(
                     False,
                     ["position_decisions → 0 → action: Input should be 'HOLD' or 'SELL'"],
-                ),
-                "main.trader.close_position": sell_mock,
-            }
+                )
+            ),
+            trader__close_position=sell_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         sell_mock.assert_not_called()
 
     def test_buy_domain_error_preserves_claude_sells(self):
@@ -1242,23 +1279,21 @@ class TestRunInnerBuyFiltering(RunInnerBase):
                 }
             ],
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [
-                    {"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}
-                ],
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.validate_ai_response": (
+        deps = self._make_deps(
+            trader__get_open_positions=[{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
+            ai_analyst__get_trading_decisions=decisions,
+            validate_ai_response=MagicMock(
+                return_value=(
                     False,
                     ["BUY candidate 'GHOST' not in scanned universe — rejecting"],
-                ),
-                "main.trader.close_position": sell_mock,
-            }
+                )
+            ),
+            trader__close_position=sell_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         # AAPL sell must still fire despite the invalid buy candidate
         sell_mock.assert_called_once()
 
@@ -1271,80 +1306,66 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             buys=[{"symbol": "MSFT", "confidence": 8, "key_signal": "momentum"}],
             sells=[{"symbol": "AAPL", "action": "SELL", "confidence": 7, "reasoning": "weak"}],
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [
-                    {"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}
-                ],
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.validate_ai_response": (
+        deps = self._make_deps(
+            trader__get_open_positions=[{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
+            ai_analyst__get_trading_decisions=decisions,
+            validate_ai_response=MagicMock(
+                return_value=(
                     False,
                     ["buy_candidates → 0 → reasoning: String should have at most 2000 characters"],
-                ),
-                "main.trader.close_position": sell_mock,
-            }
+                )
+            ),
+            trader__close_position=sell_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         sell_mock.assert_called_once()
 
     def test_bearish_regime_blocks_buys(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": _regime(bearish=True),
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime=_regime(bearish=True),
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_macro_risk_blocks_buys(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.macro_calendar.get_macro_risk": _macro(high_risk=True),
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            macro_calendar__get_macro_risk=_macro(high_risk=True),
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_dry_run_does_not_place_buy_orders(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_sell_executed_in_open_mode(self):
@@ -1360,37 +1381,31 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             }
         ]
         decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.close_position": close_mock,
-                "main.trader.get_position_meta": MagicMock(
-                    return_value={"signal": "m", "regime": "X", "confidence": 7}
-                ),
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            ai_analyst__get_trading_decisions=decisions,
+            trader__close_position=close_mock,
         )
-        with stack:
+        deps.trader.get_position_meta.return_value = {"signal": "m", "regime": "X", "confidence": 7}
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_called()
 
     def test_correlated_candidate_not_bought(self):
         """When correlation filter returns True, buy order is skipped for that candidate."""
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.correlation.correlated_with_held": True,
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            correlation__correlated_with_held=True,
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_correlation_filter_executes_log_and_continue(self):
@@ -1406,20 +1421,18 @@ class TestRunInnerBuyFiltering(RunInnerBase):
             "vol_ratio": 1.5,
             "avg_volume": 1_000_000,
         }
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.prefilter_candidates": [candidate],
-                "main.ai_analyst.get_trading_decisions": _decisions(
-                    buys=[{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}]
-                ),
-                "main.correlation.correlated_with_held": True,
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            stock_scanner__prefilter_candidates=[candidate],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}]
+            ),
+            correlation__correlated_with_held=True,
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
 
@@ -1525,21 +1538,20 @@ class TestRunInnerEarningsExit(RunInnerBase):
                 "current_price": 150.0,
             }
         ]
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
-                "main.trader.close_position": close_mock,
-                "main.trader.get_position_meta": MagicMock(
-                    return_value={"signal": "momentum", "regime": "BULL_TRENDING", "confidence": 8}
-                ),
-                "main._handle_partial_exits": [],
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            earnings_calendar__get_earnings_risk_positions={"AAPL": "2026-01-17"},
+            trader__close_position=close_mock,
         )
-        with stack:
+        deps.trader.get_position_meta.return_value = {
+            "signal": "momentum",
+            "regime": "BULL_TRENDING",
+            "confidence": 8,
+        }
+        with self._inner_patches(_handle_partial_exits=[]):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_called()
         # Verify the call was for AAPL
         self.assertEqual(close_mock.call_args[0][1], "AAPL")
@@ -1547,17 +1559,15 @@ class TestRunInnerEarningsExit(RunInnerBase):
     def test_earnings_exit_not_triggered_for_unheld_symbol(self):
         close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
         # AAPL has earnings risk but is NOT held
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [],
-                "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
-                "main.trader.close_position": close_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[],
+            earnings_calendar__get_earnings_risk_positions={"AAPL": "2026-01-17"},
+            trader__close_position=close_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_not_called()
 
     def test_earnings_exit_failure_logs_error(self):
@@ -1577,18 +1587,18 @@ class TestRunInnerEarningsExit(RunInnerBase):
                 "current_price": 150.0,
             }
         ]
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
-                "main.trader.close_position": close_mock,
-                "main._handle_partial_exits": [],
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            earnings_calendar__get_earnings_risk_positions={"AAPL": "2026-01-17"},
+            trader__close_position=close_mock,
         )
-        with stack, self.assertLogs("main", level="ERROR") as cm:
+        with (
+            self._inner_patches(_handle_partial_exits=[]),
+            self.assertLogs("main", level="ERROR") as cm,
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         log_output = "\n".join(cm.output)
         self.assertIn("Earnings exit FAILED", log_output)
         self.assertIn("AAPL", log_output)
@@ -1598,20 +1608,16 @@ class TestRunInnerOptionsSignals(RunInnerBase):
     """Line 425: options_sigs non-empty → logger.info('Options signals fetched...')."""
 
     def test_options_signals_fetched_log_when_non_empty(self):
-        stack, mocks = self._patch_all(
-            **{
-                "main.options_scanner.get_options_signals": {
-                    "AAPL": {"put_call_ratio": 0.5, "unusual_calls": True}
-                },
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            options_scanner__get_options_signals={
+                "AAPL": {"put_call_ratio": 0.5, "unusual_calls": True}
+            },
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack, self.assertLogs("main", level="INFO") as cm:
+        with self._inner_patches(), self.assertLogs("main", level="INFO") as cm:
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         log_output = "\n".join(cm.output)
         self.assertIn("Options signals fetched", log_output)
 
@@ -1631,30 +1637,26 @@ class TestRunInnerStaleTimeBased(RunInnerBase):
                 "current_price": 150.0,
             }
         ]
-        # get_position_meta must return a signal so the stale threshold can be looked up
-        meta_mock = MagicMock(
-            return_value={"signal": "momentum", "regime": "BULL_TRENDING", "confidence": 7}
-        )
         # position_ages must be high enough to be >= MAX_HOLD_DAYS
         ages = {"AAPL": config.MAX_HOLD_DAYS + 10}
-        stack, mocks = self._patch_all(
-            **{
-                # Return positions consistently across all calls inside _run_inner
-                "main.trader.get_open_positions": positions,
-                # No sell decision from AI for AAPL
-                "main.ai_analyst.get_trading_decisions": _decisions(sells=[]),
-                "main.trader.get_position_ages": ages,
-                "main.trader.close_position": close_mock,
-                "main.trader.get_position_meta": meta_mock,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            # No sell decision from AI for AAPL
+            ai_analyst__get_trading_decisions=_decisions(sells=[]),
+            trader__get_position_ages=ages,
+            trader__close_position=close_mock,
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        # get_position_meta must return a signal so the stale threshold can be looked up
+        deps.trader.get_position_meta.return_value = {
+            "signal": "momentum",
+            "regime": "BULL_TRENDING",
+            "confidence": 7,
+        }
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         # AAPL should be closed via the time-based path
         close_mock.assert_called()
 
@@ -1680,18 +1682,16 @@ class TestRunInnerSellFailed(RunInnerBase):
             }
         ]
         decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.close_position": close_mock,
-                "main.alerts.alert_error": alert_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            ai_analyst__get_trading_decisions=decisions,
+            trader__close_position=close_mock,
+            alerts__alert_error=alert_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         alert_mock.assert_called()
         # The alert should mention the sell failure
         call_args_str = str(alert_mock.call_args)
@@ -1715,18 +1715,16 @@ class TestRunInnerDryRunSell(RunInnerBase):
         ]
         decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
         save_mock = MagicMock(return_value=_saved_record())
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.close_position": close_mock,
-                "main.portfolio_tracker.save_daily_run": save_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            ai_analyst__get_trading_decisions=decisions,
+            trader__close_position=close_mock,
+            portfolio_tracker__save_daily_run=save_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_not_called()
         # save_daily_run should have been called with a trade recorded
         call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
@@ -1746,29 +1744,20 @@ class TestRunInnerRegimeMaxOrders(RunInnerBase):
             )
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 9, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "HIGH_VOL_DOWNTREND",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "HIGH_VOL_DOWNTREND", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
     def test_normal_regime_uses_max_orders_per_run(self):
@@ -1779,29 +1768,20 @@ class TestRunInnerRegimeMaxOrders(RunInnerBase):
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
         # Use a normal regime (not CHOPPY, not HIGH_VOL)
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "BULL_TRENDING",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "BULL_TRENDING", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
 
@@ -1811,30 +1791,21 @@ class TestRunInnerPreTradeCheckFailed(RunInnerBase):
     def test_pre_trade_check_failure_skips_buy(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "BULL_TRENDING",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.check_pre_trade": (False, "daily notional exceeded"),
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "BULL_TRENDING", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            check_pre_trade=MagicMock(return_value=(False, "daily notional exceeded")),
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
 
@@ -1850,31 +1821,22 @@ class TestRunInnerStopFailedAfterBuy(RunInnerBase):
             status=OrderStatus.STOP_FAILED, symbol="AAPL", rejection_reason="api error"
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "BULL_TRENDING",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": MagicMock(return_value=buy_result),
-                "main.trader.place_trailing_stop": MagicMock(return_value=stop_result),
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-                "main.alerts.alert_error": alert_mock,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "BULL_TRENDING", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=MagicMock(return_value=buy_result),
+            trader__place_trailing_stop=MagicMock(return_value=stop_result),
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
+            alerts__alert_error=alert_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         # alert_error should have been called for STOP FAILED
         alert_calls = [str(c) for c in alert_mock.call_args_list]
         self.assertTrue(
@@ -1892,30 +1854,21 @@ class TestRunInnerBuyZeroFilledQty(RunInnerBase):
             status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=0.0
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "BULL_TRENDING",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": MagicMock(return_value=buy_result),
-                "main.trader.place_trailing_stop": stop_mock,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "BULL_TRENDING", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=MagicMock(return_value=buy_result),
+            trader__place_trailing_stop=stop_mock,
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         # No stop should be placed when filled_qty == 0
         stop_mock.assert_not_called()
 
@@ -1926,31 +1879,22 @@ class TestRunInnerSubShareGuard(RunInnerBase):
     def test_sub_share_position_skips_buy(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "BULL_TRENDING",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                # $5 notional at $10/share = 0.5 shares — sub-share, cannot be stop-protected
-                "main.position_sizer.risk_budget_size": 5.0,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 10.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 10.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "BULL_TRENDING", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            # $5 notional at $10/share = 0.5 shares — sub-share, cannot be stop-protected
+            position_sizer__risk_budget_size=5.0,
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 10.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 10.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
         )
-        with stack, self.assertLogs("main", level="WARNING") as cm:
+        with self._inner_patches(), self.assertLogs("main", level="WARNING") as cm:
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
         self.assertTrue(any("sub-share" in line for line in cm.output))
 
@@ -1961,34 +1905,51 @@ class TestRunInnerNotionalTooSmall(RunInnerBase):
     def test_too_small_notional_logs_warning_and_skips(self):
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.stock_scanner.get_market_regime": {
-                    "regime": "BULL_TRENDING",
-                    "is_bearish": False,
-                },
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                # risk_budget_size returns tiny notional below 1.0
-                "main.position_sizer.risk_budget_size": 0.50,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.trader.get_open_positions": [],
-                "main.position_sizer.get_max_positions": 5,
-            }
+        deps = self._make_deps(
+            stock_scanner__get_market_regime={"regime": "BULL_TRENDING", "is_bearish": False},
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=buy_mock,
+            # risk_budget_size returns tiny notional below 1.0
+            position_sizer__risk_budget_size=0.50,
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_account_info=_account(100_000, 50_000),
+            trader__get_open_positions=[],
+            position_sizer__get_max_positions=5,
         )
-        with stack, self.assertLogs("main", level="WARNING") as cm:
+        with self._inner_patches(), self.assertLogs("main", level="WARNING") as cm:
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
         log_output = "\n".join(cm.output)
         self.assertIn("too small", log_output)
+
+
+class TestRunInnerMQSBoost(RunInnerBase):
+    """Line 1910: MQS boost logger fires when mqr_size_multiplier > 1.0."""
+
+    def test_mqs_boost_logger_fires_when_multiplier_above_one(self):
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
+            position_sizer__mqr_size_multiplier=1.5,
+            position_sizer__momentum_quality_score=3,
+        )
+        with self._inner_patches(), self.assertLogs("main", level="INFO") as cm:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        log_output = "\n".join(cm.output)
+        self.assertIn("MQS boost", log_output)
 
 
 class TestMaxPositionsCappedByConfig(RunInnerBase):
@@ -2002,50 +1963,44 @@ class TestMaxPositionsCappedByConfig(RunInnerBase):
             )
         )
         stop_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.place_buy_order": buy_mock,
-                "main.trader.place_trailing_stop": stop_mock,
-                "main.position_sizer.get_max_positions": 3,
-                "main.config.MAX_POSITIONS": 2,
-                "main.trader.get_open_positions": [
+        deps = self._make_deps(
+            trader__place_buy_order=buy_mock,
+            trader__place_trailing_stop=stop_mock,
+            position_sizer__get_max_positions=3,
+            trader__get_open_positions=[
+                {
+                    "symbol": "MSFT",
+                    "market_value": 50.0,
+                    "unrealized_plpc": 0.0,
+                    "unrealized_pl": 0.0,
+                    "qty": 1,
+                    "current_price": 50.0,
+                },
+                {
+                    "symbol": "GOOG",
+                    "market_value": 50.0,
+                    "unrealized_plpc": 0.0,
+                    "unrealized_pl": 0.0,
+                    "qty": 1,
+                    "current_price": 50.0,
+                },
+            ],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[
                     {
-                        "symbol": "MSFT",
-                        "market_value": 50.0,
-                        "unrealized_plpc": 0.0,
-                        "unrealized_pl": 0.0,
-                        "qty": 1,
-                        "current_price": 50.0,
-                    },
-                    {
-                        "symbol": "GOOG",
-                        "market_value": 50.0,
-                        "unrealized_plpc": 0.0,
-                        "unrealized_pl": 0.0,
-                        "qty": 1,
-                        "current_price": 50.0,
-                    },
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.ai_analyst.get_trading_decisions": _decisions(
-                    buys=[
-                        {
-                            "symbol": "AAPL",
-                            "confidence": 8,
-                            "reasoning": "Strong breakout signal above key resistance.",
-                            "key_signal": "momentum",
-                        }
-                    ]
-                ),
-                "main.validate_ai_response": (True, []),
-            }
+                        "symbol": "AAPL",
+                        "confidence": 8,
+                        "reasoning": "Strong breakout signal above key resistance.",
+                        "key_signal": "momentum",
+                    }
+                ]
+            ),
         )
-        with stack:
+        with self._inner_patches(), patch("main.config.MAX_POSITIONS", 2):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         # 2 positions already open and MAX_POSITIONS=2 → 0 slots → no buy
         buy_mock.assert_not_called()
 
@@ -2055,33 +2010,31 @@ class TestExperimentDrawdownCap(RunInnerBase):
 
     def test_drawdown_cap_blocks_buys(self):
         buy_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.place_buy_order": buy_mock,
-                # Start equity $1000, current $940 → $60 loss exceeds $50 cap
-                "main.load_experiment_baseline": 1000.0,
-                "main.trader.get_account_info": _account(940, 300),
-                "main.config.MAX_EXPERIMENT_DRAWDOWN_USD": 50.0,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.ai_analyst.get_trading_decisions": _decisions(
-                    buys=[
-                        {
-                            "symbol": "AAPL",
-                            "confidence": 8,
-                            "reasoning": "Strong breakout signal above key resistance.",
-                            "key_signal": "momentum",
-                        }
-                    ]
-                ),
-                "main.validate_ai_response": (True, []),
-            }
+        deps = self._make_deps(
+            trader__place_buy_order=buy_mock,
+            # Start equity $1000, current $940 → $60 loss exceeds $50 cap
+            load_experiment_baseline=MagicMock(return_value=1000.0),
+            trader__get_account_info=_account(940, 300),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[
+                    {
+                        "symbol": "AAPL",
+                        "confidence": 8,
+                        "reasoning": "Strong breakout signal above key resistance.",
+                        "key_signal": "momentum",
+                    }
+                ]
+            ),
         )
-        with stack, self.assertLogs("main", level="CRITICAL") as cm:
+        with (
+            self._inner_patches(),
+            patch("main.config.MAX_EXPERIMENT_DRAWDOWN_USD", 50.0),
+            self.assertLogs("main", level="CRITICAL") as cm,
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
         self.assertTrue(any("drawdown" in line.lower() for line in cm.output))
 
@@ -2092,34 +2045,28 @@ class TestExperimentDrawdownCap(RunInnerBase):
             )
         )
         stop_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.place_buy_order": buy_mock,
-                "main.trader.place_trailing_stop": stop_mock,
-                # $10 loss well under $50 cap
-                "main.load_experiment_baseline": 1000.0,
-                "main.trader.get_account_info": _account(990, 500),
-                "main.config.MAX_EXPERIMENT_DRAWDOWN_USD": 50.0,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.ai_analyst.get_trading_decisions": _decisions(
-                    buys=[
-                        {
-                            "symbol": "AAPL",
-                            "confidence": 8,
-                            "reasoning": "Strong breakout signal above key resistance.",
-                            "key_signal": "momentum",
-                        }
-                    ]
-                ),
-                "main.validate_ai_response": (True, []),
-            }
+        deps = self._make_deps(
+            trader__place_buy_order=buy_mock,
+            trader__place_trailing_stop=stop_mock,
+            # $10 loss well under $50 cap
+            load_experiment_baseline=MagicMock(return_value=1000.0),
+            trader__get_account_info=_account(990, 500),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[
+                    {
+                        "symbol": "AAPL",
+                        "confidence": 8,
+                        "reasoning": "Strong breakout signal above key resistance.",
+                        "key_signal": "momentum",
+                    }
+                ]
+            ),
         )
-        with stack:
+        with self._inner_patches(), patch("main.config.MAX_EXPERIMENT_DRAWDOWN_USD", 50.0):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called_once()
 
 
@@ -2133,30 +2080,25 @@ class TestPartialTimeoutImmediateStopCheck(RunInnerBase):
                 status=status, symbol="AAPL", broker_order_id="x", filled_qty=0.5
             )
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.place_buy_order": buy_mock,
-                "main.trader.ensure_stops_attached": ensure_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.ai_analyst.get_trading_decisions": _decisions(
-                    buys=[
-                        {
-                            "symbol": "AAPL",
-                            "confidence": 8,
-                            "reasoning": "Strong breakout signal above key resistance.",
-                            "key_signal": "momentum",
-                        }
-                    ]
-                ),
-                "main.validate_ai_response": (True, []),
-            }
+        deps = self._make_deps(
+            trader__place_buy_order=buy_mock,
+            trader__ensure_stops_attached=ensure_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[
+                    {
+                        "symbol": "AAPL",
+                        "confidence": 8,
+                        "reasoning": "Strong breakout signal above key resistance.",
+                        "key_signal": "momentum",
+                    }
+                ]
+            ),
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         return ensure_mock
 
     def test_partial_fill_triggers_immediate_stop_check(self):
@@ -2202,20 +2144,20 @@ class TestLateFilledOrderReconciliation(RunInnerBase):
             audit_events.append(name)
 
         record_buy_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [self._nvda_pos],
-                "main.trader.record_buy": record_buy_mock,
-                "utils.order_ledger.get_unresolved_intents": [self._nvda_intent],
-                "utils.order_ledger.update_intent": None,
-                "utils.order_ledger.log_order_event": None,
-                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[self._nvda_pos],
+            trader__record_buy=record_buy_mock,
+            audit_log__log_event=_capture_event,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("utils.order_ledger.get_unresolved_intents", return_value=[self._nvda_intent]),
+            patch("utils.order_ledger.update_intent", return_value=None),
+            patch("utils.order_ledger.log_order_event", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
 
         self.assertIn("ORDER_LATE_FILL_RECONCILED", audit_events)
         record_buy_mock.assert_called_once()
@@ -2231,20 +2173,20 @@ class TestLateFilledOrderReconciliation(RunInnerBase):
             audit_events.append(name)
 
         record_buy_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [self._nvda_pos],
-                "main.trader.record_buy": record_buy_mock,
-                "utils.order_ledger.get_unresolved_intents": [self._nvda_intent],
-                "utils.order_ledger.update_intent": None,
-                "utils.order_ledger.log_order_event": None,
-                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[self._nvda_pos],
+            trader__record_buy=record_buy_mock,
+            audit_log__log_event=_capture_event,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("utils.order_ledger.get_unresolved_intents", return_value=[self._nvda_intent]),
+            patch("utils.order_ledger.update_intent", return_value=None),
+            patch("utils.order_ledger.log_order_event", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
 
         self.assertNotIn("ORDER_LATE_FILL_RECONCILED", audit_events)
         record_buy_mock.assert_not_called()
@@ -2257,23 +2199,24 @@ class TestLateFilledOrderReconciliation(RunInnerBase):
             audit_events.append(name)
 
         record_buy_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [self._nvda_pos],
-                "main.trader.record_buy": record_buy_mock,
-                # Ledger returns a FILLED intent (already resolved) — not a timeout
-                "utils.order_ledger.get_unresolved_intents": [
-                    {**self._nvda_intent, "status": "filled"}
-                ],
-                "utils.order_ledger.update_intent": None,
-                "utils.order_ledger.log_order_event": None,
-                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[self._nvda_pos],
+            trader__record_buy=record_buy_mock,
+            audit_log__log_event=_capture_event,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            # Ledger returns a FILLED intent (already resolved) — not a timeout
+            patch(
+                "utils.order_ledger.get_unresolved_intents",
+                return_value=[{**self._nvda_intent, "status": "filled"}],
+            ),
+            patch("utils.order_ledger.update_intent", return_value=None),
+            patch("utils.order_ledger.log_order_event", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
 
         self.assertNotIn("ORDER_LATE_FILL_RECONCILED", audit_events)
         record_buy_mock.assert_not_called()
@@ -2304,24 +2247,22 @@ class TestLateFilledOrderReconciliation(RunInnerBase):
             "broker_order_id": "broker-soxs",
             "trade_date": "2026-01-15",
         }
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [short_pos],
-                "main.trader.record_short": record_short_mock,
-                "main.trader.record_buy": record_buy_mock,
-                "main.trader.get_position_meta": MagicMock(
-                    return_value={"signal": "loser_momentum", "confidence": 3}
-                ),
-                "utils.order_ledger.get_unresolved_intents": [short_intent],
-                "utils.order_ledger.update_intent": None,
-                "utils.order_ledger.log_order_event": None,
-                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[short_pos],
+            trader__record_short=record_short_mock,
+            trader__record_buy=record_buy_mock,
+            audit_log__log_event=_capture_event,
         )
-        with stack:
+        deps.trader.get_position_meta.return_value = {"signal": "loser_momentum", "confidence": 3}
+        with (
+            self._inner_patches(),
+            patch("utils.order_ledger.get_unresolved_intents", return_value=[short_intent]),
+            patch("utils.order_ledger.update_intent", return_value=None),
+            patch("utils.order_ledger.log_order_event", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
 
         self.assertIn("ORDER_LATE_FILL_RECONCILED", audit_events)
         record_short_mock.assert_called_once()
@@ -2339,60 +2280,46 @@ class TestUnexpectedBrokerPositionsHalt(RunInnerBase):
 
         tmpdir = tempfile.mkdtemp()
         halt_file = os.path.join(tmpdir, ".HALTED")
-        stack, mocks = self._patch_all(
-            **{
-                # reconcile_positions returns unexpected symbol set
-                "main.trader.reconcile_positions": {"XUNKNOWN"},
-                "main.config.IS_PAPER": False,
-                "main.config.HALT_FILE": halt_file,
-                "main.config.LOG_DIR": tmpdir,
-            }
-        )
-        with stack, self.assertRaises(SystemExit):
+        deps = self._make_deps(trader__reconcile_positions={"XUNKNOWN"})
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.HALT_FILE", halt_file),
+            patch("main.config.LOG_DIR", tmpdir),
+            self.assertRaises(SystemExit),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         import shutil as _shutil
 
         _shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_unexpected_positions_not_fatal_in_paper_mode(self):
         """Paper mode should log but not halt on unexpected positions."""
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.reconcile_positions": {"XUNKNOWN"},
-                "main.config.IS_PAPER": True,
-            }
-        )
+        deps = self._make_deps(trader__reconcile_positions={"XUNKNOWN"})
         # Should not raise SystemExit
-        with stack:
+        with self._inner_patches(), patch("main.config.IS_PAPER", True):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
 
 class TestLiveShadowMode(RunInnerBase):
     """--live-shadow: all gates run, WOULD_BUY/WOULD_SELL emitted, no real orders placed."""
 
-    def _shadow_run(self, decisions=None, overrides=None):
+    def _shadow_run(self, decisions=None):
         """Helper: run _run_inner with _live_shadow=True and capture audit_log.log_event calls."""
         log_event_calls = []
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions or _decisions(),
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.audit_log.log_event": MagicMock(
-                    side_effect=lambda *a, **kw: log_event_calls.append((a, kw))
-                ),
-                **(overrides or {}),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions or _decisions(),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with stack:
+        deps.audit_log.log_event.side_effect = lambda *a, **kw: log_event_calls.append((a, kw))
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True)
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True, deps=deps)
         return log_event_calls
 
     def test_would_buy_event_emitted_for_buy_candidate(self):
@@ -2444,43 +2371,43 @@ class TestLiveShadowMode(RunInnerBase):
                 }
             ]
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True)
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True, deps=deps)
         buy_mock.assert_not_called()
 
     def test_would_sell_event_emitted_for_sell_decision(self):
         """WOULD_SELL audit event is logged for each sell decision in shadow mode."""
+        log_event_calls = []
+        msft_position = {
+            "symbol": "MSFT",
+            "qty": 10.0,
+            "current_price": 300.0,
+            "unrealized_plpc": 2.0,
+            "market_value": 3000.0,
+            "avg_entry_price": 290.0,
+            "unrealized_pl": 100.0,
+        }
         decisions = _decisions(
             sells=[{"symbol": "MSFT", "action": "SELL", "reasoning": "Overbought on RSI."}]
         )
-        calls = self._shadow_run(
-            decisions=decisions,
-            overrides={
-                "main.trader.get_open_positions": [
-                    {
-                        "symbol": "MSFT",
-                        "qty": 10.0,
-                        "current_price": 300.0,
-                        "unrealized_plpc": 2.0,
-                        "market_value": 3000.0,
-                        "avg_entry_price": 290.0,
-                        "unrealized_pl": 100.0,
-                    }
-                ]
-            },
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__get_open_positions=[msft_position],
         )
-        event_types = [c[0][0] for c in calls if c[0]]
+        deps.audit_log.log_event.side_effect = lambda *a, **kw: log_event_calls.append((a, kw))
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", _live_shadow=True, deps=deps)
+        event_types = [c[0][0] for c in log_event_calls if c[0]]
         self.assertIn("WOULD_SELL", event_types)
 
     def test_live_shadow_complete_event_emitted(self):
@@ -2723,48 +2650,43 @@ class TestRunInnerSaveExperimentBaseline(RunInnerBase):
 
     def test_called_when_live_open_not_dry_run(self):
         save_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.save_experiment_baseline": save_mock,
-                "main.config.IS_PAPER": False,
-                "main._assert_account_safety": MagicMock(),
-                "main.trader.ensure_stops_attached": True,
-            }
+        deps = self._make_deps(
+            save_experiment_baseline=save_mock,
+            trader__ensure_stops_attached=True,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         save_mock.assert_called_once()
 
     def test_not_called_when_paper(self):
         save_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.save_experiment_baseline": save_mock,
-                "main.config.IS_PAPER": True,
-            }
-        )
-        with stack:
+        deps = self._make_deps(save_experiment_baseline=save_mock)
+        with self._inner_patches(), patch("main.config.IS_PAPER", True):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         save_mock.assert_not_called()
 
     def test_not_called_when_dry_run(self):
         save_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.save_experiment_baseline": save_mock,
-                "main.config.IS_PAPER": False,
-                "main._assert_account_safety": MagicMock(),
-                "main.trader.ensure_stops_attached": True,
-            }
+        deps = self._make_deps(
+            save_experiment_baseline=save_mock,
+            trader__ensure_stops_attached=True,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         save_mock.assert_not_called()
 
 
@@ -2773,39 +2695,38 @@ class TestRunInnerUnexpectedPositionsHalt(RunInnerBase):
 
     def test_halt_file_written_and_exit(self):
         halt_file = os.path.join(self.tmpdir, ".halt_unexpected")
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.reconcile_positions": {"XUNKNOWN"},
-                "main.config.IS_PAPER": False,
-                "main.config.HALT_FILE": halt_file,
-                "main.config.LOG_DIR": self.tmpdir,
-                "main._assert_account_safety": MagicMock(),
-            }
-        )
-        with stack, self.assertRaises(SystemExit):
+        deps = self._make_deps(trader__reconcile_positions={"XUNKNOWN"})
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.HALT_FILE", halt_file),
+            patch("main.config.LOG_DIR", self.tmpdir),
+            patch("main._assert_account_safety", MagicMock()),
+            self.assertRaises(SystemExit),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertTrue(os.path.exists(halt_file))
 
     def test_alert_sent_for_unexpected_positions(self):
         halt_file = os.path.join(self.tmpdir, ".halt_unexpected2")
         alert_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.reconcile_positions": {"XUNKNOWN"},
-                "main.config.IS_PAPER": False,
-                "main.config.HALT_FILE": halt_file,
-                "main.config.LOG_DIR": self.tmpdir,
-                "main._assert_account_safety": MagicMock(),
-                "main.alerts.alert_error": alert_mock,
-            }
+        deps = self._make_deps(
+            trader__reconcile_positions={"XUNKNOWN"},
+            alerts__alert_error=alert_mock,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.HALT_FILE", halt_file),
+            patch("main.config.LOG_DIR", self.tmpdir),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             try:
                 from main import _run_inner
 
-                _run_inner(dry_run=False, mode="open", today="2026-01-15")
+                _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
             except SystemExit:
                 pass
         self.assertTrue(alert_mock.called)
@@ -2816,19 +2737,18 @@ class TestRunInnerStopsNotOkHalt(RunInnerBase):
 
     def test_halt_file_written_and_exit_when_stops_fail(self):
         halt_file = os.path.join(self.tmpdir, ".halt_stops")
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.ensure_stops_attached": False,
-                "main.config.IS_PAPER": False,
-                "main.config.HALT_FILE": halt_file,
-                "main.config.LOG_DIR": self.tmpdir,
-                "main._assert_account_safety": MagicMock(),
-            }
-        )
-        with stack, self.assertRaises(SystemExit):
+        deps = self._make_deps(trader__ensure_stops_attached=False)
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main.config.HALT_FILE", halt_file),
+            patch("main.config.LOG_DIR", self.tmpdir),
+            patch("main._assert_account_safety", MagicMock()),
+            self.assertRaises(SystemExit),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertTrue(os.path.exists(halt_file))
 
 
@@ -2840,16 +2760,14 @@ class TestRunInnerHealthStatus(RunInnerBase):
 
         alert_mock = MagicMock()
         red_report = HealthReport(status=HealthStatus.RED, issues=["broker down"], metrics={})
-        stack, mocks = self._patch_all(
-            **{
-                "main.run_startup_health_check": red_report,
-                "main.alerts.alert_error": alert_mock,
-            }
+        deps = self._make_deps(
+            run_startup_health_check=MagicMock(return_value=red_report),
+            alerts__alert_error=alert_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         alert_calls = [str(c) for c in alert_mock.call_args_list]
         self.assertTrue(any("STARTUP HEALTH RED" in c for c in alert_calls))
 
@@ -2857,15 +2775,11 @@ class TestRunInnerHealthStatus(RunInnerBase):
         from utils.health import HealthReport, HealthStatus
 
         yellow_report = HealthReport(status=HealthStatus.YELLOW, issues=["stale order"], metrics={})
-        stack, mocks = self._patch_all(
-            **{
-                "main.run_startup_health_check": yellow_report,
-            }
-        )
-        with self.assertLogs("main", level="WARNING") as cm, stack:
+        deps = self._make_deps(run_startup_health_check=MagicMock(return_value=yellow_report))
+        with self.assertLogs("main", level="WARNING") as cm, self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertTrue(any("YELLOW" in line for line in cm.output))
 
     def test_red_health_adds_startup_health_to_skip_reasons(self):
@@ -2873,23 +2787,19 @@ class TestRunInnerHealthStatus(RunInnerBase):
         from utils.health import HealthReport, HealthStatus
 
         red_report = HealthReport(status=HealthStatus.RED, issues=["test"], metrics={})
-        stack, mocks = self._patch_all(
-            **{
-                "main.run_startup_health_check": red_report,
-                "main.alerts.alert_error": MagicMock(),
-                "main.stock_scanner.get_market_regime": _regime(),
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.ai_analyst.get_trading_decisions": _decisions(
-                    buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}]
-                ),
-            }
+        deps = self._make_deps(
+            run_startup_health_check=MagicMock(return_value=red_report),
+            alerts__alert_error=MagicMock(),
+            stock_scanner__get_market_regime=_regime(),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}]
+            ),
         )
-        with self.assertLogs("main", level="WARNING") as cm, stack:
+        with self.assertLogs("main", level="WARNING") as cm, self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertTrue(
             any("startup health" in line.lower() for line in cm.output),
             f"Expected 'startup health' in log output, got: {cm.output}",
@@ -2901,28 +2811,25 @@ class TestRunInnerDollarDailyLossCap(RunInnerBase):
 
     def test_dollar_loss_cap_triggers_close(self):
         close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        stack, mocks = self._patch_all(
-            **{
-                "main.portfolio_tracker.load_daily_baseline": 100_000.0,
-                "main.trader.get_account_info": _account(99_000.0),
-                "main.config.MAX_DAILY_LOSS_USD": 500.0,
-                "main.risk_manager.check_daily_loss": (False, 0.0),
-                "main.trader.close_position": close_mock,
-                "main.trader.get_open_positions": [
-                    {
-                        "symbol": "AAPL",
-                        "qty": 5.0,
-                        "unrealized_plpc": -1.0,
-                        "unrealized_pl": -100.0,
-                        "market_value": 500.0,
-                    }
-                ],
-            }
+        deps = self._make_deps(
+            portfolio_tracker__load_daily_baseline=100_000.0,
+            trader__get_account_info=_account(99_000.0),
+            risk_manager__check_daily_loss=(False, 0.0),
+            trader__close_position=close_mock,
+            trader__get_open_positions=[
+                {
+                    "symbol": "AAPL",
+                    "qty": 5.0,
+                    "unrealized_plpc": -1.0,
+                    "unrealized_pl": -100.0,
+                    "market_value": 500.0,
+                }
+            ],
         )
-        with stack:
+        with self._inner_patches(), patch("main.config.MAX_DAILY_LOSS_USD", 500.0):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_called()
 
 
@@ -2930,23 +2837,22 @@ class TestRunInnerPriceFilter(RunInnerBase):
     """Lines 785-792: price filter logs filtered candidate count."""
 
     def test_price_filter_log_emitted(self):
-        stack, mocks = self._patch_all(
-            **{
-                "main.config.MIN_PRICE_USD": 10.0,
-                "main.config.MAX_PRICE_USD": 0.0,
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0},
-                    {"symbol": "CHEAP", "current_price": 5.0},
-                ],
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-            }
+        deps = self._make_deps(
+            market_data__get_market_snapshots=[
+                {"symbol": "AAPL", "current_price": 150.0},
+                {"symbol": "CHEAP", "current_price": 5.0},
+            ],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
         )
-        with self.assertLogs("main", level="INFO") as cm, stack:
+        with (
+            self.assertLogs("main", level="INFO") as cm,
+            self._inner_patches(),
+            patch("main.config.MIN_PRICE_USD", 10.0),
+            patch("main.config.MAX_PRICE_USD", 0.0),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertTrue(any("Price filter" in line for line in cm.output))
 
 
@@ -2958,18 +2864,14 @@ class TestRunInnerOrderLedgerUnavailable(RunInnerBase):
 
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-                "main.alerts.alert_error": MagicMock(),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
+            alerts__alert_error=MagicMock(),
         )
         with (
-            stack,
+            self._inner_patches(),
             patch(
                 "utils.order_ledger.has_active_intent",
                 side_effect=OrderLedgerUnavailable("db locked"),
@@ -2977,29 +2879,25 @@ class TestRunInnerOrderLedgerUnavailable(RunInnerBase):
         ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_active_intent_skips_buy(self):
         """Lines 1245-1248: has_active_intent returns True → symbol skipped."""
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
         )
         with (
-            stack,
+            self._inner_patches(),
             patch("utils.order_ledger.has_active_intent", return_value=True),
         ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_import_error_silently_skips_ledger_guard(self):
@@ -3012,19 +2910,18 @@ class TestRunInnerOrderLedgerUnavailable(RunInnerBase):
             )
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
         )
-        with stack, unittest.mock.patch.dict(sys.modules, {"utils.order_ledger": None}):
+        with (
+            self._inner_patches(),
+            unittest.mock.patch.dict(sys.modules, {"utils.order_ledger": None}),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
 
@@ -3036,41 +2933,33 @@ class TestRunInnerHasPendingBuyUnavailable(RunInnerBase):
 
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-                "main.trader.has_pending_buy": BrokerStateUnavailable("broker offline"),
-                "main.alerts.alert_error": MagicMock(),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
+            trader__has_pending_buy=BrokerStateUnavailable("broker offline"),
+            alerts__alert_error=MagicMock(),
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_pending_buy_true_skips_symbol(self):
         """Lines 1094-1097: has_pending_buy returns True → symbol skipped."""
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-                "main.trader.has_pending_buy": True,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
+            trader__has_pending_buy=True,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
 
@@ -3085,26 +2974,22 @@ class TestRunInnerSmallAccountNotional(RunInnerBase):
             )
         )
         decisions = _decisions(buys=[{"symbol": "SOFI", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "SOFI", "current_price": 50.0}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "SOFI", "current_price": 50.0}
-                ],
-                "main.trader.get_account_info": _account(1_000.0, 900.0),
-                "main.config.SMALL_ACCOUNT_MODE": True,
-                "main.config.MAX_SINGLE_ORDER_USD": 100.0,
-                "main.position_sizer.small_account_size": sizer_mock,
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "SOFI", "current_price": 50.0}],
+            market_data__get_market_snapshots=[{"symbol": "SOFI", "current_price": 50.0}],
+            trader__get_account_info=_account(1_000.0, 900.0),
+            position_sizer__small_account_size=sizer_mock,
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.SMALL_ACCOUNT_MODE", True),
+            patch("main.config.MAX_SINGLE_ORDER_USD", 100.0),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         sizer_mock.assert_called()
 
 
@@ -3116,21 +3001,17 @@ class TestRunInnerExposureUnavailable(RunInnerBase):
 
         buy_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": buy_mock,
-                "main.trader.get_total_open_exposure": BrokerStateUnavailable("cannot query"),
-                "main.alerts.alert_error": MagicMock(),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=buy_mock,
+            trader__get_total_open_exposure=BrokerStateUnavailable("cannot query"),
+            alerts__alert_error=MagicMock(),
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
 
@@ -3147,32 +3028,44 @@ class TestRunInnerQuoteGate(RunInnerBase):
             spread_bps=spread_bps,
         )
 
-    def _live_buy_stack(self, qg_result, extra=None):
+    def _live_buy_deps(self, qg_result, extra_trader_place_buy=None):
+        """Build a deps for live non-paper buy scenario with a quote gate result."""
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        overrides = {
-            "main.ai_analyst.get_trading_decisions": decisions,
-            "main.stock_scanner.prefilter_candidates": [{"symbol": "AAPL", "current_price": 150.0}],
-            "main.market_data.get_market_snapshots": [{"symbol": "AAPL", "current_price": 150.0}],
-            "main.config.IS_PAPER": False,
-            "main._assert_account_safety": MagicMock(),
-            "main.trader.ensure_stops_attached": True,
-            "main.check_quote_gate": qg_result,
-            "main.alerts.alert_error": MagicMock(),
-        }
-        if extra:
-            overrides.update(extra)
-        return self._patch_all(**overrides)
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            check_quote_gate=MagicMock(return_value=qg_result),
+            alerts__alert_error=MagicMock(),
+            trader__ensure_stops_attached=True,
+        )
+        if extra_trader_place_buy is not None:
+            deps.trader.place_buy_order.return_value = extra_trader_place_buy
+            deps.trader.place_buy_order.side_effect = None
+        return deps
 
     def test_quote_gate_rejection_skips_buy(self):
         buy_mock = MagicMock()
         rejected = self._make_qg(approved=False, reject_reason="spread too wide", spread_bps=40.0)
-        stack, mocks = self._live_buy_stack(
-            rejected, extra={"main.trader.place_buy_order": buy_mock}
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}]
+            ),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            check_quote_gate=MagicMock(return_value=rejected),
+            alerts__alert_error=MagicMock(),
+            trader__ensure_stops_attached=True,
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_quote_gate_approved_allows_buy(self):
@@ -3182,36 +3075,72 @@ class TestRunInnerQuoteGate(RunInnerBase):
             )
         )
         approved = self._make_qg(approved=True)
-        stack, mocks = self._live_buy_stack(
-            approved, extra={"main.trader.place_buy_order": buy_mock}
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}]
+            ),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            check_quote_gate=MagicMock(return_value=approved),
+            alerts__alert_error=MagicMock(),
+            trader__ensure_stops_attached=True,
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
     def test_quote_gate_broker_unavailable_breaks_loop(self):
         from models import BrokerStateUnavailable
 
         buy_mock = MagicMock()
-        stack, mocks = self._live_buy_stack(
-            BrokerStateUnavailable("data api down"),
-            extra={"main.trader.place_buy_order": buy_mock},
+        err = BrokerStateUnavailable("data api down")
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}]
+            ),
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            check_quote_gate=MagicMock(side_effect=err),
+            alerts__alert_error=MagicMock(),
+            trader__ensure_stops_attached=True,
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_not_called()
 
     def test_live_buy_stack_without_extra_uses_defaults(self):
         approved = self._make_qg(approved=True)
-        stack, mocks = self._live_buy_stack(approved)
-        with stack:
+        deps = self._live_buy_deps(approved)
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+
+    def test_live_buy_deps_with_custom_order_result(self):
+        custom_result = OrderResult(
+            status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="z", filled_qty=2.0
+        )
+        approved = self._make_qg(approved=True)
+        deps = self._live_buy_deps(approved, extra_trader_place_buy=custom_result)
+        self.assertEqual(deps.trader.place_buy_order.return_value, custom_result)
 
 
 class TestRunInnerExecQuality(RunInnerBase):
@@ -3235,28 +3164,24 @@ class TestRunInnerExecQuality(RunInnerBase):
         )
 
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.config.IS_PAPER": False,
-                "main._assert_account_safety": MagicMock(),
-                "main.trader.ensure_stops_attached": True,
-                "main.check_quote_gate": approved,
-                "main.trader.place_buy_order": MagicMock(return_value=buy_result),
-                "main.audit_log.log_event": MagicMock(side_effect=_capture_event),
-                "main.alerts.alert_error": MagicMock(),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            check_quote_gate=MagicMock(return_value=approved),
+            trader__place_buy_order=MagicMock(return_value=buy_result),
+            audit_log__log_event=_capture_event,
+            alerts__alert_error=MagicMock(),
+            trader__ensure_stops_attached=True,
         )
-        with stack:
+        with (
+            self._inner_patches(),
+            patch("main.config.IS_PAPER", False),
+            patch("main._assert_account_safety", MagicMock()),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertIn("ORDER_EXEC_QUALITY", log_events)
 
 
@@ -3269,22 +3194,17 @@ class TestRunInnerPartialTimeoutStopFail(RunInnerBase):
             status=OrderStatus.PARTIAL, symbol="AAPL", broker_order_id="x", filled_qty=0.5
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.trader.place_buy_order": MagicMock(return_value=buy_result),
-                "main.trader.ensure_stops_attached": False,
-                "main._handle_stop_failure": handle_mock,
-                "main.alerts.alert_error": MagicMock(),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            trader__place_buy_order=MagicMock(return_value=buy_result),
+            trader__ensure_stops_attached=False,
+            alerts__alert_error=MagicMock(),
         )
-        with stack:
+        with self._inner_patches(), patch("main._handle_stop_failure", handle_mock):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         handle_mock.assert_called()
 
 
@@ -3322,24 +3242,24 @@ class TestLateReconciliationExecutedSymbols(RunInnerBase):
             sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "close run exit"}]
         )
         close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.get_open_positions": [aapl_pos],
-                "main.trader.close_position": close_mock,
-                "main.trader.get_position_meta": MagicMock(
-                    return_value={"signal": "momentum", "regime": "BULL", "confidence": 8}
-                ),
-                "main.audit_log.log_event": MagicMock(side_effect=_capture),
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            trader__get_open_positions=[aapl_pos],
+            trader__close_position=close_mock,
+            audit_log__log_event=_capture,
         )
+        deps.trader.get_position_meta.return_value = {
+            "signal": "momentum",
+            "regime": "BULL",
+            "confidence": 8,
+        }
         with (
-            stack,
+            self._inner_patches(),
             _patch("utils.order_ledger.get_unresolved_intents", return_value=[timeout_intent]),
         ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="close", today="2026-01-15")
+            _run_inner(dry_run=False, mode="close", today="2026-01-15", deps=deps)
         # After sell, AAPL is in executed_symbols → reconciliation skips it at line 1368
         late_fills = [e for e in audit_events if e == "ORDER_LATE_FILL_RECONCILED"]
         self.assertEqual(len(late_fills), 0)
@@ -3351,9 +3271,9 @@ class TestLateReconciliationException(RunInnerBase):
     def test_reconciliation_exception_does_not_propagate(self):
         from unittest.mock import patch as _patch
 
-        stack, mocks = self._patch_all()
+        deps = self._make_deps()
         with (
-            stack,
+            self._inner_patches(),
             _patch(
                 "utils.order_ledger.get_unresolved_intents",
                 side_effect=RuntimeError("ledger explosion"),
@@ -3362,7 +3282,7 @@ class TestLateReconciliationException(RunInnerBase):
             try:
                 from main import _run_inner
 
-                _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+                _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
             except RuntimeError:  # pragma: no cover
                 self.fail("Reconciliation exception must not propagate")
 
@@ -3387,17 +3307,15 @@ class TestEnrichedTradeFields(RunInnerBase):
             ]
         )
         save_mock = MagicMock(return_value=_saved_record())
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.portfolio_tracker.save_daily_run": save_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            ai_analyst__get_trading_decisions=decisions,
+            portfolio_tracker__save_daily_run=save_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=dry_run, mode="open", today="2026-01-15")
+            _run_inner(dry_run=dry_run, mode="open", today="2026-01-15", deps=deps)
         call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
         return call_kwargs.get("trades_executed", [])
 
@@ -3412,19 +3330,17 @@ class TestEnrichedTradeFields(RunInnerBase):
         ]
         decisions = _decisions(buys=buys)
         save_mock = MagicMock(return_value=_saved_record())
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0, "score": 0.9}
-                ],
-                "main.portfolio_tracker.save_daily_run": save_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "score": 0.9}
+            ],
+            portfolio_tracker__save_daily_run=save_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=dry_run, mode="open", today="2026-01-15")
+            _run_inner(dry_run=dry_run, mode="open", today="2026-01-15", deps=deps)
         call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
         return call_kwargs.get("trades_executed", [])
 
@@ -3517,18 +3433,16 @@ class TestEnrichedTradeFields(RunInnerBase):
         # No position_decisions for TSLA — only a stale entry
         decisions = _decisions()
         save_mock = MagicMock(return_value=_saved_record())
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.trader.get_position_ages": {"TSLA": 999},  # very stale
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.portfolio_tracker.save_daily_run": save_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            trader__get_position_ages={"TSLA": 999},  # very stale
+            ai_analyst__get_trading_decisions=decisions,
+            portfolio_tracker__save_daily_run=save_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
         trades = call_kwargs.get("trades_executed", [])
         tsla_trades = [t for t in trades if t.get("symbol") == "TSLA"]
@@ -3595,26 +3509,20 @@ class TestRunInnerSnapUpdateEnrichment(RunInnerBase):
     """Lines 877, 884, 891, 925: snap.update() for insider, av, pead, and miss data."""
 
     def test_snap_updated_with_insider_av_pead_miss_and_short_interest_data(self):
-        stack, mocks = self._patch_all(
-            **{
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.insider_feed.get_insider_activity": {"AAPL": {"insider_cluster": True}},
-                "main.av_sentiment.get_av_sentiment": {"AAPL": {"av_sentiment_score": 0.5}},
-                "main.earnings_surprise.get_earnings_surprise": {"AAPL": {"pead_candidate": True}},
-                "main.earnings_surprise.get_earnings_miss": {
-                    "AAPL": {"earnings_miss_candidate": True}
-                },
-                "main.short_interest.get_short_interest": {
-                    "AAPL": {"short_ratio": 7.5, "high_short_interest": True}
-                },
-            }
+        deps = self._make_deps(
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            insider_feed__get_insider_activity={"AAPL": {"insider_cluster": True}},
+            av_sentiment__get_av_sentiment={"AAPL": {"av_sentiment_score": 0.5}},
+            earnings_surprise__get_earnings_surprise={"AAPL": {"pead_candidate": True}},
+            earnings_surprise__get_earnings_miss={"AAPL": {"earnings_miss_candidate": True}},
+            short_interest__get_short_interest={
+                "AAPL": {"short_ratio": 7.5, "high_short_interest": True}
+            },
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
 
 class TestRunInnerMissingBranches(RunInnerBase):
@@ -3622,11 +3530,11 @@ class TestRunInnerMissingBranches(RunInnerBase):
 
     def test_vix_none_skips_vix_log(self):
         """Branch 777->779: vix=None → VIX info line not logged; macro check still runs."""
-        stack, mocks = self._patch_all(**{"main.market_data.get_vix": None})
-        with stack:
+        deps = self._make_deps(market_data__get_vix=None)
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
     def test_dollar_daily_loss_cap_not_reached(self):
         """Branch 713->720: daily_loss_usd < MAX_DAILY_LOSS_USD → cap not triggered."""
@@ -3635,31 +3543,23 @@ class TestRunInnerMissingBranches(RunInnerBase):
                 status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
             )
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.risk_manager.check_daily_loss": (False, 0.0),
-                "main.config.MAX_DAILY_LOSS_USD": 500.0,
-                "main.trader.get_account_info": _account(99_900, 30_000),
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            risk_manager__check_daily_loss=(False, 0.0),
+            trader__get_account_info=_account(99_900, 30_000),
+            trader__place_buy_order=buy_mock,
         )
-        with stack:
+        with self._inner_patches(), patch("main.config.MAX_DAILY_LOSS_USD", 500.0):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
     def test_experiment_baseline_none_skips_drawdown_check(self):
         """Branch 739->764: load_experiment_baseline returns None → drawdown check skipped."""
-        stack, mocks = self._patch_all(
-            **{
-                "main.config.MAX_EXPERIMENT_DRAWDOWN_USD": 50.0,
-                "main.load_experiment_baseline": None,
-            }
-        )
-        with stack:
+        deps = self._make_deps(load_experiment_baseline=MagicMock(return_value=None))
+        with self._inner_patches(), patch("main.config.MAX_EXPERIMENT_DRAWDOWN_USD", 50.0):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
     def test_earnings_exit_dry_run_skips_close(self):
         """Branch 808->804: dry_run=True with earnings risk → close skipped."""
@@ -3674,18 +3574,15 @@ class TestRunInnerMissingBranches(RunInnerBase):
                 "current_price": 150.0,
             }
         ]
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.earnings_calendar.get_earnings_risk_positions": {"AAPL": "2026-01-17"},
-                "main.trader.close_position": close_mock,
-                "main._handle_partial_exits": [],
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            earnings_calendar__get_earnings_risk_positions={"AAPL": "2026-01-17"},
+            trader__close_position=close_mock,
         )
-        with stack:
+        with self._inner_patches(_handle_partial_exits=[]):
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         close_mock.assert_not_called()
 
     def test_sell_pos_not_in_open_positions_still_records_sell(self):
@@ -3693,19 +3590,16 @@ class TestRunInnerMissingBranches(RunInnerBase):
         close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
         record_sell_mock = MagicMock()
         decisions = _decisions(sells=[{"symbol": "AAPL", "action": "SELL", "reasoning": "stale"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [],
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.close_position": close_mock,
-                "main.trader.record_sell": record_sell_mock,
-                "main._check_rule_based_stops": {"AAPL"},
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[],
+            ai_analyst__get_trading_decisions=decisions,
+            trader__close_position=close_mock,
+            trader__record_sell=record_sell_mock,
         )
-        with stack:
+        with self._inner_patches(_check_rule_based_stops={"AAPL"}):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
     def test_buy_rejected_not_partial_timeout_continues_loop(self):
         """Branch 1437->1215: buy result REJECTED → neither FILLED nor PARTIAL/TIMEOUT → continue."""
@@ -3715,52 +3609,44 @@ class TestRunInnerMissingBranches(RunInnerBase):
             )
         )
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.place_buy_order": buy_mock,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.validate_ai_response": (True, []),
-            }
+        deps = self._make_deps(
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=decisions,
+            validate_ai_response=MagicMock(return_value=(True, [])),
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
     def test_close_mode_no_day_summary_skips_email(self):
         """Branch 1634->exit: mode=close but get_day_summary returns None → no email sent."""
         email_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.get_day_summary": None,
-                "main.emailer.send_summary": email_mock,
-            }
+        deps = self._make_deps(
+            get_day_summary=MagicMock(return_value=None),
+            emailer__send_summary=email_mock,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="close", today="2026-01-15")
+            _run_inner(dry_run=False, mode="close", today="2026-01-15", deps=deps)
         email_mock.assert_not_called()
 
     def test_short_snapshot_enriched_with_short_interest(self):
         # Two snapshots: one symbol in si_short (True branch), one not (False branch)
-        stack, mocks = self._patch_all(
-            **{
-                "main.scan_short_universe": [{"symbol": "TSLA"}, {"symbol": "AMZN"}],
-                "main.get_short_universe": ["TSLA", "AMZN"],
-                "main.short_interest.get_short_interest": {
-                    "TSLA": {"high_short_interest": True, "short_ratio": 8.0}
-                },
-            }
+        deps = self._make_deps(
+            scan_short_universe=MagicMock(return_value=[{"symbol": "TSLA"}, {"symbol": "AMZN"}]),
+            get_short_universe=MagicMock(return_value=["TSLA", "AMZN"]),
+            short_interest__get_short_interest={
+                "TSLA": {"high_short_interest": True, "short_ratio": 8.0}
+            },
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
 
 
 class TestExecuteShorts(unittest.TestCase):
@@ -4022,21 +3908,21 @@ class TestRunInnerCoverShorts(RunInnerBase):
         record_cover_mock = MagicMock()
         positions = [self._short_position()]
         ages = {"WEAK": config.MAX_SHORT_HOLD_DAYS}
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.trader.get_open_shorts": {"WEAK"},
-                "main.trader.get_position_ages": ages,
-                "main.trader.close_position": cover_mock,
-                "main.trader.record_cover": record_cover_mock,
-                "main.trader.get_position_meta": MagicMock(return_value={"signal": "rs_short"}),
-                "main._execute_shorts": None,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            trader__get_open_shorts={"WEAK"},
+            trader__get_position_ages=ages,
         )
-        with stack:
+        deps.trader.close_position = cover_mock
+        deps.trader.record_cover = record_cover_mock
+        deps.trader.get_position_meta.return_value = {"signal": "rs_short"}
+        with (
+            self._inner_patches(),
+            patch("main._execute_shorts", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         cover_mock.assert_called()
         record_cover_mock.assert_called_with("WEAK")
 
@@ -4044,20 +3930,20 @@ class TestRunInnerCoverShorts(RunInnerBase):
         cover_mock = MagicMock()
         positions = [self._short_position()]
         ages = {"WEAK": config.MAX_SHORT_HOLD_DAYS}
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.trader.get_open_shorts": {"WEAK"},
-                "main.trader.get_position_ages": ages,
-                "main.trader.close_position": cover_mock,
-                "main.trader.get_position_meta": MagicMock(return_value={"signal": "rs_short"}),
-                "main._execute_shorts": None,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            trader__get_open_shorts={"WEAK"},
+            trader__get_position_ages=ages,
         )
-        with stack:
+        deps.trader.close_position = cover_mock
+        deps.trader.get_position_meta.return_value = {"signal": "rs_short"}
+        with (
+            self._inner_patches(),
+            patch("main._execute_shorts", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         cover_mock.assert_not_called()
 
     def test_stale_short_cover_failed_logs_error(self):
@@ -4069,21 +3955,21 @@ class TestRunInnerCoverShorts(RunInnerBase):
         alert_mock = MagicMock()
         positions = [self._short_position()]
         ages = {"WEAK": config.MAX_SHORT_HOLD_DAYS}
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": positions,
-                "main.trader.get_open_shorts": {"WEAK"},
-                "main.trader.get_position_ages": ages,
-                "main.trader.close_position": cover_mock,
-                "main.trader.get_position_meta": MagicMock(return_value={"signal": "rs_short"}),
-                "main.alerts.alert_error": alert_mock,
-                "main._execute_shorts": None,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            trader__get_open_shorts={"WEAK"},
+            trader__get_position_ages=ages,
         )
-        with stack:
+        deps.trader.close_position = cover_mock
+        deps.alerts.alert_error = alert_mock
+        deps.trader.get_position_meta.return_value = {"signal": "rs_short"}
+        with (
+            self._inner_patches(),
+            patch("main._execute_shorts", return_value=None),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         alert_mock.assert_called()
 
 
@@ -4091,63 +3977,48 @@ class TestSameDayOpenGuard(RunInnerBase):
     """Same-day open guard: only one buy phase per calendar day in open mode."""
 
     def test_second_open_run_skips_buys(self):
-        buy_mock = MagicMock()
-        lock_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": buy_mock,
-                "main.audit_log.has_open_buys_run_today": True,
-                "main.audit_log.log_open_buys_locked": lock_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            audit_log__has_open_buys_run_today=True,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
-        buy_mock.assert_not_called()
-        lock_mock.assert_not_called()
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        deps.trader.place_buy_order.assert_not_called()
+        deps.audit_log.log_open_buys_locked.assert_not_called()
 
     def test_first_open_run_locks_and_buys(self):
         buy_result = OrderResult(
             status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
         )
-        lock_mock = MagicMock()
         decisions = _decisions(buys=[{"symbol": "AAPL", "confidence": 8, "key_signal": "momentum"}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.trader.place_buy_order": MagicMock(return_value=buy_result),
-                "main.trader.get_open_positions": [],
-                "main.trader.get_account_info": _account(100_000, 50_000),
-                "main.position_sizer.get_max_positions": 5,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.audit_log.has_open_buys_run_today": False,
-                "main.audit_log.log_open_buys_locked": lock_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            trader__place_buy_order=MagicMock(return_value=buy_result),
+            trader__get_open_positions=[],
+            trader__get_account_info=_account(100_000, 50_000),
+            position_sizer__get_max_positions=5,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            audit_log__has_open_buys_run_today=False,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
-        lock_mock.assert_called_once_with("2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        deps.audit_log.log_open_buys_locked.assert_called_once_with("2026-01-15")
 
     def test_dry_run_does_not_check_or_set_guard(self):
         check_mock = MagicMock()
         lock_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.audit_log.has_open_buys_run_today": check_mock,
-                "main.audit_log.log_open_buys_locked": lock_mock,
-            }
-        )
-        with stack:
+        deps = self._make_deps()
+        deps.audit_log.has_open_buys_run_today = check_mock
+        deps.audit_log.log_open_buys_locked = lock_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="open", today="2026-01-15")
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
         check_mock.assert_not_called()
         lock_mock.assert_not_called()
 
@@ -4323,25 +4194,25 @@ class TestRunInnerMaxOrdersLimit(RunInnerBase):
             {"symbol": "MSFT", "confidence": 8, "key_signal": "momentum"},
         ]
         decisions = _decisions(buys=candidates)
-        stack, _ = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0},
-                    {"symbol": "MSFT", "current_price": 400.0},
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0},
-                    {"symbol": "MSFT", "current_price": 400.0},
-                ],
-                "main.trader.place_buy_order": buy_mock,
-                "main.config.MAX_ORDERS_PER_RUN": 1,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0},
+                {"symbol": "MSFT", "current_price": 400.0},
+            ],
+            market_data__get_market_snapshots=[
+                {"symbol": "AAPL", "current_price": 150.0},
+                {"symbol": "MSFT", "current_price": 400.0},
+            ],
         )
-        with stack:
+        deps.trader.place_buy_order = buy_mock
+        with (
+            self._inner_patches(),
+            patch("main.config.MAX_ORDERS_PER_RUN", 1),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertEqual(buy_mock.call_count, 1)
 
 
@@ -4365,19 +4236,17 @@ class TestLateReconciliationSymbolNotInLive(RunInnerBase):
             "trade_date": "2026-01-15",
         }
         # live positions are empty — GHOST never actually filled
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [],
-                "main.audit_log.log_event": MagicMock(side_effect=_capture),
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[],
         )
+        deps.audit_log.log_event.side_effect = _capture
         with (
-            stack,
+            self._inner_patches(),
             _patch("utils.order_ledger.get_unresolved_intents", return_value=[timeout_intent]),
         ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
         late_fills = [e for e in audit_events if e == "ORDER_LATE_FILL_RECONCILED"]
         self.assertEqual(late_fills, [])
 
@@ -4476,20 +4345,26 @@ class TestForceCoverIntradayInRunInner(RunInnerBase):
 
     def test_force_cover_triggered_in_close_mode(self):
         force_mock = MagicMock()
-        stack, _ = self._patch_all(**{"main._force_cover_intraday_positions": force_mock})
-        with stack:
+        deps = self._make_deps()
+        with (
+            self._inner_patches(),
+            patch("main._force_cover_intraday_positions", force_mock),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="close", today="2026-01-15")
+            _run_inner(dry_run=False, mode="close", today="2026-01-15", deps=deps)
         force_mock.assert_called_once()
 
     def test_force_cover_not_triggered_in_open_mode(self):
         force_mock = MagicMock()
-        stack, _ = self._patch_all(**{"main._force_cover_intraday_positions": force_mock})
-        with stack:
+        deps = self._make_deps()
+        with (
+            self._inner_patches(),
+            patch("main._force_cover_intraday_positions", force_mock),
+        ):
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         force_mock.assert_not_called()
 
 
@@ -4761,42 +4636,38 @@ class TestCloseModeSuppressesAiCandidates(RunInnerBase):
     def test_close_mode_no_positions_skips_claude(self):
         from main import _run_inner
 
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.is_market_open": True,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "TSLA", "matched_signals": ["bb_squeeze"]},
-                    {"symbol": "NVDA", "matched_signals": ["momentum"]},
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "TSLA", "current_price": 200.0},
-                    {"symbol": "NVDA", "current_price": 500.0},
-                ],
-            }
+        deps = self._make_deps(
+            trader__is_market_open=True,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "TSLA", "matched_signals": ["bb_squeeze"]},
+                {"symbol": "NVDA", "matched_signals": ["momentum"]},
+            ],
+            market_data__get_market_snapshots=[
+                {"symbol": "TSLA", "current_price": 200.0},
+                {"symbol": "NVDA", "current_price": 500.0},
+            ],
         )
-        with stack:
-            _run_inner(dry_run=True, mode="close", today="2026-01-15")
+        with self._inner_patches():
+            _run_inner(dry_run=True, mode="close", today="2026-01-15", deps=deps)
 
-        mocks["main.ai_analyst.get_trading_decisions"].assert_not_called()
+        deps.ai_analyst.get_trading_decisions.assert_not_called()
 
     def test_open_sells_mode_no_positions_skips_claude(self):
         from main import _run_inner
 
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.is_market_open": True,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "TSLA", "matched_signals": ["bb_squeeze"]},
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "TSLA", "current_price": 200.0},
-                ],
-            }
+        deps = self._make_deps(
+            trader__is_market_open=True,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "TSLA", "matched_signals": ["bb_squeeze"]},
+            ],
+            market_data__get_market_snapshots=[
+                {"symbol": "TSLA", "current_price": 200.0},
+            ],
         )
-        with stack:
-            _run_inner(dry_run=True, mode="open_sells", today="2026-01-15")
+        with self._inner_patches():
+            _run_inner(dry_run=True, mode="open_sells", today="2026-01-15", deps=deps)
 
-        mocks["main.ai_analyst.get_trading_decisions"].assert_not_called()
+        deps.ai_analyst.get_trading_decisions.assert_not_called()
 
 
 # ── v1.78 wiring tests ────────────────────────────────────────────────────────
@@ -5372,24 +5243,20 @@ class TestBuyLoopATRSizing(RunInnerBase):
         atr_mock = MagicMock(return_value=300.0)
         rb_mock = MagicMock(return_value=500.0)
         decisions = _decisions(buys=[self._candidate()])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": 3.5,
-                "main.position_sizer.atr_position_size": atr_mock,
-                "main.position_sizer.risk_budget_size": rb_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=3.5,
         )
-        with stack:
+        deps.position_sizer.atr_position_size = atr_mock
+        deps.position_sizer.risk_budget_size = rb_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         atr_mock.assert_called()
         rb_mock.assert_not_called()
 
@@ -5397,24 +5264,20 @@ class TestBuyLoopATRSizing(RunInnerBase):
         atr_mock = MagicMock(return_value=300.0)
         rb_mock = MagicMock(return_value=500.0)
         decisions = _decisions(buys=[self._candidate()])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.position_sizer.atr_position_size": atr_mock,
-                "main.position_sizer.risk_budget_size": rb_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
         )
-        with stack:
+        deps.position_sizer.atr_position_size = atr_mock
+        deps.position_sizer.risk_budget_size = rb_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         atr_mock.assert_not_called()
         rb_mock.assert_called()
 
@@ -5435,76 +5298,64 @@ class TestBuyLoopSignalMultipliers(RunInnerBase):
         sig_mock = MagicMock(return_value=1.5)
         cofire_mock = MagicMock(return_value=1.0)
         decisions = _decisions(buys=[self._candidate(key_signal="iv_compression")])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {
-                        "symbol": "AAPL",
-                        "current_price": 150.0,
-                        "matched_signals": ["iv_compression"],
-                    }
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.position_sizer.get_signal_size_multiplier": sig_mock,
-                "main.position_sizer.cofiring_boost": cofire_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {
+                    "symbol": "AAPL",
+                    "current_price": 150.0,
+                    "matched_signals": ["iv_compression"],
+                }
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
         )
-        with stack:
+        deps.position_sizer.get_signal_size_multiplier = sig_mock
+        deps.position_sizer.cofiring_boost = cofire_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         sig_mock.assert_called_with("iv_compression")
 
     def test_cofiring_boost_applied_for_two_signals(self):
         cofire_mock = MagicMock(return_value=1.5)
         decisions = _decisions(buys=[self._candidate(matched_signals=["momentum", "rs_leader"])])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {
-                        "symbol": "AAPL",
-                        "current_price": 150.0,
-                        "matched_signals": ["momentum", "rs_leader"],
-                    }
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.position_sizer.cofiring_boost": cofire_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {
+                    "symbol": "AAPL",
+                    "current_price": 150.0,
+                    "matched_signals": ["momentum", "rs_leader"],
+                }
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
         )
-        with stack:
+        deps.position_sizer.cofiring_boost = cofire_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         cofire_mock.assert_called_with(2)
 
     def test_rs_rank_pct_passed_to_record_buy(self):
         record_mock = MagicMock()
         decisions = _decisions(buys=[{**self._candidate(), "rs_rank_pct": 85.5}])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0, "rs_rank_pct": 85.5}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.trader.record_buy": record_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "rs_rank_pct": 85.5}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
         )
-        with stack:
+        deps.trader.record_buy = record_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         record_mock.assert_called_once()
         _, kwargs = record_mock.call_args
         self.assertEqual(kwargs.get("rs_rank_pct"), 85.5)
@@ -5650,28 +5501,23 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
 
     def test_sector_long_gate_blocks_buy(self):
         """sector_allowed_long=False skips candidate — logs and continues (lines 1726-1730)."""
-        buy_mock = MagicMock()
         decisions = _decisions(buys=[self._buy_candidate()])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.sector_momentum.get_sector_momentum_ranks": {"Technology": 8},
-                "main.sector_data.get_sector": "Technology",
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
+            sector_momentum__get_sector_momentum_ranks={"Technology": 8},
+            sector_data__get_sector="Technology",
+            sector_momentum__sector_allowed_long=False,
         )
-        with stack:
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
-        buy_mock.assert_not_called()
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        deps.trader.place_buy_order.assert_not_called()
 
     def test_sector_short_gate_blocks_short(self):
         """sector_allowed_short=False skips candidate — logs and continues (lines 667-671)."""
@@ -5735,27 +5581,25 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
     def test_signal_invalidated_exit_closes_position(self):
         """signal_invalidated returning True closes position and records trade (lines 1003-1041)."""
         close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [
-                    {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
-                ],
-                "main.trader.get_position_ages": {"AAPL": 3},
-                "main.trader.get_position_meta": {
-                    "signal": "momentum",
-                    "regime": "BULL",
-                    "confidence": 8,
-                    "entry_price": 150.0,
-                    "entry_snapshot": {"rs_rank_pct": 0.8},
-                },
-                "main.exit_optimiser.signal_invalidated": True,
-                "main.trader.close_position": close_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[
+                {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
+            ],
+            trader__get_position_ages={"AAPL": 3},
+            trader__get_position_meta={
+                "signal": "momentum",
+                "regime": "BULL",
+                "confidence": 8,
+                "entry_price": 150.0,
+                "entry_snapshot": {"rs_rank_pct": 0.8},
+            },
+            exit_optimiser__signal_invalidated=True,
         )
-        with stack:
+        deps.trader.close_position = close_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
         close_mock.assert_called()
 
     def test_signal_invalidated_exit_close_fails_logs_error(self):
@@ -5765,53 +5609,49 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
                 status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="test fail"
             )
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [
-                    {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
-                ],
-                "main.trader.get_position_ages": {"AAPL": 3},
-                "main.trader.get_position_meta": {
-                    "signal": "momentum",
-                    "regime": "BULL",
-                    "confidence": 8,
-                    "entry_price": 150.0,
-                    "entry_snapshot": {"rs_rank_pct": 0.8},
-                },
-                "main.exit_optimiser.signal_invalidated": True,
-                "main.trader.close_position": close_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[
+                {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
+            ],
+            trader__get_position_ages={"AAPL": 3},
+            trader__get_position_meta={
+                "signal": "momentum",
+                "regime": "BULL",
+                "confidence": 8,
+                "entry_price": 150.0,
+                "entry_snapshot": {"rs_rank_pct": 0.8},
+            },
+            exit_optimiser__signal_invalidated=True,
         )
-        with stack:
+        deps.trader.close_position = close_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15", deps=deps)
         close_mock.assert_called()
 
     def test_signal_invalidated_exit_dry_run_records_trade(self):
         """dry_run=True with signal invalidated → trade recorded without live close (line 1041)."""
         close_mock = MagicMock()
-        stack, mocks = self._patch_all(
-            **{
-                "main.trader.get_open_positions": [
-                    {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
-                ],
-                "main.trader.get_position_ages": {"AAPL": 3},
-                "main.trader.get_position_meta": {
-                    "signal": "momentum",
-                    "regime": "BULL",
-                    "confidence": 8,
-                    "entry_price": 150.0,
-                    "entry_snapshot": {"rs_rank_pct": 0.8},
-                },
-                "main.exit_optimiser.signal_invalidated": True,
-                "main.trader.close_position": close_mock,
-            }
+        deps = self._make_deps(
+            trader__get_open_positions=[
+                {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
+            ],
+            trader__get_position_ages={"AAPL": 3},
+            trader__get_position_meta={
+                "signal": "momentum",
+                "regime": "BULL",
+                "confidence": 8,
+                "entry_price": 150.0,
+                "entry_snapshot": {"rs_rank_pct": 0.8},
+            },
+            exit_optimiser__signal_invalidated=True,
         )
-        with stack:
+        deps.trader.close_position = close_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=True, mode="midday", today="2026-01-15")
+            _run_inner(dry_run=True, mode="midday", today="2026-01-15", deps=deps)
         close_mock.assert_not_called()
 
     def test_garch_scalar_below_one_logs_and_buys(self):
@@ -5822,24 +5662,20 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
             )
         )
         decisions = _decisions(buys=[self._buy_candidate()])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.exit_optimiser.compute_garch_vol_scalar": 0.7,
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
+            exit_optimiser__compute_garch_vol_scalar=0.7,
         )
-        with stack:
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
     def test_amihud_illiquid_flag_logs_and_buys(self):
@@ -5851,28 +5687,24 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
         )
         # amihud_illiquid must be in the buy candidate (flows from AI decisions, not snapshots)
         decisions = _decisions(buys=[self._buy_candidate(amihud_illiquid=True)])
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {
-                        "symbol": "AAPL",
-                        "current_price": 150.0,
-                        "matched_signals": ["momentum"],
-                        "amihud_illiquid": True,
-                    }
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {
+                    "symbol": "AAPL",
+                    "current_price": 150.0,
+                    "matched_signals": ["momentum"],
+                    "amihud_illiquid": True,
+                }
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
         )
-        with stack:
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
     def test_mqs_boost_logs_and_buys(self):
@@ -5890,27 +5722,23 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
                 )
             ]
         )
-        stack, mocks = self._patch_all(
-            **{
-                "main.ai_analyst.get_trading_decisions": decisions,
-                "main.stock_scanner.prefilter_candidates": [
-                    {
-                        "symbol": "AAPL",
-                        "current_price": 150.0,
-                        "matched_signals": ["momentum"],
-                    }
-                ],
-                "main.market_data.get_market_snapshots": [
-                    {"symbol": "AAPL", "current_price": 150.0}
-                ],
-                "main.exit_optimiser.compute_atr_pct": None,
-                "main.trader.place_buy_order": buy_mock,
-            }
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {
+                    "symbol": "AAPL",
+                    "current_price": 150.0,
+                    "matched_signals": ["momentum"],
+                }
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
         )
-        with stack:
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
             from main import _run_inner
 
-            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
 
 

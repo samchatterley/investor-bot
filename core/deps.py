@@ -96,6 +96,7 @@ class TradingDeps:
     # ── Broker / execution ────────────────────────────────────────────────────
     trader: Any
     stock_scanner: Any
+    short_risk: Any
 
     # ── Market data ───────────────────────────────────────────────────────────
     market_data: Any
@@ -106,6 +107,8 @@ class TradingDeps:
     options_scanner: Any
     sector_data: Any
     sentiment: Any
+    sector_momentum: Any
+    options_data: Any
 
     # ── Analysis ──────────────────────────────────────────────────────────────
     ai_analyst: Any
@@ -139,6 +142,14 @@ class TradingDeps:
     save_experiment_baseline: Any
     load_experiment_baseline: Any
     run_startup_health_check: Any
+    get_macro_snapshot: Any
+    get_sentiment_snapshot: Any
+    get_short_universe: Any
+    scan_short_universe: Any
+
+    # ── Data ──────────────────────────────────────────────────────────────────
+    short_interest: Any
+    edgar_client: Any
 
     # ── Config snapshot ───────────────────────────────────────────────────────
     run_config: RunConfig
@@ -151,15 +162,22 @@ class TradingDeps:
         from data import (
             av_sentiment,
             earnings_surprise,
+            edgar_client,
             insider_feed,
             market_data,
             news_fetcher,
             options_scanner,
             sector_data,
+            sector_momentum,
+            short_interest,
         )
+        from data import options_data as options_data_module
         from data import sentiment as sentiment_module
-        from execution import stock_scanner, trader
+        from data.macro_data import get_macro_snapshot
+        from data.sentiment_client import get_sentiment_snapshot
+        from execution import short_risk, stock_scanner, trader
         from execution.quote_gate import check_quote_gate
+        from execution.short_universe import get_short_universe, scan_short_universe
         from execution.universe import build_scan_universe
         from notifications import alerts, emailer
         from risk import (
@@ -182,6 +200,7 @@ class TradingDeps:
         return cls(
             trader=trader,
             stock_scanner=stock_scanner,
+            short_risk=short_risk,
             market_data=market_data,
             insider_feed=insider_feed,
             av_sentiment=av_sentiment,
@@ -190,6 +209,8 @@ class TradingDeps:
             options_scanner=options_scanner,
             sector_data=sector_data,
             sentiment=sentiment_module,
+            sector_momentum=sector_momentum,
+            options_data=options_data_module,
             ai_analyst=ai_analyst,
             performance=performance,
             alerts=alerts,
@@ -213,5 +234,11 @@ class TradingDeps:
             save_experiment_baseline=save_experiment_baseline,
             load_experiment_baseline=load_experiment_baseline,
             run_startup_health_check=run_startup_health_check,
+            get_macro_snapshot=get_macro_snapshot,
+            get_sentiment_snapshot=get_sentiment_snapshot,
+            get_short_universe=get_short_universe,
+            scan_short_universe=scan_short_universe,
+            short_interest=short_interest,
+            edgar_client=edgar_client,
             run_config=RunConfig.from_config(),
         )
