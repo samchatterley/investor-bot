@@ -417,6 +417,74 @@ class TestFetchStockData(unittest.TestCase):
             result = fetch_stock_data("AAPL", days=30)
         self.assertIsNone(result)
 
+    def _make_preloaded_df(self, rows=60):
+        """Return a valid DataFrame suitable for preloaded path (Close + Volume required)."""
+        idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=rows)
+        n = len(idx)
+        closes = [100.0 + i * 0.5 for i in range(n)]
+        return pd.DataFrame(
+            {
+                "Open": closes,
+                "High": [c + 1 for c in closes],
+                "Low": [c - 1 for c in closes],
+                "Close": closes,
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+
+    def test_preloaded_data_no_as_of_returns_dataframe(self):
+        """Lines 40,44: preloaded symbol with no as_of → df.copy() path."""
+        from data.market_data import fetch_stock_data
+
+        df = self._make_preloaded_df(rows=60)
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        self.assertIsNotNone(result)
+        self.assertIn("rsi", result.columns)
+
+    def test_preloaded_data_with_as_of_slices_dataframe(self):
+        """Lines 40,42: preloaded symbol with as_of → slice and copy path."""
+        from data.market_data import fetch_stock_data
+
+        df = self._make_preloaded_df(rows=60)
+        as_of = df.index[-5].strftime("%Y-%m-%d")
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df}, as_of=as_of)
+        self.assertIsNotNone(result)
+
+    def test_preloaded_data_too_few_rows_returns_none(self):
+        """Lines 45-47: preloaded df with < 35 rows → warning logged, returns None."""
+        from data.market_data import fetch_stock_data
+
+        df = self._make_preloaded_df(rows=10)
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        self.assertIsNone(result)
+
+    def test_stale_ticker_data_returns_none(self):
+        """Lines 64-67: ticker last date > 4 days old → stale feed, returns None."""
+        from data.market_data import fetch_stock_data
+
+        # Use dates that are definitely stale (10 days ago and earlier)
+        idx = pd.bdate_range(
+            end=pd.Timestamp.today().normalize() - pd.Timedelta(days=10), periods=60
+        )
+        n = len(idx)
+        closes = [100.0 + i * 0.5 for i in range(n)]
+        df = pd.DataFrame(
+            {
+                "Open": closes,
+                "High": [c + 1 for c in closes],
+                "Low": [c - 1 for c in closes],
+                "Close": closes,
+                "Volume": [1_000_000] * n,
+            },
+            index=idx,
+        )
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = df
+        with patch("data.market_data.yf.Ticker", return_value=mock_ticker):
+            result = fetch_stock_data("AAPL", days=30)
+        self.assertIsNone(result)
+
     def test_result_limited_to_requested_days(self):
         from data.market_data import fetch_stock_data
 
@@ -661,6 +729,79 @@ class TestGetMarketSnapshots(unittest.TestCase):
             result = get_market_snapshots(["AAPL"])
         self.assertEqual(result[0]["pe_ratio"], 22.5)
 
+    def test_amihud_cross_sectional_ranking_with_ten_plus_symbols(self):
+        """10+ non-zero amihud values trigger cross-sectional ranking (lines 535-537)."""
+        from data.market_data import get_market_snapshots
+
+        symbols = [f"SYM{i:02d}" for i in range(12)]
+        snaps = {sym: self._make_snap(sym) for sym in symbols}
+
+        patches = [
+            patch("data.market_data._bulk_download", return_value={}),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch(
+                "data.market_data.summarise_for_ai",
+                side_effect=lambda sym, df, **kw: dict(snaps[sym]),
+            ),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=None),
+            patch("data.market_data.compute_amihud_illiquidity", return_value=1e-7),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            result = get_market_snapshots(symbols)
+        finally:
+            for p in patches:
+                p.stop()
+
+        self.assertEqual(len(result), 12)
+        # All snapshots should have amihud_illiquid set (the top-10% threshold path ran)
+        self.assertTrue(all("amihud_illiquid" in s for s in result))
+
+    def test_compute_amihud_illiquidity_exception_returns_zero(self):
+        """Exception inside compute_amihud_illiquidity → return 0.0 (lines 269-270)."""
+        from data.market_data import compute_amihud_illiquidity
+
+        result = compute_amihud_illiquidity(None)  # type: ignore[arg-type]
+        self.assertEqual(result, 0.0)
+
+    def test_preloaded_as_of_uses_preloaded_spy_returns(self):
+        """Lines 472-474: preloaded+as_of → _spy_return_from_preloaded called instead of live."""
+        from data.market_data import get_market_snapshots
+
+        snap = self._make_snap("AAPL")
+        idx = pd.bdate_range("2024-01-01", periods=30)
+        spy_df = pd.DataFrame({"Close": [400.0 + i for i in range(30)]}, index=idx)
+        preloaded = {"AAPL": MagicMock(), "SPY": spy_df}
+        as_of = "2024-02-15"
+        with (
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+        ):
+            result = get_market_snapshots(["AAPL"], preloaded=preloaded, as_of=as_of)
+        self.assertEqual(len(result), 1)
+
+    def test_live_bulk_download_log_when_data_returned(self):
+        """Line 483: logger.info fires when _bulk_download returns non-empty dict."""
+        from data.market_data import get_market_snapshots
+
+        snap = self._make_snap("AAPL")
+        fake_bulk = {"AAPL": MagicMock()}
+        with (
+            patch("data.market_data._bulk_download", return_value=fake_bulk),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=None),
+        ):
+            result = get_market_snapshots(["AAPL"])
+        self.assertEqual(len(result), 1)
+
 
 class TestGetSpy20dReturn(unittest.TestCase):
     def test_exception_returns_none(self):
@@ -758,6 +899,33 @@ class TestSpyReturnFromPreloadedException(unittest.TestCase):
         spy_df = pd.DataFrame({"Close": [100.0 + i for i in range(20)]}, index=idx)
         # "not-a-date" causes pd.Timestamp to raise ValueError → except branch fires
         result = _spy_return_from_preloaded({"SPY": spy_df}, "not-a-date", 5)
+        self.assertIsNone(result)
+
+    def test_spy_not_in_preloaded_returns_none(self):
+        """Line 327: spy_df is None when SPY not in preloaded dict."""
+        from data.market_data import _spy_return_from_preloaded
+
+        result = _spy_return_from_preloaded({}, "2024-06-01", 5)
+        self.assertIsNone(result)
+
+    def test_returns_float_with_valid_spy_data(self):
+        """Lines 330-332: sliced data has enough rows → returns rounded float."""
+        from data.market_data import _spy_return_from_preloaded
+
+        idx = pd.bdate_range("2024-01-01", periods=30)
+        closes = [100.0 + i for i in range(30)]
+        spy_df = pd.DataFrame({"Close": closes}, index=idx)
+        result = _spy_return_from_preloaded({"SPY": spy_df}, "2024-02-15", 5)
+        self.assertIsInstance(result, float)
+
+    def test_returns_none_when_too_few_sliced_rows(self):
+        """Line 331: sliced df has fewer rows than lookback + 1 → returns None."""
+        from data.market_data import _spy_return_from_preloaded
+
+        idx = pd.bdate_range("2024-01-01", periods=3)
+        spy_df = pd.DataFrame({"Close": [100.0, 101.0, 102.0]}, index=idx)
+        # lookback=5 requires 6 rows; we have 3 → returns None
+        result = _spy_return_from_preloaded({"SPY": spy_df}, "2024-01-05", 5)
         self.assertIsNone(result)
 
 
@@ -1277,3 +1445,50 @@ class TestPrefetchMarketData(unittest.TestCase):
             patch("data.market_data._save_bulk_cache"),
         ):
             prefetch_market_data(["AAPL"])  # must not raise
+
+
+class TestComputeAmihudIlliquidity(unittest.TestCase):
+    def _make_df(self, n: int = 25, volume: float = 1_000_000, price: float = 100.0):
+
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        closes = pd.Series([price + i * 0.1 for i in range(n)], index=idx)
+        df = pd.DataFrame({"Close": closes, "Volume": volume}, index=idx)
+        return df
+
+    def test_returns_positive_float_for_normal_data(self):
+        from data.market_data import compute_amihud_illiquidity
+
+        df = self._make_df()
+        result = compute_amihud_illiquidity(df)
+        self.assertIsInstance(result, float)
+        self.assertGreater(result, 0.0)
+
+    def test_returns_zero_for_empty_df(self):
+        from data.market_data import compute_amihud_illiquidity
+
+        df = pd.DataFrame({"Close": [], "Volume": []})
+        result = compute_amihud_illiquidity(df)
+        self.assertEqual(result, 0.0)
+
+    def test_returns_zero_for_zero_volume(self):
+        from data.market_data import compute_amihud_illiquidity
+
+        df = self._make_df(volume=0)
+        result = compute_amihud_illiquidity(df)
+        self.assertEqual(result, 0.0)
+
+    def test_higher_volume_yields_lower_illiquidity(self):
+        from data.market_data import compute_amihud_illiquidity
+
+        low_vol = self._make_df(volume=10_000)
+        high_vol = self._make_df(volume=10_000_000)
+        self.assertGreater(
+            compute_amihud_illiquidity(low_vol), compute_amihud_illiquidity(high_vol)
+        )
+
+    def test_returns_zero_for_insufficient_bars(self):
+        from data.market_data import compute_amihud_illiquidity
+
+        df = self._make_df(n=3)
+        result = compute_amihud_illiquidity(df)
+        self.assertEqual(result, 0.0)

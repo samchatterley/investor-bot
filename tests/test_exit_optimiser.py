@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -7,8 +7,10 @@ from risk.exit_optimiser import (
     adverse_volume_triggered,
     compute_atr_pct,
     compute_exit_levels,
+    compute_garch_vol_scalar,
     profit_acceleration_triggered,
     rs_decay_triggered,
+    signal_invalidated,
 )
 
 
@@ -271,3 +273,174 @@ class TestProfitAccelerationTriggered(unittest.TestCase):
         custom = frozenset({"gap_and_go"})
         result = profit_acceleration_triggered(9.0, 1, "mean_reversion", fast_exit_signals=custom)
         self.assertEqual(result, "hold")
+
+
+class TestComputeGarchVolScalar(unittest.TestCase):
+    def test_returns_one_when_yfinance_fails(self):
+        with patch("yfinance.download", side_effect=Exception("network")):
+            result = compute_garch_vol_scalar("AAPL")
+        self.assertEqual(result, 1.0)
+
+    def test_returns_one_when_insufficient_data(self):
+        df = pd.DataFrame({"Close": [100.0] * 10})
+        df.columns.name = None
+        with patch("yfinance.download", return_value=df):
+            result = compute_garch_vol_scalar("AAPL")
+        self.assertEqual(result, 1.0)
+
+    def test_returns_one_when_vol_not_elevated(self):
+        import numpy as np
+
+        n = 70
+        rng = np.random.default_rng(42)
+        closes = 100 + np.cumsum(rng.normal(0, 0.5, n))
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        with patch("yfinance.download", return_value=df):
+            result = compute_garch_vol_scalar("TEST")
+        self.assertIsInstance(result, float)
+        self.assertGreater(result, 0.0)
+        self.assertLessEqual(result, 1.0)
+
+    def test_returns_float_on_success(self):
+        import numpy as np
+
+        n = 80
+        rng = np.random.default_rng(7)
+        closes = 100 + np.cumsum(rng.normal(0, 1.0, n))
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        with patch("yfinance.download", return_value=df):
+            result = compute_garch_vol_scalar("TEST")
+        self.assertIsInstance(result, float)
+
+    def test_returns_one_when_too_few_valid_returns(self):
+        """Sparse Close column → < 30 returns after dropna (line 85)."""
+        n = 70
+        closes = [float("nan")] * 42 + [100.0 + i for i in range(28)]
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        with patch("yfinance.download", return_value=df):
+            result = compute_garch_vol_scalar("TEST")
+        self.assertEqual(result, 1.0)
+
+    def test_returns_one_when_forecast_var_is_nan(self):
+        """NaN forecast variance from GARCH → returns 1.0 (line 92)."""
+        import numpy as np
+
+        n = 70
+        rng = np.random.default_rng(5)
+        closes = 100 + np.cumsum(rng.normal(0, 1.0, n))
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        mock_res = MagicMock()
+        mock_res.forecast.return_value.variance.iloc.__getitem__.return_value = float("nan")
+        with (
+            patch("yfinance.download", return_value=df),
+            patch("arch.arch_model") as mock_arch,
+        ):
+            mock_arch.return_value.fit.return_value = mock_res
+            result = compute_garch_vol_scalar("TEST")
+        self.assertEqual(result, 1.0)
+
+    def test_returns_one_when_hist_vol_is_zero(self):
+        """Constant Close prices → hist_vol = 0 → returns 1.0 (line 97)."""
+        n = 70
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": [100.0] * n}, index=idx)
+        mock_res = MagicMock()
+        mock_res.forecast.return_value.variance.iloc.__getitem__.return_value = 1.0
+        with (
+            patch("yfinance.download", return_value=df),
+            patch("arch.arch_model") as mock_arch,
+        ):
+            mock_arch.return_value.fit.return_value = mock_res
+            result = compute_garch_vol_scalar("TEST")
+        self.assertEqual(result, 1.0)
+
+    def test_returns_scalar_less_than_one_when_vol_elevated(self):
+        """forecast_vol >> hist_vol → scalar < 1.0 returned (lines 102-104)."""
+        import numpy as np
+
+        n = 70
+        rng = np.random.default_rng(11)
+        closes = 100 + np.cumsum(rng.normal(0, 1.0, n))
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        # forecast variance = 900 → forecast_vol = 30; hist_vol ≈ 1 → ratio ≈ 30 > 1.5
+        mock_res = MagicMock()
+        mock_res.forecast.return_value.variance.iloc.__getitem__.return_value = 900.0
+        with (
+            patch("yfinance.download", return_value=df),
+            patch("arch.arch_model") as mock_arch,
+        ):
+            mock_arch.return_value.fit.return_value = mock_res
+            result = compute_garch_vol_scalar("TEST")
+        self.assertIsInstance(result, float)
+        self.assertLess(result, 1.0)
+        self.assertGreaterEqual(result, 0.5)
+
+    def test_multiindex_columns_are_flattened(self):
+        """MultiIndex df from yfinance is flattened to single-level (line 81)."""
+        import numpy as np
+
+        n = 70
+        rng = np.random.default_rng(3)
+        closes = 100 + np.cumsum(rng.normal(0, 1.0, n))
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame({"Close": closes}, index=idx)
+        df.columns = pd.MultiIndex.from_tuples([("Close", "TEST")])
+        with patch("yfinance.download", return_value=df):
+            result = compute_garch_vol_scalar("TEST")
+        self.assertIsInstance(result, float)
+
+
+class TestSignalInvalidated(unittest.TestCase):
+    def test_fundamental_signal_never_invalidated(self):
+        self.assertFalse(
+            signal_invalidated("AAPL", "insider_buying", {"some": "snap"}, days_held=5)
+        )
+        self.assertFalse(signal_invalidated("AAPL", "pead", {"some": "snap"}, days_held=5))
+
+    def test_none_entry_snapshot_returns_false(self):
+        self.assertFalse(signal_invalidated("AAPL", "momentum", None, days_held=5))
+
+    def test_too_young_returns_false(self):
+        self.assertFalse(signal_invalidated("AAPL", "momentum", {"x": 1}, days_held=1))
+
+    def test_returns_false_when_get_market_snapshots_empty(self):
+        with patch("data.market_data.get_market_snapshots", return_value=[]):
+            result = signal_invalidated("AAPL", "momentum", {"x": 1}, days_held=3)
+        self.assertFalse(result)
+
+    def test_returns_true_when_signal_no_longer_fires(self):
+        with (
+            patch(
+                "data.market_data.get_market_snapshots",
+                return_value=[{"symbol": "AAPL"}],
+            ),
+            patch("signals.evaluator.evaluate_signals", return_value=["mean_reversion"]),
+        ):
+            result = signal_invalidated("AAPL", "momentum", {"x": 1}, days_held=3)
+        self.assertTrue(result)
+
+    def test_returns_false_when_signal_still_fires(self):
+        with (
+            patch(
+                "data.market_data.get_market_snapshots",
+                return_value=[{"symbol": "AAPL"}],
+            ),
+            patch(
+                "signals.evaluator.evaluate_signals", return_value=["momentum", "mean_reversion"]
+            ),
+        ):
+            result = signal_invalidated("AAPL", "momentum", {"x": 1}, days_held=3)
+        self.assertFalse(result)
+
+    def test_exception_in_get_market_snapshots_returns_false(self):
+        with patch(
+            "data.market_data.get_market_snapshots",
+            side_effect=Exception("network error"),
+        ):
+            result = signal_invalidated("AAPL", "momentum", {"x": 1}, days_held=3)
+        self.assertFalse(result)

@@ -915,6 +915,9 @@ class RunInnerBase(unittest.TestCase):
             "main.exit_optimiser.compute_atr_pct": None,
             "main.position_sizer.get_signal_size_multiplier": 1.0,
             "main.position_sizer.cofiring_boost": 1.0,
+            "main.sector_momentum.get_sector_momentum_ranks": {},
+            "main.exit_optimiser.compute_garch_vol_scalar": 1.0,
+            "main.exit_optimiser.signal_invalidated": False,
         }
         # Health check defaults to GREEN so tests focused on buy/sell logic aren't blocked.
         if "main.run_startup_health_check" not in overrides:
@@ -5630,6 +5633,285 @@ class TestBuildDataBundleOptionsIV(unittest.TestCase):
         self.assertTrue(cand["unusual_call_oi"])
         self.assertFalse(cand["panic_put_skew"])
         self.assertFalse(cand["call_skew_spike"])
+
+
+class TestRunInnerNewFeatureGates(RunInnerBase):
+    """Coverage for v1.86 feature branches in _run_inner and _execute_shorts."""
+
+    def _buy_candidate(self, **extra):
+        return {
+            "symbol": "AAPL",
+            "confidence": 8,
+            "key_signal": "momentum",
+            "reasoning": "test",
+            "matched_signals": ["momentum"],
+            **extra,
+        }
+
+    def test_sector_long_gate_blocks_buy(self):
+        """sector_allowed_long=False skips candidate — logs and continues (lines 1726-1730)."""
+        buy_mock = MagicMock()
+        decisions = _decisions(buys=[self._buy_candidate()])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.sector_momentum.get_sector_momentum_ranks": {"Technology": 8},
+                "main.sector_data.get_sector": "Technology",
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_not_called()
+
+    def test_sector_short_gate_blocks_short(self):
+        """sector_allowed_short=False skips candidate — logs and continues (lines 667-671)."""
+        from main import _execute_shorts
+
+        filled_order = OrderResult(
+            status=OrderStatus.FILLED,
+            symbol="WEAK",
+            broker_order_id="x",
+            filled_qty=5.0,
+            filled_avg_price=50.0,
+        )
+        candidate = {
+            "symbol": "WEAK",
+            "current_price": 50.0,
+            "rs_rank_pct": 10.0,
+            "price_vs_ema21_pct": -2.0,
+            "avg_volume": 1_000_000,
+        }
+        patches = [
+            patch("main.stock_scanner.scan_short_candidates", return_value=[candidate]),
+            patch("main.trader.get_open_shorts", return_value=set()),
+            patch("main.trader.get_long_notional", return_value=50_000.0),
+            patch("main.trader.get_short_notional", return_value=0.0),
+            patch("main.correlation.correlated_with_held", return_value=False),
+            patch(
+                "main.short_risk.fetch_squeeze_info",
+                return_value={"short_pct_float": None, "days_to_cover": None},
+            ),
+            patch("main.position_sizer.risk_budget_size", return_value=500.0),
+            patch("main.trader.place_short_order", return_value=filled_order),
+            patch("main.trader.record_short", return_value=None),
+            patch("main.audit_log.log_order_placed", return_value=None),
+            patch("main.audit_log.log_event", return_value=None),
+            patch(
+                "main.trader.place_short_cover_stop",
+                return_value=OrderResult(status=OrderStatus.FILLED, symbol="WEAK"),
+            ),
+            patch("main.alerts.alert_error", return_value=None),
+            patch("main.sector_momentum.get_sector_momentum_ranks", return_value={"Technology": 2}),
+            patch("main.sector_data.get_sector", return_value="Technology"),
+        ]
+        all_trades: list = []
+        executed_symbols: set = set()
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            _execute_shorts(
+                client=MagicMock(),
+                snapshots=[candidate],
+                regime={"regime": "BULL_TREND"},
+                open_positions=[],
+                account_now={"portfolio_value": 100_000.0, "cash": 50_000.0},
+                all_trades=all_trades,
+                executed_symbols=executed_symbols,
+                dry_run=False,
+                _live_shadow=False,
+            )
+        self.assertEqual(all_trades, [])
+
+    def test_signal_invalidated_exit_closes_position(self):
+        """signal_invalidated returning True closes position and records trade (lines 1003-1041)."""
+        close_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [
+                    {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
+                ],
+                "main.trader.get_position_ages": {"AAPL": 3},
+                "main.trader.get_position_meta": {
+                    "signal": "momentum",
+                    "regime": "BULL",
+                    "confidence": 8,
+                    "entry_price": 150.0,
+                    "entry_snapshot": {"rs_rank_pct": 0.8},
+                },
+                "main.exit_optimiser.signal_invalidated": True,
+                "main.trader.close_position": close_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+        close_mock.assert_called()
+
+    def test_signal_invalidated_exit_close_fails_logs_error(self):
+        """close_position failure after signal invalidation → logs error (lines 1036-1039)."""
+        close_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.REJECTED, symbol="AAPL", rejection_reason="test fail"
+            )
+        )
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [
+                    {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
+                ],
+                "main.trader.get_position_ages": {"AAPL": 3},
+                "main.trader.get_position_meta": {
+                    "signal": "momentum",
+                    "regime": "BULL",
+                    "confidence": 8,
+                    "entry_price": 150.0,
+                    "entry_snapshot": {"rs_rank_pct": 0.8},
+                },
+                "main.exit_optimiser.signal_invalidated": True,
+                "main.trader.close_position": close_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="midday", today="2026-01-15")
+        close_mock.assert_called()
+
+    def test_signal_invalidated_exit_dry_run_records_trade(self):
+        """dry_run=True with signal invalidated → trade recorded without live close (line 1041)."""
+        close_mock = MagicMock()
+        stack, mocks = self._patch_all(
+            **{
+                "main.trader.get_open_positions": [
+                    {"symbol": "AAPL", "unrealized_plpc": -2.0, "market_value": 1_000.0, "qty": 10}
+                ],
+                "main.trader.get_position_ages": {"AAPL": 3},
+                "main.trader.get_position_meta": {
+                    "signal": "momentum",
+                    "regime": "BULL",
+                    "confidence": 8,
+                    "entry_price": 150.0,
+                    "entry_snapshot": {"rs_rank_pct": 0.8},
+                },
+                "main.exit_optimiser.signal_invalidated": True,
+                "main.trader.close_position": close_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="midday", today="2026-01-15")
+        close_mock.assert_not_called()
+
+    def test_garch_scalar_below_one_logs_and_buys(self):
+        """compute_garch_vol_scalar < 1.0 logs GARCH gate and buy proceeds (line 1797)."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        decisions = _decisions(buys=[self._buy_candidate()])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.exit_optimiser.compute_garch_vol_scalar": 0.7,
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called()
+
+    def test_amihud_illiquid_flag_logs_and_buys(self):
+        """candidate.amihud_illiquid=True logs illiquidity gate, buy proceeds (line 1802)."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        # amihud_illiquid must be in the buy candidate (flows from AI decisions, not snapshots)
+        decisions = _decisions(buys=[self._buy_candidate(amihud_illiquid=True)])
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {
+                        "symbol": "AAPL",
+                        "current_price": 150.0,
+                        "matched_signals": ["momentum"],
+                        "amihud_illiquid": True,
+                    }
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called()
+
+    def test_mqs_boost_logs_and_buys(self):
+        """MQS score=3 triggers size-boost log and buy proceeds (line 1807)."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        # MQS fields must be in the buy candidate so momentum_quality_score sees them
+        decisions = _decisions(
+            buys=[
+                self._buy_candidate(
+                    rs_rank_pct=75.0, pead_candidate=True, roe=0.2, profit_margin=0.15
+                )
+            ]
+        )
+        stack, mocks = self._patch_all(
+            **{
+                "main.ai_analyst.get_trading_decisions": decisions,
+                "main.stock_scanner.prefilter_candidates": [
+                    {
+                        "symbol": "AAPL",
+                        "current_price": 150.0,
+                        "matched_signals": ["momentum"],
+                    }
+                ],
+                "main.market_data.get_market_snapshots": [
+                    {"symbol": "AAPL", "current_price": 150.0}
+                ],
+                "main.exit_optimiser.compute_atr_pct": None,
+                "main.trader.place_buy_order": buy_mock,
+            }
+        )
+        with stack:
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15")
+        buy_mock.assert_called()
 
 
 if __name__ == "__main__":  # pragma: no cover

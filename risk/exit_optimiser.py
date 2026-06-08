@@ -54,6 +54,121 @@ def compute_atr_pct(symbol: str, period: int = 14) -> float | None:
         return None
 
 
+_GARCH_VOL_LOOKBACK = 60  # trading days used to fit GARCH(1,1)
+_GARCH_SCALE_THRESHOLD = 1.5  # forecast/historical ratio above which we scale down
+_GARCH_SCALE_FLOOR = 0.5  # minimum multiplier when vol is very elevated
+
+
+def compute_garch_vol_scalar(symbol: str) -> float:
+    """Fit GARCH(1,1) on 60-day daily returns; return a position-size multiplier.
+
+    Multiplier = max(floor, historical_vol / forecast_vol) when forecast > threshold×historical.
+    Returns 1.0 when arch is unavailable, data is insufficient, or fitting fails.
+
+    A scalar < 1.0 means forecast volatility is elevated relative to its own recent history,
+    so we reduce size proportionally.  The floor prevents over-shrinkage on very volatile names.
+    """
+    try:
+        import numpy as np
+        import pandas as pd
+        import yfinance as yf
+        from arch import arch_model
+
+        df = yf.download(symbol, period="90d", interval="1d", progress=False, auto_adjust=True)
+        if df is None or len(df) < _GARCH_VOL_LOOKBACK + 5:
+            return 1.0
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        returns = df["Close"].pct_change().dropna() * 100  # arch expects percentage returns
+        returns = returns.tail(_GARCH_VOL_LOOKBACK)
+        if len(returns) < 30:
+            return 1.0
+
+        model = arch_model(returns, vol="Garch", p=1, q=1, rescale=False)
+        res = model.fit(disp="off", show_warning=False)
+        forecast = res.forecast(horizon=1, reindex=False)
+        forecast_var = float(forecast.variance.iloc[-1, 0])
+        if forecast_var <= 0 or np.isnan(forecast_var):
+            return 1.0
+        forecast_vol = forecast_var**0.5  # still in percentage units
+
+        hist_vol = float(returns.std())
+        if hist_vol <= 0:
+            return 1.0
+
+        ratio = forecast_vol / hist_vol
+        if ratio <= _GARCH_SCALE_THRESHOLD:
+            return 1.0
+        scalar = max(_GARCH_SCALE_FLOOR, hist_vol / forecast_vol)
+        logger.debug(f"compute_garch_vol_scalar({symbol}): ratio={ratio:.2f} → scalar={scalar:.2f}")
+        return round(scalar, 3)
+    except Exception as exc:
+        logger.debug(f"compute_garch_vol_scalar({symbol}): {exc}")
+        return 1.0
+
+
+_INVALIDATION_MIN_DAYS = 2  # don't exit same day or next day (noise protection)
+
+
+def signal_invalidated(
+    symbol: str,
+    entry_signal: str,
+    entry_snapshot: dict | None,
+    days_held: int,
+) -> bool:
+    """Return True when the entry signal has fully reversed and the position should exit.
+
+    Fetches a fresh market snapshot for *symbol*, re-runs ``evaluate_signals``, and
+    checks whether *entry_signal* is absent from the current signals.  Returns False
+    when data is unavailable, entry_snapshot is None, or position is too young.
+
+    Only considers technical signals that can reverse intraday (momentum, mean_reversion,
+    macd_crossover, bb_squeeze, trend_pullback, iv_compression, rs_leader, breakout_52w).
+    Fundamental signals (insider_buying, pead) are excluded — those don't reverse daily.
+    """
+    _TECHNICAL_SIGNALS = frozenset(
+        {
+            "momentum",
+            "mean_reversion",
+            "macd_crossover",
+            "bb_squeeze",
+            "trend_pullback",
+            "iv_compression",
+            "rs_leader",
+            "momentum_12_1",
+            "inside_day_breakout",
+            "range_reversion",
+        }
+    )
+
+    if entry_signal not in _TECHNICAL_SIGNALS:
+        return False
+    if entry_snapshot is None:
+        return False
+    if days_held < _INVALIDATION_MIN_DAYS:
+        return False
+
+    try:
+        from data.market_data import get_market_snapshots
+        from signals.evaluator import evaluate_signals
+
+        snaps = get_market_snapshots([symbol])
+        if not snaps:
+            return False
+        current_snap = snaps[0]
+        current_signals = set(evaluate_signals(current_snap))
+        invalidated = entry_signal not in current_signals
+        if invalidated:
+            logger.info(
+                f"signal_invalidated: {symbol} entry_signal='{entry_signal}' no longer fires"
+                f" — current_signals={sorted(current_signals)}"
+            )
+        return invalidated
+    except Exception as exc:
+        logger.debug(f"signal_invalidated({symbol}): {exc}")
+        return False
+
+
 def compute_exit_levels(
     stop_loss_pct: float,
     take_profit_pct: float,

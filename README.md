@@ -810,6 +810,24 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.86 — June 2026 — five position-sizing and exit-quality features
+
+Five independent improvements to position sizing accuracy and exit timing, each backed by 100% test coverage.
+
+- **Amihud illiquidity gate** (`data/market_data.py`, `risk/position_sizer.py`) — cross-sectional illiquidity ranking using Amihud (2002): `mean(|daily_return| / dollar_volume)` over 20 bars per symbol. When ≥10 symbols have non-zero ratios, the 90th-percentile threshold is computed; symbols above it are flagged `amihud_illiquid=True` in the snapshot. `position_sizer.amihud_size_scalar` reduces position size 50% for flagged symbols. Prevents size-normalised losses from wide bid-ask spreads on thinly-traded names.
+
+- **GARCH(1,1) volatility forecast** (`risk/exit_optimiser.py`) — `compute_garch_vol_scalar(symbol)` downloads 90 days of daily closes via yfinance, fits a GARCH(1,1) model (`arch` library) on the percentage-return series, and compares the one-step-ahead forecast volatility to the 60-day historical std dev. When `forecast_vol / hist_vol > 1.5`, the size scalar is `hist_vol / forecast_vol` (floored at 0.5). Returns 1.0 gracefully on any data or model failure.
+
+- **Momentum quality score** (`risk/position_sizer.py`) — `momentum_quality_score(candidate)` sums three binary components: RS percentile rank ≥ 60 (top-tier cross-sectional momentum), `pead_candidate` flag (post-earnings drift candidate), and profitability composite (ROE > 0 AND profit margin > 0). Score 3 triggers `mqr_size_multiplier` → 1.5× size boost. Rewards positions where price strength, earnings catalyst, and fundamental quality converge.
+
+- **Sector momentum rank gate** (`data/sector_momentum.py`, `main.py`) — ranks all 11 SPDR ETFs by 20-day return each session. Only symbols in top-4-ranked sectors are eligible for long entry; shorts restricted to bottom-3 sectors. Results cached 24 hours to `logs/sector_momentum_cache.json`. Fail-open: empty ranks allow all trades. Prevents entering counter-trend positions in sectors with deteriorating relative strength.
+
+- **Signal invalidation exit** (`risk/exit_optimiser.py`, `execution/trader.py`, `utils/db.py`) — DB migration 9 adds `entry_snapshot TEXT` column to `positions`. At buy time, `record_buy(entry_snapshot=candidate)` stores the full snapshot as JSON. At midday, `signal_invalidated(symbol, meta, pos)` re-evaluates technical signals against fresh market data; if the qualifying signal(s) from entry are no longer active (and minimum 2-day hold is met), the position is closed. Only technical signals qualify (fundamental signals like `pead` are excluded — their catalysts don't reverse intraday).
+
+- **Tests:** 107 new tests across `test_exit_optimiser.py` (15 new: GARCH sparse-data, NaN-variance, zero-vol, elevated-vol, MultiIndex-column, signal invalidation branches), `test_sector_momentum.py` (17 new: fresh/stale/corrupt cache, non-MultiIndex response, missing/sparse tickers, all-insufficient path), `test_market_data.py` (18 new: preloaded-path, stale-ticker, SPY-return, live-bulk-log, amihud cross-sectional), `test_trader_metadata.py` (2: entry_snapshot round-trip, corrupt-JSON handling), `test_main.py` (8: sector long/short gate, signal invalidation success/fail/dry-run, GARCH scalar log, amihud log, MQS boost log). **3854 passing, 100% coverage on all changed files.**
+
+---
+
 ### 1.85 — June 2026 — insider_buying three-tier conviction filter
 
 Raises the bar for the `insider_buying` signal by introducing a three-tier firing hierarchy, eliminating weak cluster signals that lack supporting conviction.

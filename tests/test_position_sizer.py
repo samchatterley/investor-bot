@@ -7,12 +7,15 @@ from unittest.mock import patch
 import config
 from risk.position_sizer import (
     SIGNAL_SHARPE_MULTIPLIER,
+    amihud_size_scalar,
     atr_position_size,
     cofiring_boost,
     drawdown_scalar,
     get_max_positions,
     get_signal_size_multiplier,
     kelly_fraction,
+    momentum_quality_score,
+    mqr_size_multiplier,
     risk_budget_size,
 )
 
@@ -399,3 +402,57 @@ class TestCofiringBoost(unittest.TestCase):
 
     def test_five_signals_still_capped_at_one_point_five(self):
         self.assertEqual(cofiring_boost(5), 1.5)
+
+
+class TestAmihudSizeScalar(unittest.TestCase):
+    def test_liquid_symbol_returns_one(self):
+        self.assertEqual(amihud_size_scalar(False), 1.0)
+
+    def test_illiquid_symbol_returns_half(self):
+        self.assertEqual(amihud_size_scalar(True), 0.5)
+
+    def test_return_type_is_float(self):
+        self.assertIsInstance(amihud_size_scalar(True), float)
+        self.assertIsInstance(amihud_size_scalar(False), float)
+
+
+class TestMomentumQualityScore(unittest.TestCase):
+    def test_empty_snapshot_scores_zero(self):
+        self.assertEqual(momentum_quality_score({}), 0)
+
+    def test_high_rs_rank_scores_one(self):
+        self.assertEqual(momentum_quality_score({"rs_rank_pct": 60.0}), 1)
+
+    def test_rs_rank_below_threshold_scores_zero(self):
+        self.assertEqual(momentum_quality_score({"rs_rank_pct": 59.9}), 0)
+
+    def test_pead_candidate_scores_one(self):
+        self.assertEqual(momentum_quality_score({"pead_candidate": True}), 1)
+
+    def test_pead_false_scores_zero(self):
+        self.assertEqual(momentum_quality_score({"pead_candidate": False}), 0)
+
+    def test_quality_proxy_positive_roe_and_margin_scores_one(self):
+        self.assertEqual(momentum_quality_score({"roe": 0.15, "profit_margin": 0.10}), 1)
+
+    def test_negative_roe_quality_zero(self):
+        self.assertEqual(momentum_quality_score({"roe": -0.05, "profit_margin": 0.10}), 0)
+
+    def test_negative_margin_quality_zero(self):
+        self.assertEqual(momentum_quality_score({"roe": 0.10, "profit_margin": -0.02}), 0)
+
+    def test_all_three_components_scores_three(self):
+        snap = {"rs_rank_pct": 75.0, "pead_candidate": True, "roe": 0.20, "profit_margin": 0.15}
+        self.assertEqual(momentum_quality_score(snap), 3)
+
+    def test_two_components_scores_two(self):
+        snap = {"rs_rank_pct": 80.0, "pead_candidate": True}
+        self.assertEqual(momentum_quality_score(snap), 2)
+
+    def test_mqr_multiplier_one_for_score_below_three(self):
+        self.assertEqual(mqr_size_multiplier(0), 1.0)
+        self.assertEqual(mqr_size_multiplier(1), 1.0)
+        self.assertEqual(mqr_size_multiplier(2), 1.0)
+
+    def test_mqr_multiplier_one_point_five_for_score_three(self):
+        self.assertEqual(mqr_size_multiplier(3), 1.5)

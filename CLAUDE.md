@@ -7,7 +7,9 @@ If `TODO.md` exists in the project root, read it and restore the items into Todo
 ## Todo hygiene
 
 - Mark tasks completed in TodoWrite as soon as they are done, not in a batch at the end.
+- **Never mark items completed unless the work is fully shipped** (code committed, tests green). Do not mark pending items completed at session end just to tidy up — leave them pending.
 - TODO.md is auto-written by a PostToolUse hook on every TodoWrite call — do not edit it manually.
+- The hook preserves the file if the pending list would become empty — accidental batch-completes are ignored. A pre-commit git hook also blocks staging TODO.md with fewer than 3 pending items.
 
 ## After every push
 

@@ -36,6 +36,7 @@ from data import (
     news_fetcher,
     options_scanner,
     sector_data,
+    sector_momentum,
     short_interest,
 )
 from data import (
@@ -649,6 +650,8 @@ def _execute_shorts(
         f"slots={short_slots} | hedge {short_notional:.0f}/{hedge_cap:.0f}"
     )
 
+    _sector_ranks_short = sector_momentum.get_sector_momentum_ranks()
+
     shorts_placed = 0
     portfolio_value = account_now["portfolio_value"]
     for candidate in short_candidates:
@@ -656,6 +659,15 @@ def _execute_shorts(
             break
         symbol = candidate["symbol"]
         if symbol in executed_symbols:
+            continue
+
+        # Sector momentum gate — only allow shorts in bottom 3 sectors by 20d return
+        _short_sector = sector_data.get_sector(symbol)
+        if not sector_momentum.sector_allowed_short(_short_sector, _sector_ranks_short):
+            logger.info(
+                f"  Short skip {symbol}: sector '{_short_sector}' not in bottom-3 momentum"
+                f" (rank={_sector_ranks_short.get(_short_sector, '?')})"
+            )
             continue
 
         # Correlation gate — skip if correlated with any held position
@@ -974,6 +986,63 @@ def _manage_existing_positions(
                             "symbol": symbol,
                             "action": "PARTIAL SELL",
                             "detail": f"profit acceleration 50% at +{unrealised_pct:.1f}% [dry run]",
+                            "decision_type": "rule_based",
+                        }
+                    )
+
+    # Signal invalidation exit — runs at midday only (data settled; avoids open-session noise).
+    # Re-fetches a live snapshot per position and exits when the entry signal no longer fires.
+    if mode == "midday":
+        for pos in trader.get_open_positions(client):
+            symbol = pos["symbol"]
+            meta = trader.get_position_meta(symbol)
+            signal = meta.get("signal", "unknown")
+            days_held = position_ages.get(symbol, 1)
+            entry_snap = meta.get("entry_snapshot")
+            if exit_optimiser.signal_invalidated(symbol, signal, entry_snap, days_held):
+                logger.info(
+                    f"Signal invalidation exit: {symbol} [{signal}] no longer active"
+                    f" after {days_held}d"
+                )
+                audit_log.log_earnings_exit(symbol, "signal_invalidated")
+                if not dry_run:
+                    result = trader.close_position(client, symbol)
+                    if result.is_success:
+                        performance.record_trade_outcome(
+                            signal,
+                            pos.get("unrealized_plpc", 0.0),
+                            regime=meta.get("regime", "UNKNOWN"),
+                            confidence=meta.get("confidence", 0),
+                            sector=sector_data.get_sector(symbol),
+                            hold_days=days_held,
+                            symbol=symbol,
+                            entry_date=meta.get("entry_date"),
+                            entry_price=meta.get("entry_price"),
+                            exit_reason="signal_invalidated",
+                        )
+                        audit_log.log_position_closed(
+                            symbol, "signal_invalidated", pos.get("unrealized_plpc", 0.0)
+                        )
+                        trader.record_sell(symbol)
+                        all_trades.append(
+                            {
+                                "symbol": symbol,
+                                "action": "SELL",
+                                "detail": f"signal invalidated [{signal}] after {days_held}d",
+                                "decision_type": "rule_based",
+                            }
+                        )
+                    else:
+                        logger.error(
+                            f"  Signal invalidation SELL FAILED {symbol} — "
+                            f"{result.rejection_reason or 'close failed'}"
+                        )
+                else:
+                    all_trades.append(
+                        {
+                            "symbol": symbol,
+                            "action": "SELL",
+                            "detail": f"signal invalidated [{signal}] after {days_held}d [dry run]",
                             "decision_type": "rule_based",
                         }
                     )
@@ -1630,6 +1699,8 @@ def _execute_buy_phase(
                     f"(VIX={mc.vix})"
                 )
 
+            _sector_ranks = sector_momentum.get_sector_momentum_ranks()
+
             orders_placed = 0
             for candidate in valid_candidates:
                 if orders_placed >= effective_max_orders:
@@ -1643,6 +1714,20 @@ def _execute_buy_phase(
                 n_signals = len(candidate.get("matched_signals") or [key_signal])
                 sig_multiplier = position_sizer.get_signal_size_multiplier(key_signal)
                 cofire_multiplier = position_sizer.cofiring_boost(n_signals)
+                _mqs = position_sizer.momentum_quality_score(candidate)
+                _mqr_multiplier = position_sizer.mqr_size_multiplier(_mqs)
+                _amihud_scalar = position_sizer.amihud_size_scalar(
+                    candidate.get("amihud_illiquid", False)
+                )
+
+                # Sector momentum gate — only allow longs in top 4 sectors by 20d return
+                _sym_sector = sector_data.get_sector(symbol)
+                if not sector_momentum.sector_allowed_long(_sym_sector, _sector_ranks):
+                    logger.info(
+                        f"Skipping {symbol}: sector '{_sym_sector}' not in top-4 momentum"
+                        f" (rank={_sector_ranks.get(_sym_sector, '?')})"
+                    )
+                    continue
 
                 # Correlation filter — skip if returns too closely track an existing position
                 if correlation.correlated_with_held(symbol, {p["symbol"] for p in open_positions}):
@@ -1707,8 +1792,30 @@ def _execute_buy_phase(
                             signal=key_signal,
                             regime=mc.regime.get("regime", "UNKNOWN"),
                         )
+                    _garch_scalar = exit_optimiser.compute_garch_vol_scalar(symbol)
+                    if _garch_scalar < 1.0:
+                        logger.info(
+                            f"  GARCH vol gate: {symbol} forecast vol elevated"
+                            f" — size scaled {_garch_scalar:.2f}×"
+                        )
+                    if candidate.get("amihud_illiquid"):
+                        logger.info(
+                            f"  Amihud illiquidity gate: {symbol} flagged top-10% illiquid"
+                            f" — size reduced 50%"
+                        )
+                    if _mqr_multiplier > 1.0:
+                        logger.info(
+                            f"  MQS boost: {symbol} score={_mqs}/3"
+                            f" — size boosted {_mqr_multiplier:.1f}×"
+                        )
                     notional = min(
-                        _base * _dd_scalar * sig_multiplier * cofire_multiplier,
+                        _base
+                        * _dd_scalar
+                        * sig_multiplier
+                        * cofire_multiplier
+                        * _amihud_scalar
+                        * _garch_scalar
+                        * _mqr_multiplier,
                         available_cash,
                     )
 
@@ -1804,6 +1911,7 @@ def _execute_buy_phase(
                                 confidence=confidence,
                                 track="intraday" if _signal in INTRADAY_SIGNALS else "multiday",
                                 rs_rank_pct=candidate.get("rs_rank_pct"),
+                                entry_snapshot=candidate,
                             )
                             audit_log.log_order_placed(
                                 symbol, "BUY", notional, buy_result.broker_order_id or ""

@@ -97,6 +97,28 @@ class TestGetPositionMeta(_MetaTestBase):
         self.assertEqual(meta["regime"], "UNKNOWN")
         self.assertEqual(meta["confidence"], 0)
 
+    def test_entry_snapshot_stored_and_retrieved(self):
+        from execution.trader import get_position_meta, record_buy
+
+        snap = {"rs_rank_pct": 0.85, "signal": "momentum"}
+        record_buy("AAPL", 175.0, entry_snapshot=snap)
+        meta = get_position_meta("AAPL")
+        self.assertEqual(meta["entry_snapshot"], snap)
+
+    def test_invalid_json_snapshot_returns_none(self):
+        from execution.trader import get_position_meta, record_buy
+        from utils.db import get_db
+
+        record_buy("AAPL", 175.0, entry_snapshot={"ok": True})
+        # Corrupt the stored JSON directly via DB
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE positions SET entry_snapshot=? WHERE symbol=?",
+                ("not-valid-json{{{", "AAPL"),
+            )
+        meta = get_position_meta("AAPL")
+        self.assertIsNone(meta["entry_snapshot"])
+
 
 class TestPositionAges(_MetaTestBase):
     def test_position_entered_today_has_age_one(self):

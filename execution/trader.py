@@ -499,12 +499,17 @@ def record_buy(
     confidence: int = 0,
     track: str = "multiday",
     rs_rank_pct: float | None = None,
+    entry_snapshot: dict | None = None,
 ):
+    import json as _json
+
+    snap_json = _json.dumps(entry_snapshot) if entry_snapshot is not None else None
     with _db() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO positions "
-            "(symbol, entry_date, entry_price, signal, regime, confidence, track, rs_rank_pct) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(symbol, entry_date, entry_price, signal, regime, confidence, track, rs_rank_pct,"
+            " entry_snapshot) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 symbol,
                 today_et().isoformat(),
@@ -514,6 +519,7 @@ def record_buy(
                 confidence,
                 track,
                 rs_rank_pct,
+                snap_json,
             ),
         )
 
@@ -539,12 +545,27 @@ def record_partial_exit(symbol: str):
 
 def get_position_meta(symbol: str) -> dict:
     """Return full entry metadata for a position (signal, regime, confidence, entry_price, entry_date)."""
-    defaults = {"signal": "unknown", "regime": "UNKNOWN", "confidence": 0, "entry_price": 0.0}
+    import json as _json
+
+    defaults = {
+        "signal": "unknown",
+        "regime": "UNKNOWN",
+        "confidence": 0,
+        "entry_price": 0.0,
+        "entry_snapshot": None,
+    }
     try:
         with _db() as conn:
             row = conn.execute("SELECT * FROM positions WHERE symbol=?", (symbol,)).fetchone()
         if row:
-            return {**defaults, **dict(row)}
+            meta = {**defaults, **dict(row)}
+            raw = meta.get("entry_snapshot")
+            if isinstance(raw, str):
+                try:
+                    meta["entry_snapshot"] = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    meta["entry_snapshot"] = None
+            return meta
     except Exception:
         pass
     return defaults

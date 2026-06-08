@@ -248,6 +248,49 @@ def atr_position_size(
     return max(0.0, capped)
 
 
+_MQS_BOOST = 1.5  # size multiplier when all three quality components fire
+
+
+def momentum_quality_score(snapshot: dict) -> int:
+    """Return a 0–3 conviction score combining momentum rank, EPS revision, and quality.
+
+    Each component contributes 1 point:
+      1. Momentum rank: ``rs_rank_pct >= 60`` (top 40% of universe by 20d RS)
+      2. EPS revision:  ``pead_candidate == True``  (recent positive EPS beat ≥10%)
+      3. Quality proxy: ``roe > 0 and profit_margin > 0``  (profitable on both metrics)
+
+    Score 3 = all three fire → 1.5× size multiplier via ``mqr_size_multiplier``.
+    Scores 0-2 → no penalty, no boost.
+    """
+    score = 0
+    if (snapshot.get("rs_rank_pct") or 0.0) >= 60:
+        score += 1
+    if snapshot.get("pead_candidate"):
+        score += 1
+    roe = snapshot.get("roe")
+    pm = snapshot.get("profit_margin")
+    if roe is not None and pm is not None and roe > 0 and pm > 0:
+        score += 1
+    return score
+
+
+def mqr_size_multiplier(score: int) -> float:
+    """Return 1.5× when momentum quality score is 3, else 1.0."""
+    return _MQS_BOOST if score >= 3 else 1.0
+
+
+_AMIHUD_ILLIQUID_SCALAR = 0.5  # reduce position size 50% for top-10% illiquid symbols
+
+
+def amihud_size_scalar(amihud_illiquid: bool) -> float:
+    """Return 0.5 when symbol is in the top 10% least-liquid symbols, else 1.0.
+
+    Liquidity risk: wide bid-ask spreads and thin books mean exits at stop are
+    more costly on illiquid names — halving size keeps the dollar risk constant.
+    """
+    return _AMIHUD_ILLIQUID_SCALAR if amihud_illiquid else 1.0
+
+
 def cofiring_boost(n_signals: int) -> float:
     """Return position size multiplier for co-firing signals.
 

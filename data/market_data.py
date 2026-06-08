@@ -247,6 +247,29 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
     }
 
 
+def compute_amihud_illiquidity(df: pd.DataFrame, lookback: int = 20) -> float:
+    """Return the Amihud (2002) illiquidity ratio averaged over the last *lookback* bars.
+
+    illiq = mean( |daily_return| / (close * volume) )
+
+    Higher = less liquid.  Returns 0.0 when data is insufficient or all dollar-volume
+    is zero (e.g. zero-volume periods in backtest pre-loaded data).
+    """
+    try:
+        tail = df.tail(lookback)
+        if len(tail) < 5:
+            return 0.0
+        ret = tail["Close"].pct_change().abs()
+        dollar_vol = tail["Close"] * tail["Volume"]
+        ratio = ret / dollar_vol.replace(0, float("nan"))
+        mean_val = float(ratio.mean(skipna=True))
+        if mean_val != mean_val:  # NaN guard
+            return 0.0
+        return mean_val
+    except Exception:
+        return 0.0
+
+
 def get_vix() -> float | None:
     """Return the latest VIX close."""
     try:
@@ -480,6 +503,7 @@ def get_market_snapshots(
             snap["rel_strength_20d"] = round(snap["ret_20d_pct"] - spy_20d, 2)
         if sym in fundamentals:
             snap.update(fundamentals[sym])
+        snap["amihud_illiquidity"] = compute_amihud_illiquidity(df)
         return snap
 
     snapshots = []
@@ -500,6 +524,20 @@ def get_market_snapshots(
             snapshots[idx]["rs_rank_pct"] = round(
                 sum(1 for v in sorted_scores if v < score) / n * 100, 1
             )
+
+    # Cross-sectional Amihud illiquidity rank: flag top 10% as illiquid.
+    amihud_pairs = [
+        (i, s["amihud_illiquidity"])
+        for i, s in enumerate(snapshots)
+        if s.get("amihud_illiquidity", 0.0) > 0
+    ]
+    if len(amihud_pairs) >= 10:
+        threshold = sorted(v for _, v in amihud_pairs)[int(len(amihud_pairs) * 0.90)]
+        for idx, val in amihud_pairs:
+            snapshots[idx]["amihud_illiquid"] = val >= threshold
+    else:
+        for s in snapshots:
+            s["amihud_illiquid"] = False
 
     return snapshots
 
