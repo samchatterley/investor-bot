@@ -233,7 +233,7 @@ class TestParseCompTable(unittest.TestCase):
         strings = soup.find_all(
             string=lambda t: "summary compensation table" in t.lower() if t else False
         )
-        if strings:
+        if strings:  # pragma: no branch
             strings[0].extract()  # remove the node entirely from the tree
         # Should not raise; result is empty or partial
         result = _parse_comp_table(soup)

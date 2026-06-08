@@ -628,7 +628,7 @@ class TestDownloadFgPrices(TestCase):
 
 class TestGetGoogleTrends(TestCase):
     def _make_pytrends_mock(self, current: int = 80, history: list[int] | None = None) -> MagicMock:
-        if history is None:
+        if history is None:  # pragma: no cover
             history = [30] * 12 + [current]
         mock = MagicMock()
         dates = pd.date_range("2026-01-01", periods=len(history), freq="W")
@@ -867,5 +867,5 @@ class TestTrendReqImportFallback(TestCase):
             sys.modules["data.sentiment_client"] = original_sc
             if orig_pytrends_request is not None:
                 sys.modules["pytrends.request"] = orig_pytrends_request
-            else:
+            else:  # pragma: no cover
                 sys.modules.pop("pytrends.request", None)

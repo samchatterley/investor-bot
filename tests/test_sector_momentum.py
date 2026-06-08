@@ -67,17 +67,6 @@ class TestSectorAllowedShort(unittest.TestCase):
 
 
 class TestGetSectorMomentumRanks(unittest.TestCase):
-    def _make_price_df(self, tickers: list[str], n: int = 25):
-        """Build a fake multi-column close DataFrame for yf.download."""
-        idx = pd.bdate_range("2024-01-01", periods=n)
-        data = {t: [100.0 + i * (0.5 if t == "XLK" else -0.2) for i in range(n)] for t in tickers}
-        closes = pd.DataFrame(data, index=idx)
-        mock_df = MagicMock()
-        mock_df.empty = False
-        mock_df.__getitem__ = lambda self, key: closes
-        mock_df.columns = pd.MultiIndex.from_tuples([("Close", t) for t in tickers])
-        return mock_df, closes
-
     def test_returns_empty_dict_on_download_failure(self):
         with (
             patch("yfinance.download", side_effect=Exception("network")),

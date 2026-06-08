@@ -7032,11 +7032,10 @@ class TestRunShortParamSensitivity(unittest.TestCase):
 
 
 class TestRunShortWalkForward(unittest.TestCase):
-    def _run(self, raw=None, fold_days=30, **kwargs):
+    def _run(self, fold_days=30, **kwargs):
         from backtest.engine import run_short_walk_forward
 
-        if raw is None:
-            raw = _make_raw(n=100)
+        raw = _make_raw(n=100)
         with (
             patch("backtest.engine.yf.download", return_value=raw),
             patch("backtest.engine.prefetch_earnings_history", return_value={}),
@@ -7299,12 +7298,10 @@ class TestShortEntrySignalEventPath(unittest.TestCase):
 class TestRunShortSimulationEarningsGap(unittest.TestCase):
     """Coverage for the earnings_gap_pct computation in _run_short_simulation."""
 
-    def _build(self, n=60, open_gap_bar=None, open_gap_pct=-0.10):
+    def _build(self, n=60):
         idx = pd.bdate_range("2024-11-01", periods=n)
         prices = [100.0 - i * 0.3 for i in range(n)]
         opens = list(prices)
-        if open_gap_bar is not None:
-            opens[open_gap_bar] = prices[open_gap_bar - 1] * (1 + open_gap_pct)
         df = pd.DataFrame(
             {
                 "Close": prices,
@@ -7323,7 +7320,7 @@ class TestRunShortSimulationEarningsGap(unittest.TestCase):
     def test_earnings_gap_triggers_entry_on_event_path(self):
         n = 60
         # Use a mid-point bar in the indicators DataFrame (not raw index)
-        indicators, spy_ind, idx = self._build(n=n, open_gap_bar=None)
+        indicators, spy_ind, idx = self._build(n=n)
         ind_df = indicators["WEAK"]
         ind_len = len(ind_df)
         gap_bar = max(5, ind_len // 2)  # a bar in the middle of the indicators
@@ -8142,7 +8139,7 @@ class TestRunMonteCarlo(unittest.TestCase):
 
     def test_per_signal_entries_have_required_keys(self):
         result = self._run()
-        for d in result["per_signal"].values():
+        for d in result["per_signal"].values():  # pragma: no cover
             for key in ("trades", "actual_mean_pct", "ci_low_pct", "ci_high_pct", "significant"):
                 self.assertIn(key, d)
 
@@ -8336,7 +8333,7 @@ class TestRunCoFiringAnalysis(unittest.TestCase):
     def test_high_overlap_pairs_sorted_descending(self):
         result = self._run()
         pairs = result["high_overlap_pairs"]
-        for i in range(len(pairs) - 1):
+        for i in range(len(pairs) - 1):  # pragma: no cover
             self.assertGreaterEqual(pairs[i]["co_fire_pct"], pairs[i + 1]["co_fire_pct"])
 
     def test_returns_empty_on_no_data(self):

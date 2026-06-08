@@ -64,7 +64,7 @@ disable_error_code = ["union-attr", "arg-type", "index", "operator", "misc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short -q --cov --cov-report=term-missing --cov-fail-under=100"
+addopts = "--tb=short -q --cov --cov-report=term-missing"
 log_cli = false
 filterwarnings = [
     # alpaca-py's streaming module imports websockets.legacy at import time;
@@ -81,12 +81,17 @@ omit = [
     "evals/*",
     "*/evals/*",
     "*/vscode*",
+    "*/.vscode/*",
+    "*/vscode_pytest*",
     "*/extensions/*",
     "*/site-packages/*",
     "*/python_files/*",
+    "*ms-python*",
 ]
 
 [tool.coverage.report]
+include = ["*/InvestorBotHard/*"]
+fail_under = 100
 exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",

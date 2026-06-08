@@ -205,7 +205,7 @@ class TestLoadPipeline(unittest.TestCase):
         finally:
             if original is None:
                 sys.modules.pop("transformers", None)
-            else:
+            else:  # pragma: no cover
                 sys.modules["transformers"] = original
         self.assertIs(finbert._pipeline, mock_pipe_instance)
 
@@ -223,12 +223,12 @@ class TestLoadPipeline(unittest.TestCase):
             try:
                 finbert._load_pipeline()
             finally:
-                if original is None:
+                if original is None:  # pragma: no cover
                     sys.modules.pop("transformers", None)
                 else:
                     sys.modules["transformers"] = original
         self.assertIs(finbert._pipeline, False)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

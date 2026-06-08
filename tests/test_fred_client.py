@@ -374,7 +374,7 @@ class TestGetMacroSnapshot(unittest.TestCase):
                 return icsa_data
             if series_id == "FEDFUNDS":
                 return ff_data
-            return []
+            return []  # pragma: no cover
 
         with patch("data.fred_client.fetch_series", side_effect=_side_effect):
             from data.fred_client import get_macro_snapshot
@@ -403,7 +403,7 @@ class TestGetMacroSnapshot(unittest.TestCase):
                 return icsa_data
             if series_id == "FEDFUNDS":
                 return ff_data
-            return []
+            return []  # pragma: no cover
 
         with patch("data.fred_client.fetch_series", side_effect=_side_effect):
             from data.fred_client import get_macro_snapshot
@@ -430,5 +430,5 @@ class TestGetMacroSnapshot(unittest.TestCase):
         self.assertFalse(result["yield_curve_inverted"])
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

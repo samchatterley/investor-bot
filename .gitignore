@@ -10,6 +10,8 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+.coverage
+.coverage.*
 
 # Python environments
 venv/

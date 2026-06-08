@@ -1333,15 +1333,6 @@ class TestSaveBulkCache(unittest.TestCase):
 class TestBulkDownloadCacheBehavior(unittest.TestCase):
     """_bulk_download cache-aware routing."""
 
-    def _make_multi_df(self, symbols: list[str]) -> pd.DataFrame:
-        idx = pd.bdate_range("2025-01-01", periods=5)
-        data = {
-            (f, s): [float(i) for i in range(5)]
-            for f in ("Open", "Close", "Volume")
-            for s in symbols
-        }
-        return pd.DataFrame(data, index=idx)
-
     def test_cache_hit_skips_download(self):
         from data.market_data import _bulk_download
 
