@@ -356,9 +356,13 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         deps.portfolio_tracker.load_history.return_value = []
         deps.portfolio_tracker.get_track_record.return_value = []
         deps.portfolio_tracker.save_daily_run.return_value = {
-            "date": "2026-01-15", "daily_pnl": 0.0,
-            "account_before": account, "account_after": account,
-            "market_summary": "test", "trades_executed": [], "stop_losses_triggered": [],
+            "date": "2026-01-15",
+            "daily_pnl": 0.0,
+            "account_before": account,
+            "account_after": account,
+            "market_summary": "test",
+            "trades_executed": [],
+            "stop_losses_triggered": [],
         }
         deps.portfolio_tracker.print_summary.return_value = None
         deps.portfolio_tracker.save_daily_baseline.return_value = None
@@ -383,7 +387,8 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         ]
         deps.market_data.get_intraday_data.return_value = {}
         deps.stock_scanner.get_market_regime.return_value = {
-            "regime": "BULL_TRENDING", "is_bearish": False
+            "regime": "BULL_TRENDING",
+            "is_bearish": False,
         }
         deps.stock_scanner.get_top_movers.return_value = []
         deps.stock_scanner.prefilter_candidates.return_value = candidates
@@ -394,9 +399,16 @@ class TestMaxOrdersPerRun(unittest.TestCase):
 
         deps.macro_calendar.get_macro_risk.return_value = {"is_high_risk": False, "event": ""}
         deps.get_macro_snapshot.return_value = MacroSnapshot(
-            credit_spread_roc=None, credit_stress=False, tlt_spy_spread_5d=None,
-            duration_flight=False, copper_gold_trend_20d=None, copper_gold_positive=False,
-            usd_trend_20d=None, usd_strong=False, hyg_ief_roc_10d=None, data_available=False,
+            credit_spread_roc=None,
+            credit_stress=False,
+            tlt_spy_spread_5d=None,
+            duration_flight=False,
+            copper_gold_trend_20d=None,
+            copper_gold_positive=False,
+            usd_trend_20d=None,
+            usd_strong=False,
+            hyg_ief_roc_10d=None,
+            data_available=False,
         )
         deps.get_sentiment_snapshot.return_value = SentimentSnapshot(
             aaii=None,
@@ -447,7 +459,9 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         deps.performance.record_trade_outcome.return_value = None
         deps.get_day_summary.return_value = {
             "date": "2026-01-15",
-            "account_before": account, "account_after": account, "daily_pnl": 0.0,
+            "account_before": account,
+            "account_after": account,
+            "daily_pnl": 0.0,
         }
         deps.build_scan_universe.return_value = []
         deps.save_experiment_baseline.return_value = None
