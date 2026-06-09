@@ -170,6 +170,10 @@ def fetch_stock_data(
             df["weekly_trend_up"] = True
             df["weekly_rsi"] = 50.0
 
+        # Rebind after dropna so Batch 1 ops never mix pre/post-dropna indices
+        close = df["Close"]
+        volume = df["Volume"]
+
         # ── Golden / Death Cross ──────────────────────────────────────────────
         df["sma50"] = close.rolling(50).mean()
         df["sma200"] = close.rolling(200).mean()
