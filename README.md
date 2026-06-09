@@ -810,6 +810,20 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.90 — June 2026 — Regime model v2: CREDIT_STRESS, LATE_CYCLE_BULL, RECOVERY states
+
+Extends the 6-state regime classifier to 9 states by integrating three new macro inputs: HYG/LQD credit spread 10-day ROC, breadth % of stocks above their 50-day SMA, and T10Y2Y yield curve spread.
+
+- **`MarketRegime` enum** — 3 new members: `CREDIT_STRESS`, `LATE_CYCLE_BULL`, `RECOVERY`.
+- **`RegimeFeatures`** — 3 new optional fields (`credit_spread_roc`, `breadth_pct_above_sma50`, `t10y2y`) defaulting to `None` for backward compatibility.
+- **`RegimeThresholds`** — 5 new defaults: `credit_stress_roc_min=-2.0`, `t10y2y_inversion_threshold=0.0`, `breadth_divergence_max=0.50`, `recovery_spy_5d_min=0.5`, `recovery_drawdown_max=-5.0`.
+- **`resolve_regime()` priority chain** — STRESS_RISK_OFF → HIGH_VOL_DOWNTREND → DEFENSIVE_DOWNTREND → **CREDIT_STRESS** → (LATE_CYCLE_BULL or BULL_TREND) → **RECOVERY** → NEUTRAL_CHOP. CREDIT_STRESS fires when HYG/LQD 10d ROC ≤ −2%; LATE_CYCLE_BULL fires when bull price conditions hold but yield curve is inverted or breadth is narrow (<50%); RECOVERY fires when SPY 5d ≥ 0.5% but drawdown ≤ −5%.
+- **Hysteresis** — STRESS_RISK_OFF confirms immediately; all other new states require 2 consecutive bars to confirm.
+- **`signals/evaluator.py`** — `REGIME_BLOCKED` extended: CREDIT_STRESS inherits HIGH_VOL blocking; LATE_CYCLE_BULL inherits NEUTRAL_CHOP blocking; RECOVERY blocks `{breakout_52w, momentum, gap_and_go, macd_crossover, inside_day_breakout}` while allowing `mean_reversion`, `trend_pullback`, `iv_compression`. `SHORT_ALLOWED_REGIMES` gains `CREDIT_STRESS`.
+- **Tests:** 60+ new tests across `test_market_regime.py` (6 new test classes) and 14 new tests in `test_risk_config.py`. **146 tests in test_market_regime.py, 100% coverage on changed files.**
+
+---
+
 ### 1.89 — June 2026 — rs_leader and momentum_12_1 globally disabled
 
 Walk-forward backtest evidence confirms no edge for either signal in any market regime.

@@ -159,6 +159,24 @@ _NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion", "iv_co
 # BULL_TREND: rsi_divergence is a consolidation setup, not a reversal worth buying in uptrends.
 _BULL_TREND_BLOCKED = frozenset({"rsi_divergence"})
 
+# CREDIT_STRESS: credit tightening pre-emptively; treat same as HIGH_VOL (block pure momentum).
+_CREDIT_STRESS_BLOCKED = _HIGH_VOL_BLOCKED
+
+# LATE_CYCLE_BULL: bull price action but macro warning (inverted curve / narrow breadth).
+# Quality and catalyst signals (pead, insider_buying) pass; momentum/breakout blocked.
+_LATE_CYCLE_BULL_BLOCKED = _NEUTRAL_CHOP_BLOCKED
+
+# RECOVERY: bouncing from weakness; allow mean-reversion and early trend, block pure momentum chasers.
+_RECOVERY_BLOCKED = frozenset(
+    {
+        "breakout_52w",
+        "momentum",
+        "gap_and_go",
+        "macd_crossover",
+        "inside_day_breakout",
+    }
+)
+
 # ── Globally disabled signals ─────────────────────────────────────────────────
 # Signals removed from both live and backtest after statistically evidenced negative
 # contribution across all analysis runs (Jan 2024 – Jun 2026).
@@ -183,7 +201,7 @@ GLOBALLY_DISABLED: frozenset[str] = frozenset(
 # Shorts only make sense when the market is already under stress; entering
 # short in BULL_TREND or NEUTRAL_CHOP means fighting the prevailing tide.
 SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset(
-    {"STRESS_RISK_OFF", "HIGH_VOL_DOWNTREND", "DEFENSIVE_DOWNTREND"}
+    {"STRESS_RISK_OFF", "HIGH_VOL_DOWNTREND", "DEFENSIVE_DOWNTREND", "CREDIT_STRESS"}
 )
 
 # Signals removed after producing negative expectancy in every isolated and
@@ -426,13 +444,17 @@ REGIME_BLOCKED: dict[str, frozenset[str]] = {
     "HIGH_VOL": _HIGH_VOL_BLOCKED,
     "BULL_TRENDING": _BULL_TREND_BLOCKED,
     "CHOPPY": _NEUTRAL_CHOP_BLOCKED,
-    # New 5-state names
+    # 5-state names
     "STRESS_RISK_OFF": _BEAR_DAY_BLOCKED,
     "HIGH_VOL_DOWNTREND": _HIGH_VOL_BLOCKED,
     "DEFENSIVE_DOWNTREND": _DEFENSIVE_BLOCKED,
     "BULL_TREND": _BULL_TREND_BLOCKED,
     "NEUTRAL_CHOP": _NEUTRAL_CHOP_BLOCKED,
     "UNKNOWN": _BEAR_DAY_BLOCKED,
+    # v2 states
+    "CREDIT_STRESS": _CREDIT_STRESS_BLOCKED,
+    "LATE_CYCLE_BULL": _LATE_CYCLE_BULL_BLOCKED,
+    "RECOVERY": _RECOVERY_BLOCKED,
 }
 
 

@@ -1,4 +1,4 @@
-"""Shared 5-state market regime classifier used by both the live pipeline
+"""Shared 8-state market regime classifier used by both the live pipeline
 and the backtest engine.  A single implementation eliminates live/backtest
 drift and provides hysteresis to prevent daily regime flip-flopping.
 
@@ -6,9 +6,17 @@ States (priority order):
   STRESS_RISK_OFF     — multi-feature crisis signal; block all new buys immediately
   HIGH_VOL_DOWNTREND  — elevated fear + price weakness; cut size sharply
   DEFENSIVE_DOWNTREND — steady bearish drift; modest size reduction
-  BULL_TREND          — confirmed uptrend; normal sizing
+  CREDIT_STRESS       — credit spreads tightening (HYG/LQD ROC) before equity cracks
+  LATE_CYCLE_BULL     — bull price action + macro warning (inverted curve or breadth divergence)
+  BULL_TREND          — confirmed uptrend with clean macro backdrop; normal sizing
+  RECOVERY            — positive 5d momentum but still in ≥5% drawdown; early-cycle bounce
   NEUTRAL_CHOP        — directionless; conservative sizing, prefer mean-reversion
   UNKNOWN             — insufficient data; treat as STRESS for safety
+
+New inputs (all optional — degrade gracefully when not supplied):
+  hyg_lqd_series      — daily HYG/LQD price-ratio series; used to compute 10d ROC
+  breadth_series      — daily fraction of universe stocks above their 50d SMA (0.0–1.0)
+  t10y2y_series       — FRED T10Y2Y yield-curve spread series
 
 Hysteresis:
   STRESS_RISK_OFF is entered immediately (no confirmation delay).
@@ -50,7 +58,10 @@ class MarketRegime(StrEnum):
     STRESS_RISK_OFF = "STRESS_RISK_OFF"
     HIGH_VOL_DOWNTREND = "HIGH_VOL_DOWNTREND"
     DEFENSIVE_DOWNTREND = "DEFENSIVE_DOWNTREND"
+    CREDIT_STRESS = "CREDIT_STRESS"
+    LATE_CYCLE_BULL = "LATE_CYCLE_BULL"
     BULL_TREND = "BULL_TREND"
+    RECOVERY = "RECOVERY"
     NEUTRAL_CHOP = "NEUTRAL_CHOP"
     UNKNOWN = "UNKNOWN"
 
@@ -73,6 +84,14 @@ class RegimeThresholds:
     spy_5d_bull: float = 2.0
     spy_1d_bull: float = 0.0
     require_above_ma200: bool = True
+    # CREDIT_STRESS: HYG/LQD ratio 10d ROC ≤ this threshold signals credit tightening
+    credit_stress_roc_min: float = -2.0
+    # LATE_CYCLE_BULL: bull price conditions met but macro warns
+    t10y2y_inversion_threshold: float = 0.0  # yield curve inverted when T10Y2Y < this
+    breadth_divergence_max: float = 0.50  # <50% stocks above 50d SMA = narrow leadership
+    # RECOVERY: bouncing from weakness; positive but not yet full bull
+    recovery_spy_5d_min: float = 0.5  # 5d return must be at least this positive
+    recovery_drawdown_max: float = -5.0  # must still be in ≥5% drawdown from peak
 
 
 @dataclass(frozen=True)
@@ -88,6 +107,10 @@ class RegimeFeatures:
     vix_5d_change: float | None
     vix9d: float | None  # CBOE 9-day VIX — near-term fear gauge
     data_quality: str  # "full" | "partial" | "minimal" | "insufficient"
+    # v2 macro inputs — all optional; None when data not supplied
+    credit_spread_roc: float | None = None  # HYG/LQD ratio 10d ROC (%); negative = tightening
+    breadth_pct_above_sma50: float | None = None  # fraction 0–1; <0.5 = narrow leadership
+    t10y2y: float | None = None  # FRED T10Y2Y (%); <0 = inverted yield curve
 
 
 @dataclass(frozen=True)
@@ -139,6 +162,9 @@ class MarketRegimeSnapshot:
             "vix_term_inverted": vix_term_inverted,
             "data_quality": self.features.data_quality,
             "reasons": list(self.reasons),
+            "credit_spread_roc": self.features.credit_spread_roc,
+            "breadth_pct_above_sma50": self.features.breadth_pct_above_sma50,
+            "t10y2y": self.features.t10y2y,
         }
 
 
@@ -147,13 +173,19 @@ def compute_regime_features(
     vix_df: pd.DataFrame | None,
     as_of: str | pd.Timestamp | None = None,
     vix9d_df: pd.DataFrame | None = None,
+    hyg_lqd_series: pd.Series | None = None,
+    breadth_series: pd.Series | None = None,
+    t10y2y_series: pd.Series | None = None,
 ) -> RegimeFeatures:
-    """Compute all regime features from SPY and VIX DataFrames up to as_of.
+    """Compute all regime features from SPY, VIX, and optional macro series up to as_of.
 
     spy_df must have a 'Close' column indexed by Timestamp.
     vix_df (optional) must have a 'Close' column indexed by Timestamp.
     vix9d_df (optional) must have a 'Close' column indexed by Timestamp.
       Used to compute VIX term structure (VIX9D/VIX > 1.05 = near-term fear elevated).
+    hyg_lqd_series (optional) — daily HYG/LQD price-ratio Series; 10d ROC computed here.
+    breadth_series (optional) — daily fraction of universe stocks above 50d SMA (0.0–1.0).
+    t10y2y_series (optional) — FRED T10Y2Y yield-curve spread Series.
     """
     if as_of is not None:
         cutoff = pd.Timestamp(as_of)
@@ -223,6 +255,34 @@ def compute_regime_features(
         if not vix9d_close.empty:
             vix9d = float(vix9d_close.iloc[-1])
 
+    # ── v2 macro inputs ───────────────────────────────────────────────────────
+    credit_spread_roc: float | None = None
+    if hyg_lqd_series is not None:
+        hl = hyg_lqd_series
+        if as_of is not None:
+            hl = hl[hl.index <= cutoff]
+        hl = hl.dropna()
+        if len(hl) >= 11:  # need 10 bars of history + current bar
+            credit_spread_roc = float((hl.iloc[-1] / hl.iloc[-11] - 1) * 100)
+
+    breadth_pct_above_sma50: float | None = None
+    if breadth_series is not None:
+        bs = breadth_series
+        if as_of is not None:
+            bs = bs[bs.index <= cutoff]
+        bs = bs.dropna()
+        if not bs.empty:
+            breadth_pct_above_sma50 = float(bs.iloc[-1])
+
+    t10y2y: float | None = None
+    if t10y2y_series is not None:
+        ts = t10y2y_series
+        if as_of is not None:
+            ts = ts[ts.index <= cutoff]
+        ts = ts.dropna()
+        if not ts.empty:
+            t10y2y = float(ts.iloc[-1])
+
     return RegimeFeatures(
         spy_ret_1d=spy_ret_1d,
         spy_ret_5d=spy_ret_5d,
@@ -235,6 +295,9 @@ def compute_regime_features(
         vix_5d_change=vix_5d_change,
         vix9d=vix9d,
         data_quality=data_quality,
+        credit_spread_roc=credit_spread_roc,
+        breadth_pct_above_sma50=breadth_pct_above_sma50,
+        t10y2y=t10y2y,
     )
 
 
@@ -319,13 +382,52 @@ def resolve_regime(
         reasons.append(f"SPY {f.spy_ret_5d:+.1f}%/5d — steady weakness")
         return MarketRegime.DEFENSIVE_DOWNTREND, reasons
 
-    # ── BULL_TREND ───────────────────────────────────────────────────────────
+    # ── CREDIT_STRESS ────────────────────────────────────────────────────────
+    # Credit tightening before equity prices crack — pre-emptive risk-off.
+    # Fires when HYG/LQD ratio falls ≥|credit_stress_roc_min|% in 10 days, even
+    # while SPY is flat or positive.  Priority below DEFENSIVE — price weakness
+    # already captures deteriorating credit if equity has also broken down.
+    if f.credit_spread_roc is not None and f.credit_spread_roc <= t.credit_stress_roc_min:
+        reasons.append(
+            f"CREDIT_STRESS: HYG/LQD ROC {f.credit_spread_roc:+.1f}% ≤ {t.credit_stress_roc_min}"
+        )
+        return MarketRegime.CREDIT_STRESS, reasons
+
+    # ── BULL_TREND / LATE_CYCLE_BULL ─────────────────────────────────────────
     bull_price_ok = f.spy_ret_5d >= t.spy_5d_bull and f.spy_ret_1d >= t.spy_1d_bull
     ma200_ok = (not t.require_above_ma200) or (f.spy_above_ma200 is True)
     if bull_price_ok and ma200_ok:
         ma200_str = " + above MA200" if t.require_above_ma200 else ""
-        reasons.append(f"SPY {f.spy_ret_5d:+.1f}%/5d + {f.spy_ret_1d:+.1f}%/1d{ma200_str}")
+        base_reason = f"SPY {f.spy_ret_5d:+.1f}%/5d + {f.spy_ret_1d:+.1f}%/1d{ma200_str}"
+        # Downgrade to LATE_CYCLE_BULL when macro signals warn
+        t10y2y_inverted = f.t10y2y is not None and f.t10y2y < t.t10y2y_inversion_threshold
+        breadth_divergence = (
+            f.breadth_pct_above_sma50 is not None
+            and f.breadth_pct_above_sma50 < t.breadth_divergence_max
+        )
+        if t10y2y_inverted or breadth_divergence:
+            late_reasons = [base_reason]
+            if t10y2y_inverted:
+                late_reasons.append(
+                    f"T10Y2Y {f.t10y2y:.2f}% < {t.t10y2y_inversion_threshold} (inverted)"
+                )
+            if breadth_divergence:
+                late_reasons.append(
+                    f"breadth {f.breadth_pct_above_sma50:.0%} < {t.breadth_divergence_max:.0%} (narrow leadership)"
+                )
+            reasons.extend(late_reasons)
+            return MarketRegime.LATE_CYCLE_BULL, reasons
+        reasons.append(base_reason)
         return MarketRegime.BULL_TREND, reasons
+
+    # ── RECOVERY ─────────────────────────────────────────────────────────────
+    # Positive 5d momentum but still in meaningful drawdown from peak.
+    # Captures the early-cycle bounce phase before a full BULL_TREND confirms.
+    if f.spy_ret_5d >= t.recovery_spy_5d_min and f.spy_drawdown_pct <= t.recovery_drawdown_max:
+        reasons.append(
+            f"RECOVERY: SPY {f.spy_ret_5d:+.1f}%/5d bouncing; drawdown {f.spy_drawdown_pct:.1f}%"
+        )
+        return MarketRegime.RECOVERY, reasons
 
     # ── NEUTRAL_CHOP ─────────────────────────────────────────────────────────
     reasons.append(f"SPY {f.spy_ret_1d:+.1f}%/1d  {f.spy_ret_5d:+.1f}%/5d — no directional signal")
@@ -401,9 +503,20 @@ def get_market_regime(
     previous: PreviousRegimeState | None = None,
     thresholds: RegimeThresholds | None = None,
     vix9d_df: pd.DataFrame | None = None,
+    hyg_lqd_series: pd.Series | None = None,
+    breadth_series: pd.Series | None = None,
+    t10y2y_series: pd.Series | None = None,
 ) -> MarketRegimeSnapshot:
     """Full regime classification: features → resolution → hysteresis."""
-    features = compute_regime_features(spy_df, vix_df, as_of, vix9d_df=vix9d_df)
+    features = compute_regime_features(
+        spy_df,
+        vix_df,
+        as_of,
+        vix9d_df=vix9d_df,
+        hyg_lqd_series=hyg_lqd_series,
+        breadth_series=breadth_series,
+        t10y2y_series=t10y2y_series,
+    )
     candidate, reasons = resolve_regime(features, thresholds)
     return apply_regime_hysteresis(candidate, previous, reasons, features)
 
@@ -413,6 +526,9 @@ def compute_regime_series(
     vix_df: pd.DataFrame | None,
     trading_dates: list[str],
     thresholds: RegimeThresholds | None = None,
+    hyg_lqd_series: pd.Series | None = None,
+    breadth_series: pd.Series | None = None,
+    t10y2y_series: pd.Series | None = None,
 ) -> dict[str, str]:
     """Classify each date in trading_dates using rolling history.
 
@@ -423,7 +539,14 @@ def compute_regime_series(
     result: dict[str, str] = {}
     for date_str in sorted(trading_dates):
         snapshot = get_market_regime(
-            spy_df, vix_df, as_of=date_str, previous=previous, thresholds=thresholds
+            spy_df,
+            vix_df,
+            as_of=date_str,
+            previous=previous,
+            thresholds=thresholds,
+            hyg_lqd_series=hyg_lqd_series,
+            breadth_series=breadth_series,
+            t10y2y_series=t10y2y_series,
         )
         result[date_str] = snapshot.regime.value
         previous = snapshot.to_previous()

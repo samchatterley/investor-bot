@@ -147,8 +147,13 @@ class TestMarketRegimeEnum(unittest.TestCase):
         self.assertEqual(MarketRegime.BULL_TREND, "BULL_TREND")
         self.assertEqual(MarketRegime.STRESS_RISK_OFF, "STRESS_RISK_OFF")
 
-    def test_six_states_defined(self):
-        self.assertEqual(len(MarketRegime), 6)
+    def test_nine_states_defined(self):
+        self.assertEqual(len(MarketRegime), 9)
+
+    def test_new_v2_states_are_members(self):
+        self.assertIn(MarketRegime.CREDIT_STRESS, list(MarketRegime))
+        self.assertIn(MarketRegime.LATE_CYCLE_BULL, list(MarketRegime))
+        self.assertIn(MarketRegime.RECOVERY, list(MarketRegime))
 
 
 # ── RegimeThresholds defaults ─────────────────────────────────────────────────
@@ -1128,3 +1133,399 @@ class TestToPrevious(unittest.TestCase):
         self.assertEqual(prev.regime, MarketRegime.BULL_TREND)
         self.assertEqual(prev.pending_candidate, MarketRegime.NEUTRAL_CHOP)
         self.assertEqual(prev.pending_count, 1)
+
+
+# ── Regime v2: RegimeFeatures new fields ─────────────────────────────────────
+
+
+class TestRegimeFeaturesV2Fields(unittest.TestCase):
+    def test_new_fields_default_to_none(self):
+        f = _features_bull()
+        self.assertIsNone(f.credit_spread_roc)
+        self.assertIsNone(f.breadth_pct_above_sma50)
+        self.assertIsNone(f.t10y2y)
+
+    def test_new_fields_can_be_set(self):
+        f = RegimeFeatures(
+            spy_ret_1d=0.5,
+            spy_ret_5d=3.0,
+            spy_ret_20d=5.0,
+            spy_above_ma200=True,
+            spy_drawdown_pct=-1.0,
+            vix=15.0,
+            vix_ma20=14.0,
+            vix_vs_ma=1.07,
+            vix_5d_change=-5.0,
+            vix9d=None,
+            data_quality="full",
+            credit_spread_roc=-3.0,
+            breadth_pct_above_sma50=0.45,
+            t10y2y=-0.25,
+        )
+        self.assertEqual(f.credit_spread_roc, -3.0)
+        self.assertEqual(f.breadth_pct_above_sma50, 0.45)
+        self.assertEqual(f.t10y2y, -0.25)
+
+
+# ── Regime v2: RegimeThresholds new fields ────────────────────────────────────
+
+
+class TestRegimeThresholdsV2(unittest.TestCase):
+    def test_credit_stress_roc_min_default(self):
+        self.assertEqual(RegimeThresholds().credit_stress_roc_min, -2.0)
+
+    def test_t10y2y_inversion_threshold_default(self):
+        self.assertEqual(RegimeThresholds().t10y2y_inversion_threshold, 0.0)
+
+    def test_breadth_divergence_max_default(self):
+        self.assertEqual(RegimeThresholds().breadth_divergence_max, 0.50)
+
+    def test_recovery_spy_5d_min_default(self):
+        self.assertEqual(RegimeThresholds().recovery_spy_5d_min, 0.5)
+
+    def test_recovery_drawdown_max_default(self):
+        self.assertEqual(RegimeThresholds().recovery_drawdown_max, -5.0)
+
+    def test_can_override_new_thresholds(self):
+        t = RegimeThresholds(credit_stress_roc_min=-3.0, breadth_divergence_max=0.40)
+        self.assertEqual(t.credit_stress_roc_min, -3.0)
+        self.assertEqual(t.breadth_divergence_max, 0.40)
+
+
+# ── Regime v2: compute_regime_features new series inputs ─────────────────────
+
+
+def _make_series(values: list[float], start: str = "2024-01-01") -> pd.Series:
+    idx = pd.date_range(start=start, periods=len(values), freq="B")
+    return pd.Series(values, index=idx)
+
+
+class TestComputeRegimeFeaturesV2(unittest.TestCase):
+    def _spy(self, n: int = 250) -> pd.DataFrame:
+        return _spy_df_bull(n)
+
+    def test_credit_spread_roc_none_when_series_absent(self):
+        f = compute_regime_features(self._spy(), None)
+        self.assertIsNone(f.credit_spread_roc)
+
+    def test_credit_spread_roc_computed_from_series(self):
+        # 10d ROC: 105 / 100 - 1 = +5%
+        vals = [100.0] * 10 + [105.0]
+        hyg_lqd = _make_series(vals)
+        f = compute_regime_features(self._spy(), None, hyg_lqd_series=hyg_lqd)
+        self.assertAlmostEqual(f.credit_spread_roc, 5.0, places=4)
+
+    def test_credit_spread_roc_negative_on_decline(self):
+        vals = [100.0] * 10 + [97.0]
+        hyg_lqd = _make_series(vals)
+        f = compute_regime_features(self._spy(), None, hyg_lqd_series=hyg_lqd)
+        self.assertAlmostEqual(f.credit_spread_roc, -3.0, places=4)
+
+    def test_credit_spread_roc_none_when_too_few_bars(self):
+        # Only 5 bars — need ≥11 for 10d ROC
+        hyg_lqd = _make_series([100.0] * 5)
+        f = compute_regime_features(self._spy(), None, hyg_lqd_series=hyg_lqd)
+        self.assertIsNone(f.credit_spread_roc)
+
+    def test_breadth_none_when_series_absent(self):
+        f = compute_regime_features(self._spy(), None)
+        self.assertIsNone(f.breadth_pct_above_sma50)
+
+    def test_breadth_latest_value_used(self):
+        breadth = _make_series([0.60, 0.55, 0.48])
+        f = compute_regime_features(self._spy(), None, breadth_series=breadth)
+        self.assertAlmostEqual(f.breadth_pct_above_sma50, 0.48, places=4)
+
+    def test_t10y2y_none_when_series_absent(self):
+        f = compute_regime_features(self._spy(), None)
+        self.assertIsNone(f.t10y2y)
+
+    def test_t10y2y_latest_value_used(self):
+        t10y2y = _make_series([0.5, 0.2, -0.1])
+        f = compute_regime_features(self._spy(), None, t10y2y_series=t10y2y)
+        self.assertAlmostEqual(f.t10y2y, -0.1, places=4)
+
+    def test_as_of_filters_all_new_series(self):
+        # Series runs 2024-01-01 through 2024-01-15 (11 business days).
+        # as_of="2024-01-10" should exclude the later bars.
+        vals_hyg_lqd = [1.0] * 5 + [0.97] * 5 + [0.90]  # 11 bars total; bar 11 is excluded
+        hyg_lqd = _make_series(vals_hyg_lqd)
+        as_of_date = hyg_lqd.index[9]  # 10th bar
+        f = compute_regime_features(self._spy(), None, as_of=as_of_date, hyg_lqd_series=hyg_lqd)
+        # Only 10 bars visible at as_of — too few for 10d ROC (need ≥11), so None
+        self.assertIsNone(f.credit_spread_roc)
+
+
+# ── Regime v2: resolve_regime new state branches ─────────────────────────────
+
+
+def _features_credit_stress() -> RegimeFeatures:
+    """SPY flat but credit spreads deteriorating sharply."""
+    return RegimeFeatures(
+        spy_ret_1d=0.1,
+        spy_ret_5d=0.5,
+        spy_ret_20d=1.0,
+        spy_above_ma200=True,
+        spy_drawdown_pct=-3.0,
+        vix=18.0,
+        vix_ma20=17.0,
+        vix_vs_ma=1.06,
+        vix_5d_change=5.0,
+        vix9d=None,
+        data_quality="full",
+        credit_spread_roc=-3.0,  # below -2.0 threshold
+    )
+
+
+def _features_late_cycle_inverted() -> RegimeFeatures:
+    """Bull price conditions met but yield curve inverted."""
+    return RegimeFeatures(
+        spy_ret_1d=0.5,
+        spy_ret_5d=3.0,
+        spy_ret_20d=5.0,
+        spy_above_ma200=True,
+        spy_drawdown_pct=-1.0,
+        vix=15.0,
+        vix_ma20=14.0,
+        vix_vs_ma=1.07,
+        vix_5d_change=-5.0,
+        vix9d=None,
+        data_quality="full",
+        t10y2y=-0.3,  # inverted
+    )
+
+
+def _features_late_cycle_breadth() -> RegimeFeatures:
+    """Bull price conditions met but narrow breadth."""
+    return RegimeFeatures(
+        spy_ret_1d=0.5,
+        spy_ret_5d=3.0,
+        spy_ret_20d=5.0,
+        spy_above_ma200=True,
+        spy_drawdown_pct=-1.0,
+        vix=15.0,
+        vix_ma20=14.0,
+        vix_vs_ma=1.07,
+        vix_5d_change=-5.0,
+        vix9d=None,
+        data_quality="full",
+        breadth_pct_above_sma50=0.40,  # below 0.50 threshold
+    )
+
+
+def _features_recovery() -> RegimeFeatures:
+    """SPY bouncing positively but still in drawdown."""
+    return RegimeFeatures(
+        spy_ret_1d=0.3,
+        spy_ret_5d=1.5,
+        spy_ret_20d=-2.0,
+        spy_above_ma200=False,
+        spy_drawdown_pct=-8.0,  # still in drawdown
+        vix=20.0,
+        vix_ma20=22.0,
+        vix_vs_ma=0.91,
+        vix_5d_change=-10.0,
+        vix9d=None,
+        data_quality="full",
+    )
+
+
+class TestResolveRegimeV2(unittest.TestCase):
+    # ── CREDIT_STRESS ─────────────────────────────────────────────────────────
+
+    def test_credit_stress_fires_on_roc_below_threshold(self):
+        regime, reasons = resolve_regime(_features_credit_stress())
+        self.assertEqual(regime, MarketRegime.CREDIT_STRESS)
+
+    def test_credit_stress_reason_mentions_roc(self):
+        _, reasons = resolve_regime(_features_credit_stress())
+        self.assertTrue(any("CREDIT_STRESS" in r for r in reasons))
+
+    def test_credit_stress_not_triggered_when_roc_above_threshold(self):
+        f = RegimeFeatures(**{**_features_credit_stress().__dict__, "credit_spread_roc": -1.0})
+        regime, _ = resolve_regime(f)
+        self.assertNotEqual(regime, MarketRegime.CREDIT_STRESS)
+
+    def test_credit_stress_not_triggered_when_roc_none(self):
+        f = RegimeFeatures(**{**_features_credit_stress().__dict__, "credit_spread_roc": None})
+        regime, _ = resolve_regime(f)
+        self.assertNotEqual(regime, MarketRegime.CREDIT_STRESS)
+
+    def test_credit_stress_not_triggered_when_spy_already_defensive(self):
+        # Defensive_downtrend has higher priority than credit_stress
+        f = RegimeFeatures(**{**_features_credit_stress().__dict__, "spy_ret_5d": -2.0})
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.DEFENSIVE_DOWNTREND)
+
+    def test_credit_stress_custom_threshold(self):
+        t = RegimeThresholds(credit_stress_roc_min=-3.5)
+        # credit_spread_roc=-3.0 > -3.5 threshold → should NOT trigger
+        regime, _ = resolve_regime(_features_credit_stress(), t)
+        self.assertNotEqual(regime, MarketRegime.CREDIT_STRESS)
+
+    # ── LATE_CYCLE_BULL ───────────────────────────────────────────────────────
+
+    def test_late_cycle_bull_fires_on_inverted_curve(self):
+        regime, _ = resolve_regime(_features_late_cycle_inverted())
+        self.assertEqual(regime, MarketRegime.LATE_CYCLE_BULL)
+
+    def test_late_cycle_bull_fires_on_narrow_breadth(self):
+        regime, _ = resolve_regime(_features_late_cycle_breadth())
+        self.assertEqual(regime, MarketRegime.LATE_CYCLE_BULL)
+
+    def test_late_cycle_bull_reason_mentions_inverted_curve(self):
+        _, reasons = resolve_regime(_features_late_cycle_inverted())
+        self.assertTrue(any("inverted" in r.lower() for r in reasons))
+
+    def test_late_cycle_bull_reason_mentions_narrow_leadership(self):
+        _, reasons = resolve_regime(_features_late_cycle_breadth())
+        self.assertTrue(any("narrow leadership" in r for r in reasons))
+
+    def test_bull_trend_fires_when_no_macro_warning(self):
+        # Standard bull features with no T10Y2Y or breadth — pure BULL_TREND
+        regime, _ = resolve_regime(_features_bull())
+        self.assertEqual(regime, MarketRegime.BULL_TREND)
+
+    def test_bull_trend_not_downgraded_when_curve_positive(self):
+        # T10Y2Y positive — not inverted, no breadth warning
+        f = RegimeFeatures(**{**_features_bull().__dict__, "t10y2y": 0.5})
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.BULL_TREND)
+
+    def test_bull_trend_not_downgraded_when_breadth_above_threshold(self):
+        f = RegimeFeatures(**{**_features_bull().__dict__, "breadth_pct_above_sma50": 0.65})
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.BULL_TREND)
+
+    def test_late_cycle_bull_fires_with_both_warnings(self):
+        f = RegimeFeatures(
+            **{**_features_bull().__dict__, "t10y2y": -0.5, "breadth_pct_above_sma50": 0.35}
+        )
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.LATE_CYCLE_BULL)
+
+    def test_late_cycle_bull_not_triggered_without_bull_price_conditions(self):
+        # Choppy price action + inverted curve → not LATE_CYCLE_BULL
+        f = RegimeFeatures(**{**_features_choppy().__dict__, "t10y2y": -0.3})
+        regime, _ = resolve_regime(f)
+        self.assertNotEqual(regime, MarketRegime.LATE_CYCLE_BULL)
+
+    # ── RECOVERY ──────────────────────────────────────────────────────────────
+
+    def test_recovery_fires_when_positive_5d_and_in_drawdown(self):
+        regime, _ = resolve_regime(_features_recovery())
+        self.assertEqual(regime, MarketRegime.RECOVERY)
+
+    def test_recovery_reason_mentions_drawdown(self):
+        _, reasons = resolve_regime(_features_recovery())
+        self.assertTrue(any("RECOVERY" in r for r in reasons))
+
+    def test_recovery_not_triggered_when_5d_below_min(self):
+        f = RegimeFeatures(**{**_features_recovery().__dict__, "spy_ret_5d": 0.2})
+        regime, _ = resolve_regime(f)
+        self.assertNotEqual(regime, MarketRegime.RECOVERY)
+
+    def test_recovery_not_triggered_when_drawdown_shallow(self):
+        # drawdown only -3%, above -5% threshold
+        f = RegimeFeatures(**{**_features_recovery().__dict__, "spy_drawdown_pct": -3.0})
+        regime, _ = resolve_regime(f)
+        self.assertNotEqual(regime, MarketRegime.RECOVERY)
+
+    def test_recovery_takes_priority_over_neutral_chop(self):
+        # Recovery criteria met → should be RECOVERY not NEUTRAL_CHOP
+        regime, _ = resolve_regime(_features_recovery())
+        self.assertNotEqual(regime, MarketRegime.NEUTRAL_CHOP)
+
+    def test_bull_trend_takes_priority_over_recovery(self):
+        # Full bull conditions (spy_5d=3%, above_ma200) → BULL_TREND even if in drawdown
+        f = RegimeFeatures(
+            **{
+                **_features_recovery().__dict__,
+                "spy_ret_5d": 3.0,
+                "spy_ret_1d": 0.5,
+                "spy_above_ma200": True,
+            }
+        )
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.BULL_TREND)
+
+    def test_recovery_custom_thresholds(self):
+        t = RegimeThresholds(recovery_spy_5d_min=2.0, recovery_drawdown_max=-3.0)
+        f = RegimeFeatures(**{**_features_recovery().__dict__, "spy_ret_5d": 1.5})
+        # 1.5% < 2.0% recovery_spy_5d_min → not RECOVERY
+        regime, _ = resolve_regime(f, t)
+        self.assertNotEqual(regime, MarketRegime.RECOVERY)
+
+    # ── Priority ordering between new states ──────────────────────────────────
+
+    def test_credit_stress_does_not_fire_in_stress_risk_off(self):
+        f = RegimeFeatures(**{**_features_stress_a().__dict__, "credit_spread_roc": -5.0})
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.STRESS_RISK_OFF)
+
+    def test_credit_stress_does_not_fire_in_high_vol_downtrend(self):
+        f = RegimeFeatures(**{**_features_high_vol().__dict__, "credit_spread_roc": -5.0})
+        regime, _ = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.HIGH_VOL_DOWNTREND)
+
+
+# ── Regime v2: to_dict includes new fields ────────────────────────────────────
+
+
+class TestMarketRegimeSnapshotToDictV2(unittest.TestCase):
+    def test_to_dict_includes_credit_spread_roc(self):
+        f = RegimeFeatures(**{**_features_bull().__dict__, "credit_spread_roc": -1.5})
+        snap = MarketRegimeSnapshot(regime=MarketRegime.BULL_TREND, reasons=("ok",), features=f)
+        d = snap.to_dict()
+        self.assertIn("credit_spread_roc", d)
+        self.assertEqual(d["credit_spread_roc"], -1.5)
+
+    def test_to_dict_includes_breadth_pct_above_sma50(self):
+        f = RegimeFeatures(**{**_features_bull().__dict__, "breadth_pct_above_sma50": 0.62})
+        snap = MarketRegimeSnapshot(regime=MarketRegime.BULL_TREND, reasons=("ok",), features=f)
+        d = snap.to_dict()
+        self.assertIn("breadth_pct_above_sma50", d)
+        self.assertEqual(d["breadth_pct_above_sma50"], 0.62)
+
+    def test_to_dict_includes_t10y2y(self):
+        f = RegimeFeatures(**{**_features_bull().__dict__, "t10y2y": -0.2})
+        snap = MarketRegimeSnapshot(
+            regime=MarketRegime.LATE_CYCLE_BULL, reasons=("macro",), features=f
+        )
+        d = snap.to_dict()
+        self.assertIn("t10y2y", d)
+        self.assertEqual(d["t10y2y"], -0.2)
+
+    def test_to_dict_new_fields_none_when_not_set(self):
+        snap = MarketRegimeSnapshot(
+            regime=MarketRegime.BULL_TREND, reasons=("ok",), features=_features_bull()
+        )
+        d = snap.to_dict()
+        self.assertIsNone(d["credit_spread_roc"])
+        self.assertIsNone(d["breadth_pct_above_sma50"])
+        self.assertIsNone(d["t10y2y"])
+
+
+# ── Regime v2: compute_regime_series passes new series through ────────────────
+
+
+class TestComputeRegimeSeriesV2(unittest.TestCase):
+    def test_credit_stress_appears_in_series_when_data_provided(self):
+        spy = _spy_df_flat(250)
+        # Gradual 10% decline over last 30 bars ensures ROC ≈ -3.5% on all 5 test dates.
+        # First test date has prev=None → CREDIT_STRESS confirms immediately (no hysteresis).
+        idx = spy.index
+        n = len(idx)
+        vals = [1.0] * (n - 30) + [1.0 - i * (0.1 / 29) for i in range(30)]
+        hyg_lqd = pd.Series(vals, index=idx)
+        dates = [d.strftime("%Y-%m-%d") for d in spy.index[-5:]]
+        result = compute_regime_series(spy, None, dates, hyg_lqd_series=hyg_lqd)
+        self.assertIn("CREDIT_STRESS", result.values())
+
+    def test_regime_series_still_works_without_new_series(self):
+        spy = _spy_df_flat(250)
+        dates = [d.strftime("%Y-%m-%d") for d in spy.index[-3:]]
+        result = compute_regime_series(spy, None, dates)
+        self.assertEqual(len(result), 3)
+        for v in result.values():
+            self.assertIn(v, [r.value for r in MarketRegime])

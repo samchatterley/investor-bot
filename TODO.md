@@ -1,11 +1,10 @@
 # Pending Work
 
-### Pending
-- [ ] DI Step 2 — wire TradingDeps through _run_inner; replace module-level deps with deps.* calls in all pipeline phases
-- [ ] DI Step 3 — refactor _build_data_bundle, _fetch_market_context, and other helpers to accept deps: TradingDeps parameter
-- [ ] DI Step 4 — update RunInnerBase tests to use make_test_deps(); retire _patch_all 700-target boilerplate
+### In Progress
 - [ ] Extend regime model v2 — add credit spread, breadth, T10Y2Y, Fear & Greed composite as classification inputs
 - [ ] Add RECOVERY, LATE_CYCLE_BULL, CREDIT_STRESS regime states
+
+### Pending
 - [ ] Implement correlation_regime_gate — rolling 20d within-sector correlation; >0.75 dampen signal confidence; <0.35 boost
 - [ ] Implement vol_of_vol_signal — rolling 10d std dev of daily VIX changes; >3.5 reduce all sizes 30%; <1.0 allow boosted sizing
 - [ ] Implement breadth_thrust signal — Zweig % above 50d SMA from <40% to >60% in 10 days
@@ -23,7 +22,7 @@
 - [ ] Implement unusual_options_activity signal — single-day OTM call OI change >300% of prior 5d avg on strikes >10% OTM
 - [ ] Implement credit_spread_gate — HYG/LQD price ratio 10d ROC falling >2% = credit stress = suppress all longs
 - [ ] Implement duration_flight_signal — TLT 5d return outperforming SPY by >3% = flight-to-safety = DEFENSIVE_DOWNTREND confirmation
-- [ ] Implement yield_curve_regime gate — TNX minus IRX; inversion >20 days = late-cycle, dampen momentum longs at 50%
+- [ ] Implement yield_curve_regime gate — TNX minus IRX; inversion >20 days = late-cycle, dampen momentum longs at 50%; >1.5 and rising = expansion boost
 - [ ] Implement yield_curve_macro — FRED T10Y2Y; sustained <0 for >60 days = recession risk; >1.5 and rising = expansion boost
 - [ ] Implement pmi_regime_signal — FRED NAPM; PMI 3m trend >55 boosts cyclical signals; <45 suppresses all longs
 - [ ] Implement earnings_revision_cycle — weekly % of universe with rising vs falling EPS estimates; >55% rising = revision tailwind
@@ -40,18 +39,19 @@
 - [ ] Implement relative_pe_gate — stock P/E vs sector median; >2x sector = suppress momentum; <0.7x + positive momentum = value+momentum boost
 - [ ] Implement short_interest_trend signal — SI% rising >20% = bearish; falling >30% from peak + price rising = squeeze long
 - [ ] Implement aaii_sentiment_signal — bears >50% for 2+ weeks = contrarian long gate; bulls >60% for 3+ weeks = dampen longs
-- [ ] Implement fear_greed_composite — 7-component index (SPY vs MA, AD line, P/C ratio, VIX vs MA, TLT vs SPY, HYG/IEF, NH/NL); <20 = extreme fear long; >80 = caution
-- [ ] Implement google_trends_signal — pytrends weekly queries; search spike + positive context = long supplement; spike + negative terms = short supplement
+- [ ] Implement fear_greed_composite — 7-component index; <20 = extreme fear long; >80 = caution
+- [ ] Implement google_trends_signal — pytrends weekly queries; search spike + positive context = long supplement
 - [ ] Implement activist_13d_signal — EDGAR SC 13D filing from known activist list; long within 5 days of filing
 - [ ] Implement guidance_change_signal — EDGAR 8-K FinBERT classification; positive score >0.7 = guidance raise long; negative = guidance cut short
 - [ ] Implement secondary_offering_short — EDGAR 424B4/S-3 prospectus detector; new secondary priced = supply shock short
 - [ ] Implement lockup_expiry_short — 180-day IPO lockup calendar; short setup 5-10 days before expiry
 - [ ] Implement analyst_revision_signal — yfinance recommendations_summary; consensus shift Hold→Buy = long; Buy→Hold/Underperform = short
-- [ ] Implement index_rebalance_signal — S&P 500 add/delete announcements; long additions at close on announcement day; short deletions immediately
+- [ ] Implement index_rebalance_signal — S&P 500 add/delete announcements; long additions at close; short deletions immediately
 - [ ] Implement turn_of_month_gate — days -2 to +3 around month-end boost long priority
 - [ ] Implement opex_week_context — week of 3rd Friday; dampen gap_and_go and momentum; boost post-OPEX directional release
 - [ ] Implement halloween_regime_modifier — Nov-Apr lower confidence hurdle; May-Oct raise hurdle
-- [ ] Implement quarter_end_window_dressing — last 5 trading days of each quarter; boost rs_leader and momentum_12_1 conviction
+- [ ] Implement quarter_end_window_dressing — last 5 trading days of each quarter; boost momentum conviction
 - [ ] Implement tax_loss_reversal — track stocks down >30% YTD in Nov/Dec; flag for January long entry
 - [ ] Implement pre_holiday_boost — trading day before NYSE holidays; small long-side scoring boost
 - [ ] Implement sector_pair_mean_reversion — long top-quartile RS / short bottom-quartile RS within GICS sub-industry when spread >1.5x historical std dev
+

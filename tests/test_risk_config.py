@@ -178,6 +178,64 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
 
         self.assertIn("rsi_divergence", REGIME_BLOCKED["STRESS_RISK_OFF"])
 
+    def test_credit_stress_in_regime_blocked(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("CREDIT_STRESS", REGIME_BLOCKED)
+
+    def test_late_cycle_bull_in_regime_blocked(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("LATE_CYCLE_BULL", REGIME_BLOCKED)
+
+    def test_recovery_in_regime_blocked(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("RECOVERY", REGIME_BLOCKED)
+
+    def test_credit_stress_blocks_momentum_like_high_vol(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("momentum", REGIME_BLOCKED["CREDIT_STRESS"])
+        self.assertIn("breakout_52w", REGIME_BLOCKED["CREDIT_STRESS"])
+
+    def test_late_cycle_bull_blocks_momentum_like_neutral_chop(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("momentum", REGIME_BLOCKED["LATE_CYCLE_BULL"])
+        self.assertIn("mean_reversion", REGIME_BLOCKED["LATE_CYCLE_BULL"])
+
+    def test_recovery_allows_mean_reversion(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertNotIn("mean_reversion", REGIME_BLOCKED["RECOVERY"])
+
+    def test_recovery_allows_trend_pullback(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertNotIn("trend_pullback", REGIME_BLOCKED["RECOVERY"])
+
+    def test_recovery_blocks_momentum_chasers(self):
+        from signals.evaluator import REGIME_BLOCKED
+
+        self.assertIn("momentum", REGIME_BLOCKED["RECOVERY"])
+        self.assertIn("gap_and_go", REGIME_BLOCKED["RECOVERY"])
+
+    def test_credit_stress_in_short_allowed_regimes(self):
+        from signals.evaluator import SHORT_ALLOWED_REGIMES
+
+        self.assertIn("CREDIT_STRESS", SHORT_ALLOWED_REGIMES)
+
+    def test_recovery_not_in_short_allowed_regimes(self):
+        from signals.evaluator import SHORT_ALLOWED_REGIMES
+
+        self.assertNotIn("RECOVERY", SHORT_ALLOWED_REGIMES)
+
+    def test_late_cycle_bull_not_in_short_allowed_regimes(self):
+        from signals.evaluator import SHORT_ALLOWED_REGIMES
+
+        self.assertNotIn("LATE_CYCLE_BULL", SHORT_ALLOWED_REGIMES)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
