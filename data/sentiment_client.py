@@ -44,6 +44,14 @@ try:
 except ImportError:
     _TrendReq = None  # type: ignore[assignment,misc]
 _AAII_URL = "https://www.aaii.com/files/surveys/sentiment.xls"
+_AAII_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.aaii.com/sentimentsurvey",
+}
 _AAII_CACHE_TTL_DAYS = 7  # AAII publishes weekly
 _FG_CACHE_TTL_DAYS = 1
 _TRENDS_CACHE_TTL_DAYS = 7
@@ -114,7 +122,7 @@ def _is_stale(entry: dict, ttl_days: int) -> bool:
 def _fetch_aaii_raw() -> pd.DataFrame | None:
     """Download and parse the AAII sentiment XLS. Returns DataFrame or None."""
     try:
-        resp = requests.get(_AAII_URL, timeout=20)
+        resp = requests.get(_AAII_URL, headers=_AAII_HEADERS, timeout=20)
         resp.raise_for_status()
         # AAII provides an XLS file with multiple tabs
         df = pd.read_excel(resp.content, sheet_name=0, header=None)
