@@ -607,6 +607,16 @@ def _handle_partial_exits(
     return executed
 
 
+_STANDALONE_SHORT_REGIMES: frozenset[str] = frozenset(
+    {
+        "DEFENSIVE_DOWNTREND",
+        "HIGH_VOL_DOWNTREND",
+        "STRESS_RISK_OFF",
+        "CREDIT_STRESS",
+    }
+)
+
+
 def _execute_shorts(
     client,
     snapshots: list[dict],
@@ -622,9 +632,10 @@ def _execute_shorts(
     """Scan for and execute short positions (bottom-quartile RS, rule-gated).
 
     - Max MAX_SHORT_POSITIONS concurrent shorts.
-    - Total short notional capped at MAX_SHORT_HEDGE_RATIO × long notional.
-    - Each position sized at SHORT_SIZE_SCALE × standard long size (whole shares only).
-    - Regime gate: BULL_TREND or NEUTRAL_CHOP only.
+    - Bear regimes (DEFENSIVE_DOWNTREND / HIGH_VOL_DOWNTREND / STRESS_RISK_OFF / CREDIT_STRESS):
+      standalone short book allowed; capped at MAX_SHORT_STANDALONE_RATIO × portfolio value.
+    - All other regimes: hedge-only; requires existing longs; capped at MAX_SHORT_HEDGE_RATIO × long notional.
+    - Each position sized at SHORT_SIZE_SCALE × standard position size (whole shares only).
     """
     _trader = deps.trader if deps is not None else trader
     _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
@@ -656,28 +667,34 @@ def _execute_shorts(
         logger.info(f"Short slots full: {len(open_shorts)}/{config.MAX_SHORT_POSITIONS}")
         return
 
+    portfolio_value = account_now["portfolio_value"]
     long_notional = _trader.get_long_notional(client)
-    if long_notional == 0:
+    short_notional = _trader.get_short_notional(client)
+
+    if long_notional == 0 and regime_name not in _STANDALONE_SHORT_REGIMES:
         logger.info("No long positions — skipping short scan (shorts are hedges only)")
         return
-    short_notional = _trader.get_short_notional(client)
-    hedge_cap = long_notional * config.MAX_SHORT_HEDGE_RATIO
-    if short_notional >= hedge_cap:
-        logger.info(
-            f"Short hedge cap reached: ${short_notional:.0f} >= ${hedge_cap:.0f} "
-            f"({config.MAX_SHORT_HEDGE_RATIO:.0%} of long book)"
-        )
-        return
 
-    logger.info(
-        f"Short scan: {len(short_candidates)} candidates | "
-        f"slots={short_slots} | hedge {short_notional:.0f}/{hedge_cap:.0f}"
-    )
+    if long_notional == 0:
+        short_cap = portfolio_value * config.MAX_SHORT_STANDALONE_RATIO
+        logger.info(
+            f"Short scan: {len(short_candidates)} candidates | "
+            f"slots={short_slots} | standalone {short_notional:.0f}/{short_cap:.0f}"
+        )
+    else:
+        short_cap = long_notional * config.MAX_SHORT_HEDGE_RATIO
+        logger.info(
+            f"Short scan: {len(short_candidates)} candidates | "
+            f"slots={short_slots} | hedge {short_notional:.0f}/{short_cap:.0f}"
+        )
+
+    if short_notional >= short_cap:
+        logger.info(f"Short cap reached: ${short_notional:.0f} >= ${short_cap:.0f}")
+        return
 
     _sector_ranks_short = _sector_momentum.get_sector_momentum_ranks()
 
     shorts_placed = 0
-    portfolio_value = account_now["portfolio_value"]
     for candidate in short_candidates:
         if shorts_placed >= short_slots:
             break
@@ -731,10 +748,10 @@ def _execute_shorts(
             )
             continue
 
-        # Hedge cap check per-order
+        # Cap check per-order
         order_notional = qty_shares * current_price
-        if short_notional + order_notional > hedge_cap:
-            logger.info(f"  Short skip {symbol}: would breach hedge cap")
+        if short_notional + order_notional > short_cap:
+            logger.info(f"  Short skip {symbol}: would breach short cap")
             continue
 
         signals_str = ", ".join(matched_signals) if matched_signals else key_signal

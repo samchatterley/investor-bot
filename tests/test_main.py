@@ -3665,7 +3665,13 @@ class TestExecuteShorts(unittest.TestCase):
         return {"portfolio_value": 100_000.0, "cash": 50_000.0}
 
     def _run(
-        self, candidates=None, dry_run=True, _live_shadow=False, initial_executed=None, **overrides
+        self,
+        candidates=None,
+        dry_run=True,
+        _live_shadow=False,
+        initial_executed=None,
+        regime=None,
+        **overrides,
     ):
         from main import _execute_shorts
 
@@ -3715,7 +3721,7 @@ class TestExecuteShorts(unittest.TestCase):
             _execute_shorts(
                 client=MagicMock(),
                 snapshots=[self._snap()],
-                regime={"regime": "BULL_TREND"},
+                regime=regime if regime is not None else {"regime": "BULL_TREND"},
                 open_positions=[],
                 account_now=self._account_now(),
                 all_trades=all_trades,
@@ -3865,9 +3871,51 @@ class TestExecuteShorts(unittest.TestCase):
         mocks["main.trader.place_short_cover_stop"].assert_not_called()
         self.assertIn("WEAK", executed)
 
-    def test_no_long_positions_skips_shorts(self):
-        # long_notional == 0 → returns early, no orders placed
-        all_trades, _, mocks = self._run(**{"main.trader.get_long_notional": 0.0})
+    def test_no_long_positions_skips_shorts_in_non_bear_regime(self):
+        # long_notional == 0 in non-bear regime → hedge-only, returns early
+        all_trades, _, mocks = self._run(
+            regime={"regime": "BULL_TREND"},
+            **{"main.trader.get_long_notional": 0.0},
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_standalone_shorts_allowed_in_bear_regime(self):
+        # long_notional == 0 in DEFENSIVE_DOWNTREND → standalone mode, proceeds
+        all_trades, executed, _ = self._run(
+            regime={"regime": "DEFENSIVE_DOWNTREND"},
+            dry_run=True,
+            **{"main.trader.get_long_notional": 0.0},
+        )
+        self.assertEqual(len(all_trades), 1)
+        self.assertEqual(all_trades[0]["action"], "SHORT")
+        self.assertIn("WEAK", executed)
+
+    def test_standalone_cap_reached_returns_early(self):
+        # short_notional >= portfolio_value * MAX_SHORT_STANDALONE_RATIO → returns early
+        # portfolio_value=100_000, standalone_cap=30_000, short_notional=30_001
+        all_trades, _, mocks = self._run(
+            regime={"regime": "DEFENSIVE_DOWNTREND"},
+            **{
+                "main.trader.get_long_notional": 0.0,
+                "main.trader.get_short_notional": 30_001.0,
+            },
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
+    def test_per_order_standalone_cap_skip(self):
+        # standalone cap nearly full; single order would breach it
+        # portfolio_value=100_000, cap=30_000, existing=29_900, order=5*50=250 → 30_150 > 30_000
+        all_trades, _, mocks = self._run(
+            regime={"regime": "HIGH_VOL_DOWNTREND"},
+            dry_run=False,
+            **{
+                "main.trader.get_long_notional": 0.0,
+                "main.trader.get_short_notional": 29_900.0,
+                "main.position_sizer.risk_budget_size": 500.0,
+            },
+        )
         mocks["main.trader.place_short_order"].assert_not_called()
         self.assertEqual(all_trades, [])
 

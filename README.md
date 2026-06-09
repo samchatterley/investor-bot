@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.93 — June 2026 — Standalone short book in bear regimes
+
+Removes the hedge-only restriction on short entries so the bot can run a directional short book when no long positions are held during bear market regimes.
+
+- **`main._STANDALONE_SHORT_REGIMES`** — new module-level constant: `{DEFENSIVE_DOWNTREND, HIGH_VOL_DOWNTREND, STRESS_RISK_OFF, CREDIT_STRESS}`. Shorts are allowed without longs only in these regimes.
+- **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
+- **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
+- **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
+
+---
+
 ### 1.92 — June 2026 — Regime model v2: historical breadth series wired into backtest
 
 Closes the live/backtest asymmetry introduced in v1.91: the backtest now computes a true historical % above 50d SMA breadth series for the regime map rather than passing `None`.

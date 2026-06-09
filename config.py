@@ -85,6 +85,9 @@ MAX_SHORT_HEDGE_RATIO = float(
     os.getenv("MAX_SHORT_HEDGE_RATIO", "0.5")
 )  # short notional / long notional ceiling
 MAX_SHORT_HOLD_DAYS = int(os.getenv("MAX_SHORT_HOLD_DAYS", "3"))
+MAX_SHORT_STANDALONE_RATIO = float(
+    os.getenv("MAX_SHORT_STANDALONE_RATIO", "0.3")
+)  # max short notional as fraction of portfolio when no longs held (bear regimes only)
 
 # Risk-budget sizing (replaces Kelly)
 RISK_PER_TRADE_PCT = 0.006  # 0.6% of equity risked per trade
