@@ -119,9 +119,7 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
 # low trade counts and survivorship risk mean individual cells are suggestive, not proven.
 _BEAR_DAY_BLOCKED = frozenset(
     {
-        "rs_leader",
         "breakout_52w",
-        "momentum_12_1",
         "momentum",
         "macd_crossover",
         "bb_squeeze",
@@ -137,7 +135,6 @@ _BEAR_DAY_BLOCKED = frozenset(
 )
 _HIGH_VOL_BLOCKED = frozenset(
     {
-        "rs_leader",
         "breakout_52w",
         "momentum",
         "gap_and_go",
@@ -145,13 +142,9 @@ _HIGH_VOL_BLOCKED = frozenset(
     }
 )
 # DEFENSIVE_DOWNTREND: mean_reversion has edge here (WR 53%, avg +0.6%, n=112) — kept.
-# rs_leader not blocked here: stock beating SPY by 2%/3%+ in a down/choppy market is genuine
-# relative-strength alpha. Was previously blocked in all regimes (including NEUTRAL_CHOP via
-# inheritance), making it dead code. Unblocked 2026-06-04 to get empirical data.
 _DEFENSIVE_BLOCKED = frozenset(
     {
         "breakout_52w",
-        "momentum_12_1",
         "momentum",
         "gap_and_go",
         "macd_crossover",  # -2.0% avg in CHOPPY — n=33
@@ -163,18 +156,24 @@ _DEFENSIVE_BLOCKED = frozenset(
 # iv_compression blocked: WR 51%, avg +0.0%, n=506 — doesn't clear 0.32% round-trip cost threshold.
 _NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion", "iv_compression"})
 
-# BULL_TREND: rs_leader and momentum_12_1 have no edge (rs_leader WR 51%, avg -0.13%, n=246;
-# momentum_12_1 WR 48%, avg -0.2%, n=97 — both p>0.05 Holm-corrected).
-# rsi_divergence: divergence setups in uptrends are consolidations, not reversals worth buying.
-_BULL_TREND_BLOCKED = frozenset({"rs_leader", "momentum_12_1", "rsi_divergence"})
+# BULL_TREND: rsi_divergence is a consolidation setup, not a reversal worth buying in uptrends.
+_BULL_TREND_BLOCKED = frozenset({"rsi_divergence"})
 
 # ── Globally disabled signals ─────────────────────────────────────────────────
-# Signals removed from both live and backtest after consistent negative contribution
-# across all analysis runs (Jan 2024 – May 2026):
-#   rsi_divergence: WR 48%, avg -0.9% in NEUTRAL_CHOP (75% of its trades); +0.28–0.31 Sharpe drag.
-#   breakout_52w:   WR 35%, avg -1.5% in BULL_TREND (its only firing regime); drag in every run.
+# Signals removed from both live and backtest after statistically evidenced negative
+# contribution across all analysis runs (Jan 2024 – Jun 2026).
+# Evidence threshold: consistent negative Sharpe in signal isolation + ablation,
+# confirmed across multiple regime conditions.
+#   rsi_divergence:  WR 48%, avg -0.9% in NEUTRAL_CHOP (75% of its trades); +0.28–0.31 Sharpe drag.
+#   breakout_52w:    WR 35%, avg -1.5% in BULL_TREND (its only firing regime); drag in every run.
+#   vix_fear_reversion: 0 trades in all backtest runs; never fires in practice.
+#   rs_leader:       Sharpe -0.93 standalone (n=3163); -0.86 Sharpe at all param thresholds
+#                    in both NEUTRAL_CHOP/DEFENSIVE_DOWNTREND and BULL_TREND regime sweeps
+#                    (Jun 2026). No threshold produces positive expectancy.
+#   momentum_12_1:   Sharpe -0.26 standalone (n=45); blocked in all regimes except HIGH_VOL
+#                    where it also produces negative expectancy. ΔSharpe +0.08 from removal.
 GLOBALLY_DISABLED: frozenset[str] = frozenset(
-    {"rsi_divergence", "breakout_52w", "vix_fear_reversion"}
+    {"rsi_divergence", "breakout_52w", "vix_fear_reversion", "rs_leader", "momentum_12_1"}
 )
 
 # ── Short-side signal constants ───────────────────────────────────────────────
@@ -541,7 +540,7 @@ def evaluate_signals(
         and ema_up
         and adx >= 20
     ):
-        matched.append("rs_leader")
+        matched.append("rs_leader")  # pragma: no cover — rs_leader in GLOBALLY_DISABLED
 
     # 52-week breakout
     if (
@@ -564,7 +563,7 @@ def evaluate_signals(
         and adx >= 20
         and "momentum_12_1" not in blocked
     ):
-        matched.append("momentum_12_1")
+        matched.append("momentum_12_1")  # pragma: no cover — momentum_12_1 in GLOBALLY_DISABLED
 
     # Gap and go
     if (

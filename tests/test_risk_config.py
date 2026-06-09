@@ -151,11 +151,11 @@ class TestRegimeBlockedCanonical(unittest.TestCase):
 
         self.assertIn("range_reversion", REGIME_BLOCKED["DEFENSIVE_DOWNTREND"])
 
-    def test_momentum_12_1_blocked_in_bull_trend(self):
-        # Blocked: WR 48%, avg -0.2%, n=97 in BULL_TREND (p>0.05 Holm-corrected)
-        from signals.evaluator import REGIME_BLOCKED
+    def test_momentum_12_1_globally_disabled(self):
+        # Globally disabled: WR 48%, avg -0.2%, n=97 in BULL_TREND; no edge in any regime
+        from signals.evaluator import GLOBALLY_DISABLED
 
-        self.assertIn("momentum_12_1", REGIME_BLOCKED["BULL_TREND"])
+        self.assertIn("momentum_12_1", GLOBALLY_DISABLED)
 
     def test_iv_compression_blocked_in_neutral_chop(self):
         # Blocked: WR 51%, avg +0.0%, n=506 — doesn't clear 0.32% round-trip cost threshold

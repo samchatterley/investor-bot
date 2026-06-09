@@ -390,9 +390,10 @@ class TestEntrySignalNewDailySignals(unittest.TestCase):
             _entry_signal(_make_row(price_vs_52w_high_pct=-1.0, vol_ratio=1.3, ema9=99, ema21=100))
         )
 
-    def test_rs_leader_fires_with_spy_data(self):
+    def test_rs_leader_globally_disabled_with_spy_data(self):
+        # rs_leader globally disabled — no edge in any regime (Sharpe -0.93 standalone)
         row = _make_row(ret_5d=6.0, ret_10d=8.0, ema9=101, ema21=100)
-        self.assertEqual(_entry_signal(row, spy_ret_5d=3.0, spy_ret_10d=4.0), "rs_leader")
+        self.assertIsNone(_entry_signal(row, spy_ret_5d=3.0, spy_ret_10d=4.0))
 
     def test_rs_leader_blocked_without_spy_data(self):
         row = _make_row(ret_5d=6.0, ret_10d=8.0, ema9=101, ema21=100)
@@ -632,13 +633,11 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
         result = _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="BEAR_DAY")
         self.assertNotEqual(result, "rs_leader")
 
-    def test_rs_leader_fires_in_neutral_chop(self):
-        # rs_leader was previously blocked in all regimes (DEFENSIVE inherited into NEUTRAL_CHOP).
-        # Fixed 2026-06-04: should now fire when stock strongly outperforms SPY in choppy market.
+    def test_rs_leader_globally_disabled_in_neutral_chop(self):
+        # rs_leader moved to GLOBALLY_DISABLED 2026-06-08 — best Sharpe 0.15 over 9-year sweep
         row = _make_row(ret_5d=5.0, ret_10d=7.0, ema9=101, ema21=100, adx=30)
-        self.assertEqual(
+        self.assertIsNone(
             _entry_signal(row, spy_ret_5d=2.0, spy_ret_10d=3.0, regime="NEUTRAL_CHOP"),
-            "rs_leader",
         )
 
     def test_bear_day_blocks_mean_reversion(self):
@@ -817,9 +816,10 @@ class TestRsiDivergenceSignal(unittest.TestCase):
 class TestMomentum121Signal(unittest.TestCase):
     """momentum_12_1: Jegadeesh-Titman 12-1 medium-term momentum signal."""
 
-    def test_fires_above_threshold(self):
+    def test_globally_disabled_never_fires_above_threshold(self):
+        # momentum_12_1 globally disabled — no edge in any regime
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
-        self.assertEqual(_entry_signal(row), "momentum_12_1")
+        self.assertIsNone(_entry_signal(row))
 
     def test_no_fire_below_threshold(self):
         row = _make_row(mom_12_1=5.0, ema9=101, ema21=100, adx=25)
@@ -846,19 +846,21 @@ class TestMomentum121Signal(unittest.TestCase):
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
         self.assertIsNone(_entry_signal(row, regime="BULL_TRENDING"))
 
-    def test_allowed_on_high_vol(self):
+    def test_globally_disabled_on_high_vol(self):
+        # momentum_12_1 globally disabled — HIGH_VOL regime no longer an exception
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25)
-        self.assertEqual(_entry_signal(row, regime="HIGH_VOL"), "momentum_12_1")
+        self.assertIsNone(_entry_signal(row, regime="HIGH_VOL"))
 
     def test_absent_defaults_to_no_fire(self):
         # When mom_12_1 absent, defaults to -999 → no signal
         row = _make_row(ema9=101, ema21=100, adx=25)
         self.assertNotEqual(_entry_signal(row), "momentum_12_1")
 
-    def test_custom_threshold(self):
+    def test_globally_disabled_ignores_custom_threshold(self):
+        # momentum_12_1 globally disabled — custom params cannot re-enable it
         row = _make_row(mom_12_1=8.0, ema9=101, ema21=100, adx=25)
-        self.assertNotEqual(_entry_signal(row), "momentum_12_1")
-        self.assertEqual(_entry_signal(row, params={"mom12_1_threshold": 5.0}), "momentum_12_1")
+        self.assertIsNone(_entry_signal(row))
+        self.assertIsNone(_entry_signal(row, params={"mom12_1_threshold": 5.0}))
 
     def test_in_signal_priority(self):
         self.assertIn("momentum_12_1", _SIGNAL_PRIORITY)
@@ -872,18 +874,17 @@ class TestMomentum121Signal(unittest.TestCase):
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25, ret_5d=5.0)
         self.assertIsNone(_entry_signal(row))
 
-    def test_fires_on_pullback(self):
-        # ret_5d=-2.0 ≤ 1.0 — genuine pullback in strong trend
+    def test_globally_disabled_on_pullback(self):
+        # momentum_12_1 globally disabled — pullback conditions no longer sufficient to fire
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25, ret_5d=-2.0)
-        self.assertEqual(_entry_signal(row), "momentum_12_1")
+        self.assertIsNone(_entry_signal(row))
 
-    def test_custom_pullback_threshold(self):
-        # ret_5d=3.0 above default 1.0; fires when threshold relaxed to 5.0
+    def test_globally_disabled_ignores_custom_pullback_threshold(self):
+        # momentum_12_1 globally disabled — relaxed pullback threshold cannot re-enable it
         row = _make_row(mom_12_1=15.0, ema9=101, ema21=100, adx=25, ret_5d=3.0)
         self.assertIsNone(_entry_signal(row))
-        self.assertEqual(
+        self.assertIsNone(
             _entry_signal(row, params={"mom12_1_pullback_ret5d_max": 5.0}),
-            "momentum_12_1",
         )
 
     def test_signals_not_tested_excludes_momentum_12_1_when_column_present(self):

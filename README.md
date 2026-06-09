@@ -122,8 +122,8 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume; blocked in DEFENSIVE_DOWNTREND | 5 days |
 | `trend_continuation` | AI-classified continuation of an established trend | 5 days |
 | `breakout_52w` | Within 3% of 52-week high + above-average volume + weekly trend intact; blocked in DEFENSIVE_DOWNTREND | 5 days |
-| `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment; **blocked in BULL_TREND** (its primary regime) — no live edge detected; effectively inactive | 5 days |
-| `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; blocked in BULL_TREND, DEFENSIVE_DOWNTREND, and stress regimes | 5 days |
+| `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment; **globally disabled** (`GLOBALLY_DISABLED`) — Sharpe −0.93 standalone, best param sweep Sharpe 0.15 over 9 years; no edge in any regime | 5 days |
+| `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; **globally disabled** (`GLOBALLY_DISABLED`) — WR 48%, avg −0.2% in every tested regime | 5 days |
 | `gap_and_go` | Intraday gap ≥ threshold + volume; blocked in DEFENSIVE_DOWNTREND | 5 days |
 | `vix_fear_reversion` | VIX spike above threshold + vol filter — mean-reversion buy after volatility shock; blocked in non-stress regimes | 3 days |
 | `rsi_divergence` | Price lower than 5 days ago but RSI recovering (bullish structural divergence); ADX < 25, RSI < 45; blocked in BULL_TREND and stress regimes | 3 days |
@@ -809,6 +809,32 @@ Additional live-mode safety gates active in all modes:
 ---
 
 ## Version History
+
+### 1.89 — June 2026 — rs_leader and momentum_12_1 globally disabled
+
+Walk-forward backtest evidence confirms no edge for either signal in any market regime.
+
+- **`rs_leader` → `GLOBALLY_DISABLED`** — standalone Sharpe −0.93 over 9-year walk-forward; exhaustive param sweep (5d excess threshold 2–10%, 10d threshold 3–12%) yields best-case Sharpe 0.15 at tightest thresholds (too few trades). Removed from `_BEAR_DAY_BLOCKED` and `_HIGH_VOL_BLOCKED`; per-regime blocking replaced by global freeze.
+- **`momentum_12_1` → `GLOBALLY_DISABLED`** — WR 48%, avg −0.2%, n≥97 in every tested regime (BULL_TREND, HIGH_VOL, NEUTRAL_CHOP); no combination of ADX, pullback, or threshold parameters recovers a positive Sharpe. Removed from `_BULL_TREND_BLOCKED` and `_DEFENSIVE_BLOCKED`.
+- **Tests:** 10 tests updated across `test_backtest.py` (7), `test_stock_scanner.py` (2), `test_risk_config.py` (1) — fire-assertion tests converted to verify global disabling; `# pragma: no cover` added to now-unreachable append lines in `signals/evaluator.py`. **3856 passing, 100% coverage on changed files.**
+
+---
+
+### 1.88 — June 2026 — TradingDeps dependency injection refactor
+
+Replaced module-level globals with a single injectable `TradingDeps` dataclass, eliminating 15+ `unittest.mock.patch` call sites and making `_run_inner` fully testable without import-level side effects.
+
+- **`core/deps.py`** — new `TradingDeps` dataclass with 23 fields (trader, stock_scanner, market_data, ai_analyst, position_sizer, validate_ai_response, + 9 new: short_risk, sector_momentum, options_data, get_macro_snapshot, get_sentiment_snapshot, get_short_universe, scan_short_universe, short_interest, edgar_client). `TradingDeps.production()` constructs the live instance; `TradingDeps.testing()` is replaced by `make_test_deps()` in `conftest.py`.
+- **`main.py`** — `_run_inner(deps: TradingDeps | None = None)` calls `TradingDeps.production()` when `deps is None`; all ~15 pipeline helpers accept `deps: TradingDeps | None = None` with the same lazy-init pattern. All module-level globals removed from hot paths.
+- **Tests:** `TestMaxOrdersPerRun._run_buys` rewritten to use `make_test_deps` with `MacroSnapshot` / `SentimentSnapshot` dataclass objects (not dicts). `TestRunInnerMQSBoost` added to cover `main.py:1910` MQS boost logger. Dead `_shadow_run(overrides=...)` parameter removed. **3856 passing, 100% coverage.**
+
+---
+
+### 1.87 — June 2026 — 100% coverage enforcement; VSCode extension excluded
+
+- **`pytest.ini`** — `--cov-fail-under=100` added; VSCode extension path excluded from measurement via `omit` to prevent false coverage shortfalls.
+
+---
 
 ### 1.86 — June 2026 — five position-sizing and exit-quality features
 

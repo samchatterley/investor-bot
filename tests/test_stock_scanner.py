@@ -371,11 +371,11 @@ class TestRsLeaderSignal(unittest.TestCase):
         base.update(overrides)
         return _snap(**base)
 
-    def test_rs_leader_fires_when_spy_data_provided(self):
+    def test_rs_leader_globally_disabled_never_fires(self):
+        # rs_leader moved to GLOBALLY_DISABLED — no edge in any regime (Sharpe -0.93 standalone)
         snap = self._rs_snap()
         result = prefilter_candidates([snap], spy_ret_5d=1.5, spy_ret_10d=2.5)
-        self.assertEqual(len(result), 1)
-        self.assertIn("rs_leader", result[0]["matched_signals"])
+        self.assertEqual(len(result), 0)
 
     def test_rs_leader_silent_when_spy_data_absent(self):
         snap = self._rs_snap()
@@ -389,13 +389,13 @@ class TestRsLeaderSignal(unittest.TestCase):
         result = prefilter_candidates([snap], regime="BULL_TREND", spy_ret_5d=1.5, spy_ret_10d=2.5)
         self.assertEqual(len(result), 0)
 
-    def test_rs_leader_allowed_in_neutral_chop(self):
+    def test_rs_leader_globally_disabled_in_neutral_chop(self):
+        # rs_leader globally disabled — no edge in NEUTRAL_CHOP either (best Sharpe 0.15)
         snap = self._rs_snap()
         result = prefilter_candidates(
             [snap], regime="NEUTRAL_CHOP", spy_ret_5d=1.5, spy_ret_10d=2.5
         )
-        self.assertEqual(len(result), 1)
-        self.assertIn("rs_leader", result[0]["matched_signals"])
+        self.assertEqual(len(result), 0)
 
     def test_rs_leader_insufficient_5d_excess_fails(self):
         # Stock 5d excess only 1.0% — below rsl_excess_5d_min=2.0
