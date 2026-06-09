@@ -23,6 +23,7 @@ All functions degrade gracefully — return None/False on data failure.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -125,7 +126,7 @@ def _fetch_aaii_raw() -> pd.DataFrame | None:
         resp = requests.get(_AAII_URL, headers=_AAII_HEADERS, timeout=20)
         resp.raise_for_status()
         # AAII provides an XLS file with multiple tabs
-        df = pd.read_excel(resp.content, sheet_name=0, header=None)
+        df = pd.read_excel(io.BytesIO(resp.content), sheet_name=0, header=None)
         return df
     except Exception as exc:
         logger.warning("aaii: download failed: %s", exc)
