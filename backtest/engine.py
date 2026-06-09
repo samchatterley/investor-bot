@@ -52,7 +52,7 @@ from config import (
     SPREAD_BPS,
     STOCK_UNIVERSE,
 )
-from data.market_regime import compute_regime_series
+from data.market_regime import compute_regime_series, fetch_t10y2y_series
 from data.universe_history import get_universe_for_date
 from execution.short_universe import STATIC_SHORT_UNIVERSE
 from risk.risk_config import RiskConfig
@@ -604,15 +604,47 @@ def _fetch_intraday_bars(
     return result
 
 
+def _fetch_hyg_lqd_for_backtest(start: str) -> pd.Series | None:
+    """Download HYG and LQD for a backtest date range, return daily price-ratio Series."""
+    try:
+        raw = yf.download(["HYG", "LQD"], start=start, auto_adjust=True, progress=False)
+        if raw.empty:
+            return None
+        if not isinstance(raw.columns, pd.MultiIndex):
+            return None
+        hyg_close = raw["Close"]["HYG"].dropna()
+        lqd_close = raw["Close"]["LQD"].dropna()
+        common = hyg_close.index.intersection(lqd_close.index)
+        if len(common) < 11:
+            return None
+        ratio = hyg_close.loc[common] / lqd_close.loc[common]
+        ratio.index = pd.DatetimeIndex(ratio.index).tz_localize(None)
+        return ratio
+    except Exception as e:
+        logger.warning(f"HYG/LQD backtest fetch failed: {e}")
+        return None
+
+
 def _build_regime_map(
     spy_indicators: pd.DataFrame,
     vix_df_for_regime: pd.DataFrame | None,
 ) -> dict[str, str]:
-    """Build a {date_str: regime_name} map using the shared 5-state classifier."""
+    """Build a {date_str: regime_name} map using the shared 9-state classifier."""
     spy_close = pd.DataFrame({"Close": spy_indicators["Close"].astype(float)}).dropna()
     spy_close.index = pd.DatetimeIndex(spy_close.index).tz_localize(None)
     trading_dates = [ts.strftime("%Y-%m-%d") for ts in spy_indicators.index]
-    result = compute_regime_series(spy_close, vix_df_for_regime, trading_dates)
+
+    start = spy_close.index[0].strftime("%Y-%m-%d") if not spy_close.empty else "2000-01-01"
+    hyg_lqd_series = _fetch_hyg_lqd_for_backtest(start)
+    t10y2y_series = fetch_t10y2y_series(observation_start=start)
+
+    result = compute_regime_series(
+        spy_close,
+        vix_df_for_regime,
+        trading_dates,
+        hyg_lqd_series=hyg_lqd_series,
+        t10y2y_series=t10y2y_series,
+    )
     stress_days = sum(1 for r in result.values() if r == "STRESS_RISK_OFF")
     logger.info(f"Regime map computed — {stress_days} STRESS_RISK_OFF sessions")
     return result

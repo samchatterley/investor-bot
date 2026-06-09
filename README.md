@@ -810,6 +810,17 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.91 — June 2026 — Regime model v2 phase 2: macro inputs wired through live pipeline and backtest
+
+Completes phase 2 of the v2 regime classifier by feeding the three new macro series (HYG/LQD credit spread, breadth % above 50d SMA, T10Y2Y yield curve) through every code path that calls `get_market_regime` or `_build_regime_map`.
+
+- **`data/market_regime.py`** — `fetch_hyg_lqd_history()` and `fetch_t10y2y_series()` are new public functions. `fetch_spy_vix_history()` now also downloads and caches the HYG/LQD ratio. `_load_cache`/`_save_cache` extended to a 5-tuple (`spy`, `vix`, `vix9d`, `hyg_lqd`, `date`) with backward-compatible `.get()` for old pickle files.
+- **`execution/stock_scanner.get_market_regime()`** — now fetches HYG/LQD, T10Y2Y, and breadth snapshot on every call and passes them to `_compute_regime`, enabling CREDIT_STRESS and LATE_CYCLE_BULL classification in live trading.
+- **`backtest/engine._build_regime_map()`** — `_fetch_hyg_lqd_for_backtest()` downloads HYG/LQD history for the backtest window; `fetch_t10y2y_series()` provides FRED yield-curve data; both are forwarded to `compute_regime_series` so backtest regime maps reflect the same 9-state logic as live trading.
+- **Tests:** 14 new tests in `test_market_regime.py` (160 total), 1 new in `test_stock_scanner.py` (130 total), 5 new in `test_backtest.py` (634 total). 100% coverage on all changed files.
+
+---
+
 ### 1.90 — June 2026 — Regime model v2: CREDIT_STRESS, LATE_CYCLE_BULL, RECOVERY states
 
 Extends the 6-state regime classifier to 9 states by integrating three new macro inputs: HYG/LQD credit spread 10-day ROC, breadth % of stocks above their 50-day SMA, and T10Y2Y yield curve spread.

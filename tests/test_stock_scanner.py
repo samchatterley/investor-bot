@@ -1,5 +1,6 @@
 """Tests for execution/stock_scanner.py — get_market_regime, prefilter_candidates, get_top_movers."""
 
+import contextlib
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -45,8 +46,9 @@ class TestGetMarketRegime(unittest.TestCase):
     tests don't need network access or a live yfinance install.
     """
 
-    def _mock_shared(self, regime_name: str, is_bearish: bool = False):
-        """Return a context manager that injects a pre-built snapshot."""
+    def _with_regime(self, regime_name: str):
+        """Return a context manager that mocks all I/O seams for get_market_regime."""
+        from data.breadth import BreadthSnapshot
         from data.market_regime import (
             MarketRegime,
             MarketRegimeSnapshot,
@@ -74,43 +76,58 @@ class TestGetMarketRegime(unittest.TestCase):
             reasons=(f"test {regime_name}",),
             features=features,
         )
-        import contextlib
+        zero_breadth = BreadthSnapshot(
+            pct_above_sma50=0.0,
+            pct_above_sma200=0.0,
+            new_highs_52w=0,
+            new_lows_52w=0,
+            nh_nl_ratio=0.0,
+            ad_line_5d_change=0.0,
+            breadth_thrust=False,
+            symbols_counted=0,
+        )
 
-        return contextlib.ExitStack(), [
-            patch("execution.stock_scanner.fetch_spy_vix_history", return_value=(spy_df, vix_df)),
-            patch("execution.stock_scanner.fetch_vix9d_history", return_value=None),
-            patch("execution.stock_scanner.load_regime_state", return_value=None),
-            patch("execution.stock_scanner._compute_regime", return_value=snapshot),
-            patch("execution.stock_scanner.save_regime_state"),
-        ]
+        @contextlib.contextmanager
+        def _ctx():
+            with (
+                patch(
+                    "execution.stock_scanner.fetch_spy_vix_history",
+                    return_value=(spy_df, vix_df),
+                ),
+                patch("execution.stock_scanner.fetch_vix9d_history", return_value=None),
+                patch("execution.stock_scanner.fetch_hyg_lqd_history", return_value=None),
+                patch("execution.stock_scanner.fetch_t10y2y_series", return_value=None),
+                patch(
+                    "execution.stock_scanner.get_breadth_snapshot",
+                    return_value=zero_breadth,
+                ),
+                patch("execution.stock_scanner.load_regime_state", return_value=None),
+                patch("execution.stock_scanner._compute_regime", return_value=snapshot),
+                patch("execution.stock_scanner.save_regime_state"),
+            ):
+                yield
 
-    def _with_regime(self, regime_name: str):
-        _, patches = self._mock_shared(regime_name)
-        return patches
+        return _ctx()
 
     def test_bull_trend_regime(self):
-        patchers = self._with_regime("BULL_TREND")
-        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
+        with self._with_regime("BULL_TREND"):
             result = get_market_regime(threshold_pct=-1.5)
         self.assertEqual(result["regime"], "BULL_TREND")
         self.assertFalse(result["is_bearish"])
 
     def test_stress_regime_sets_is_bearish(self):
-        patchers = self._with_regime("STRESS_RISK_OFF")
-        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
+        with self._with_regime("STRESS_RISK_OFF"):
             result = get_market_regime(threshold_pct=-1.5)
         self.assertEqual(result["regime"], "STRESS_RISK_OFF")
         self.assertTrue(result["is_bearish"])
 
     def test_high_vol_downtrend_regime(self):
-        patchers = self._with_regime("HIGH_VOL_DOWNTREND")
-        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
+        with self._with_regime("HIGH_VOL_DOWNTREND"):
             result = get_market_regime(threshold_pct=-1.5, vix=30.0)
         self.assertEqual(result["regime"], "HIGH_VOL_DOWNTREND")
 
     def test_neutral_chop_regime(self):
-        patchers = self._with_regime("NEUTRAL_CHOP")
-        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
+        with self._with_regime("NEUTRAL_CHOP"):
             result = get_market_regime(threshold_pct=-1.5)
         self.assertEqual(result["regime"], "NEUTRAL_CHOP")
 
@@ -124,11 +141,66 @@ class TestGetMarketRegime(unittest.TestCase):
         self.assertFalse(result["is_bearish"])
 
     def test_result_has_required_keys(self):
-        patchers = self._with_regime("NEUTRAL_CHOP")
-        with patchers[0], patchers[1], patchers[2], patchers[3], patchers[4]:
+        with self._with_regime("NEUTRAL_CHOP"):
             result = get_market_regime()
         for key in ("is_bearish", "spy_change_pct", "spy_5d_pct", "regime"):
             self.assertIn(key, result)
+
+    def test_breadth_wired_when_symbols_counted(self):
+        """breadth_series is passed to _compute_regime when symbols_counted > 0."""
+        from data.breadth import BreadthSnapshot
+        from data.market_regime import (
+            MarketRegime,
+            MarketRegimeSnapshot,
+            RegimeFeatures,
+        )
+
+        idx = pd.bdate_range("2024-01-01", periods=10)
+        spy_df = pd.DataFrame({"Close": [400.0] * 10}, index=idx)
+        vix_df = pd.DataFrame({"Close": [18.0] * 10}, index=idx)
+        features = RegimeFeatures(
+            spy_ret_1d=1.0,
+            spy_ret_5d=3.0,
+            spy_ret_20d=5.0,
+            spy_above_ma200=True,
+            spy_drawdown_pct=-1.0,
+            vix=18.0,
+            vix_ma20=17.0,
+            vix_vs_ma=1.06,
+            vix_5d_change=-2.0,
+            vix9d=None,
+            data_quality="full",
+        )
+        snapshot = MarketRegimeSnapshot(
+            regime=MarketRegime.BULL_TREND,
+            reasons=("ok",),
+            features=features,
+        )
+        breadth = BreadthSnapshot(
+            pct_above_sma50=0.65,
+            pct_above_sma200=0.55,
+            new_highs_52w=30,
+            new_lows_52w=5,
+            nh_nl_ratio=6.0,
+            ad_line_5d_change=10.0,
+            breadth_thrust=False,
+            symbols_counted=100,
+        )
+        mock_compute = MagicMock(return_value=snapshot)
+        with (
+            patch("execution.stock_scanner.fetch_spy_vix_history", return_value=(spy_df, vix_df)),
+            patch("execution.stock_scanner.fetch_vix9d_history", return_value=None),
+            patch("execution.stock_scanner.fetch_hyg_lqd_history", return_value=None),
+            patch("execution.stock_scanner.fetch_t10y2y_series", return_value=None),
+            patch("execution.stock_scanner.get_breadth_snapshot", return_value=breadth),
+            patch("execution.stock_scanner.load_regime_state", return_value=None),
+            patch("execution.stock_scanner._compute_regime", mock_compute),
+            patch("execution.stock_scanner.save_regime_state"),
+        ):
+            get_market_regime()
+        call_kwargs = mock_compute.call_args[1]
+        self.assertIsNotNone(call_kwargs.get("breadth_series"))
+        self.assertAlmostEqual(float(call_kwargs["breadth_series"].iloc[0]), 0.65)
 
 
 class TestPrefilterCandidates(unittest.TestCase):

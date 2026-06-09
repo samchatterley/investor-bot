@@ -601,24 +601,46 @@ def save_regime_state(snapshot: MarketRegimeSnapshot) -> None:
 
 
 def _load_cache() -> tuple[
-    pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, date | None
+    pd.DataFrame | None,
+    pd.DataFrame | None,
+    pd.DataFrame | None,
+    pd.Series | None,
+    date | None,
 ]:
-    """Return (spy_df, vix_df, vix9d_df, cache_date) or (None, None, None, None) on miss."""
+    """Return (spy_df, vix_df, vix9d_df, hyg_lqd_series, cache_date) or all-None on miss."""
     try:
         with open(_CACHE_PATH, "rb") as f:
             payload = pickle.load(f)
-        return payload["spy"], payload["vix"], payload.get("vix9d"), payload["date"]
+        return (
+            payload["spy"],
+            payload["vix"],
+            payload.get("vix9d"),
+            payload.get("hyg_lqd"),
+            payload["date"],
+        )
     except Exception:
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 def _save_cache(
-    spy_df: pd.DataFrame, vix_df: pd.DataFrame | None, vix9d_df: pd.DataFrame | None = None
+    spy_df: pd.DataFrame,
+    vix_df: pd.DataFrame | None,
+    vix9d_df: pd.DataFrame | None = None,
+    hyg_lqd_series: pd.Series | None = None,
 ) -> None:
     try:
         os.makedirs(cfg.LOG_DIR, exist_ok=True)
         with open(_CACHE_PATH, "wb") as f:
-            pickle.dump({"spy": spy_df, "vix": vix_df, "vix9d": vix9d_df, "date": date.today()}, f)
+            pickle.dump(
+                {
+                    "spy": spy_df,
+                    "vix": vix_df,
+                    "vix9d": vix9d_df,
+                    "hyg_lqd": hyg_lqd_series,
+                    "date": date.today(),
+                },
+                f,
+            )
     except Exception as e:
         logger.warning(f"Failed to save SPY/VIX cache: {e}")
 
@@ -636,7 +658,7 @@ def fetch_spy_vix_history(
 
     Also fetches VIX9D internally; use fetch_vix9d_history() to get it.
     """
-    spy_cached, vix_cached, _vix9d_cached, cache_date = _load_cache()
+    spy_cached, vix_cached, _vix9d_cached, _hyg_lqd_cached, cache_date = _load_cache()
     if cache_date == date.today() and spy_cached is not None:
         logger.debug("SPY/VIX cache hit — skipping yfinance download")
         return spy_cached, vix_cached
@@ -684,7 +706,21 @@ def fetch_spy_vix_history(
     except Exception as e:
         logger.warning(f"VIX9D history fetch failed: {e}")
 
-    _save_cache(spy_df, vix_df, vix9d_df)
+    hyg_lqd_series: pd.Series | None = None
+    try:
+        raw_hl = yf.download(["HYG", "LQD"], start=start, auto_adjust=True, progress=False)
+        if not raw_hl.empty and isinstance(raw_hl.columns, pd.MultiIndex):
+            hyg = raw_hl["Close"]["HYG"].dropna()
+            lqd = raw_hl["Close"]["LQD"].dropna()
+            common = hyg.index.intersection(lqd.index)
+            if len(common) >= 11:
+                ratio = hyg.loc[common] / lqd.loc[common]
+                ratio.index = pd.DatetimeIndex(ratio.index).tz_localize(None)
+                hyg_lqd_series = ratio
+    except Exception as e:
+        logger.warning(f"HYG/LQD history fetch failed: {e}")
+
+    _save_cache(spy_df, vix_df, vix9d_df, hyg_lqd_series)
     return spy_df, vix_df
 
 
@@ -694,10 +730,43 @@ def fetch_vix9d_history(lookback_days: int = 504) -> pd.DataFrame | None:
     Returns None if VIX9D data is unavailable (CBOE data starts ~2011;
     yfinance may not always carry it).
     """
-    _spy, _vix, vix9d_cached, cache_date = _load_cache()
+    _spy, _vix, vix9d_cached, _hyg_lqd, cache_date = _load_cache()
     if cache_date == date.today():
         return vix9d_cached
     # Cache is cold — trigger a full refresh via fetch_spy_vix_history
     fetch_spy_vix_history(lookback_days=lookback_days)
-    _, _, vix9d_refreshed, _ = _load_cache()
+    _, _, vix9d_refreshed, _, _ = _load_cache()
     return vix9d_refreshed
+
+
+def fetch_hyg_lqd_history(lookback_days: int = 504) -> pd.Series | None:
+    """Return cached HYG/LQD price-ratio Series, triggering a full fetch if cold.
+
+    Returns None if HYG or LQD data is unavailable or insufficient (<11 bars).
+    """
+    _spy, _vix, _vix9d, hyg_lqd_cached, cache_date = _load_cache()
+    if cache_date == date.today():
+        return hyg_lqd_cached
+    fetch_spy_vix_history(lookback_days=lookback_days)
+    _, _, _, hyg_lqd_refreshed, _ = _load_cache()
+    return hyg_lqd_refreshed
+
+
+def fetch_t10y2y_series(observation_start: str = "2000-01-01") -> pd.Series | None:
+    """Return FRED T10Y2Y yield-curve spread as a pd.Series, or None if unavailable.
+
+    Positive values = normal curve; negative = inverted (recession risk).
+    Requires FRED_API_KEY environment variable and the fredapi package.
+    """
+    try:
+        from data.fred_client import fetch_series
+
+        data = fetch_series("T10Y2Y", observation_start=observation_start)
+        if not data:
+            return None
+        idx = pd.DatetimeIndex([pd.Timestamp(d) for d, _ in data]).tz_localize(None)
+        vals = [v for _, v in data]
+        return pd.Series(vals, index=idx)
+    except Exception as e:
+        logger.warning(f"T10Y2Y series fetch failed: {e}")
+        return None

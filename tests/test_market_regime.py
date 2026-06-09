@@ -21,7 +21,9 @@ from data.market_regime import (
     apply_regime_hysteresis,
     compute_regime_features,
     compute_regime_series,
+    fetch_hyg_lqd_history,
     fetch_spy_vix_history,
+    fetch_t10y2y_series,
     get_market_regime,
     load_regime_state,
     resolve_regime,
@@ -325,6 +327,16 @@ class TestComputeRegimeFeatures(unittest.TestCase):
         )
         f = compute_regime_features(spy, None, vix9d_df=vix9d_df)
         self.assertIsNone(f.vix9d)
+
+    def test_vix9d_populated_when_df_has_valid_data(self):
+        """Line 256: vix9d_df provided with valid Close → vix9d set."""
+        spy = _make_spy_df([400.0] * 10)
+        vix9d_df = pd.DataFrame(
+            {"Close": [18.5] * 5},
+            index=pd.date_range("2024-01-01", periods=5, freq="B"),
+        )
+        f = compute_regime_features(spy, None, vix9d_df=vix9d_df)
+        self.assertAlmostEqual(f.vix9d, 18.5)
 
 
 # ── resolve_regime ────────────────────────────────────────────────────────────
@@ -880,19 +892,30 @@ class TestSpyVixCache(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_load_cache_returns_nones_when_missing(self):
-        spy, vix, vix9d, d = _load_cache()
+        spy, vix, vix9d, hyg_lqd, d = _load_cache()
         self.assertIsNone(spy)
         self.assertIsNone(vix)
         self.assertIsNone(vix9d)
+        self.assertIsNone(hyg_lqd)
         self.assertIsNone(d)
 
     def test_save_and_load_cache_today(self):
         spy = _spy_df_flat(n=10)
         vix = _make_vix_df([20.0] * 10)
         _save_cache(spy, vix)
-        spy2, vix2, vix9d2, d = _load_cache()
+        spy2, vix2, vix9d2, hyg_lqd2, d = _load_cache()
         self.assertIsNotNone(spy2)
         self.assertIsNone(vix9d2)
+        self.assertIsNone(hyg_lqd2)
+        self.assertEqual(d, date.today())
+
+    def test_save_and_load_cache_with_hyg_lqd(self):
+        spy = _spy_df_flat(n=10)
+        hyg_lqd = pd.Series([1.1] * 10, index=spy.index)
+        _save_cache(spy, None, hyg_lqd_series=hyg_lqd)
+        _, _, _, hyg_lqd2, d = _load_cache()
+        self.assertIsNotNone(hyg_lqd2)
+        self.assertEqual(len(hyg_lqd2), 10)
         self.assertEqual(d, date.today())
 
     def test_cache_miss_when_stale(self):
@@ -900,7 +923,7 @@ class TestSpyVixCache(unittest.TestCase):
         cache_path = os.path.join(self._tmp.name, "spy_vix_cache.pkl")
         with open(cache_path, "wb") as f:
             pickle.dump({"spy": spy, "vix": None, "date": date.today() - timedelta(days=1)}, f)
-        _, _, _vix9d, d = _load_cache()
+        _, _, _vix9d, _hyg_lqd, d = _load_cache()
         self.assertEqual(d, date.today() - timedelta(days=1))  # stale date returned
 
 
@@ -1068,6 +1091,53 @@ class TestFetchSpyVixHistory(unittest.TestCase):
             spy, vix = fetch_spy_vix_history()
         self.assertFalse(spy.empty)
 
+    def test_hyg_lqd_ratio_stored_in_cache_when_download_succeeds(self):
+        """HYG/LQD MultiIndex download with ≥11 bars → ratio stored in cache."""
+        idx = pd.date_range("2024-01-01", periods=15, freq="B")
+        spy_raw = pd.DataFrame({"Close": [400.0] * 15}, index=idx)
+        mi = pd.MultiIndex.from_tuples([("Close", "HYG"), ("Close", "LQD")])
+        hl_raw = pd.DataFrame(
+            {("Close", "HYG"): [90.0] * 15, ("Close", "LQD"): [100.0] * 15},
+            columns=mi,
+            index=idx,
+        )
+
+        def mock_dl(ticker, **kwargs):
+            if isinstance(ticker, str) and ticker == "SPY":
+                return spy_raw
+            if isinstance(ticker, list):  # HYG/LQD multi-ticker call
+                return hl_raw
+            return pd.DataFrame()
+
+        with patch("data.market_regime.yf.download", side_effect=mock_dl):
+            fetch_spy_vix_history()
+        _, _, _, hyg_lqd, _ = _load_cache()
+        self.assertIsNotNone(hyg_lqd)
+        self.assertEqual(len(hyg_lqd), 15)
+
+    def test_hyg_lqd_ratio_none_when_fewer_than_11_common_bars(self):
+        """Branch 716->723: HYG/LQD MultiIndex with only 5 common bars → ratio not stored."""
+        idx = pd.date_range("2024-01-01", periods=5, freq="B")
+        spy_raw = pd.DataFrame({"Close": [400.0] * 5}, index=idx)
+        mi = pd.MultiIndex.from_tuples([("Close", "HYG"), ("Close", "LQD")])
+        hl_raw = pd.DataFrame(
+            {("Close", "HYG"): [90.0] * 5, ("Close", "LQD"): [100.0] * 5},
+            columns=mi,
+            index=idx,
+        )
+
+        def mock_dl(ticker, **kwargs):
+            if isinstance(ticker, str) and ticker == "SPY":
+                return spy_raw
+            if isinstance(ticker, list):
+                return hl_raw
+            return pd.DataFrame()
+
+        with patch("data.market_regime.yf.download", side_effect=mock_dl):
+            fetch_spy_vix_history()
+        _, _, _, hyg_lqd, _ = _load_cache()
+        self.assertIsNone(hyg_lqd)
+
     def test_save_cache_failure_does_not_raise(self):
         """Lines 473-474: Exception in _save_cache is silently logged."""
         spy = _spy_df_flat(n=10)
@@ -1084,8 +1154,8 @@ class TestFetchSpyVixHistory(unittest.TestCase):
             {"Close": [18.0] * 5},
             index=pd.date_range("2024-01-01", periods=5, freq="B"),
         )
-        cold = (None, None, None, date(2020, 1, 1))
-        warm = (None, None, vix9d_df, date.today())
+        cold = (None, None, None, None, date(2020, 1, 1))
+        warm = (None, None, vix9d_df, None, date.today())
         load_returns = iter([cold, warm])
 
         with (
@@ -1105,7 +1175,7 @@ class TestFetchSpyVixHistory(unittest.TestCase):
             {"Close": [18.0] * 5},
             index=pd.date_range("2024-01-01", periods=5, freq="B"),
         )
-        warm = (None, None, vix9d_df, date.today())
+        warm = (None, None, vix9d_df, None, date.today())
 
         with (
             patch("data.market_regime._load_cache", return_value=warm),
@@ -1115,6 +1185,76 @@ class TestFetchSpyVixHistory(unittest.TestCase):
 
         mock_fetch.assert_not_called()
         self.assertIsNotNone(result)
+
+
+# ── fetch_hyg_lqd_history ─────────────────────────────────────────────────────
+
+
+class TestFetchHygLqdHistory(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        patcher = patch(
+            "data.market_regime._CACHE_PATH",
+            os.path.join(self._tmp.name, "spy_vix_cache.pkl"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_warm_cache_returns_series(self):
+        spy = _spy_df_flat(n=10)
+        hyg_lqd = pd.Series([1.1] * 10, index=spy.index)
+        _save_cache(spy, None, hyg_lqd_series=hyg_lqd)
+        result = fetch_hyg_lqd_history()
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 10)
+
+    def test_warm_cache_none_hyg_lqd_returns_none(self):
+        spy = _spy_df_flat(n=10)
+        _save_cache(spy, None)
+        result = fetch_hyg_lqd_history()
+        self.assertIsNone(result)
+
+    def test_cold_cache_triggers_refresh(self):
+        from data.market_regime import fetch_hyg_lqd_history as _fhl
+
+        idx = pd.date_range("2024-01-01", periods=10, freq="B")
+        hyg_lqd = pd.Series([1.1] * 10, index=idx)
+        cold = (None, None, None, None, date(2020, 1, 1))
+        warm = (None, None, None, hyg_lqd, date.today())
+        load_returns = iter([cold, warm])
+
+        with (
+            patch("data.market_regime._load_cache", side_effect=lambda: next(load_returns)),
+            patch("data.market_regime.fetch_spy_vix_history") as mock_fetch,
+        ):
+            result = _fhl()
+
+        mock_fetch.assert_called_once()
+        self.assertIsNotNone(result)
+
+
+# ── fetch_t10y2y_series ────────────────────────────────────────────────────────
+
+
+class TestFetchT10y2ySeries(unittest.TestCase):
+    def test_returns_none_when_fred_unavailable(self):
+        with patch("data.fred_client._get_api_key", return_value=None):
+            result = fetch_t10y2y_series()
+        self.assertIsNone(result)
+
+    def test_returns_series_when_data_available(self):
+        fake_data = [("2024-01-02", 0.5), ("2024-01-03", -0.1), ("2024-01-04", -0.3)]
+        with patch("data.fred_client.fetch_series", return_value=fake_data):
+            result = fetch_t10y2y_series()
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3)
+        self.assertAlmostEqual(float(result.iloc[-1]), -0.3)
+
+    def test_returns_none_on_exception(self):
+        with patch("data.fred_client.fetch_series", side_effect=Exception("boom")):
+            result = fetch_t10y2y_series()
+        self.assertIsNone(result)
 
 
 # ── PreviousRegimeState.to_previous() ────────────────────────────────────────
@@ -1254,6 +1394,38 @@ class TestComputeRegimeFeaturesV2(unittest.TestCase):
         f = compute_regime_features(self._spy(), None, as_of=as_of_date, hyg_lqd_series=hyg_lqd)
         # Only 10 bars visible at as_of — too few for 10d ROC (need ≥11), so None
         self.assertIsNone(f.credit_spread_roc)
+
+    def test_as_of_filters_breadth_series(self):
+        # Start breadth series at 2024-04-01 so as_of leaves ~65 SPY bars visible (≥6).
+        breadth = _make_series([0.70, 0.65, 0.55, 0.40], start="2024-04-01")
+        as_of_date = breadth.index[1]  # 2024-04-02 — latest visible breadth = 0.65
+        f = compute_regime_features(self._spy(), None, as_of=as_of_date, breadth_series=breadth)
+        self.assertAlmostEqual(f.breadth_pct_above_sma50, 0.65, places=4)
+
+    def test_as_of_filters_t10y2y_series(self):
+        # Same start-date logic as breadth test above.
+        t10y2y = _make_series([0.5, 0.2, -0.3, -0.5], start="2024-04-01")
+        as_of_date = t10y2y.index[1]  # 2024-04-02 — latest visible t10y2y = 0.2
+        f = compute_regime_features(self._spy(), None, as_of=as_of_date, t10y2y_series=t10y2y)
+        self.assertAlmostEqual(f.t10y2y, 0.2, places=4)
+
+    def test_breadth_empty_after_as_of_filter_stays_none(self):
+        """Branch 274->277: breadth_series all-future dates → empty after filter → None."""
+        breadth = _make_series([0.60, 0.55], start="2025-01-01")
+        # as_of="2024-01-10" leaves ~8 SPY bars visible (≥6) but breadth is all-future
+        f = compute_regime_features(
+            self._spy(), None, as_of=pd.Timestamp("2024-01-10"), breadth_series=breadth
+        )
+        self.assertIsNone(f.breadth_pct_above_sma50)
+
+    def test_t10y2y_empty_after_as_of_filter_stays_none(self):
+        """Branch 283->286: t10y2y_series all-future dates → empty after filter → None."""
+        t10y2y = _make_series([0.5, 0.2], start="2025-01-01")
+        # as_of="2024-01-10" leaves ~8 SPY bars visible (≥6) but t10y2y is all-future
+        f = compute_regime_features(
+            self._spy(), None, as_of=pd.Timestamp("2024-01-10"), t10y2y_series=t10y2y
+        )
+        self.assertIsNone(f.t10y2y)
 
 
 # ── Regime v2: resolve_regime new state branches ─────────────────────────────

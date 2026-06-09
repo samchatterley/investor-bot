@@ -1,10 +1,14 @@
 import logging
 
+import pandas as pd
 import yfinance as yf
 
 from config import ETF_SYMBOLS, MIN_VOLUME
+from data.breadth import get_breadth_snapshot
 from data.market_regime import (
+    fetch_hyg_lqd_history,
     fetch_spy_vix_history,
+    fetch_t10y2y_series,
     fetch_vix9d_history,
     load_regime_state,
     save_regime_state,
@@ -157,7 +161,7 @@ EXTENDED_UNIVERSE = list(
 
 
 def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> dict:
-    """5-state regime classifier backed by data.market_regime.
+    """9-state regime classifier backed by data.market_regime.
 
     threshold_pct and vix are accepted for backward-compatible call sites
     but the shared module uses its own RegimeThresholds defaults.
@@ -166,8 +170,25 @@ def get_market_regime(threshold_pct: float = -1.5, vix: float | None = None) -> 
     try:
         spy_df, vix_df = fetch_spy_vix_history()
         vix9d_df = fetch_vix9d_history()
+        hyg_lqd_series = fetch_hyg_lqd_history()
+        t10y2y_series = fetch_t10y2y_series()
+
+        breadth_series: pd.Series | None = None
+        b = get_breadth_snapshot()
+        if b.symbols_counted > 0:
+            today_ts = pd.Timestamp.today().normalize()
+            breadth_series = pd.Series([b.pct_above_sma50], index=pd.DatetimeIndex([today_ts]))
+
         previous = load_regime_state()
-        snapshot = _compute_regime(spy_df, vix_df, previous=previous, vix9d_df=vix9d_df)
+        snapshot = _compute_regime(
+            spy_df,
+            vix_df,
+            previous=previous,
+            vix9d_df=vix9d_df,
+            hyg_lqd_series=hyg_lqd_series,
+            breadth_series=breadth_series,
+            t10y2y_series=t10y2y_series,
+        )
         save_regime_state(snapshot)
         result = snapshot.to_dict()
         logger.info(

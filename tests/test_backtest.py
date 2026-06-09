@@ -3422,6 +3422,59 @@ class TestComputeRegimeSeriesAllBranches(unittest.TestCase):
             self.assertIn(v, valid)
 
 
+class TestFetchHygLqdForBacktest(unittest.TestCase):
+    """Unit tests for _fetch_hyg_lqd_for_backtest helper."""
+
+    def _make_hyg_lqd_raw(self, n: int = 20) -> pd.DataFrame:
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        hyg = pd.Series([90.0 + i * 0.01 for i in range(n)], index=idx)
+        lqd = pd.Series([100.0 + i * 0.01 for i in range(n)], index=idx)
+        cols = pd.MultiIndex.from_tuples(
+            [("Close", "HYG"), ("Close", "LQD")], names=["Price", "Ticker"]
+        )
+        return pd.DataFrame({("Close", "HYG"): hyg, ("Close", "LQD"): lqd}, columns=cols)
+
+    def test_returns_series_on_success(self):
+        from backtest.engine import _fetch_hyg_lqd_for_backtest
+
+        raw = self._make_hyg_lqd_raw(n=20)
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = _fetch_hyg_lqd_for_backtest("2024-01-01")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 20)
+
+    def test_returns_none_on_empty_dataframe(self):
+        from backtest.engine import _fetch_hyg_lqd_for_backtest
+
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = _fetch_hyg_lqd_for_backtest("2024-01-01")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_non_multiindex(self):
+        from backtest.engine import _fetch_hyg_lqd_for_backtest
+
+        idx = pd.bdate_range("2024-01-01", periods=15)
+        flat = pd.DataFrame({"Close": [90.0] * 15}, index=idx)
+        with patch("backtest.engine.yf.download", return_value=flat):
+            result = _fetch_hyg_lqd_for_backtest("2024-01-01")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_insufficient_rows(self):
+        from backtest.engine import _fetch_hyg_lqd_for_backtest
+
+        raw = self._make_hyg_lqd_raw(n=5)  # < 11 bars required
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = _fetch_hyg_lqd_for_backtest("2024-01-01")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_exception(self):
+        from backtest.engine import _fetch_hyg_lqd_for_backtest
+
+        with patch("backtest.engine.yf.download", side_effect=Exception("network")):
+            result = _fetch_hyg_lqd_for_backtest("2024-01-01")
+        self.assertIsNone(result)
+
+
 class TestBootstrapCellCiRngFailure(unittest.TestCase):
     """Lines 530-531, 539: random.Random raises → rng stays None → sample_blocks=blocks."""
 
