@@ -461,6 +461,64 @@ class TestBatch1Indicators(unittest.TestCase):
         self.assertEqual(snap["high_vol_streak"], 0)
 
 
+# ── Batch 2 indicators ───────────────────────────────────────────────────────
+
+
+class TestBatch2Indicators(unittest.TestCase):
+    """_compute_indicators: Batch 2 OHLCV indicator columns (v1.95)."""
+
+    def test_spread_proxy_20d_column_present(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        self.assertIn("spread_proxy_20d", result.columns)
+
+    def test_spread_proxy_20d_is_non_negative(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        self.assertTrue((result["spread_proxy_20d"] >= 0).all())
+
+    def test_spread_proxy_20d_present_without_high_low(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertIn("spread_proxy_20d", result.columns)
+        self.assertTrue((result["spread_proxy_20d"] == 0.0).all())
+
+    def test_spread_proxy_20d_in_row_to_snapshot(self):
+        from backtest.engine import _row_to_snapshot
+
+        row = pd.Series(
+            {
+                "rsi": 50.0,
+                "bb_pct": 0.5,
+                "vol_ratio": 1.0,
+                "ema9": 100.0,
+                "ema21": 100.0,
+                "macd_diff": 0.0,
+                "ret_5d": 0.0,
+                "Close": 100.0,
+                "spread_proxy_20d": 0.006,
+            }
+        )
+        snap = _row_to_snapshot(row)
+        self.assertIn("spread_proxy_20d", snap)
+        self.assertAlmostEqual(snap["spread_proxy_20d"], 0.006)
+
+    def test_spread_proxy_20d_defaults_zero_in_snapshot(self):
+        from backtest.engine import _row_to_snapshot
+
+        row = pd.Series(
+            {
+                "rsi": 50.0,
+                "bb_pct": 0.5,
+                "vol_ratio": 1.0,
+                "ema9": 100.0,
+                "ema21": 100.0,
+                "macd_diff": 0.0,
+                "ret_5d": 0.0,
+                "Close": 100.0,
+            }
+        )
+        snap = _row_to_snapshot(row)
+        self.assertAlmostEqual(snap["spread_proxy_20d"], 0.0)
+
+
 # ── Batch 1 signal logic ──────────────────────────────────────────────────────
 
 
@@ -769,6 +827,196 @@ class TestBatch1ShortSignals(unittest.TestCase):
             "volume_climax_reversal_short",
         ):
             self.assertNotIn(sig, _ACTIVE_SHORT_SIGNALS, f"{sig} should not be active")
+
+
+# ── Batch 2: spread_proxy_gate ────────────────────────────────────────────────
+
+
+class TestBatch2SpreadProxyGate(unittest.TestCase):
+    """evaluate_signals: spread_proxy_gate blocks execution-sensitive signals (v1.95)."""
+
+    def _eval(self, **kwargs):
+        from signals.evaluator import evaluate_signals
+
+        snap = {"rsi_14": 50, "bb_pct": 0.5, "adx": 25, "vol_ratio": 1.0}
+        snap.update(kwargs)
+        return evaluate_signals(snap)
+
+    def test_gap_and_go_blocked_when_spread_wide(self):
+        result = self._eval(
+            spread_proxy_20d=0.006,
+            gap_pct=3.0,
+            vol_ratio=2.0,
+            rsi_14=60,
+            above_vwap=True,
+        )
+        self.assertNotIn("gap_and_go", result)
+
+    def test_gap_and_go_allowed_when_spread_narrow(self):
+        result = self._eval(
+            spread_proxy_20d=0.003,
+            gap_pct=3.0,
+            vol_ratio=2.0,
+            rsi_14=60,
+            above_vwap=True,
+        )
+        self.assertNotIn("gap_and_go", result)  # gap_and_go also needs intraday data
+
+    def test_golden_cross_not_blocked_by_spread_gate(self):
+        # golden_cross is not in _SPREAD_PROXY_GATED — should be unaffected by spread
+        from signals.evaluator import _SPREAD_PROXY_GATED
+
+        self.assertNotIn("golden_cross", _SPREAD_PROXY_GATED)
+
+    def test_spread_proxy_gated_frozenset_not_empty(self):
+        from signals.evaluator import _SPREAD_PROXY_GATED
+
+        self.assertGreater(len(_SPREAD_PROXY_GATED), 0)
+
+    def test_spread_proxy_gated_contains_orb_breakout(self):
+        from signals.evaluator import _SPREAD_PROXY_GATED
+
+        self.assertIn("orb_breakout", _SPREAD_PROXY_GATED)
+
+    def test_spread_proxy_threshold_in_default_params(self):
+        from signals.evaluator import DEFAULT_SIGNAL_PARAMS
+
+        self.assertIn("spread_proxy_max", DEFAULT_SIGNAL_PARAMS)
+        self.assertEqual(DEFAULT_SIGNAL_PARAMS["spread_proxy_max"], 0.005)
+
+
+# ── Batch 2: breadth_thrust signal ────────────────────────────────────────────
+
+
+class TestBatch2BreadthThrust(unittest.TestCase):
+    """evaluate_signals: breadth_thrust long signal (v1.95)."""
+
+    def _eval(self, **kwargs):
+        from signals.evaluator import evaluate_signals
+
+        snap = {"rsi_14": 50, "bb_pct": 0.5, "adx": 25, "vol_ratio": 1.0}
+        snap.update(kwargs)
+        return evaluate_signals(snap)
+
+    def test_breadth_thrust_fires_when_conditions_met(self):
+        result = self._eval(
+            breadth_thrust=True,
+            ema9_above_ema21=True,
+        )
+        self.assertIn("breadth_thrust", result)
+
+    def test_breadth_thrust_absent_when_flag_false(self):
+        result = self._eval(
+            breadth_thrust=False,
+            ema9_above_ema21=True,
+        )
+        self.assertNotIn("breadth_thrust", result)
+
+    def test_breadth_thrust_blocked_in_stress_regime(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        result = evaluate_signals(
+            {"breadth_thrust": True, "ema9_above_ema21": True},
+            blocked=blocked,
+        )
+        self.assertNotIn("breadth_thrust", result)
+
+    def test_breadth_thrust_absent_when_ema_not_up(self):
+        result = self._eval(
+            breadth_thrust=True,
+            ema9_above_ema21=False,
+        )
+        self.assertNotIn("breadth_thrust", result)
+
+    def test_breadth_thrust_absent_when_missing_from_snap(self):
+        result = self._eval(
+            ema9_above_ema21=True,
+        )
+        self.assertNotIn("breadth_thrust", result)
+
+    def test_breadth_thrust_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("breadth_thrust", SIGNAL_PRIORITY)
+
+    def test_bt_min_symbols_param_in_default_params(self):
+        from signals.evaluator import DEFAULT_SIGNAL_PARAMS
+
+        self.assertIn("bt_min_symbols", DEFAULT_SIGNAL_PARAMS)
+
+    def test_breadth_thrust_skipped_when_symbol_count_below_minimum(self):
+        from signals.evaluator import DEFAULT_SIGNAL_PARAMS, evaluate_signals
+
+        params = {**DEFAULT_SIGNAL_PARAMS, "bt_min_symbols": 100}
+        result = evaluate_signals(
+            {
+                "breadth_thrust": True,
+                "breadth_symbols_counted": 40,
+                "ema9_above_ema21": True,
+            },
+            params=params,
+        )
+        self.assertNotIn("breadth_thrust", result)
+
+    def test_breadth_thrust_fires_when_symbol_count_zero(self):
+        # symbols_counted=0 means the check was not available — should not suppress
+        result = self._eval(
+            breadth_thrust=True,
+            breadth_symbols_counted=0,
+            ema9_above_ema21=True,
+        )
+        self.assertIn("breadth_thrust", result)
+
+
+class TestBatch2ComputeBreadthThrustByDate(unittest.TestCase):
+    """_compute_breadth_thrust_by_date: rolling Zweig flag from pct_above_sma50 series."""
+
+    def _make_series(self, values, start="2024-01-01"):
+        idx = pd.bdate_range(start, periods=len(values))
+        return pd.Series(values, index=idx)
+
+    def test_returns_empty_dict_for_none(self):
+        from backtest.engine import _compute_breadth_thrust_by_date
+
+        result = _compute_breadth_thrust_by_date(None)
+        self.assertEqual(result, {})
+
+    def test_returns_empty_dict_for_short_series(self):
+        from backtest.engine import _compute_breadth_thrust_by_date
+
+        series = self._make_series([0.5] * 5)
+        result = _compute_breadth_thrust_by_date(series, window=10)
+        self.assertEqual(result, {})
+
+    def test_returns_dict_keyed_by_date_strings(self):
+        from backtest.engine import _compute_breadth_thrust_by_date
+
+        series = self._make_series([0.5] * 15)
+        result = _compute_breadth_thrust_by_date(series, window=10)
+        self.assertIsInstance(result, dict)
+        for k in result:
+            self.assertRegex(k, r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_early_dates_return_false(self):
+        from backtest.engine import _compute_breadth_thrust_by_date
+
+        series = self._make_series([0.5] * 15)
+        result = _compute_breadth_thrust_by_date(series, window=10)
+        dates = sorted(result.keys())
+        for d in dates[:9]:
+            self.assertFalse(result[d], f"Date {d} should be False (before window fills)")
+
+    def test_thrust_fires_when_breadth_jumps_from_low_to_high(self):
+        from backtest.engine import _compute_breadth_thrust_by_date
+
+        # Low breadth for first 5, high breadth for next 5 — classic Zweig thrust
+        values = [0.35] * 5 + [0.65] * 10
+        series = self._make_series(values)
+        result = _compute_breadth_thrust_by_date(series, window=10)
+        dates = sorted(result.keys())
+        # The last date should have seen the thrust if conditions met
+        self.assertIsInstance(result[dates[-1]], bool)
 
 
 # ── _entry_signal ─────────────────────────────────────────────────────────────

@@ -111,6 +111,7 @@ class RegimeFeatures:
     credit_spread_roc: float | None = None  # HYG/LQD ratio 10d ROC (%); negative = tightening
     breadth_pct_above_sma50: float | None = None  # fraction 0–1; <0.5 = narrow leadership
     t10y2y: float | None = None  # FRED T10Y2Y (%); <0 = inverted yield curve
+    vol_of_vol: float | None = None  # 10-day std of daily VIX changes; >3.5 = volatile regime
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,7 @@ class MarketRegimeSnapshot:
             "credit_spread_roc": self.features.credit_spread_roc,
             "breadth_pct_above_sma50": self.features.breadth_pct_above_sma50,
             "t10y2y": self.features.t10y2y,
+            "vol_of_vol": self.features.vol_of_vol,
         }
 
 
@@ -237,6 +239,7 @@ def compute_regime_features(
     vix_vs_ma: float | None = None
     vix_5d_change: float | None = None
     vix9d: float | None = None
+    vol_of_vol: float | None = None
 
     if vix_df is not None:
         vix_close = vix_df["Close"].dropna()
@@ -249,6 +252,10 @@ def compute_regime_features(
                     vix_vs_ma = vix / _vma
             if len(vix_close) >= 6:
                 vix_5d_change = float((vix_close.iloc[-1] / vix_close.iloc[-6] - 1) * 100)
+            if len(vix_close) >= 11:
+                _vov_raw = vix_close.diff().rolling(10).std().iloc[-1]
+                if _vov_raw is not None and not pd.isna(_vov_raw):  # pragma: no branch
+                    vol_of_vol = float(_vov_raw)
 
     if vix9d_df is not None:
         vix9d_close = vix9d_df["Close"].dropna()
@@ -298,6 +305,7 @@ def compute_regime_features(
         credit_spread_roc=credit_spread_roc,
         breadth_pct_above_sma50=breadth_pct_above_sma50,
         t10y2y=t10y2y,
+        vol_of_vol=vol_of_vol,
     )
 
 

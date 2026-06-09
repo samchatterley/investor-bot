@@ -1701,3 +1701,66 @@ class TestComputeRegimeSeriesV2(unittest.TestCase):
         self.assertEqual(len(result), 3)
         for v in result.values():
             self.assertIn(v, [r.value for r in MarketRegime])
+
+
+# ── Batch 2: vol_of_vol in RegimeFeatures and to_dict ─────────────────────────
+
+
+def _make_vix_df_n(n: int, base: float = 20.0, noise: float = 1.0) -> pd.DataFrame:
+    rng = pd.date_range("2024-01-01", periods=n, freq="B")
+    vals = base + noise * (pd.Series(range(n)) % 5 - 2)
+    return pd.DataFrame({"Close": vals.values}, index=rng)
+
+
+class TestVolOfVolInRegimeFeatures(unittest.TestCase):
+    """vol_of_vol field: computed from 10-day std of VIX daily changes."""
+
+    def test_vol_of_vol_computed_when_sufficient_vix_bars(self):
+        spy = _spy_df_flat(50)
+        vix = _make_vix_df_n(50)
+        result = compute_regime_features(spy, vix)
+        self.assertIsNotNone(result.vol_of_vol)
+        self.assertGreater(result.vol_of_vol, 0.0)
+
+    def test_vol_of_vol_none_when_vix_insufficient(self):
+        spy = _spy_df_flat(50)
+        vix = _make_vix_df_n(5)
+        result = compute_regime_features(spy, vix)
+        self.assertIsNone(result.vol_of_vol)
+
+    def test_vol_of_vol_none_when_no_vix(self):
+        spy = _spy_df_flat(50)
+        result = compute_regime_features(spy, None)
+        self.assertIsNone(result.vol_of_vol)
+
+    def test_vol_of_vol_is_float_when_present(self):
+        spy = _spy_df_flat(50)
+        vix = _make_vix_df_n(30)
+        result = compute_regime_features(spy, vix)
+        if result.vol_of_vol is not None:
+            self.assertIsInstance(result.vol_of_vol, float)
+
+    def test_vol_of_vol_none_when_vix_close_empty_after_dropna(self):
+        spy = _spy_df_flat(50)
+        rng = pd.date_range("2024-01-01", periods=5, freq="B")
+        vix = pd.DataFrame({"Close": [float("nan")] * 5}, index=rng)
+        result = compute_regime_features(spy, vix)
+        self.assertIsNone(result.vol_of_vol)
+
+
+class TestVolOfVolInToDict(unittest.TestCase):
+    """to_dict() includes vol_of_vol from RegimeFeatures."""
+
+    def test_to_dict_includes_vol_of_vol(self):
+        f = RegimeFeatures(**{**_features_bull().__dict__, "vol_of_vol": 2.5})
+        snap = MarketRegimeSnapshot(regime=MarketRegime.BULL_TREND, reasons=("ok",), features=f)
+        d = snap.to_dict()
+        self.assertIn("vol_of_vol", d)
+        self.assertAlmostEqual(d["vol_of_vol"], 2.5)
+
+    def test_to_dict_vol_of_vol_none_when_not_set(self):
+        snap = MarketRegimeSnapshot(
+            regime=MarketRegime.BULL_TREND, reasons=("ok",), features=_features_bull()
+        )
+        d = snap.to_dict()
+        self.assertIsNone(d["vol_of_vol"])

@@ -826,6 +826,20 @@ Removes the hedge-only restriction on short entries so the bot can run a directi
 
 ---
 
+### 1.95 — June 2026 — Batch 2 signals: spread_proxy_gate, breadth_thrust, vol_of_vol position-sizing
+
+Adds one new long signal (`breadth_thrust`), a per-stock execution-cost gate (`spread_proxy_gate`), and a VIX volatility-of-volatility position-sizing multiplier.
+
+- **`signals/evaluator.py`** — `breadth_thrust` signal at priority 24: fires when Zweig breadth-thrust flag is set, EMA9 > EMA21, and regime is not STRESS. Blocked in `_BEAR_DAY_BLOCKED` and `_HIGH_VOL_BLOCKED`. New `_SPREAD_PROXY_GATED` frozenset (`gap_and_go`, `mean_reversion`, `range_reversion`, `candle_exhaustion`, `orb_breakout`, `vwap_reclaim`, `intraday_momentum`) — dynamically merged into `blocked` when `spread_proxy_20d > 0.5%`. Parameters: `spread_proxy_max=0.005`, `bt_min_symbols=50`.
+- **`backtest/engine._compute_indicators()`** — `spread_proxy_20d`: 20-day rolling mean of (High−Low)/midpoint. `_compute_breadth_thrust_by_date()`: converts breadth series into per-date Zweig thrust booleans using `is_breadth_thrust()`. Both wired into `_entry_signal()` via `_run_simulation()` and `_run_combined_simulation()`. `run_backtest()` fetches and computes breadth-thrust map.
+- **`data/market_data.fetch_stock_data()`** — `spread_proxy_20d` column. `summarise_for_ai()` exposes it. `get_market_snapshots()` injects `breadth_thrust` and `breadth_symbols_counted` via `get_breadth_snapshot(price_data=live_bulk)` (live pipeline only).
+- **`data/market_regime.RegimeFeatures`** — `vol_of_vol: float | None`: 10-day std of daily VIX changes. Computed when VIX has ≥11 bars. Exposed in `to_dict()` as `"vol_of_vol"`.
+- **`risk/position_sizer.vol_of_vol_scalar()`** — returns 0.7 when VoV > 3.5, 1.2 when VoV < 1.0, else 1.0. Constants: `_VOV_REDUCE_THRESHOLD=3.5`, `_VOV_BOOST_THRESHOLD=1.0`.
+- **`main._execute_buy_phase()`** — `_vov_scalar = vol_of_vol_scalar(mc.regime.get("vol_of_vol"))` multiplied into the notional chain. Log message when scalar ≠ 1.0.
+- **Tests:** 45 new tests across `test_backtest.py` (`TestBatch2Indicators` ×5, `TestBatch2SpreadProxyGate` ×6, `TestBatch2BreadthThrust` ×9, `TestBatch2ComputeBreadthThrustByDate` ×5), `test_position_sizer.py` (`TestVolOfVolScalar` ×9), `test_market_regime.py` (`TestVolOfVolInRegimeFeatures` ×5, `TestVolOfVolInToDict` ×2), `test_market_data.py` (`TestSummariseForAIBatch2Fields` ×4). 100% coverage on all changed lines.
+
+---
+
 ### 1.94 — June 2026 — Batch 1 OHLCV technical signals: golden_cross, candle_exhaustion, obv_divergence, obv_acceleration, volume_climax_reversal
 
 Adds five new long-side signals and one short-side signal (death_cross) derived purely from OHLCV data, with full backtest and live pipeline integration.

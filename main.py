@@ -1839,6 +1839,7 @@ def _execute_buy_phase(
                 _amihud_scalar = _position_sizer.amihud_size_scalar(
                     candidate.get("amihud_illiquid", False)
                 )
+                _vov_scalar = _position_sizer.vol_of_vol_scalar(mc.regime.get("vol_of_vol"))
 
                 # Sector momentum gate — only allow longs in top 4 sectors by 20d return
                 _sym_sector = _sector_data.get_sector(symbol)
@@ -1928,6 +1929,11 @@ def _execute_buy_phase(
                             f"  MQS boost: {symbol} score={_mqs}/3"
                             f" — size boosted {_mqr_multiplier:.1f}×"
                         )
+                    if _vov_scalar != 1.0:
+                        _vov_raw = mc.regime.get("vol_of_vol")
+                        logger.info(
+                            f"  VoV scalar: vov={_vov_raw:.2f} → size scaled {_vov_scalar:.2f}×"
+                        )
                     notional = min(
                         _base
                         * _dd_scalar
@@ -1935,7 +1941,8 @@ def _execute_buy_phase(
                         * cofire_multiplier
                         * _amihud_scalar
                         * _garch_scalar
-                        * _mqr_multiplier,
+                        * _mqr_multiplier
+                        * _vov_scalar,
                         available_cash,
                     )
 

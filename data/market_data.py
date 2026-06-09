@@ -241,6 +241,14 @@ def fetch_stock_data(
         _streak = _climax_cs - _climax_cs.where(~_is_climax).ffill().fillna(0)
         df["high_vol_streak"] = _streak.astype(int)
 
+        # ── Spread proxy (execution-cost gate) ───────────────────────────────
+        if "High" in df.columns and "Low" in df.columns:
+            _midpoint = (df["High"] + df["Low"]) / 2
+            _spread_raw = (df["High"] - df["Low"]) / _midpoint.where(_midpoint > 0)
+            df["spread_proxy_20d"] = _spread_raw.rolling(20, min_periods=10).mean().fillna(0.0)
+        else:
+            df["spread_proxy_20d"] = 0.0
+
         # Return only the requested number of most recent days
         return df.tail(days) if len(df) >= 2 else None
 
@@ -355,6 +363,10 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "high_vol_streak": int(latest.get("high_vol_streak", 0))
         if pd.notna(latest.get("high_vol_streak", 0))
         else 0,
+        # ── Batch 2 OHLCV signal fields ───────────────────────────────────────
+        "spread_proxy_20d": round(float(latest.get("spread_proxy_20d", 0.0)), 5)
+        if pd.notna(latest.get("spread_proxy_20d", 0.0))
+        else 0.0,
     }
 
 
@@ -649,6 +661,23 @@ def get_market_snapshots(
     else:
         for s in snapshots:
             s["amihud_illiquid"] = False
+
+    # Breadth-thrust injection (live pipeline only — backtest uses engine-level dict)
+    if live_bulk is not None:
+        try:
+            from data.breadth import get_breadth_snapshot
+
+            _bsnapshot = get_breadth_snapshot(price_data=live_bulk)
+            _bt_flag = bool(_bsnapshot.breadth_thrust)
+            _bt_count = int(_bsnapshot.symbols_counted)
+            for s in snapshots:
+                s["breadth_thrust"] = _bt_flag
+                s["breadth_symbols_counted"] = _bt_count
+        except Exception as exc:
+            logger.warning(f"breadth_thrust injection failed: {exc}")
+            for s in snapshots:
+                s.setdefault("breadth_thrust", False)
+                s.setdefault("breadth_symbols_counted", 0)
 
     return snapshots
 

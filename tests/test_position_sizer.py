@@ -17,6 +17,7 @@ from risk.position_sizer import (
     momentum_quality_score,
     mqr_size_multiplier,
     risk_budget_size,
+    vol_of_vol_scalar,
 )
 
 
@@ -456,3 +457,37 @@ class TestMomentumQualityScore(unittest.TestCase):
 
     def test_mqr_multiplier_one_point_five_for_score_three(self):
         self.assertEqual(mqr_size_multiplier(3), 1.5)
+
+
+# ── Batch 2: vol_of_vol_scalar ────────────────────────────────────────────────
+
+
+class TestVolOfVolScalar(unittest.TestCase):
+    """vol_of_vol_scalar: position-size multiplier based on VIX volatility-of-volatility."""
+
+    def test_high_vov_reduces_size(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(5.0), 0.7)
+
+    def test_low_vov_boosts_size(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(0.5), 1.2)
+
+    def test_mid_vov_returns_one(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(2.0), 1.0)
+
+    def test_none_returns_one(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(None), 1.0)
+
+    def test_exact_reduce_threshold_returns_one(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(3.5), 1.0)
+
+    def test_just_above_reduce_threshold_reduces(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(3.51), 0.7)
+
+    def test_exact_boost_threshold_returns_one(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(1.0), 1.0)
+
+    def test_just_below_boost_threshold_boosts(self):
+        self.assertAlmostEqual(vol_of_vol_scalar(0.99), 1.2)
+
+    def test_return_type_is_float(self):
+        self.assertIsInstance(vol_of_vol_scalar(2.0), float)

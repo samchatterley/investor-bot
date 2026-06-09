@@ -271,6 +271,15 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     _streak = _climax_cs - _climax_cs.where(~_is_climax).ffill().fillna(0)
     df["high_vol_streak"] = _streak.astype(int)
 
+    # ── Spread proxy (Batch 2) ────────────────────────────────────────────────
+    # 20-day rolling average of (High–Low)/midpoint — proxy for round-trip execution cost.
+    if "High" in df.columns and "Low" in df.columns:
+        _midpoint = (df["High"] + df["Low"]) / 2
+        _spread_raw = (df["High"] - df["Low"]) / _midpoint.where(_midpoint > 0)
+        df["spread_proxy_20d"] = _spread_raw.rolling(20, min_periods=10).mean().fillna(0.0)
+    else:
+        df["spread_proxy_20d"] = 0.0
+
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
 
@@ -348,6 +357,8 @@ def _row_to_snapshot(
     snap["shooting_star"] = bool(row.get("shooting_star", False))
     snap["bearish_engulf"] = bool(row.get("bearish_engulf", False))
     snap["high_vol_streak"] = int(row.get("high_vol_streak", 0))
+    # ── Batch 2 signal fields ─────────────────────────────────────────────────
+    snap["spread_proxy_20d"] = float(row.get("spread_proxy_20d", 0.0))
     if intraday:
         snap.update(
             {
@@ -372,6 +383,7 @@ def _entry_signal(
     fundamentals: dict | None = None,
     disabled_signals: frozenset[str] | None = None,
     rs_rank_pct: float | None = None,
+    breadth_thrust: bool = False,
 ) -> str | None:
     """Return the highest-priority matching signal, or None.
 
@@ -391,6 +403,7 @@ def _entry_signal(
     )
     if rs_rank_pct is not None:
         snap["rs_rank_pct"] = rs_rank_pct
+    snap["breadth_thrust"] = breadth_thrust
     signals = evaluate_signals(
         snap,
         blocked=blocked,
@@ -747,6 +760,27 @@ def _fetch_breadth_series_for_backtest(
         return None
 
 
+def _compute_breadth_thrust_by_date(
+    breadth_series: "pd.Series | None",
+    window: int = 10,
+) -> "dict[str, bool]":
+    """Return {date_str: bool} Zweig breadth-thrust flag from daily pct_above_sma50 series."""
+    from data.breadth import is_breadth_thrust
+
+    if breadth_series is None or len(breadth_series) < window:
+        return {}
+    values = list(breadth_series.values)
+    dates = [ts.strftime("%Y-%m-%d") for ts in breadth_series.index]
+    result: dict[str, bool] = {}
+    for i, date_str in enumerate(dates):
+        if i < window - 1:
+            result[date_str] = False
+        else:
+            chunk = values[max(0, i - window + 1) : i + 1]
+            result[date_str] = is_breadth_thrust(chunk, window=window)
+    return result
+
+
 def _build_regime_map(
     spy_indicators: pd.DataFrame,
     vix_df_for_regime: pd.DataFrame | None,
@@ -1025,6 +1059,7 @@ def _run_simulation(
     rs_ranks: dict[str, dict[str, float]] | None = None,
     rs_top_pct: float = 0.75,
     stop_activation_delay: int = 2,
+    breadth_thrust_by_date: dict[str, bool] | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo).
@@ -1195,6 +1230,9 @@ def _run_simulation(
                 fundamentals=fundamentals,
                 disabled_signals=disabled_signals,
                 rs_rank_pct=rank_pct,
+                breadth_thrust=bool(breadth_thrust_by_date.get(prev_date_str, False))
+                if breadth_thrust_by_date
+                else False,
             )
             if signal:
                 if (
@@ -1805,6 +1843,7 @@ def _run_combined_simulation(
     rs_top_pct: float = 0.75,
     stop_activation_delay: int = 2,
     rs_rank_lag10: dict[str, dict[str, float]] | None = None,
+    breadth_thrust_by_date: dict[str, bool] | None = None,
 ) -> dict:
     """Combined long/short simulation with a single shared cash pool.
 
@@ -2051,6 +2090,9 @@ def _run_combined_simulation(
                     vix_spike=vix_spike,
                     fundamentals=fundamentals,
                     rs_rank_pct=rank_pct,
+                    breadth_thrust=bool(breadth_thrust_by_date.get(prev_date_str, False))
+                    if breadth_thrust_by_date
+                    else False,
                 )
                 if signal:
                     if (
@@ -2560,6 +2602,16 @@ def run_backtest(
         stress_days = sum(1 for r in regime_by_date.values() if r == "STRESS_RISK_OFF")
         logger.info(f"Regime map computed — {stress_days} STRESS_RISK_OFF sessions")
 
+    # Breadth-thrust map for Zweig breadth-thrust long signal
+    breadth_thrust_by_date: dict[str, bool] = {}
+    try:
+        _bt_series = _fetch_breadth_series_for_backtest(fetch_start)
+        breadth_thrust_by_date = _compute_breadth_thrust_by_date(_bt_series)
+        thrust_days = sum(1 for v in breadth_thrust_by_date.values() if v)
+        logger.info(f"Breadth-thrust map computed — {thrust_days} thrust days")
+    except Exception as exc:
+        logger.warning(f"Breadth-thrust fetch failed — breadth_thrust signal disabled: {exc}")
+
     # Alpaca intraday bars for vwap_reclaim / orb_breakout / intraday_momentum
     intraday_data: dict | None = None
     if use_intraday:
@@ -2603,6 +2655,7 @@ def run_backtest(
         insider_history=insider_history,
         rs_ranks=rs_ranks,
         disabled_signals=disabled_signals,
+        breadth_thrust_by_date=breadth_thrust_by_date or None,
     )
     results["start"] = start_date
     results["end"] = end_date

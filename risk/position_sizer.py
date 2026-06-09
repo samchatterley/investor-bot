@@ -302,3 +302,24 @@ def cofiring_boost(n_signals: int) -> float:
     if n_signals >= 2:
         return 1.5
     return 1.0
+
+
+_VOV_REDUCE_THRESHOLD = 3.5
+_VOV_BOOST_THRESHOLD = 1.0
+_VOV_REDUCE_SCALAR = 0.7
+_VOV_BOOST_SCALAR = 1.2
+
+
+def vol_of_vol_scalar(vov: float | None) -> float:
+    """Return position-size multiplier based on 10-day VIX volatility-of-volatility.
+
+    High VoV (>3.5) signals an unstable volatility regime — reduce all positions.
+    Low VoV (<1.0) signals a quiet, mean-reverting regime — allow a small boost.
+    """
+    if vov is None:
+        return 1.0
+    if vov > _VOV_REDUCE_THRESHOLD:
+        return _VOV_REDUCE_SCALAR
+    if vov < _VOV_BOOST_THRESHOLD:
+        return _VOV_BOOST_SCALAR
+    return 1.0

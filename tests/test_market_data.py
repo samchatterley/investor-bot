@@ -1549,3 +1549,39 @@ class TestSummariseForAIBatch1Fields(unittest.TestCase):
         for key in ("golden_cross", "death_cross", "hammer", "near_20d_low"):
             self.assertFalse(result[key], f"{key} should default to False")
         self.assertEqual(result["high_vol_streak"], 0)
+
+
+# ── Batch 2 summarise_for_ai fields ──────────────────────────────────────────
+
+
+class TestSummariseForAIBatch2Fields(unittest.TestCase):
+    """summarise_for_ai returns Batch 2 OHLCV signal fields (v1.95)."""
+
+    def _make_df_with_batch2(self):
+        df = _make_df()
+        df["spread_proxy_20d"] = 0.006
+        return df
+
+    def test_spread_proxy_20d_key_present(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", self._make_df_with_batch2())
+        self.assertIn("spread_proxy_20d", result)
+
+    def test_spread_proxy_20d_value_extracted(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", self._make_df_with_batch2())
+        self.assertAlmostEqual(result["spread_proxy_20d"], 0.006, places=4)
+
+    def test_spread_proxy_20d_defaults_to_zero_when_absent(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", _make_df())
+        self.assertAlmostEqual(result["spread_proxy_20d"], 0.0)
+
+    def test_spread_proxy_20d_is_float(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", self._make_df_with_batch2())
+        self.assertIsInstance(result["spread_proxy_20d"], float)

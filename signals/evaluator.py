@@ -39,6 +39,8 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "obv_divergence": 21,
     "obv_acceleration": 22,
     "volume_climax_reversal": 23,
+    # ── Batch 2: universe-level signals ──────────────────────────────────────
+    "breadth_thrust": 24,
 }
 
 # Signals that require Alpaca minute bars and must execute same-day (Open→Close).
@@ -115,6 +117,8 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "rr_rsi_max": 30.0,  # extreme oversold
     # macd_crossover
     "macd_vol_min": 1.2,
+    # spread_proxy_gate — suppress execution-sensitive signals when avg daily spread > 0.5%
+    "spread_proxy_max": 0.005,
     # golden_cross / death_cross — minimal vol threshold (cross event is the signal)
     "gc_vol_min": 0.8,
     "dc_vol_min": 0.8,
@@ -126,6 +130,8 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "obv_acc_vol_min": 1.2,
     # volume_climax_reversal: consecutive extreme-volume days at 20d extreme
     "vcr_streak_min": 3,
+    # breadth_thrust: require minimum universe coverage to trust the Zweig signal
+    "bt_min_symbols": 50,
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
@@ -151,6 +157,7 @@ _BEAR_DAY_BLOCKED = frozenset(
         "candle_exhaustion",  # catching falling knives in stress; need backtest to validate
         "obv_divergence",  # accumulation signals unreliable in extreme panic selling
         "obv_acceleration",  # trend confirmation meaningless in bear-day whipsaw
+        "breadth_thrust",  # breadth was already declining into bear day; thrust already stale
     }
 )
 _HIGH_VOL_BLOCKED = frozenset(
@@ -160,6 +167,21 @@ _HIGH_VOL_BLOCKED = frozenset(
         "gap_and_go",
         "orb_breakout",
         "candle_exhaustion",  # catching reversal candles in HV downtrend is premature
+        "breadth_thrust",  # breadth thrust in high-vol downtrend can be a whipsaw
+    }
+)
+
+# Signals suppressed when the 20-day average (High–Low)/midpoint spread > spread_proxy_max.
+# Round-trip cost exceeds expected edge for these short-hold / execution-sensitive signals.
+_SPREAD_PROXY_GATED: frozenset[str] = frozenset(
+    {
+        "gap_and_go",  # gap execution on wide spread → slippage kills the edge
+        "mean_reversion",  # 2-day hold; round-trip cost is a large fraction of P&L
+        "range_reversion",  # extreme-oversold mean-revert; same profile as mean_reversion
+        "candle_exhaustion",  # 3-day reversal entry; tight execution required
+        "orb_breakout",  # intraday — execution cost matters most at open
+        "vwap_reclaim",  # intraday — execution cost matters most at open
+        "intraday_momentum",  # intraday — execution cost matters most at open
     }
 )
 # DEFENSIVE_DOWNTREND: mean_reversion has edge here (WR 53%, avg +0.6%, n=112) — kept.
@@ -584,6 +606,11 @@ def evaluate_signals(
     blocked = blocked | GLOBALLY_DISABLED
     p = DEFAULT_SIGNAL_PARAMS if params is None else {**DEFAULT_SIGNAL_PARAMS, **params}
 
+    # Spread proxy gate: when average daily H–L spread > threshold, execution cost exceeds
+    # edge for short-hold and intraday signals — dynamically add them to blocked.
+    if float(snapshot.get("spread_proxy_20d", 0.0)) > p["spread_proxy_max"]:
+        blocked = blocked | _SPREAD_PROXY_GATED
+
     def _f(key: str, default: float) -> float:
         v = snapshot.get(key)
         return float(v) if v is not None else default
@@ -826,6 +853,19 @@ def evaluate_signals(
         and "volume_climax_reversal" not in blocked
     ):
         matched.append("volume_climax_reversal")
+
+    # Breadth thrust (Zweig): universe breadth jumped from <40% to >60% above 50d SMA
+    # within 10 days — rare "all-clear" thrust confirming a broad market expansion.
+    # Requires individual stock EMA alignment (don't buy laggards on a broad rally).
+    # Requires minimum universe coverage (bt_min_symbols) to trust the breadth reading.
+    _bt_symbols = int(snapshot.get("breadth_symbols_counted", 0))
+    if (
+        bool(snapshot.get("breadth_thrust", False))
+        and (_bt_symbols == 0 or _bt_symbols >= int(p["bt_min_symbols"]))
+        and ema_up
+        and "breadth_thrust" not in blocked
+    ):
+        matched.append("breadth_thrust")
 
     # Intraday signals (only active when intraday fields are present in snapshot)
     if orb_up and "orb_breakout" not in blocked:
