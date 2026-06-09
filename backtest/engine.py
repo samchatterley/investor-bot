@@ -625,6 +625,42 @@ def _fetch_hyg_lqd_for_backtest(start: str) -> pd.Series | None:
         return None
 
 
+def _fetch_breadth_series_for_backtest(
+    start: str,
+    min_symbols: int = 10,
+) -> pd.Series | None:
+    """Compute historical % above 50d SMA series for the backtest regime map.
+
+    Downloads STOCK_UNIVERSE price history from 100 calendar days before `start`
+    to provide the 50-bar SMA warmup. Returns a tz-naive pd.Series of daily
+    pct_above_sma50 values (0.0–1.0) for dates >= start, or None on failure.
+
+    Dates where fewer than min_symbols have a valid SMA50 are excluded.
+    """
+    try:
+        warmup_start = (pd.Timestamp(start) - pd.Timedelta(days=100)).strftime("%Y-%m-%d")
+        raw = yf.download(
+            list(STOCK_UNIVERSE), start=warmup_start, auto_adjust=True, progress=False
+        )
+        if raw.empty:
+            return None
+        if not isinstance(raw.columns, pd.MultiIndex):
+            return None
+        close = raw["Close"].copy()
+        close.index = pd.DatetimeIndex(close.index).tz_localize(None)
+        sma50 = close.rolling(50).mean()
+        valid_counts = sma50.notna().sum(axis=1)
+        above_counts = (close > sma50).sum(axis=1)
+        pct_above = above_counts / valid_counts.where(valid_counts > 0)
+        pct_above = pct_above.where(valid_counts >= min_symbols)
+        start_ts = pd.Timestamp(start).normalize()
+        pct_above = pct_above[pct_above.index >= start_ts].dropna()
+        return pct_above if not pct_above.empty else None
+    except Exception as e:
+        logger.warning(f"breadth backtest fetch failed: {e}")
+        return None
+
+
 def _build_regime_map(
     spy_indicators: pd.DataFrame,
     vix_df_for_regime: pd.DataFrame | None,
@@ -637,6 +673,7 @@ def _build_regime_map(
     start = spy_close.index[0].strftime("%Y-%m-%d") if not spy_close.empty else "2000-01-01"
     hyg_lqd_series = _fetch_hyg_lqd_for_backtest(start)
     t10y2y_series = fetch_t10y2y_series(observation_start=start)
+    breadth_series = _fetch_breadth_series_for_backtest(start)
 
     result = compute_regime_series(
         spy_close,
@@ -644,6 +681,7 @@ def _build_regime_map(
         trading_dates,
         hyg_lqd_series=hyg_lqd_series,
         t10y2y_series=t10y2y_series,
+        breadth_series=breadth_series,
     )
     stress_days = sum(1 for r in result.values() if r == "STRESS_RISK_OFF")
     logger.info(f"Regime map computed — {stress_days} STRESS_RISK_OFF sessions")

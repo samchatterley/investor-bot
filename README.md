@@ -810,6 +810,16 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
+### 1.92 — June 2026 — Regime model v2: historical breadth series wired into backtest
+
+Closes the live/backtest asymmetry introduced in v1.91: the backtest now computes a true historical % above 50d SMA breadth series for the regime map rather than passing `None`.
+
+- **`backtest/engine._fetch_breadth_series_for_backtest()`** — downloads `STOCK_UNIVERSE` price history from 100 calendar days before the backtest start (providing the 50-bar SMA warmup). Vectorised rolling SMA50 computation over all symbols; excludes dates with fewer than 10 valid readings. Returns `None` gracefully so existing tests are unaffected (mock universe has 3 symbols < threshold).
+- **`backtest/engine._build_regime_map()`** — now passes `breadth_series` alongside `hyg_lqd_series` and `t10y2y_series` to `compute_regime_series`. All three macro inputs are consistent between live and backtest.
+- **Tests:** 7 new tests in `test_backtest.py` (643 total). 100% coverage on `backtest/engine.py`.
+
+---
+
 ### 1.91 — June 2026 — Regime model v2 phase 2: macro inputs wired through live pipeline and backtest
 
 Completes phase 2 of the v2 regime classifier by feeding the three new macro series (HYG/LQD credit spread, breadth % above 50d SMA, T10Y2Y yield curve) through every code path that calls `get_market_regime` or `_build_regime_map`.

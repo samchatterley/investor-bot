@@ -3475,6 +3475,110 @@ class TestFetchHygLqdForBacktest(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestFetchBreadthSeriesForBacktest(unittest.TestCase):
+    """Unit tests for _fetch_breadth_series_for_backtest helper."""
+
+    def _make_breadth_raw(self, n: int = 100, n_symbols: int = 15) -> pd.DataFrame:
+        """MultiIndex DataFrame with n_symbols gently-rising series."""
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        data = {}
+        for i in range(n_symbols):
+            sym = f"SYM{i:02d}"
+            closes = [100.0 + j * 0.1 for j in range(n)]
+            data[("Close", sym)] = closes
+            data[("Volume", sym)] = [1_000_000] * n
+        df = pd.DataFrame(data, index=idx)
+        df.columns = pd.MultiIndex.from_tuples(df.columns)
+        return df
+
+    def test_returns_series_for_valid_data(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        raw = self._make_breadth_raw()
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNotNone(result)
+        self.assertIsInstance(result, pd.Series)
+
+    def test_values_between_zero_and_one(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        raw = self._make_breadth_raw()
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNotNone(result)
+        self.assertTrue((result >= 0.0).all())
+        self.assertTrue((result <= 1.0).all())
+
+    def test_dates_from_start_onward(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        raw = self._make_breadth_raw()
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNotNone(result)
+        self.assertTrue((result.index >= pd.Timestamp("2025-01-01")).all())
+
+    def test_returns_none_on_empty_download(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        with patch("backtest.engine.yf.download", return_value=pd.DataFrame()):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_non_multiindex(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        idx = pd.bdate_range("2024-11-01", periods=15)
+        flat = pd.DataFrame({"Close": [100.0] * 15}, index=idx)
+        with patch("backtest.engine.yf.download", return_value=flat):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_too_few_symbols(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        # 3 symbols < default min_symbols=10 → all dates have NaN → returns None
+        raw = self._make_breadth_raw(n_symbols=3)
+        with patch("backtest.engine.yf.download", return_value=raw):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_exception(self):
+        from backtest.engine import _fetch_breadth_series_for_backtest
+
+        with patch("backtest.engine.yf.download", side_effect=RuntimeError("network")):
+            result = _fetch_breadth_series_for_backtest("2025-01-01")
+        self.assertIsNone(result)
+
+
+class TestBuildRegimeMapBreadthWiring(unittest.TestCase):
+    """Verify _fetch_breadth_series_for_backtest result is forwarded to compute_regime_series."""
+
+    def test_breadth_series_passed_to_compute_regime_series(self):
+        from backtest.engine import _build_regime_map
+
+        idx = pd.bdate_range("2025-01-01", periods=250)
+        spy_df = pd.DataFrame({"Close": [400.0] * 250, "Volume": [1e6] * 250}, index=idx)
+        breadth = pd.Series([0.6] * 30, index=pd.bdate_range("2025-01-01", periods=30))
+        captured: dict = {}
+
+        def _capture(spy, vix, dates, **kwargs):
+            captured.update(kwargs)
+            return dict.fromkeys(dates, "NEUTRAL_CHOP")
+
+        with (
+            patch("backtest.engine._fetch_hyg_lqd_for_backtest", return_value=None),
+            patch("backtest.engine.fetch_t10y2y_series", return_value=None),
+            patch("backtest.engine._fetch_breadth_series_for_backtest", return_value=breadth),
+            patch("backtest.engine.compute_regime_series", side_effect=_capture),
+        ):
+            _build_regime_map(spy_df, None)
+
+        self.assertIsNotNone(captured.get("breadth_series"))
+        self.assertEqual(len(captured["breadth_series"]), 30)
+
+
 class TestBootstrapCellCiRngFailure(unittest.TestCase):
     """Lines 530-531, 539: random.Random raises → rng stays None → sample_blocks=blocks."""
 
