@@ -239,6 +239,538 @@ class TestComputeIndicators(unittest.TestCase):
         self.assertTrue(result["macd_cross"].isin([True, False]).all())
 
 
+# ── Batch 1 OHLCV indicators ──────────────────────────────────────────────────
+
+
+class TestBatch1Indicators(unittest.TestCase):
+    """_compute_indicators: Batch 1 OHLCV indicator columns (v1.94)."""
+
+    def test_golden_cross_death_cross_present(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertIn("golden_cross", result.columns)
+        self.assertIn("death_cross", result.columns)
+
+    def test_golden_cross_is_boolean(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertTrue(result["golden_cross"].isin([True, False]).all())
+
+    def test_death_cross_is_boolean(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertTrue(result["death_cross"].isin([True, False]).all())
+
+    def test_obv_columns_present(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        for col in (
+            "obv",
+            "obv_5d_slope",
+            "obv_20d_slope",
+            "obv_divergence_bull",
+            "obv_divergence_bear",
+            "obv_accelerating_up",
+            "obv_accelerating_down",
+        ):
+            self.assertIn(col, result.columns, f"Missing: {col}")
+
+    def test_obv_divergence_columns_are_boolean(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        for col in (
+            "obv_divergence_bull",
+            "obv_divergence_bear",
+            "obv_accelerating_up",
+            "obv_accelerating_down",
+        ):
+            self.assertTrue(result[col].isin([True, False]).all(), f"{col} not boolean")
+
+    def test_near_20d_columns_present(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        for col in ("high_20d", "low_20d", "near_20d_low", "near_20d_high"):
+            self.assertIn(col, result.columns, f"Missing: {col}")
+
+    def test_near_20d_columns_are_boolean(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertTrue(result["near_20d_low"].isin([True, False]).all())
+        self.assertTrue(result["near_20d_high"].isin([True, False]).all())
+
+    def test_candle_patterns_present_with_full_ohlcv(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        for col in ("hammer", "bullish_engulf", "shooting_star", "bearish_engulf"):
+            self.assertIn(col, result.columns, f"Missing: {col}")
+
+    def test_candle_patterns_absent_without_open(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        for col in ("hammer", "bullish_engulf", "shooting_star", "bearish_engulf"):
+            self.assertNotIn(col, result.columns, f"Should be absent: {col}")
+
+    def test_candle_patterns_are_boolean(self):
+        result = _compute_indicators(_make_ohlcv_full(60))
+        for col in ("hammer", "bullish_engulf", "shooting_star", "bearish_engulf"):
+            self.assertTrue(result[col].isin([True, False]).all(), f"{col} not boolean")
+
+    def test_high_vol_streak_present(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertIn("high_vol_streak", result.columns)
+
+    def test_high_vol_streak_non_negative(self):
+        result = _compute_indicators(_make_ohlcv(60))
+        self.assertTrue((result["high_vol_streak"] >= 0).all())
+
+    def test_high_vol_streak_counts_consecutive_days(self):
+        n = 60
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        # Last 3 days at 10× average so vol_ratio stays well above 2.5 despite rolling mean
+        vols = [1_000_000] * (n - 3) + [10_000_000, 10_000_000, 10_000_000]
+        df = pd.DataFrame(
+            {"Close": [100.0 + i * 0.5 for i in range(n)], "Volume": vols},
+            index=idx,
+        )
+        result = _compute_indicators(df)
+        self.assertEqual(int(result["high_vol_streak"].iloc[-1]), 3)
+
+    def test_high_vol_streak_resets_after_low_vol_day(self):
+        n = 60
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        # 2 high-vol days, 1 low-vol day, 1 high-vol day → streak on last day = 1
+        vols = [1_000_000] * (n - 4) + [10_000_000, 10_000_000, 1_000_000, 10_000_000]
+        df = pd.DataFrame(
+            {"Close": [100.0 + i * 0.5 for i in range(n)], "Volume": vols},
+            index=idx,
+        )
+        result = _compute_indicators(df)
+        self.assertEqual(int(result["high_vol_streak"].iloc[-1]), 1)
+
+    def test_hammer_fires_on_crafted_candle(self):
+        n = 40
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        prices = [100.0 + i * 0.1 for i in range(n)]
+        opens = list(prices)
+        highs = [p + 0.5 for p in prices]
+        lows = [p - 0.5 for p in prices]
+        # Override last row: bearish body + long lower shadow + tiny upper shadow
+        opens[-1] = 100.0
+        prices[-1] = 99.0
+        highs[-1] = 100.2  # upper shadow = 100.2 - 100.0 = 0.2 ≤ 0.3×body(1)
+        lows[-1] = 95.0  # lower shadow = 99.0 - 95.0 = 4.0 ≥ 2×body(1)
+        df = pd.DataFrame(
+            {"Close": prices, "Open": opens, "High": highs, "Low": lows, "Volume": [1_000_000] * n},
+            index=idx,
+        )
+        result = _compute_indicators(df)
+        self.assertTrue(bool(result["hammer"].iloc[-1]))
+
+    def test_shooting_star_fires_on_crafted_candle(self):
+        n = 40
+        idx = pd.bdate_range("2024-11-01", periods=n)
+        prices = [100.0 + i * 0.1 for i in range(n)]
+        opens = list(prices)
+        highs = [p + 0.5 for p in prices]
+        lows = [p - 0.5 for p in prices]
+        # Override last row: small green body + long upper shadow + tiny lower shadow
+        opens[-1] = 100.0
+        prices[-1] = 101.0  # green candle body = 1
+        highs[-1] = 105.0  # upper shadow = 105.0 - 101.0 = 4.0 ≥ 2×body(1)
+        lows[-1] = 99.8  # lower shadow = 100.0 - 99.8 = 0.2 ≤ 0.3×body(1)
+        df = pd.DataFrame(
+            {"Close": prices, "Open": opens, "High": highs, "Low": lows, "Volume": [1_000_000] * n},
+            index=idx,
+        )
+        result = _compute_indicators(df)
+        self.assertTrue(bool(result["shooting_star"].iloc[-1]))
+
+    def test_row_to_snapshot_includes_batch1_fields(self):
+        from backtest.engine import _row_to_snapshot
+
+        row = pd.Series(
+            {
+                "rsi": 50.0,
+                "bb_pct": 0.5,
+                "vol_ratio": 1.0,
+                "ema9": 100.0,
+                "ema21": 100.0,
+                "macd_diff": 0.0,
+                "ret_5d": 0.0,
+                "ret_10d": 0.0,
+                "macd_cross": False,
+                "bb_squeeze": False,
+                "bb_squeeze_days": 0,
+                "pct_vs_ema21": 0.0,
+                "price_vs_52w_high_pct": -50.0,
+                "adx": 30.0,
+                "Close": 100.0,
+                "golden_cross": True,
+                "death_cross": False,
+                "obv_divergence_bull": True,
+                "obv_divergence_bear": False,
+                "obv_accelerating_up": True,
+                "obv_accelerating_down": False,
+                "near_20d_low": True,
+                "near_20d_high": False,
+                "hammer": True,
+                "bullish_engulf": False,
+                "shooting_star": False,
+                "bearish_engulf": False,
+                "high_vol_streak": 3,
+            }
+        )
+        snap = _row_to_snapshot(row)
+        for field in (
+            "golden_cross",
+            "death_cross",
+            "obv_divergence_bull",
+            "obv_divergence_bear",
+            "obv_accelerating_up",
+            "obv_accelerating_down",
+            "near_20d_low",
+            "near_20d_high",
+            "hammer",
+            "bullish_engulf",
+            "shooting_star",
+            "bearish_engulf",
+            "high_vol_streak",
+        ):
+            self.assertIn(field, snap, f"Missing: {field}")
+        self.assertTrue(snap["golden_cross"])
+        self.assertTrue(snap["obv_divergence_bull"])
+        self.assertTrue(snap["near_20d_low"])
+        self.assertEqual(snap["high_vol_streak"], 3)
+
+    def test_row_to_snapshot_defaults_batch1_when_absent(self):
+        from backtest.engine import _row_to_snapshot
+
+        row = pd.Series(
+            {
+                "rsi": 50.0,
+                "bb_pct": 0.5,
+                "vol_ratio": 1.0,
+                "ema9": 100.0,
+                "ema21": 100.0,
+                "macd_diff": 0.0,
+                "ret_5d": 0.0,
+                "Close": 100.0,
+            }
+        )
+        snap = _row_to_snapshot(row)
+        for bool_field in (
+            "golden_cross",
+            "death_cross",
+            "hammer",
+            "bullish_engulf",
+            "near_20d_low",
+            "near_20d_high",
+        ):
+            self.assertFalse(snap[bool_field], f"{bool_field} should default False")
+        self.assertEqual(snap["high_vol_streak"], 0)
+
+
+# ── Batch 1 signal logic ──────────────────────────────────────────────────────
+
+
+class TestBatch1LongSignals(unittest.TestCase):
+    """evaluate_signals: Batch 1 OHLCV long signal logic (v1.94)."""
+
+    def _eval(self, **kwargs):
+        from signals.evaluator import evaluate_signals
+
+        snap = {"rsi_14": 50, "bb_pct": 0.5, "adx": 25, "vol_ratio": 1.0}
+        snap.update(kwargs)
+        return evaluate_signals(snap)
+
+    # ── golden_cross ─────────────────────────────────────────────────────────
+
+    def test_golden_cross_fires(self):
+        self.assertIn("golden_cross", self._eval(golden_cross=True, vol_ratio=1.0))
+
+    def test_golden_cross_absent_when_false(self):
+        self.assertNotIn("golden_cross", self._eval(golden_cross=False))
+
+    def test_golden_cross_absent_when_field_missing(self):
+        self.assertNotIn("golden_cross", self._eval())
+
+    def test_golden_cross_requires_vol_threshold(self):
+        from signals.evaluator import evaluate_signals
+
+        self.assertNotIn(
+            "golden_cross",
+            evaluate_signals({"golden_cross": True, "vol_ratio": 0.5}),
+        )
+
+    def test_golden_cross_allowed_in_stress_regime(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        result = evaluate_signals({"golden_cross": True, "vol_ratio": 1.0}, blocked=blocked)
+        self.assertIn("golden_cross", result)
+
+    def test_golden_cross_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("golden_cross", SIGNAL_PRIORITY)
+
+    # ── candle_exhaustion ────────────────────────────────────────────────────
+
+    def test_candle_exhaustion_fires_with_hammer(self):
+        self.assertIn(
+            "candle_exhaustion",
+            self._eval(hammer=True, near_20d_low=True, vol_ratio=2.0),
+        )
+
+    def test_candle_exhaustion_fires_with_bullish_engulf(self):
+        self.assertIn(
+            "candle_exhaustion",
+            self._eval(bullish_engulf=True, near_20d_low=True, vol_ratio=2.0),
+        )
+
+    def test_candle_exhaustion_requires_near_20d_low(self):
+        self.assertNotIn(
+            "candle_exhaustion",
+            self._eval(hammer=True, near_20d_low=False, vol_ratio=2.0),
+        )
+
+    def test_candle_exhaustion_requires_vol(self):
+        self.assertNotIn(
+            "candle_exhaustion",
+            self._eval(hammer=True, near_20d_low=True, vol_ratio=1.0),
+        )
+
+    def test_candle_exhaustion_requires_pattern(self):
+        self.assertNotIn(
+            "candle_exhaustion",
+            self._eval(hammer=False, bullish_engulf=False, near_20d_low=True, vol_ratio=2.0),
+        )
+
+    def test_candle_exhaustion_blocked_in_stress(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        result = evaluate_signals(
+            {"hammer": True, "near_20d_low": True, "vol_ratio": 2.0}, blocked=blocked
+        )
+        self.assertNotIn("candle_exhaustion", result)
+
+    def test_candle_exhaustion_blocked_in_high_vol_downtrend(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["HIGH_VOL_DOWNTREND"]
+        result = evaluate_signals(
+            {"hammer": True, "near_20d_low": True, "vol_ratio": 2.0}, blocked=blocked
+        )
+        self.assertNotIn("candle_exhaustion", result)
+
+    def test_candle_exhaustion_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("candle_exhaustion", SIGNAL_PRIORITY)
+
+    # ── obv_divergence ───────────────────────────────────────────────────────
+
+    def test_obv_divergence_fires(self):
+        self.assertIn("obv_divergence", self._eval(obv_divergence_bull=True, vol_ratio=1.2))
+
+    def test_obv_divergence_requires_bull_flag(self):
+        self.assertNotIn("obv_divergence", self._eval(obv_divergence_bull=False, vol_ratio=1.2))
+
+    def test_obv_divergence_requires_vol(self):
+        from signals.evaluator import evaluate_signals
+
+        self.assertNotIn(
+            "obv_divergence",
+            evaluate_signals({"obv_divergence_bull": True, "vol_ratio": 0.8}),
+        )
+
+    def test_obv_divergence_blocked_in_stress(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        result = evaluate_signals({"obv_divergence_bull": True, "vol_ratio": 1.5}, blocked=blocked)
+        self.assertNotIn("obv_divergence", result)
+
+    def test_obv_divergence_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("obv_divergence", SIGNAL_PRIORITY)
+
+    # ── obv_acceleration ─────────────────────────────────────────────────────
+
+    def test_obv_acceleration_fires_with_ema_alignment(self):
+        self.assertIn(
+            "obv_acceleration",
+            self._eval(obv_accelerating_up=True, ema9_above_ema21=True, vol_ratio=1.5),
+        )
+
+    def test_obv_acceleration_fires_with_positive_macd(self):
+        self.assertIn(
+            "obv_acceleration",
+            self._eval(
+                obv_accelerating_up=True, ema9_above_ema21=False, macd_diff=0.5, vol_ratio=1.5
+            ),
+        )
+
+    def test_obv_acceleration_requires_trend_alignment(self):
+        self.assertNotIn(
+            "obv_acceleration",
+            self._eval(
+                obv_accelerating_up=True, ema9_above_ema21=False, macd_diff=-0.1, vol_ratio=1.5
+            ),
+        )
+
+    def test_obv_acceleration_requires_vol(self):
+        from signals.evaluator import evaluate_signals
+
+        self.assertNotIn(
+            "obv_acceleration",
+            evaluate_signals(
+                {"obv_accelerating_up": True, "ema9_above_ema21": True, "vol_ratio": 0.8}
+            ),
+        )
+
+    def test_obv_acceleration_blocked_in_stress(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        result = evaluate_signals(
+            {"obv_accelerating_up": True, "ema9_above_ema21": True, "vol_ratio": 1.5},
+            blocked=blocked,
+        )
+        self.assertNotIn("obv_acceleration", result)
+
+    def test_obv_acceleration_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("obv_acceleration", SIGNAL_PRIORITY)
+
+    # ── volume_climax_reversal ───────────────────────────────────────────────
+
+    def test_volume_climax_reversal_fires(self):
+        self.assertIn(
+            "volume_climax_reversal",
+            self._eval(high_vol_streak=3, near_20d_low=True),
+        )
+
+    def test_volume_climax_reversal_fires_higher_streak(self):
+        self.assertIn(
+            "volume_climax_reversal",
+            self._eval(high_vol_streak=5, near_20d_low=True),
+        )
+
+    def test_volume_climax_reversal_requires_streak_min(self):
+        self.assertNotIn(
+            "volume_climax_reversal",
+            self._eval(high_vol_streak=2, near_20d_low=True),
+        )
+
+    def test_volume_climax_reversal_requires_near_20d_low(self):
+        self.assertNotIn(
+            "volume_climax_reversal",
+            self._eval(high_vol_streak=3, near_20d_low=False),
+        )
+
+    def test_volume_climax_reversal_allowed_in_stress(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        result = evaluate_signals({"high_vol_streak": 3, "near_20d_low": True}, blocked=blocked)
+        self.assertIn("volume_climax_reversal", result)
+
+    def test_volume_climax_reversal_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("volume_climax_reversal", SIGNAL_PRIORITY)
+
+    # ── priority ordering ────────────────────────────────────────────────────
+
+    def test_batch1_signals_lower_priority_than_intraday_momentum(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        for sig in (
+            "golden_cross",
+            "candle_exhaustion",
+            "obv_divergence",
+            "obv_acceleration",
+            "volume_climax_reversal",
+        ):
+            self.assertGreater(
+                SIGNAL_PRIORITY[sig],
+                SIGNAL_PRIORITY["intraday_momentum"],
+                f"{sig} should have lower priority than intraday_momentum",
+            )
+
+
+class TestBatch1ShortSignals(unittest.TestCase):
+    """evaluate_short_signals: Batch 1 OHLCV short signal logic (v1.94)."""
+
+    def _eval_short(self, **kwargs):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"vol_ratio": 1.0, "rsi_14": 50.0, "rsi_prev": 50.0}
+        snap.update(kwargs)
+        return evaluate_short_signals(snap)
+
+    def test_death_cross_fires(self):
+        self.assertIn("death_cross", self._eval_short(death_cross=True, vol_ratio=1.0))
+
+    def test_death_cross_absent_when_false(self):
+        self.assertNotIn("death_cross", self._eval_short(death_cross=False))
+
+    def test_death_cross_absent_when_field_missing(self):
+        self.assertNotIn("death_cross", self._eval_short())
+
+    def test_death_cross_requires_vol_threshold(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertNotIn(
+            "death_cross",
+            evaluate_short_signals({"death_cross": True, "vol_ratio": 0.5}),
+        )
+
+    def test_death_cross_blocked_when_explicitly_blocked(self):
+        from signals.evaluator import evaluate_short_signals
+
+        result = evaluate_short_signals(
+            {"death_cross": True, "vol_ratio": 1.0},
+            blocked=frozenset({"death_cross"}),
+        )
+        self.assertNotIn("death_cross", result)
+
+    def test_death_cross_not_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertNotIn("death_cross", SHORT_GLOBALLY_DISABLED)
+
+    def test_new_short_signals_globally_disabled(self):
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        for sig in (
+            "candle_exhaustion_short",
+            "obv_divergence_short",
+            "obv_acceleration_short",
+            "volume_climax_reversal_short",
+        ):
+            self.assertIn(sig, SHORT_GLOBALLY_DISABLED, f"{sig} should be globally disabled")
+
+    def test_all_new_short_signals_in_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        for sig in (
+            "death_cross",
+            "candle_exhaustion_short",
+            "obv_divergence_short",
+            "obv_acceleration_short",
+            "volume_climax_reversal_short",
+        ):
+            self.assertIn(sig, SHORT_SIGNAL_PRIORITY, f"{sig} missing from SHORT_SIGNAL_PRIORITY")
+
+    def test_death_cross_in_active_short_signals(self):
+        self.assertIn("death_cross", _ACTIVE_SHORT_SIGNALS)
+
+    def test_disabled_new_short_signals_not_in_active(self):
+        for sig in (
+            "candle_exhaustion_short",
+            "obv_divergence_short",
+            "obv_acceleration_short",
+            "volume_climax_reversal_short",
+        ):
+            self.assertNotIn(sig, _ACTIVE_SHORT_SIGNALS, f"{sig} should not be active")
+
+
 # ── _entry_signal ─────────────────────────────────────────────────────────────
 
 

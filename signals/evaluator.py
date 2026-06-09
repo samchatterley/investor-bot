@@ -33,6 +33,12 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "orb_breakout": 16,
     "vwap_reclaim": 17,
     "intraday_momentum": 18,
+    # ── Batch 1: OHLCV technical signals ────────────────────────────────────
+    "golden_cross": 19,
+    "candle_exhaustion": 20,
+    "obv_divergence": 21,
+    "obv_acceleration": 22,
+    "volume_climax_reversal": 23,
 }
 
 # Signals that require Alpaca minute bars and must execute same-day (Open→Close).
@@ -109,6 +115,17 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "rr_rsi_max": 30.0,  # extreme oversold
     # macd_crossover
     "macd_vol_min": 1.2,
+    # golden_cross / death_cross — minimal vol threshold (cross event is the signal)
+    "gc_vol_min": 0.8,
+    "dc_vol_min": 0.8,
+    # candle_exhaustion: bullish/bearish reversal candle at 20d extreme with elevated vol
+    "cex_vol_min": 1.5,
+    # obv_divergence: price vs OBV trend divergence with vol confirmation
+    "obv_div_vol_min": 1.0,
+    # obv_acceleration: short-term OBV rate faster than long-term + vol confirmation
+    "obv_acc_vol_min": 1.2,
+    # volume_climax_reversal: consecutive extreme-volume days at 20d extreme
+    "vcr_streak_min": 3,
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
@@ -131,6 +148,9 @@ _BEAR_DAY_BLOCKED = frozenset(
         "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
         "mean_reversion",  # WR 47%, p>0.05 in STRESS_RISK_OFF (n=129)
         "rsi_divergence",  # no mean-reversion buying in stress regimes
+        "candle_exhaustion",  # catching falling knives in stress; need backtest to validate
+        "obv_divergence",  # accumulation signals unreliable in extreme panic selling
+        "obv_acceleration",  # trend confirmation meaningless in bear-day whipsaw
     }
 )
 _HIGH_VOL_BLOCKED = frozenset(
@@ -139,6 +159,7 @@ _HIGH_VOL_BLOCKED = frozenset(
         "momentum",
         "gap_and_go",
         "orb_breakout",
+        "candle_exhaustion",  # catching reversal candles in HV downtrend is premature
     }
 )
 # DEFENSIVE_DOWNTREND: mean_reversion has edge here (WR 53%, avg +0.6%, n=112) — kept.
@@ -221,6 +242,10 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "overbought_downtrend",  # backward elimination: ΔSharpe +0.060 drag — removed v1.80
         "parabolic_exhaustion",  # backward elimination: ΔSharpe +0.570, -99.5% return — removed v1.80
         "iv_compression_short",  # new signal — disabled pending initial backtest validation (v1.82)
+        "candle_exhaustion_short",  # new signal — disabled pending initial backtest validation (v1.94)
+        "obv_divergence_short",  # new signal — disabled pending initial backtest validation (v1.94)
+        "obv_acceleration_short",  # new signal — disabled pending initial backtest validation (v1.94)
+        "volume_climax_reversal_short",  # new signal — disabled pending initial backtest validation (v1.94)
     }
 )
 
@@ -237,6 +262,12 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "guidance_downgrade": 9,  # Negative 8-K guidance — management lowering outlook (live-only)
     "secondary_offering_short": 10,  # 424B4/S-3 secondary — supply shock dilution (live-only)
     "iv_compression_short": 11,  # HV compression in downtrend (disabled pending backtest)
+    # ── Batch 1: OHLCV short signals ────────────────────────────────────────
+    "death_cross": 12,  # SMA50 crosses below SMA200 (active)
+    "candle_exhaustion_short": 13,  # bearish reversal candle at 20d high (disabled pending backtest)
+    "obv_divergence_short": 14,  # price up / OBV down — distribution (disabled pending backtest)
+    "obv_acceleration_short": 15,  # OBV selling rate accelerating (disabled pending backtest)
+    "volume_climax_reversal_short": 16,  # high-vol streak at 20d high — exhaustion (disabled pending backtest)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -271,6 +302,12 @@ DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     # iv_compression_short thresholds (HV compression in confirmed downtrend)
     "ivcs_hv_rank_max": 0.15,  # same compression threshold as long-side iv_compression
     "ivcs_vol_min": 1.0,  # vol confirmation — lower floor; downtrends can be quiet
+    # Batch 1 OHLCV short signal thresholds
+    "dc_vol_min": 0.8,
+    "cex_vol_min": 1.5,
+    "obv_div_vol_min": 1.0,
+    "obv_acc_vol_min": 1.2,
+    "vcr_streak_min": 3,
 }
 
 
@@ -433,6 +470,57 @@ def evaluate_short_signals(
         and snapshot.get("vol_ratio", 0.0) >= p["ivcs_vol_min"]
     ):
         matched.append("iv_compression_short")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
+
+    # ── Batch 1 OHLCV short signals ──────────────────────────────────────────
+
+    # death_cross: SMA50 just crossed below SMA200 — major trend deterioration confirmed.
+    # Fires once at the cross; subsequent trailing entries captured by other signals.
+    if (
+        "death_cross" not in blocked
+        and snapshot.get("death_cross", False)
+        and snapshot.get("vol_ratio", 0.0) >= p["dc_vol_min"]
+    ):
+        matched.append("death_cross")
+
+    # candle_exhaustion_short: bearish reversal candle (shooting star or bearish engulfing)
+    # at the 20-day high with elevated volume — distribution at resistance.
+    if (
+        "candle_exhaustion_short" not in blocked
+        and (snapshot.get("shooting_star", False) or snapshot.get("bearish_engulf", False))
+        and snapshot.get("near_20d_high", False)
+        and snapshot.get("vol_ratio", 0.0) >= p["cex_vol_min"]
+    ):
+        matched.append("candle_exhaustion_short")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
+
+    # obv_divergence_short: price rising but OBV declining — smart money distributing
+    # into retail buying pressure.  Complement to the long-side obv_divergence signal.
+    if (
+        "obv_divergence_short" not in blocked
+        and snapshot.get("obv_divergence_bear", False)
+        and snapshot.get("vol_ratio", 0.0) >= p["obv_div_vol_min"]
+    ):
+        matched.append("obv_divergence_short")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
+
+    # obv_acceleration_short: short-term OBV selling rate faster than long-term baseline
+    # AND EMA structure already bearish — institutional selling accelerating.
+    if (
+        "obv_acceleration_short" not in blocked
+        and snapshot.get("obv_accelerating_down", False)
+        and not snapshot.get("ema9_above_ema21", True)
+        and snapshot.get("vol_ratio", 0.0) >= p["obv_acc_vol_min"]
+    ):
+        matched.append("obv_acceleration_short")  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
+
+    # volume_climax_reversal_short: ≥vcr_streak_min consecutive extreme-volume days at
+    # the 20-day high — climactic buying exhaustion, distribution into retail enthusiasm.
+    if (
+        "volume_climax_reversal_short" not in blocked
+        and int(snapshot.get("high_vol_streak", 0)) >= p["vcr_streak_min"]
+        and snapshot.get("near_20d_high", False)
+    ):
+        matched.append(
+            "volume_climax_reversal_short"
+        )  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
 
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched
@@ -688,6 +776,56 @@ def evaluate_signals(
     # MACD crossover
     if macd_up and vol > p["macd_vol_min"] and adx >= 20 and "macd_crossover" not in blocked:
         matched.append("macd_crossover")
+
+    # ── Batch 1 OHLCV signals ─────────────────────────────────────────────────
+
+    # Golden cross: SMA50 just crossed above SMA200 — major long-term trend confirmation.
+    # Low vol threshold; the cross itself is the signal, not the volume on the cross day.
+    if (
+        bool(snapshot.get("golden_cross", False))
+        and vol >= p["gc_vol_min"]
+        and "golden_cross" not in blocked
+    ):
+        matched.append("golden_cross")
+
+    # Candle exhaustion: bullish reversal candle (hammer or bullish engulfing) at the
+    # 20-day low with elevated volume — panic selling into support; capitulation setup.
+    if (
+        (bool(snapshot.get("hammer", False)) or bool(snapshot.get("bullish_engulf", False)))
+        and bool(snapshot.get("near_20d_low", False))
+        and vol >= p["cex_vol_min"]
+        and "candle_exhaustion" not in blocked
+    ):
+        matched.append("candle_exhaustion")
+
+    # OBV divergence: price declining over 5 days but OBV rising — institutional
+    # accumulation under price weakness; smart money buying into the selloff.
+    if (
+        bool(snapshot.get("obv_divergence_bull", False))
+        and vol >= p["obv_div_vol_min"]
+        and "obv_divergence" not in blocked
+    ):
+        matched.append("obv_divergence")
+
+    # OBV acceleration: short-term OBV buying rate faster than long-term baseline
+    # AND trend structure intact (EMA9 > EMA21 or MACD positive) — buying momentum
+    # is picking up before price fully reflects it.
+    if (
+        bool(snapshot.get("obv_accelerating_up", False))
+        and (ema_up or macd_diff > 0)
+        and vol >= p["obv_acc_vol_min"]
+        and "obv_acceleration" not in blocked
+    ):
+        matched.append("obv_acceleration")
+
+    # Volume climax reversal: ≥vcr_streak_min consecutive extreme-volume days at the
+    # 20-day low — capitulation / panic selling exhaustion; mean-reversion long setup.
+    if (
+        int(snapshot.get("high_vol_streak", 0)) >= p["vcr_streak_min"]
+        and bool(snapshot.get("near_20d_low", False))
+        and "volume_climax_reversal" not in blocked
+    ):
+        matched.append("volume_climax_reversal")
 
     # Intraday signals (only active when intraday fields are present in snapshot)
     if orb_up and "orb_breakout" not in blocked:

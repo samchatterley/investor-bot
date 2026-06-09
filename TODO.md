@@ -1,19 +1,13 @@
 # Pending Work
 
 ### In Progress
-- [ ] Extend regime model v2 — add credit spread, breadth, T10Y2Y, Fear & Greed composite as classification inputs
-- [ ] Add RECOVERY, LATE_CYCLE_BULL, CREDIT_STRESS regime states
+- [ ] Commit Batch 1 as v1.94 and update README
 
 ### Pending
 - [ ] Implement correlation_regime_gate — rolling 20d within-sector correlation; >0.75 dampen signal confidence; <0.35 boost
 - [ ] Implement vol_of_vol_signal — rolling 10d std dev of daily VIX changes; >3.5 reduce all sizes 30%; <1.0 allow boosted sizing
 - [ ] Implement breadth_thrust signal — Zweig % above 50d SMA from <40% to >60% in 10 days
-- [ ] Implement golden_death_cross signal — SMA50 cross above/below SMA200
-- [ ] Implement candle_exhaustion signal — hammer/engulfing at 20d extremes with vol_ratio >1.5
 - [ ] Implement new_high_low_ratio gate — NH/NL >2.0 for 3 days boosts momentum; <0.5 dampens longs and boosts shorts
-- [ ] Implement obv_divergence gate — OBV 20d trend vs price; accumulation = long confirmation; distribution = short confirmation
-- [ ] Implement obv_acceleration signal — OBV 5d slope vs 20d slope; accelerating into price = long; accelerating on down moves = short
-- [ ] Implement volume_climax_reversal — 3+ days vol_ratio >2.5 at price extremes = exhaustion; long at lows, short at highs
 - [ ] Implement premarket_gap_quality — yfinance prepost pre-market prices; suppress gap_and_go if gap retraces >50% by 09:35
 - [ ] Implement spread_proxy_gate — (High-Low)/midpoint 20d avg >0.5% = round-trip cost too high for short-hold signals
 - [ ] Implement options_skew_signal — 25-delta put/call IV ratio; >1.4 panic hedging = contrarian long; call skew spike = informed upside
@@ -54,4 +48,6 @@
 - [ ] Implement tax_loss_reversal — track stocks down >30% YTD in Nov/Dec; flag for January long entry
 - [ ] Implement pre_holiday_boost — trading day before NYSE holidays; small long-side scoring boost
 - [ ] Implement sector_pair_mean_reversion — long top-quartile RS / short bottom-quartile RS within GICS sub-industry when spread >1.5x historical std dev
+- [ ] Implement squeeze_setup_long — SI% >20% float + days_to_cover >5 + ret_5d <5% + price near 20d low; crowded dormant short = pre-squeeze long entry
+- [ ] Implement squeeze_momentum_long — SI% >20% float + days_to_cover >5 + ret_5d >10% + price breaking above 20d high; squeeze in motion = momentum continuation long
 

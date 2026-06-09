@@ -199,6 +199,78 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
             (close - df["Low"]) / daily_range.where(daily_range > 0)
         ).fillna(0.5)
 
+    # ── Golden / Death Cross ──────────────────────────────────────────────────
+    _sma50_prev = df["sma50"].shift(1)
+    _sma200_prev = df["sma200"].shift(1)
+    df["golden_cross"] = ((_sma50_prev < _sma200_prev) & (df["sma50"] >= df["sma200"])).fillna(
+        False
+    )
+    df["death_cross"] = ((_sma50_prev > _sma200_prev) & (df["sma50"] <= df["sma200"])).fillna(False)
+
+    # ── On-Balance Volume and derivatives ─────────────────────────────────────
+    _price_dir = (close.diff() > 0).astype(int) - (close.diff() < 0).astype(int)
+    df["obv"] = (volume * _price_dir).cumsum()
+    # Per-day OBV slope over 5d and 20d windows — normalised so they're comparable
+    df["obv_5d_slope"] = df["obv"].diff(5) / 5
+    df["obv_20d_slope"] = df["obv"].diff(20) / 20
+    _price_5d_chg = close.diff(5)
+    # Bull divergence: price falling but OBV rising = accumulation under weakness
+    df["obv_divergence_bull"] = ((_price_5d_chg < 0) & (df["obv_5d_slope"] > 0)).fillna(False)
+    # Bear divergence: price rising but OBV falling = distribution into strength
+    df["obv_divergence_bear"] = ((_price_5d_chg > 0) & (df["obv_5d_slope"] < 0)).fillna(False)
+    # Acceleration: short-term daily OBV rate > long-term daily OBV rate
+    df["obv_accelerating_up"] = (
+        (df["obv_5d_slope"] > 0) & (df["obv_5d_slope"] > df["obv_20d_slope"])
+    ).fillna(False)
+    df["obv_accelerating_down"] = (
+        (df["obv_5d_slope"] < 0) & (df["obv_5d_slope"] < df["obv_20d_slope"])
+    ).fillna(False)
+
+    # ── 20-day high / low proximity ───────────────────────────────────────────
+    df["high_20d"] = close.rolling(20, min_periods=10).max()
+    df["low_20d"] = close.rolling(20, min_periods=10).min()
+    _low_safe = df["low_20d"].where(df["low_20d"] > 0)
+    _high_safe = df["high_20d"].where(df["high_20d"] > 0)
+    df["near_20d_low"] = ((close - df["low_20d"]) / _low_safe < 0.02).fillna(False)
+    df["near_20d_high"] = ((df["high_20d"] - close) / _high_safe < 0.02).fillna(False)
+
+    # ── Candle patterns (require Open, High, Low) ────────────────────────────
+    if "Open" in df.columns and "High" in df.columns and "Low" in df.columns:
+        _body = close - df["Open"]
+        _body_abs = _body.abs()
+        _candle_top = close.where(_body >= 0, df["Open"])  # top of body
+        _candle_bot = close.where(_body < 0, df["Open"])  # bottom of body
+        _upper_shadow = df["High"] - _candle_top
+        _lower_shadow = _candle_bot - df["Low"]
+        # Hammer: small body with lower shadow ≥2× body and tiny upper shadow
+        df["hammer"] = (
+            (_body_abs > 0) & (_lower_shadow >= 2 * _body_abs) & (_upper_shadow <= 0.3 * _body_abs)
+        ).fillna(False)
+        # Bullish engulfing: today's green body fully engulfs yesterday's red body
+        df["bullish_engulf"] = (
+            (_body >= 0)
+            & (close.shift(1) < df["Open"].shift(1))
+            & (close > df["Open"].shift(1))
+            & (df["Open"] < close.shift(1))
+        ).fillna(False)
+        # Shooting star: small body with upper shadow ≥2× body and tiny lower shadow
+        df["shooting_star"] = (
+            (_body_abs > 0) & (_upper_shadow >= 2 * _body_abs) & (_lower_shadow <= 0.3 * _body_abs)
+        ).fillna(False)
+        # Bearish engulfing: today's red body fully engulfs yesterday's green body
+        df["bearish_engulf"] = (
+            (_body < 0)
+            & (close.shift(1) > df["Open"].shift(1))
+            & (close < df["Open"].shift(1))
+            & (df["Open"] > close.shift(1))
+        ).fillna(False)
+
+    # ── High-volume streak (climax volume) ────────────────────────────────────
+    _is_climax = df["vol_ratio"] > 2.5
+    _climax_cs = _is_climax.astype(int).cumsum()
+    _streak = _climax_cs - _climax_cs.where(~_is_climax).ffill().fillna(0)
+    df["high_vol_streak"] = _streak.astype(int)
+
     # Drop rows where any core indicator is NaN (warmup period)
     return df.dropna(subset=_CORE_COLS)
 
@@ -262,6 +334,20 @@ def _row_to_snapshot(
         snap["insider_comp_ratio"] = float(fundamentals.get("insider_comp_ratio", 0.0))
         snap["activist_filing"] = bool(fundamentals.get("activist_filing", False))
         snap["insider_large_buy"] = bool(fundamentals.get("insider_large_buy", False))
+    # ── Batch 1 OHLCV signal fields ───────────────────────────────────────────
+    snap["golden_cross"] = bool(row.get("golden_cross", False))
+    snap["death_cross"] = bool(row.get("death_cross", False))
+    snap["obv_divergence_bull"] = bool(row.get("obv_divergence_bull", False))
+    snap["obv_divergence_bear"] = bool(row.get("obv_divergence_bear", False))
+    snap["obv_accelerating_up"] = bool(row.get("obv_accelerating_up", False))
+    snap["obv_accelerating_down"] = bool(row.get("obv_accelerating_down", False))
+    snap["near_20d_low"] = bool(row.get("near_20d_low", False))
+    snap["near_20d_high"] = bool(row.get("near_20d_high", False))
+    snap["hammer"] = bool(row.get("hammer", False))
+    snap["bullish_engulf"] = bool(row.get("bullish_engulf", False))
+    snap["shooting_star"] = bool(row.get("shooting_star", False))
+    snap["bearish_engulf"] = bool(row.get("bearish_engulf", False))
+    snap["high_vol_streak"] = int(row.get("high_vol_streak", 0))
     if intraday:
         snap.update(
             {

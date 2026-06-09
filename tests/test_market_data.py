@@ -1483,3 +1483,69 @@ class TestComputeAmihudIlliquidity(unittest.TestCase):
         df = self._make_df(n=3)
         result = compute_amihud_illiquidity(df)
         self.assertEqual(result, 0.0)
+
+
+# ── Batch 1 summarise_for_ai fields ──────────────────────────────────────────
+
+
+class TestSummariseForAIBatch1Fields(unittest.TestCase):
+    """summarise_for_ai returns Batch 1 OHLCV signal fields (v1.94)."""
+
+    def _make_df_with_batch1(self):
+        """Minimal DataFrame with Batch 1 indicator columns pre-computed."""
+        closes = [100.0, 101.0, 102.0]
+        df = _make_df(close_vals=closes)
+        df["golden_cross"] = [False, False, True]
+        df["death_cross"] = [False, False, False]
+        df["obv_divergence_bull"] = [False, False, True]
+        df["obv_divergence_bear"] = [False, False, False]
+        df["obv_accelerating_up"] = [False, True, True]
+        df["obv_accelerating_down"] = [False, False, False]
+        df["near_20d_low"] = [False, False, True]
+        df["near_20d_high"] = [False, False, False]
+        df["hammer"] = [False, False, True]
+        df["bullish_engulf"] = [False, False, False]
+        df["shooting_star"] = [False, False, False]
+        df["bearish_engulf"] = [False, False, False]
+        df["high_vol_streak"] = [0, 0, 3]
+        return df
+
+    def test_batch1_keys_present_in_output(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", self._make_df_with_batch1())
+        for key in (
+            "golden_cross",
+            "death_cross",
+            "obv_divergence_bull",
+            "obv_divergence_bear",
+            "obv_accelerating_up",
+            "obv_accelerating_down",
+            "near_20d_low",
+            "near_20d_high",
+            "hammer",
+            "bullish_engulf",
+            "shooting_star",
+            "bearish_engulf",
+            "high_vol_streak",
+        ):
+            self.assertIn(key, result, f"Missing key: {key}")
+
+    def test_batch1_values_extracted_correctly(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", self._make_df_with_batch1())
+        self.assertTrue(result["golden_cross"])
+        self.assertFalse(result["death_cross"])
+        self.assertTrue(result["obv_divergence_bull"])
+        self.assertTrue(result["near_20d_low"])
+        self.assertTrue(result["hammer"])
+        self.assertEqual(result["high_vol_streak"], 3)
+
+    def test_batch1_defaults_to_false_when_columns_absent(self):
+        from data.market_data import summarise_for_ai
+
+        result = summarise_for_ai("AAPL", _make_df())
+        for key in ("golden_cross", "death_cross", "hammer", "near_20d_low"):
+            self.assertFalse(result[key], f"{key} should default to False")
+        self.assertEqual(result["high_vol_streak"], 0)

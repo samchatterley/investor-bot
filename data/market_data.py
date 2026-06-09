@@ -170,6 +170,73 @@ def fetch_stock_data(
             df["weekly_trend_up"] = True
             df["weekly_rsi"] = 50.0
 
+        # ── Golden / Death Cross ──────────────────────────────────────────────
+        df["sma50"] = close.rolling(50).mean()
+        df["sma200"] = close.rolling(200).mean()
+        _sma50_prev = df["sma50"].shift(1)
+        _sma200_prev = df["sma200"].shift(1)
+        df["golden_cross"] = ((_sma50_prev < _sma200_prev) & (df["sma50"] >= df["sma200"])).fillna(
+            False
+        )
+        df["death_cross"] = ((_sma50_prev > _sma200_prev) & (df["sma50"] <= df["sma200"])).fillna(
+            False
+        )
+
+        # ── On-Balance Volume and derivatives ─────────────────────────────────
+        _price_dir = (close.diff() > 0).astype(int) - (close.diff() < 0).astype(int)
+        df["obv"] = (volume * _price_dir).cumsum()
+        df["obv_5d_slope"] = df["obv"].diff(5) / 5
+        df["obv_20d_slope"] = df["obv"].diff(20) / 20
+        _price_5d_chg = close.diff(5)
+        df["obv_divergence_bull"] = ((_price_5d_chg < 0) & (df["obv_5d_slope"] > 0)).fillna(False)
+        df["obv_divergence_bear"] = ((_price_5d_chg > 0) & (df["obv_5d_slope"] < 0)).fillna(False)
+        df["obv_accelerating_up"] = (
+            (df["obv_5d_slope"] > 0) & (df["obv_5d_slope"] > df["obv_20d_slope"])
+        ).fillna(False)
+        df["obv_accelerating_down"] = (
+            (df["obv_5d_slope"] < 0) & (df["obv_5d_slope"] < df["obv_20d_slope"])
+        ).fillna(False)
+
+        # ── 20-day high / low proximity ───────────────────────────────────────
+        df["high_20d"] = close.rolling(20, min_periods=10).max()
+        df["low_20d"] = close.rolling(20, min_periods=10).min()
+        _low_safe = df["low_20d"].where(df["low_20d"] > 0)
+        _high_safe = df["high_20d"].where(df["high_20d"] > 0)
+        df["near_20d_low"] = ((close - df["low_20d"]) / _low_safe < 0.02).fillna(False)
+        df["near_20d_high"] = ((df["high_20d"] - close) / _high_safe < 0.02).fillna(False)
+
+        # ── Candle patterns ───────────────────────────────────────────────────
+        _body = close - df["Open"]
+        _body_abs = _body.abs()
+        _candle_top = close.where(_body >= 0, df["Open"])
+        _candle_bot = close.where(_body < 0, df["Open"])
+        _upper_shadow = df["High"] - _candle_top
+        _lower_shadow = _candle_bot - df["Low"]
+        df["hammer"] = (
+            (_body_abs > 0) & (_lower_shadow >= 2 * _body_abs) & (_upper_shadow <= 0.3 * _body_abs)
+        ).fillna(False)
+        df["bullish_engulf"] = (
+            (_body >= 0)
+            & (close.shift(1) < df["Open"].shift(1))
+            & (close > df["Open"].shift(1))
+            & (df["Open"] < close.shift(1))
+        ).fillna(False)
+        df["shooting_star"] = (
+            (_body_abs > 0) & (_upper_shadow >= 2 * _body_abs) & (_lower_shadow <= 0.3 * _body_abs)
+        ).fillna(False)
+        df["bearish_engulf"] = (
+            (_body < 0)
+            & (close.shift(1) > df["Open"].shift(1))
+            & (close < df["Open"].shift(1))
+            & (df["Open"] > close.shift(1))
+        ).fillna(False)
+
+        # ── High-volume streak ────────────────────────────────────────────────
+        _is_climax = df["vol_ratio"] > 2.5
+        _climax_cs = _is_climax.astype(int).cumsum()
+        _streak = _climax_cs - _climax_cs.where(~_is_climax).ffill().fillna(0)
+        df["high_vol_streak"] = _streak.astype(int)
+
         # Return only the requested number of most recent days
         return df.tail(days) if len(df) >= 2 else None
 
@@ -244,6 +311,46 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "close_pct_of_range": round(float(_cpr), 2)
         if (_cpr := latest.get("close_pct_of_range")) is not None and pd.notna(_cpr)
         else 0.5,
+        # ── Batch 1 OHLCV signal fields ───────────────────────────────────────
+        "golden_cross": bool(latest.get("golden_cross", False))
+        if pd.notna(latest.get("golden_cross", False))
+        else False,
+        "death_cross": bool(latest.get("death_cross", False))
+        if pd.notna(latest.get("death_cross", False))
+        else False,
+        "obv_divergence_bull": bool(latest.get("obv_divergence_bull", False))
+        if pd.notna(latest.get("obv_divergence_bull", False))
+        else False,
+        "obv_divergence_bear": bool(latest.get("obv_divergence_bear", False))
+        if pd.notna(latest.get("obv_divergence_bear", False))
+        else False,
+        "obv_accelerating_up": bool(latest.get("obv_accelerating_up", False))
+        if pd.notna(latest.get("obv_accelerating_up", False))
+        else False,
+        "obv_accelerating_down": bool(latest.get("obv_accelerating_down", False))
+        if pd.notna(latest.get("obv_accelerating_down", False))
+        else False,
+        "near_20d_low": bool(latest.get("near_20d_low", False))
+        if pd.notna(latest.get("near_20d_low", False))
+        else False,
+        "near_20d_high": bool(latest.get("near_20d_high", False))
+        if pd.notna(latest.get("near_20d_high", False))
+        else False,
+        "hammer": bool(latest.get("hammer", False))
+        if pd.notna(latest.get("hammer", False))
+        else False,
+        "bullish_engulf": bool(latest.get("bullish_engulf", False))
+        if pd.notna(latest.get("bullish_engulf", False))
+        else False,
+        "shooting_star": bool(latest.get("shooting_star", False))
+        if pd.notna(latest.get("shooting_star", False))
+        else False,
+        "bearish_engulf": bool(latest.get("bearish_engulf", False))
+        if pd.notna(latest.get("bearish_engulf", False))
+        else False,
+        "high_vol_streak": int(latest.get("high_vol_streak", 0))
+        if pd.notna(latest.get("high_vol_streak", 0))
+        else 0,
     }
 
 

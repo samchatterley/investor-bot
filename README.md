@@ -131,6 +131,11 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `insider_buying` | ≥2 distinct corporate insiders made open-market Form 4 purchases (SEC EDGAR) within 10 days; bypasses weekly trend filter | 5 days |
 | `pead` | Post-Earnings Announcement Drift: EPS beat ≥5% within 30 days + price still drifting up (ret_5d > 0); bypasses weekly trend filter | 3 days |
 | `iv_compression` | Historical volatility rank in bottom 20th percentile of its 52-week range + directional confirmation (EMA or MACD) + volume; blocked in NEUTRAL_CHOP | 4 days |
+| `golden_cross` | SMA50 crosses above SMA200 + vol_ratio ≥ 0.8; regime-agnostic | 5 days |
+| `candle_exhaustion` | Hammer or bullish engulf at 20d low with vol_ratio ≥ 1.5; blocked in BEAR_DAY and HIGH_VOL | 3 days |
+| `obv_divergence` | OBV 5d slope rising while price 5d negative (accumulation divergence) + vol_ratio ≥ 1.0; blocked in BEAR_DAY | 3 days |
+| `obv_acceleration` | OBV 5d slope > OBV 20d slope (accelerating into price) + EMA aligned or MACD positive + vol_ratio ≥ 1.2; blocked in BEAR_DAY | 3 days |
+| `volume_climax_reversal` | 3+ consecutive days of vol_ratio > 2.5 at 20d price low (exhaustion reversal) | 3 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
 **Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
@@ -143,7 +148,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`, `rsi_divergence`, `range_reversion`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`, `vix_fear_reversion`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`, `gap_and_go`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`, `rsi_divergence`, `range_reversion`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`, `vix_fear_reversion`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`, `gap_and_go`), **OHLCV technical** (`golden_cross`, `candle_exhaustion`, `obv_divergence`, `obv_acceleration`, `volume_climax_reversal`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
 
 ---
 
@@ -203,7 +208,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (3625 tests, 100% coverage)
+├── tests/             Unit test suite (3688 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -766,7 +771,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **3625 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **3688 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -818,6 +823,17 @@ Removes the hedge-only restriction on short entries so the bot can run a directi
 - **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
 - **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
 - **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
+
+---
+
+### 1.94 — June 2026 — Batch 1 OHLCV technical signals: golden_cross, candle_exhaustion, obv_divergence, obv_acceleration, volume_climax_reversal
+
+Adds five new long-side signals and one short-side signal (death_cross) derived purely from OHLCV data, with full backtest and live pipeline integration.
+
+- **`signals/evaluator.py`** — 5 new long signals (`golden_cross`, `candle_exhaustion`, `obv_divergence`, `obv_acceleration`, `volume_climax_reversal`) at priorities 19–23; `death_cross` short signal at priority 12. Regime blocking: `candle_exhaustion`, `obv_divergence`, `obv_acceleration` blocked in `_BEAR_DAY_BLOCKED`; `candle_exhaustion` also blocked in `_HIGH_VOL_BLOCKED`. Four short-side variants (`candle_exhaustion_short`, `obv_divergence_short`, `obv_acceleration_short`, `volume_climax_reversal_short`) added to `SHORT_GLOBALLY_DISABLED` pending backtest validation. Batch 1 params added to both `DEFAULT_SIGNAL_PARAMS` and `DEFAULT_SHORT_SIGNAL_PARAMS`.
+- **`backtest/engine._compute_indicators()`** — 13 new OHLCV indicator columns: `golden_cross`, `death_cross`, `obv`, `obv_5d_slope`, `obv_20d_slope`, `obv_divergence_bull`, `obv_divergence_bear`, `obv_accelerating_up`, `obv_accelerating_down`, `near_20d_low`, `near_20d_high`, candle patterns (`hammer`, `bullish_engulf`, `shooting_star`, `bearish_engulf`), `high_vol_streak`. `_row_to_snapshot()` maps all 13 to the snapshot dict consumed by the evaluator.
+- **`data/market_data.fetch_stock_data()`** — same 13 indicator columns computed before `df.tail(days)` return. `summarise_for_ai()` exposes all 13 as typed fields in the scanner snapshot dict.
+- **Tests:** 63 new tests (702 total in `test_backtest.py`; 3 in `test_fetch_stock_data.py`; 3 in `test_market_data.py`). 100% coverage on all changed lines.
 
 ---
 

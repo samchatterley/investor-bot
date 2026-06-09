@@ -272,3 +272,78 @@ class TestFetchStockDataPreloaded(unittest.TestCase):
         result = fetch_stock_data("AAPL", days=15, preloaded={"AAPL": df})
         if result is not None:  # pragma: no branch
             self.assertLessEqual(len(result), 15)
+
+
+class TestFetchStockDataBatch1Indicators(unittest.TestCase):
+    """fetch_stock_data: Batch 1 OHLCV indicator columns computed correctly (v1.94)."""
+
+    def _make_preloaded(self, n=200):
+        idx = pd.bdate_range(end="2025-06-01", periods=n)
+        prices = [100.0 + i * 0.1 for i in range(len(idx))]
+        return pd.DataFrame(
+            {
+                "Open": prices,
+                "High": [p + 1 for p in prices],
+                "Low": [p - 1 for p in prices],
+                "Close": prices,
+                "Volume": [1_000_000] * len(idx),
+            },
+            index=idx,
+        )
+
+    def test_batch1_indicator_columns_present(self):
+        from data.market_data import fetch_stock_data
+
+        df = self._make_preloaded(200)
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        if result is None:  # pragma: no cover
+            self.skipTest("fetch returned None — warmup failed")
+        for col in (
+            "golden_cross",
+            "death_cross",
+            "obv_divergence_bull",
+            "obv_divergence_bear",
+            "obv_accelerating_up",
+            "obv_accelerating_down",
+            "near_20d_low",
+            "near_20d_high",
+            "hammer",
+            "bullish_engulf",
+            "shooting_star",
+            "bearish_engulf",
+            "high_vol_streak",
+        ):
+            self.assertIn(col, result.columns, f"Missing Batch 1 column: {col}")
+
+    def test_batch1_boolean_columns_contain_only_booleans(self):
+        from data.market_data import fetch_stock_data
+
+        df = self._make_preloaded(200)
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        if result is None:  # pragma: no cover
+            self.skipTest("fetch returned None")
+        for col in (
+            "golden_cross",
+            "death_cross",
+            "obv_divergence_bull",
+            "obv_divergence_bear",
+            "near_20d_low",
+            "near_20d_high",
+            "hammer",
+            "bullish_engulf",
+            "shooting_star",
+            "bearish_engulf",
+        ):
+            self.assertTrue(
+                result[col].isin([True, False]).all(),
+                f"{col} contains non-boolean values",
+            )
+
+    def test_high_vol_streak_non_negative(self):
+        from data.market_data import fetch_stock_data
+
+        df = self._make_preloaded(200)
+        result = fetch_stock_data("AAPL", days=30, preloaded={"AAPL": df})
+        if result is None:  # pragma: no cover
+            self.skipTest("fetch returned None")
+        self.assertTrue((result["high_vol_streak"] >= 0).all())
