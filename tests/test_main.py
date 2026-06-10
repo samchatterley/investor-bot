@@ -869,6 +869,7 @@ class RunInnerBase(unittest.TestCase):
         deps.position_sizer.momentum_quality_score.return_value = 0
         deps.position_sizer.mqr_size_multiplier.return_value = 1.0
         deps.position_sizer.amihud_size_scalar.return_value = 1.0
+        deps.position_sizer.vol_of_vol_scalar.return_value = 1.0
         deps.position_sizer.drawdown_scalar.return_value = 1.0
         deps.market_data.get_vix.return_value = 18.0
         deps.market_data.get_spy_5d_return.return_value = 1.5
