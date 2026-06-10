@@ -731,7 +731,7 @@ class TestGetAttribution(unittest.TestCase):
         self.assertIn("unknown", result["by_signal"])
 
     def test_period_days_included_in_result(self):
-        rows = [("2026-05-10", "AAPL", "momentum", "BULL", "Tech", 2, 3.0, "live")]
+        rows = [("2026-06-05", "AAPL", "momentum", "BULL", "Tech", 2, 3.0, "live")]
         with patch("utils.db.get_db", _fake_get_db(rows)):
             result = get_attribution(days=30)
         self.assertEqual(result["period_days"], 30)
