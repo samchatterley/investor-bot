@@ -17,6 +17,7 @@ from risk.position_sizer import (
     momentum_quality_score,
     mqr_size_multiplier,
     risk_budget_size,
+    seasonal_scalar,
     vol_of_vol_scalar,
 )
 
@@ -491,3 +492,97 @@ class TestVolOfVolScalar(unittest.TestCase):
 
     def test_return_type_is_float(self):
         self.assertIsInstance(vol_of_vol_scalar(2.0), float)
+
+
+def _neutral_ctx(**overrides) -> dict:
+    """Return a fully-neutral seasonal context with optional field overrides."""
+    base = {
+        "turn_of_month": False,
+        "opex_week": False,
+        "post_opex": False,
+        "halloween_bullish": False,
+        "quarter_end_dressing": False,
+        "pre_holiday": False,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestSeasonalScalar(unittest.TestCase):
+    def _patch(self, ctx: dict):
+        return patch("risk.macro_calendar.get_seasonal_context", return_value=ctx)
+
+    def test_all_neutral_bearish_season_gives_0_90(self):
+        ctx = _neutral_ctx(halloween_bullish=False)
+        with self._patch(ctx):
+            self.assertAlmostEqual(seasonal_scalar("momentum"), 0.90)
+
+    def test_halloween_bullish_gives_1_10(self):
+        ctx = _neutral_ctx(halloween_bullish=True)
+        with self._patch(ctx):
+            self.assertAlmostEqual(seasonal_scalar("momentum"), 1.10)
+
+    def test_opex_week_dampens_gap_and_go(self):
+        ctx = _neutral_ctx(halloween_bullish=True, opex_week=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("gap_and_go")
+        self.assertAlmostEqual(result, 1.10 * 0.70)
+
+    def test_opex_week_does_not_dampen_pead(self):
+        ctx = _neutral_ctx(halloween_bullish=True, opex_week=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("pead")
+        self.assertAlmostEqual(result, 1.10)
+
+    def test_post_opex_boosts_all_signals(self):
+        ctx = _neutral_ctx(halloween_bullish=True, post_opex=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("pead")
+        self.assertAlmostEqual(result, 1.10 * 1.10)
+
+    def test_turn_of_month_boosts(self):
+        ctx = _neutral_ctx(halloween_bullish=True, turn_of_month=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("mean_reversion")
+        self.assertAlmostEqual(result, 1.10 * 1.05)
+
+    def test_quarter_end_boosts_momentum(self):
+        ctx = _neutral_ctx(halloween_bullish=True, quarter_end_dressing=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("momentum")
+        self.assertAlmostEqual(result, 1.10 * 1.10)
+
+    def test_quarter_end_does_not_boost_gap_and_go(self):
+        ctx = _neutral_ctx(halloween_bullish=True, quarter_end_dressing=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("gap_and_go")
+        self.assertAlmostEqual(result, 1.10)
+
+    def test_pre_holiday_boosts_all_signals(self):
+        ctx = _neutral_ctx(halloween_bullish=True, pre_holiday=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("mean_reversion")
+        self.assertAlmostEqual(result, 1.10 * 1.05)
+
+    def test_result_clamped_at_1_25(self):
+        ctx = _neutral_ctx(
+            halloween_bullish=True,
+            post_opex=True,
+            turn_of_month=True,
+            quarter_end_dressing=True,
+            pre_holiday=True,
+        )
+        with self._patch(ctx):
+            result = seasonal_scalar("momentum")
+        self.assertLessEqual(result, 1.25)
+
+    def test_result_clamped_at_0_70(self):
+        ctx = _neutral_ctx(halloween_bullish=False, opex_week=True)
+        with self._patch(ctx):
+            result = seasonal_scalar("gap_and_go")
+        self.assertGreaterEqual(result, 0.70)
+
+    def test_result_is_float(self):
+        ctx = _neutral_ctx(halloween_bullish=True)
+        with self._patch(ctx):
+            self.assertIsInstance(seasonal_scalar("momentum"), float)

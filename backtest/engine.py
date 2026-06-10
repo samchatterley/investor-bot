@@ -384,6 +384,7 @@ def _entry_signal(
     disabled_signals: frozenset[str] | None = None,
     rs_rank_pct: float | None = None,
     breadth_thrust: bool = False,
+    calendar_month: int = 0,
 ) -> str | None:
     """Return the highest-priority matching signal, or None.
 
@@ -404,6 +405,7 @@ def _entry_signal(
     if rs_rank_pct is not None:
         snap["rs_rank_pct"] = rs_rank_pct
     snap["breadth_thrust"] = breadth_thrust
+    snap["calendar_month"] = calendar_month
     signals = evaluate_signals(
         snap,
         blocked=blocked,
@@ -1233,6 +1235,7 @@ def _run_simulation(
                 breadth_thrust=bool(breadth_thrust_by_date.get(prev_date_str, False))
                 if breadth_thrust_by_date
                 else False,
+                calendar_month=int(prev_date_str[5:7]),
             )
             if signal:
                 if (
@@ -2093,6 +2096,7 @@ def _run_combined_simulation(
                     breadth_thrust=bool(breadth_thrust_by_date.get(prev_date_str, False))
                     if breadth_thrust_by_date
                     else False,
+                    calendar_month=int(prev_date_str[5:7]),
                 )
                 if signal:
                     if (

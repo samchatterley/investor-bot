@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from datetime import date as _date
 
 from config import (
     KELLY_MULTIPLIER,
@@ -323,3 +324,48 @@ def vol_of_vol_scalar(vov: float | None) -> float:
     if vov < _VOV_BOOST_THRESHOLD:
         return _VOV_BOOST_SCALAR
     return 1.0
+
+
+_TOM_SCALAR = 1.05  # turn-of-month institutional flows boost longs
+_POST_OPEX_SCALAR = 1.10  # post-OPEX directional release after gamma pinning
+_QUARTER_END_SCALAR = 1.10  # window dressing: fund managers chase momentum winners
+_PRE_HOLIDAY_SCALAR = 1.05  # light-tape thin-volume day before NYSE holiday
+_OPEX_WEEK_SCALAR = 0.70  # OPEX week: gamma pinning suppresses gap/momentum edge
+_HALLOWEEN_BULLISH_SCALAR = 1.10  # Nov–Apr: seasonally stronger market half
+_HALLOWEEN_BEARISH_SCALAR = 0.90  # May–Oct: sell-in-May seasonality
+
+_OPEX_WEEK_DAMPENED_SIGNALS: frozenset[str] = frozenset({"gap_and_go", "momentum"})
+_QUARTER_END_BOOSTED_SIGNALS: frozenset[str] = frozenset(
+    {"momentum", "bb_squeeze", "trend_pullback"}
+)
+
+
+def seasonal_scalar(signal: str, check_date: _date | None = None) -> float:
+    """Return a position-size multiplier from calendar/seasonal context.
+
+    Covers six effects: halloween seasonality, OPEX week dampening, post-OPEX boost,
+    turn-of-month flows, quarter-end window dressing, and pre-holiday thin-tape boost.
+    Result is clamped to [0.70, 1.25] to limit combined drift.
+    """
+    from risk.macro_calendar import get_seasonal_context
+
+    ctx = get_seasonal_context(check_date)
+    scalar = 1.0
+
+    if ctx.get("halloween_bullish"):
+        scalar *= _HALLOWEEN_BULLISH_SCALAR
+    else:
+        scalar *= _HALLOWEEN_BEARISH_SCALAR
+
+    if ctx.get("opex_week") and signal in _OPEX_WEEK_DAMPENED_SIGNALS:
+        scalar *= _OPEX_WEEK_SCALAR
+    if ctx.get("post_opex"):
+        scalar *= _POST_OPEX_SCALAR
+    if ctx.get("turn_of_month"):
+        scalar *= _TOM_SCALAR
+    if ctx.get("quarter_end_dressing") and signal in _QUARTER_END_BOOSTED_SIGNALS:
+        scalar *= _QUARTER_END_SCALAR
+    if ctx.get("pre_holiday"):
+        scalar *= _PRE_HOLIDAY_SCALAR
+
+    return max(0.70, min(scalar, 1.25))

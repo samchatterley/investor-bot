@@ -208,7 +208,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (3688 tests, 100% coverage)
+├── tests/             Unit test suite (4119 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -771,7 +771,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **3688 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **4119 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -823,6 +823,20 @@ Removes the hedge-only restriction on short entries so the bot can run a directi
 - **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
 - **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
 - **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
+
+---
+
+### 1.95b — June 2026 — Batch 3 calendar/seasonal signals: turn_of_month, opex, halloween, quarter-end, tax_loss_reversal, pre_holiday
+
+Adds six calendar- and seasonality-driven signals and position-sizing adjustments that exploit well-documented calendar effects without requiring any external data feed.
+
+- **`risk/macro_calendar.get_seasonal_context()`** — new function returning six boolean flags: `turn_of_month` (±2 trading days of month-end), `opex_week` (Mon–Fri of third-Friday week), `post_opex` (Mon–Tue after OPEX), `halloween_bullish` (Nov–Apr), `quarter_end_dressing` (last 7 days of Mar/Jun/Sep/Dec), `pre_holiday` (next weekday is a NYSE holiday). Added supporting helpers: `_third_friday()`, `_next_weekday()` (weekend-skip only), `_next_trading_day()` (weekend + holiday skip), and `NYSE_HOLIDAYS` frozenset (2026–2028).
+- **`risk/position_sizer.seasonal_scalar(signal, check_date)`** — new sizing multiplier: halloween bullish +10% / bearish −10%; post-OPEX +10%; turn-of-month +5%; quarter-end dressing +10% for momentum/bb_squeeze/trend_pullback; pre-holiday +5%; OPEX week −30% for gap_and_go/momentum. Scalars stack multiplicatively, clamped to [0.70, 1.25]. `_OPEX_WEEK_DAMPENED` frozenset exported from `signals/evaluator.py`.
+- **`signals/evaluator.tax_loss_reversal`** — new long signal (priority 25): fires in January when `price_vs_52w_high_pct < −30%` AND `ema9_above_ema21=True`. Catches beaten-down stocks whose tax-loss selling pressure reverses at year-start. `calendar_month` field injected into snapshots at source.
+- **`data/market_data.summarise_for_ai()`** — injects `calendar_month: date.today().month` into live snapshots.
+- **`backtest/engine._entry_signal()`** — `calendar_month: int` parameter; passed as `int(prev_date_str[5:7])` at both simulation call sites.
+- **`main._execute_buy_phase()`** — `_seasonal_scalar = seasonal_scalar(key_signal)` multiplied into the notional chain; logged when ≠ 1.0.
+- **Tests:** 59 new tests — `TestThirdFriday` (4), `TestNextTradingDay` (4), `TestNYSEHolidays` (4), `TestGetSeasonalContext` (22), `TestSeasonalScalar` (12), `TestBatch3TaxLossReversal` (13). 100% coverage on all changed lines.
 
 ---
 

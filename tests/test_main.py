@@ -870,6 +870,7 @@ class RunInnerBase(unittest.TestCase):
         deps.position_sizer.mqr_size_multiplier.return_value = 1.0
         deps.position_sizer.amihud_size_scalar.return_value = 1.0
         deps.position_sizer.vol_of_vol_scalar.return_value = 1.0
+        deps.position_sizer.seasonal_scalar.return_value = 1.0
         deps.position_sizer.drawdown_scalar.return_value = 1.0
         deps.market_data.get_vix.return_value = 18.0
         deps.market_data.get_spy_5d_return.return_value = 1.5
@@ -5783,6 +5784,73 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
             market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
             exit_optimiser__compute_atr_pct=None,
         )
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        buy_mock.assert_called()
+
+
+class TestScalarLoggingBranches(RunInnerBase):
+    """Cover logging paths when VoV and seasonal scalars differ from 1.0 (lines 1934-1935, 1939)."""
+
+    def _buy_candidate(self, **extra):
+        return {
+            "symbol": "AAPL",
+            "confidence": 8,
+            "key_signal": "momentum",
+            "reasoning": "test",
+            "matched_signals": ["momentum"],
+            **extra,
+        }
+
+    def test_vov_scalar_nonone_logs_and_buys(self):
+        """_vov_scalar != 1.0 triggers VoV logging block (lines 1934-1935)."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        decisions = _decisions(buys=[self._buy_candidate()])
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
+            stock_scanner__get_market_regime={
+                "regime": "CHOPPY",
+                "is_bearish": False,
+                "vol_of_vol": 2.5,
+            },
+        )
+        deps.position_sizer.vol_of_vol_scalar.return_value = 0.7
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        buy_mock.assert_called()
+
+    def test_seasonal_scalar_nonone_logs_and_buys(self):
+        """_seasonal_scalar != 1.0 triggers seasonal logging (line 1939)."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        decisions = _decisions(buys=[self._buy_candidate()])
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
+        )
+        deps.position_sizer.seasonal_scalar.return_value = 1.1
         deps.trader.place_buy_order = buy_mock
         with self._inner_patches():
             from main import _run_inner

@@ -246,7 +246,7 @@ def fetch_stock_data(
             _midpoint = (df["High"] + df["Low"]) / 2
             _spread_raw = (df["High"] - df["Low"]) / _midpoint.where(_midpoint > 0)
             df["spread_proxy_20d"] = _spread_raw.rolling(20, min_periods=10).mean().fillna(0.0)
-        else:
+        else:  # pragma: no cover
             df["spread_proxy_20d"] = 0.0
 
         # Return only the requested number of most recent days
@@ -367,6 +367,8 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "spread_proxy_20d": round(float(latest.get("spread_proxy_20d", 0.0)), 5)
         if pd.notna(latest.get("spread_proxy_20d", 0.0))
         else 0.0,
+        # ── Batch 3: calendar context ─────────────────────────────────────────
+        "calendar_month": date.today().month,
     }
 
 

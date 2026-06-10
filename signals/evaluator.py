@@ -41,7 +41,13 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "volume_climax_reversal": 23,
     # ── Batch 2: universe-level signals ──────────────────────────────────────
     "breadth_thrust": 24,
+    # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
+    "tax_loss_reversal": 25,
 }
+
+# Signals that receive a size reduction during OPEX week (vol pinning / gamma effects).
+# Applied as a 0.70× scalar in position_sizer.seasonal_scalar — not a hard block.
+OPEX_WEEK_DAMPENED: frozenset[str] = frozenset({"gap_and_go", "momentum"})
 
 # Signals that require Alpaca minute bars and must execute same-day (Open→Close).
 # These must never fire in the multi-day backtest track (daily bars, overnight holds).
@@ -132,6 +138,8 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "vcr_streak_min": 3,
     # breadth_thrust: require minimum universe coverage to trust the Zweig signal
     "bt_min_symbols": 50,
+    # tax_loss_reversal: 52w high drawdown threshold (stock must be >30% below 52w high)
+    "tlr_52w_drawdown_max": -30.0,
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
@@ -605,6 +613,7 @@ def evaluate_signals(
     """
     blocked = blocked | GLOBALLY_DISABLED
     p = DEFAULT_SIGNAL_PARAMS if params is None else {**DEFAULT_SIGNAL_PARAMS, **params}
+    calendar_month = int(snapshot.get("calendar_month", 0))
 
     # Spread proxy gate: when average daily H–L spread > threshold, execution cost exceeds
     # edge for short-hold and intraday signals — dynamically add them to blocked.
@@ -866,6 +875,21 @@ def evaluate_signals(
         and "breadth_thrust" not in blocked
     ):
         matched.append("breadth_thrust")
+
+    # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
+
+    # tax_loss_reversal: January rebound after Nov/Dec systematic tax-loss selling.
+    # Stocks beaten down >30% from their 52-week high face year-end selling pressure
+    # from investors harvesting losses; that pressure lifts when the new tax year resets.
+    # Requires nascent EMA alignment (EMA9 > EMA21) to avoid buying into continued decline.
+    # calendar_month must be present in snapshot (injected by scanner and backtest engine).
+    if (
+        calendar_month == 1
+        and pct_52w < p["tlr_52w_drawdown_max"]
+        and ema_up
+        and "tax_loss_reversal" not in blocked
+    ):
+        matched.append("tax_loss_reversal")
 
     # Intraday signals (only active when intraday fields are present in snapshot)
     if orb_up and "orb_breakout" not in blocked:

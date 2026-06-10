@@ -1585,3 +1585,39 @@ class TestSummariseForAIBatch2Fields(unittest.TestCase):
 
         result = summarise_for_ai("AAPL", self._make_df_with_batch2())
         self.assertIsInstance(result["spread_proxy_20d"], float)
+
+    def test_breadth_thrust_injection_exception_falls_back(self):
+        """Lines 678-682: get_breadth_snapshot raising → setdefault fallback applied."""
+        from data.market_data import get_market_snapshots
+
+        snap = {
+            "symbol": "AAPL",
+            "current_price": 100.0,
+            "ret_1d_pct": 0.5,
+            "ret_5d_pct": 2.0,
+            "ret_10d_pct": 4.0,
+            "rsi_14": 55.0,
+            "macd_diff": 0.1,
+            "macd_crossed_up": False,
+            "macd_crossed_down": False,
+            "ema9_above_ema21": True,
+            "bb_pct": 0.5,
+            "vol_ratio": 1.2,
+            "price_vs_ema9_pct": 1.0,
+            "weekly_trend_up": True,
+            "weekly_rsi": 55.0,
+        }
+        with (
+            patch("data.market_data._bulk_download", return_value={"AAPL": MagicMock()}),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=None),
+            patch("data.breadth.get_breadth_snapshot", side_effect=RuntimeError("feed down")),
+        ):
+            result = get_market_snapshots(["AAPL"])
+        self.assertEqual(len(result), 1)
+        self.assertFalse(result[0].get("breadth_thrust", True))
+        self.assertEqual(result[0].get("breadth_symbols_counted", -1), 0)

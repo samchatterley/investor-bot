@@ -2054,6 +2054,32 @@ class TestRunBacktest(unittest.TestCase):
         self.assertEqual(result["total_trades"], 0)
 
 
+class TestRunBacktestBreadthThrustFetchFailure(unittest.TestCase):
+    """Lines 2616-2617: _compute_breadth_thrust_by_date raising → warning logged, backtest continues."""
+
+    def setUp(self):
+        self._save_patcher = patch("backtest.engine._save_results")
+        self._print_patcher = patch("backtest.engine._print_results")
+        self._save_patcher.start()
+        self._print_patcher.start()
+
+    def tearDown(self):
+        self._save_patcher.stop()
+        self._print_patcher.stop()
+
+    def test_breadth_thrust_fetch_exception_does_not_abort_backtest(self):
+        raw = _make_raw()
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch(
+                "backtest.engine._compute_breadth_thrust_by_date",
+                side_effect=RuntimeError("breadth feed offline"),
+            ),
+        ):
+            result = run_backtest(["AAPL", "FLAT"], start_date="2025-03-01", end_date="2025-03-07")
+        self.assertIn("total_trades", result)
+
+
 # ── run_walk_forward_optimized ────────────────────────────────────────────────
 
 # Tiny param grid: 4 combos (fast grid search); vol/ret thresholds loose enough
@@ -9359,3 +9385,135 @@ class TestRunCoFiringAnalysis(unittest.TestCase):
                 use_earnings_only=True,
             )
         mock_earn.assert_called_once()
+
+
+class TestBatch3TaxLossReversal(unittest.TestCase):
+    """evaluate_signals: tax_loss_reversal calendar/seasonal signal (v1.96)."""
+
+    def _eval(self, **kwargs):
+        from signals.evaluator import evaluate_signals
+
+        snap = {"rsi_14": 50, "bb_pct": 0.5, "adx": 25, "vol_ratio": 1.0}
+        snap.update(kwargs)
+        return evaluate_signals(snap)
+
+    def test_fires_in_january_with_conditions_met(self):
+        self.assertIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=1,
+                price_vs_52w_high_pct=-35.0,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_does_not_fire_in_february(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=2,
+                price_vs_52w_high_pct=-35.0,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_does_not_fire_in_june(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=6,
+                price_vs_52w_high_pct=-35.0,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_does_not_fire_in_december(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=12,
+                price_vs_52w_high_pct=-35.0,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_requires_sufficient_drawdown(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=1,
+                price_vs_52w_high_pct=-20.0,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_requires_ema_alignment(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=1,
+                price_vs_52w_high_pct=-35.0,
+                ema9_above_ema21=False,
+            ),
+        )
+
+    def test_does_not_fire_when_calendar_month_missing(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(price_vs_52w_high_pct=-35.0, ema9_above_ema21=True),
+        )
+
+    def test_exactly_at_threshold_does_not_fire(self):
+        self.assertNotIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=1,
+                price_vs_52w_high_pct=-30.0,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_just_below_threshold_fires(self):
+        self.assertIn(
+            "tax_loss_reversal",
+            self._eval(
+                calendar_month=1,
+                price_vs_52w_high_pct=-30.01,
+                ema9_above_ema21=True,
+            ),
+        )
+
+    def test_respects_blocked_set(self):
+        from signals.evaluator import evaluate_signals
+
+        result = evaluate_signals(
+            {"calendar_month": 1, "price_vs_52w_high_pct": -35.0, "ema9_above_ema21": True},
+            blocked=frozenset({"tax_loss_reversal"}),
+        )
+        self.assertNotIn("tax_loss_reversal", result)
+
+    def test_in_signal_priority(self):
+        from signals.evaluator import SIGNAL_PRIORITY
+
+        self.assertIn("tax_loss_reversal", SIGNAL_PRIORITY)
+
+    def test_in_multiday_signals(self):
+        from signals.evaluator import MULTIDAY_SIGNALS
+
+        self.assertIn("tax_loss_reversal", MULTIDAY_SIGNALS)
+
+    def test_custom_threshold_param(self):
+        from signals.evaluator import evaluate_signals
+
+        result = evaluate_signals(
+            {"calendar_month": 1, "price_vs_52w_high_pct": -25.0, "ema9_above_ema21": True},
+            params={"tlr_52w_drawdown_max": -20.0},
+        )
+        self.assertIn("tax_loss_reversal", result)
+
+    def test_opex_week_dampened_in_frozenset(self):
+        from signals.evaluator import OPEX_WEEK_DAMPENED
+
+        self.assertIn("gap_and_go", OPEX_WEEK_DAMPENED)
+        self.assertIn("momentum", OPEX_WEEK_DAMPENED)
+        self.assertNotIn("pead", OPEX_WEEK_DAMPENED)

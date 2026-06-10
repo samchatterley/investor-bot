@@ -1840,6 +1840,7 @@ def _execute_buy_phase(
                     candidate.get("amihud_illiquid", False)
                 )
                 _vov_scalar = _position_sizer.vol_of_vol_scalar(mc.regime.get("vol_of_vol"))
+                _seasonal_scalar = _position_sizer.seasonal_scalar(key_signal)
 
                 # Sector momentum gate — only allow longs in top 4 sectors by 20d return
                 _sym_sector = _sector_data.get_sector(symbol)
@@ -1934,6 +1935,10 @@ def _execute_buy_phase(
                         logger.info(
                             f"  VoV scalar: vov={_vov_raw:.2f} → size scaled {_vov_scalar:.2f}×"
                         )
+                    if _seasonal_scalar != 1.0:
+                        logger.info(
+                            f"  Seasonal scalar: {key_signal} → size scaled {_seasonal_scalar:.2f}×"
+                        )
                     notional = min(
                         _base
                         * _dd_scalar
@@ -1942,7 +1947,8 @@ def _execute_buy_phase(
                         * _amihud_scalar
                         * _garch_scalar
                         * _mqr_multiplier
-                        * _vov_scalar,
+                        * _vov_scalar
+                        * _seasonal_scalar,
                         available_cash,
                     )
 

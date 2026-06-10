@@ -379,6 +379,7 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         deps.position_sizer.mqr_size_multiplier.return_value = 1.0
         deps.position_sizer.amihud_size_scalar.return_value = 1.0
         deps.position_sizer.vol_of_vol_scalar.return_value = 1.0
+        deps.position_sizer.seasonal_scalar.return_value = 1.0
         deps.position_sizer.drawdown_scalar.return_value = 1.0
         deps.market_data.get_vix.return_value = 15.0
         deps.market_data.get_spy_5d_return.return_value = 1.5
