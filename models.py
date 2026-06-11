@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 if TYPE_CHECKING:  # pragma: no cover
     from utils.health import HealthStatus
 
+from signals.registry import AI_CITEABLE_SIGNALS
+
 
 class BrokerStateUnavailable(Exception):
     """Raised when a broker query fails and the result cannot be trusted.
@@ -53,31 +55,9 @@ class OrderResult:
         return self.status == OrderStatus.FILLED
 
 
-VALID_BUY_SIGNALS: frozenset[str] = frozenset(
-    {
-        "mean_reversion",
-        "momentum",
-        "trend_continuation",
-        "macd_crossover",
-        "rsi_oversold",
-        "news_catalyst",
-        "unknown",
-        "bb_squeeze",
-        "breakout_52w",
-        "rs_leader",
-        "inside_day_breakout",
-        "trend_pullback",
-        "vwap_reclaim",
-        "orb_breakout",
-        "intraday_momentum",
-        "gap_and_go",
-        "vix_fear_reversion",
-        "momentum_12_1",
-        "insider_buying",
-        "pead",
-        "iv_compression",
-    }
-)
+# Derived from signals.registry — do not edit here.
+# Add or remove signals in signals/evaluator.py (SIGNAL_PRIORITY / GLOBALLY_DISABLED).
+VALID_BUY_SIGNALS: frozenset[str] = AI_CITEABLE_SIGNALS
 
 
 class BuyCandidate(BaseModel):
@@ -101,6 +81,7 @@ class BuyCandidate(BaseModel):
 class PositionDecision(BaseModel):
     symbol: str
     action: Literal["HOLD", "SELL"]
+    confidence: int = Field(ge=1, le=10, default=5)
     reasoning: str = ""
 
     model_config = {"extra": "ignore"}

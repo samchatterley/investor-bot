@@ -902,8 +902,11 @@ def evaluate_signals(
     # from investors harvesting losses; that pressure lifts when the new tax year resets.
     # Requires nascent EMA alignment (EMA9 > EMA21) to avoid buying into continued decline.
     # calendar_month must be present in snapshot (injected by scanner and backtest engine).
+    # Guard: skip when price_vs_52w_high_pct is absent — the sentinel default of -999
+    # would satisfy the drawdown threshold and fire a false signal on missing data.
     if (
         calendar_month == 1
+        and snapshot.get("price_vs_52w_high_pct") is not None
         and pct_52w < p["tlr_52w_drawdown_max"]
         and ema_up
         and "tax_loss_reversal" not in blocked

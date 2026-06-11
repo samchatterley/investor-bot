@@ -58,6 +58,8 @@ _EXCLUDED_SYMBOLS: frozenset[str] = frozenset(
     {
         "SQ",  # Block Inc rebranded to XYZ in 2024; SQ no longer valid
         "EXAS",  # Exact Sciences: consistent yfinance data failures May 2026
+        "Q",  # Quintiles merged into IQVIA (IQV) 2016; replaced by IQV in universe
+        "MRSH",  # No current S&P 500 constituent; removed from STOCK_UNIVERSE June 2026
     }
 )
 

@@ -645,6 +645,7 @@ def _execute_shorts(
     _short_risk = deps.short_risk if deps is not None else short_risk
     _position_sizer = deps.position_sizer if deps is not None else position_sizer
     _audit_log = deps.audit_log if deps is not None else audit_log
+    _alerts = deps.alerts if deps is not None else alerts
 
     regime_name = regime.get("regime", "UNKNOWN")
 
@@ -661,7 +662,14 @@ def _execute_shorts(
     if not short_candidates:
         return
 
-    open_shorts = _trader.get_open_shorts()
+    # OrderLedgerUnavailable means slot count is unknown → skip shorts to avoid
+    # bypassing the MAX_SHORT_POSITIONS cap when we can't read existing shorts.
+    try:
+        open_shorts = _trader.get_open_shorts()
+    except OrderLedgerUnavailable as e:
+        logger.error(f"Short ledger unavailable — skipping short entries this run: {e}")
+        _alerts.alert_error("ORDER LEDGER UNAVAILABLE", str(e))
+        return
     short_slots = config.MAX_SHORT_POSITIONS - len(open_shorts)
     if short_slots <= 0:
         logger.info(f"Short slots full: {len(open_shorts)}/{config.MAX_SHORT_POSITIONS}")
@@ -862,7 +870,11 @@ def _get_position_snapshot(client, deps: TradingDeps | None = None) -> PositionS
     open_positions = _trader.get_open_positions(client)
     held_symbols = {p["symbol"] for p in open_positions}
     position_ages = _trader.get_position_ages()
-    open_shorts_db = _trader.get_open_shorts()
+    try:
+        open_shorts_db = _trader.get_open_shorts()
+    except OrderLedgerUnavailable as e:
+        logger.warning(f"get_open_shorts unavailable in position snapshot: {e} — using empty set")
+        open_shorts_db = set()
     stale = [
         sym
         for sym, age in position_ages.items()
@@ -1755,7 +1767,14 @@ def _execute_buy_phase(
         )
         return open_positions, account_now
 
-    daily_notional_spent = _trader.get_daily_notional(today)  # persisted across runs on same date
+    # OrderLedgerUnavailable means cap tracking is inoperative → suspend all buys
+    # (silently returning 0.0 would reset the daily cap, allowing unlimited spend).
+    try:
+        daily_notional_spent = _trader.get_daily_notional(today)
+    except OrderLedgerUnavailable as e:
+        logger.error(f"Daily-notional ledger unavailable — suspending all buys this run: {e}")
+        _alerts.alert_error("ORDER LEDGER UNAVAILABLE", str(e))
+        return open_positions, account_now
     skip_buys = (
         mode in ("close", "open_sells")
         or cb_triggered
@@ -1839,7 +1858,23 @@ def _execute_buy_phase(
                 symbol = candidate["symbol"]
                 confidence = candidate["confidence"]
                 key_signal = candidate.get("key_signal", "unknown")
-                n_signals = len(candidate.get("matched_signals") or [key_signal])
+                matched_signals: list[str] = candidate.get("matched_signals") or []
+                # Cross-check: AI-cited key_signal must have actually fired on this candidate.
+                # If it didn't, fall back to the highest-priority signal that did fire, or
+                # "unknown".  This prevents a hallucinated or misattributed key_signal from
+                # applying the wrong size multiplier, hold days, or seasonal/macro scalars.
+                if (
+                    key_signal not in ("unknown", None)
+                    and matched_signals
+                    and key_signal not in matched_signals
+                ):
+                    fallback = matched_signals[0]
+                    logger.warning(
+                        f"  {symbol}: AI cited key_signal='{key_signal}' but it is not in "
+                        f"matched_signals={matched_signals} — falling back to '{fallback}'"
+                    )
+                    key_signal = fallback
+                n_signals = len(matched_signals) or 1
                 sig_multiplier = _position_sizer.get_signal_size_multiplier(key_signal)
                 cofire_multiplier = _position_sizer.cofiring_boost(n_signals)
                 _mqs = _position_sizer.momentum_quality_score(candidate)
@@ -1964,7 +1999,12 @@ def _execute_buy_phase(
                         logger.info(
                             f"  NHL scalar: nhl_ratio={candidate.get('nhl_ratio', '?')} → size scaled {_nhl_scalar:.2f}×"
                         )
-                    notional = min(
+                    _regime_size_mult = regime_policy.position_size_multiplier
+                    if _regime_size_mult != 1.0:
+                        logger.info(
+                            f"  Regime size multiplier: {regime_name} → size scaled {_regime_size_mult:.2f}×"
+                        )
+                    notional = (
                         _base
                         * _dd_scalar
                         * sig_multiplier
@@ -1976,9 +2016,21 @@ def _execute_buy_phase(
                         * _seasonal_scalar
                         * _macro_scalar
                         * _corr_scalar
-                        * _nhl_scalar,
-                        available_cash,
+                        * _nhl_scalar
+                        * _regime_size_mult
                     )
+                    # Hard position-weight cap applied after the full multiplier chain.
+                    # Each scalar is individually bounded but their product can exceed the cap.
+                    _max_position_notional = (
+                        account_now["portfolio_value"] * config.MAX_POSITION_WEIGHT
+                    )
+                    if notional > _max_position_notional:
+                        logger.info(
+                            f"  Position weight cap ({config.MAX_POSITION_WEIGHT:.0%}): "
+                            f"{symbol} notional ${notional:.2f} → ${_max_position_notional:.2f}"
+                        )
+                        notional = _max_position_notional
+                    notional = min(notional, available_cash)
 
                 # Pre-trade controls (MiFID II) — includes open-exposure cap when configured.
                 # BrokerStateUnavailable means we cannot verify exposure → suspend all buys.
@@ -2062,7 +2114,12 @@ def _execute_buy_phase(
                             orders_placed += 1
                             daily_notional_spent += notional
                             _trader.add_daily_notional(today, notional)
-                            entry_price = sym_snap["current_price"] if sym_snap else 0.0
+                            # Use actual fill price for entry metadata; snapshot price is pre-trade
+                            entry_price = (
+                                buy_result.filled_avg_price
+                                if buy_result.filled_avg_price
+                                else (sym_snap["current_price"] if sym_snap else 0.0)
+                            )
                             _signal = candidate.get("key_signal", "unknown")
                             _trader.record_buy(
                                 symbol,
@@ -2082,8 +2139,10 @@ def _execute_buy_phase(
                                     symbol, buy_result.broker_order_id or "", buy_result.filled_qty
                                 )
                                 current_price = sym_snap["current_price"] if sym_snap else None
-                                # Floor to whole shares — Alpaca rejects fractional stop orders
-                                stop_qty = int(math.floor(buy_result.filled_qty))
+                                # Pass raw fractional fill qty — place_trailing_stop places a
+                                # whole-share stop and liquidates any fractional remainder
+                                # so every share of the fill is protected or sold.
+                                stop_qty = buy_result.filled_qty
                                 t_stop_submit = time.monotonic()
                                 stop_result = (
                                     _trader.place_trailing_stop(
@@ -2093,7 +2152,7 @@ def _execute_buy_phase(
                                         current_price=current_price,
                                         trail_percent=vix_trail_pct,
                                     )
-                                    if stop_qty >= 1
+                                    if stop_qty > 0
                                     else None
                                 )
                                 t_stop_accept = time.monotonic()
@@ -2587,12 +2646,34 @@ def _evaluate_risk_limits(
         _alerts.alert_daily_loss(dl_pct)
         logger.warning("Daily loss limit hit — closing all positions.")
         if not dry_run:
+            failed_closes: list[str] = []
             for pos in _trader.get_open_positions(client):
-                _trader.close_position(client, pos["symbol"])
-                _audit_log.log_position_closed(
-                    pos["symbol"], "daily_loss_limit", pos["unrealized_plpc"]
+                sym = pos["symbol"]
+                try:
+                    _trader.close_position(client, sym)
+                    _audit_log.log_position_closed(sym, "daily_loss_limit", pos["unrealized_plpc"])
+                    _trader.record_sell(sym)
+                except Exception as e:
+                    logger.critical(
+                        f"Daily-loss close FAILED for {sym}: {e} — position may still be open"
+                    )
+                    failed_closes.append(sym)
+            if failed_closes:
+                os.makedirs(config.LOG_DIR, exist_ok=True)
+                halt_data = {
+                    "halted": True,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "reason": "daily_loss_close_failure",
+                    "failed_symbols": failed_closes,
+                }
+                with open(config.HALT_FILE, "w") as _hf:
+                    json.dump(halt_data, _hf, indent=2)
+                    _hf.write("\n")
+                _alerts.alert_error(
+                    "HALT — DAILY-LOSS CLOSE FAILED",
+                    f"Failed to close {failed_closes} during daily-loss liquidation. "
+                    "Bot halted. Check broker immediately.",
                 )
-                _trader.record_sell(pos["symbol"])
         return None
 
     # ── Experiment drawdown cap ───────────────────────────────────────────────

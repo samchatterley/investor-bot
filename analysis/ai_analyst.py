@@ -8,6 +8,7 @@ import anthropic
 
 from analysis.performance import get_actionable_feedback
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HOLD_DAYS, MAX_POSITIONS, MIN_CONFIDENCE
+from signals.registry import AI_CITEABLE_SIGNALS
 from utils.validators import validate_ai_response
 
 logger = logging.getLogger(__name__)
@@ -128,26 +129,7 @@ _DECISION_TOOL = {
                         },
                         "key_signal": {
                             "type": "string",
-                            "enum": [
-                                "vix_fear_reversion",
-                                "insider_buying",
-                                "pead",
-                                "mean_reversion",
-                                "momentum",
-                                "momentum_12_1",
-                                "gap_and_go",
-                                "macd_crossover",
-                                "bb_squeeze",
-                                "breakout_52w",
-                                "rs_leader",
-                                "inside_day_breakout",
-                                "trend_pullback",
-                                "iv_compression",
-                                "vwap_reclaim",
-                                "orb_breakout",
-                                "intraday_momentum",
-                                "unknown",
-                            ],
+                            "enum": sorted(AI_CITEABLE_SIGNALS),
                         },
                         "do_nothing_case": {
                             "type": "string",

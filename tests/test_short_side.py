@@ -943,11 +943,16 @@ class TestGetOpenPositionsDbErrors(unittest.TestCase):
         with patch("execution.trader._db", side_effect=Exception("db down")):
             self.assertEqual(get_open_longs(), set())
 
-    def test_get_open_shorts_returns_empty_on_db_error(self):
+    def test_get_open_shorts_raises_on_db_error(self):
+        # get_open_shorts must fail closed (raise) so the short-slot cap isn't bypassed
         from execution.trader import get_open_shorts
+        from models import OrderLedgerUnavailable
 
-        with patch("execution.trader._db", side_effect=Exception("db down")):
-            self.assertEqual(get_open_shorts(), set())
+        with (
+            patch("execution.trader._db", side_effect=Exception("db down")),
+            self.assertRaises(OrderLedgerUnavailable),
+        ):
+            get_open_shorts()
 
 
 class TestRsDeteriorationSignal(unittest.TestCase):

@@ -604,11 +604,96 @@ def get_stale_positions(max_days: int = 3) -> list[str]:
     return [sym for sym, age in get_position_ages().items() if age >= max_days]
 
 
+def _record_stop_exit_outcome(client: TradingClient, symbol: str) -> None:
+    """Record a trade outcome for a position that was closed by a broker-side stop.
+
+    Called during reconciliation for positions that exist in the DB but have
+    disappeared from the broker — most likely a trailing stop that fired between
+    runs.  Queries recent closed SELL orders to recover the actual exit price;
+    falls back to entry_price (0% return) if no fill record is found.
+
+    This fixes the survivorship bias in empirical win-rate stats: stop exits
+    were previously invisible to record_trade_outcome because they happened
+    outside normal sell-phase execution.
+    """
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
+    from analysis.performance import record_trade_outcome
+
+    meta = get_position_meta(symbol)
+    entry_price = float(meta.get("entry_price") or 0.0)
+    entry_date_str = meta.get("entry_date") or today_et().isoformat()
+    signal = meta.get("signal") or "unknown"
+    regime = meta.get("regime") or "UNKNOWN"
+    confidence = int(meta.get("confidence") or 0)
+
+    exit_price: float | None = None
+    exit_date_str: str | None = None
+    exit_reason = "stop_loss"
+
+    try:
+        closed_orders = client.get_orders(
+            GetOrdersRequest(symbols=[symbol], status=QueryOrderStatus.CLOSED, limit=10)
+        )
+        sell_fills = [
+            o
+            for o in closed_orders
+            if o.side.value == "sell"
+            and o.status.value == "filled"
+            and o.filled_avg_price is not None
+        ]
+        if sell_fills:
+            most_recent = sorted(sell_fills, key=lambda o: o.filled_at or o.created_at)[-1]
+            exit_price = float(most_recent.filled_avg_price)
+            if most_recent.filled_at:
+                exit_date_str = most_recent.filled_at.date().isoformat()
+    except Exception as e:
+        logger.warning(f"reconcile: could not fetch closed orders for {symbol}: {e}")
+
+    if exit_price is None or entry_price <= 0:
+        return_pct = 0.0
+    else:
+        return_pct = (exit_price / entry_price - 1) * 100
+
+    try:
+        hold_days = (
+            (date.fromisoformat(exit_date_str) - date.fromisoformat(entry_date_str)).days
+            if exit_date_str
+            else 0
+        )
+    except Exception:
+        hold_days = 0
+
+    logger.info(
+        f"Reconcile: recording stop exit for {symbol}: "
+        f"signal={signal} return={return_pct:.2f}% (entry=${entry_price:.2f} exit=${exit_price or 0:.2f})"
+    )
+    try:
+        record_trade_outcome(
+            signal=signal,
+            return_pct=return_pct,
+            regime=regime,
+            confidence=confidence,
+            hold_days=hold_days,
+            symbol=symbol,
+            date_closed=exit_date_str or today_et().isoformat(),
+            entry_date=entry_date_str,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+        )
+    except Exception as e:
+        logger.warning(f"reconcile: record_trade_outcome failed for {symbol}: {e}")
+
+
 def reconcile_positions(client: TradingClient) -> set[str]:
     """Sync the SQLite positions table with actual Alpaca positions.
 
     Removes stale entries for positions that no longer exist at the broker,
-    adds placeholder entries for positions with no local metadata.
+    adds placeholder entries for positions with no local metadata.  For each
+    stale position, attempts to record a trade outcome so stop-loss exits are
+    captured in signal_stats (fixing the survivorship bias from between-run stops).
 
     Returns the set of symbols that existed at the broker but had no local
     record — these are unexpected positions and should be treated as a
@@ -626,7 +711,8 @@ def reconcile_positions(client: TradingClient) -> set[str]:
             stored = {row["symbol"] for row in conn.execute("SELECT symbol FROM positions")}
 
             for sym in stored - actual.keys():
-                logger.info(f"Reconcile: removing stale metadata for {sym}")
+                logger.info(f"Reconcile: removing stale metadata for {sym} (recording outcome)")
+                _record_stop_exit_outcome(client, sym)
                 conn.execute("DELETE FROM positions WHERE symbol=?", (sym,))
 
             for sym in actual.keys() - stored:
@@ -766,53 +852,68 @@ _ACTIVE_ORDER_STATUSES = frozenset({"new", "accepted", "pending_new", "held"})
 
 
 def cancel_open_orders(client: TradingClient, symbol: str):
-    """Cancel all account orders then wait until the position's shares are freed.
+    """Cancel this symbol's open orders, then wait until shares are freed.
 
-    GTC trailing stops placed on prior days are NOT returned by get_orders() with
-    a symbol filter in some Alpaca SDK versions — they only appear when cancelling
-    all account orders.  Cancelling all is safe here: any stops that get cancelled
-    alongside the target symbol's stop will be re-attached by ensure_stops_attached
-    at the end of the run.
+    Strategy: scoped cancel first (only this symbol's orders) to avoid stripping
+    stops from other positions.  GTC trailing stops placed on prior days may not
+    appear in symbol-filtered Alpaca queries — if shares are still held after the
+    scoped cancel, falls back to cancel-all as a last resort.  Any other stops
+    stripped by the fallback are re-attached by ensure_stops_attached at end of run.
 
     Polls qty_available on the position (not order status) so the check is
-    authoritative — it confirms Alpaca has released the held shares, not just
-    that the cancel request was accepted.
+    authoritative — confirms Alpaca released the shares, not just accepted the cancel.
     """
-    try:
-        # Check if any shares are actually held before firing cancel-all
+    from alpaca.trading.requests import GetOrdersRequest
+
+    def _shares_freed() -> bool:
         try:
             pos = client.get_open_position(symbol)
-            available = float(pos.qty_available)
-            total = float(pos.qty)
-            # Use abs() — short positions have negative qty, so signed >= fails.
-            if abs(available) >= abs(total) - 0.000001:
-                return  # nothing held — no cancellations needed
+            return abs(float(pos.qty_available)) >= abs(float(pos.qty)) - 0.000001
         except Exception:
-            return  # position gone or unreadable
+            return True  # position gone or unreadable — treat as freed
 
-        # Cancel ALL account orders — the only reliable way to release shares
-        # held by GTC trailing stops that the symbol-scoped query misses.
-        logger.info(
-            f"cancel_open_orders({symbol}): cancelling all account orders to free held shares"
+    try:
+        # Early exit if no shares are held
+        if _shares_freed():
+            return
+
+        # --- Phase 1: scoped cancel for this symbol's orders only ---
+        import contextlib
+
+        logger.info(f"cancel_open_orders({symbol}): cancelling symbol-scoped orders")
+        try:
+            symbol_orders = client.get_orders(GetOrdersRequest(symbols=[symbol]))
+            for o in symbol_orders:
+                with contextlib.suppress(Exception):
+                    client.cancel_order_by_id(o.id)
+        except Exception as e:
+            logger.warning(f"cancel_open_orders({symbol}): scoped cancel query failed: {e}")
+
+        # Poll after scoped cancel
+        deadline = time.time() + _CANCEL_WAIT_SECS
+        while time.time() < deadline:
+            time.sleep(_CANCEL_POLL_INTERVAL)
+            if _shares_freed():
+                logger.info(f"cancel_open_orders({symbol}): shares freed (scoped cancel)")
+                return
+
+        # --- Phase 2: fallback cancel-all (GTC trailing-stop workaround) ---
+        # Some Alpaca SDK versions omit GTC stops from symbol-filtered queries.
+        logger.warning(
+            f"cancel_open_orders({symbol}): shares still held after scoped cancel — "
+            "falling back to cancel-all (GTC stop workaround)"
         )
         try:
             client.cancel_orders()
         except Exception as e:
-            logger.warning(f"cancel_orders() failed: {e}")
+            logger.warning(f"cancel_orders() fallback failed: {e}")
 
-        # Poll position qty_available until all shares are freed (or timeout).
         deadline = time.time() + _CANCEL_WAIT_SECS
         while time.time() < deadline:
             time.sleep(_CANCEL_POLL_INTERVAL)
-            try:
-                pos = client.get_open_position(symbol)
-                total = float(pos.qty)
-                available = float(pos.qty_available)
-                if abs(available) >= abs(total) - 0.000001:
-                    logger.info(f"cancel_open_orders({symbol}): all shares freed")
-                    return
-            except Exception:
-                return  # position gone or unreadable — proceed with close
+            if _shares_freed():
+                logger.info(f"cancel_open_orders({symbol}): shares freed (cancel-all fallback)")
+                return
         logger.warning(
             f"cancel_open_orders({symbol}): shares still held after {_CANCEL_WAIT_SECS}s"
         )
@@ -881,15 +982,19 @@ def place_partial_sell(client: TradingClient, symbol: str, qty: float) -> OrderR
 
 
 def get_daily_notional(market_date: str) -> float:
-    """Return total confirmed buy notional for the given market date."""
+    """Return total confirmed buy notional for the given market date.
+
+    Raises OrderLedgerUnavailable on DB failure — callers must treat this as
+    buy-blocking rather than silently resetting the daily cap to zero.
+    """
     try:
         with _db() as conn:
             row = conn.execute(
                 "SELECT buy_notional FROM daily_notional WHERE market_date=?", (market_date,)
             ).fetchone()
         return float(row["buy_notional"]) if row else 0.0
-    except Exception:
-        return 0.0
+    except Exception as e:
+        raise OrderLedgerUnavailable(f"get_daily_notional failed: {e}") from e
 
 
 def add_daily_notional(market_date: str, amount: float):
@@ -1081,13 +1186,17 @@ def get_open_longs() -> set[str]:
 
 
 def get_open_shorts() -> set[str]:
-    """Return symbols of current short positions tracked in the DB."""
+    """Return symbols of current short positions tracked in the DB.
+
+    Raises OrderLedgerUnavailable on DB failure — callers must treat this as
+    short-blocking to prevent bypassing the short-slot cap.
+    """
     try:
         with _db() as conn:
             rows = conn.execute("SELECT symbol FROM positions WHERE side='short'").fetchall()
         return {row["symbol"] for row in rows}
-    except Exception:
-        return set()
+    except Exception as e:
+        raise OrderLedgerUnavailable(f"get_open_shorts failed: {e}") from e
 
 
 def get_intraday_positions() -> list[str]:

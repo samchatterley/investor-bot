@@ -2054,10 +2054,13 @@ class TestExperimentDrawdownCap(RunInnerBase):
         deps = self._make_deps(
             trader__place_buy_order=buy_mock,
             trader__place_trailing_stop=stop_mock,
-            # $10 loss well under $50 cap
+            # $10 loss well under $50 cap; price=100 ensures max notional (15%×990=$148.50)
+            # buys ≥1 whole share (148.50/100=1.485) so the sub-share gate doesn't block.
+            # market_data__get_market_snapshots must also use price=100 (used for sizing).
             load_experiment_baseline=MagicMock(return_value=1000.0),
             trader__get_account_info=_account(990, 500),
-            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 100.0}],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 100.0}],
             ai_analyst__get_trading_decisions=_decisions(
                 buys=[
                     {
@@ -5959,6 +5962,158 @@ class TestScalarLoggingBranches(RunInnerBase):
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         buy_mock.assert_called()
+
+
+# ── New-code coverage tests (v1.96 changes) ──────────────────────────────────
+
+
+class TestOrderLedgerUnavailableInShorts(RunInnerBase):
+    """Lines 669-672: OrderLedgerUnavailable on get_open_shorts suspends short entries."""
+
+    def test_short_entries_skipped_on_ledger_error(self):
+        from models import OrderLedgerUnavailable
+
+        short_mock = MagicMock(side_effect=OrderLedgerUnavailable("ledger down"))
+        alert_mock = MagicMock()
+        deps = self._make_deps(
+            trader__get_open_shorts=short_mock,
+            alerts__alert_error=alert_mock,
+            # non-empty so _execute_shorts reaches get_open_shorts instead of early-returning
+            stock_scanner__scan_short_candidates=[{"symbol": "TSLA", "current_price": 200.0}],
+        )
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        alert_mock.assert_called()  # alert fired
+
+
+class TestOrderLedgerUnavailableInSnapshot(RunInnerBase):
+    """Lines 875-877: OrderLedgerUnavailable in _get_position_snapshot → empty set used."""
+
+    def test_position_snapshot_continues_with_empty_shorts(self):
+        from models import OrderLedgerUnavailable
+
+        call_count = [0]
+        real_shorts = set()
+
+        def flaky_get_open_shorts():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OrderLedgerUnavailable("flaky")
+            return real_shorts
+
+        deps = self._make_deps(trader__get_open_shorts=MagicMock(side_effect=flaky_get_open_shorts))
+        with self._inner_patches():
+            from main import _run_inner
+
+            # Should not raise — proceeds with empty open_shorts_db
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+
+
+class TestOrderLedgerUnavailableInBuyPhase(RunInnerBase):
+    """Lines 1774-1777: OrderLedgerUnavailable on get_daily_notional suspends all buys."""
+
+    def test_buys_suspended_when_daily_notional_unavailable(self):
+        from models import OrderLedgerUnavailable
+
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        deps = self._make_deps(
+            trader__get_daily_notional=MagicMock(side_effect=OrderLedgerUnavailable("ledger")),
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[
+                    {
+                        "symbol": "AAPL",
+                        "confidence": 8,
+                        "reasoning": "Strong breakout signal above key resistance.",
+                        "key_signal": "momentum",
+                    }
+                ]
+            ),
+        )
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        buy_mock.assert_not_called()  # all buys suspended
+
+
+class TestKeySignalFallback(RunInnerBase):
+    """Lines 1871-1876: AI cites key_signal not in matched_signals → falls back to matched_signals[0]."""
+
+    def test_key_signal_fallback_when_not_in_matched(self):
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        # AI says key_signal="gap_and_go" but candidate only has matched_signal="momentum"
+        deps = self._make_deps(
+            trader__place_buy_order=buy_mock,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 100.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[
+                {"symbol": "AAPL", "current_price": 100.0, "matched_signals": ["momentum"]}
+            ],
+            ai_analyst__get_trading_decisions=_decisions(
+                buys=[
+                    {
+                        "symbol": "AAPL",
+                        "confidence": 8,
+                        "reasoning": "Strong breakout signal above key resistance.",
+                        "key_signal": "gap_and_go",  # NOT in matched_signals → fallback to "momentum"
+                        "matched_signals": ["momentum"],  # needed so condition triggers
+                    }
+                ]
+            ),
+        )
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        buy_mock.assert_called_once()
+
+
+class TestDailyLossCloseFailureHalt(RunInnerBase):
+    """Lines 2656-2660, 2662-2672: close_position fails during daily-loss liquidation → halt file."""
+
+    def test_close_failure_writes_halt_and_alerts(self):
+        import tempfile
+
+        positions = [
+            {
+                "symbol": "AAPL",
+                "unrealized_pl": -500.0,
+                "unrealized_plpc": -5.0,
+                "qty": 10.0,
+                "market_value": 1000.0,
+                "current_price": 100.0,
+            }
+        ]
+        alert_mock = MagicMock()
+        deps = self._make_deps(
+            risk_manager__check_daily_loss=(True, -6.0),
+            trader__get_open_positions=positions,
+            trader__close_position=MagicMock(side_effect=Exception("broker unavailable")),
+            alerts__alert_error=alert_mock,
+        )
+        with (
+            self._inner_patches(),
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("main.config.LOG_DIR", tmpdir),
+            patch("main.config.HALT_FILE", f"{tmpdir}/halt.json"),
+        ):
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        alert_mock.assert_called()  # HALT alert sent
 
 
 if __name__ == "__main__":  # pragma: no cover

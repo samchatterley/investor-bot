@@ -503,8 +503,9 @@ class TestClosePosition(unittest.TestCase):
         self.assertIn("not found", result.rejection_reason)
 
     def test_cancels_open_orders_before_closing(self):
-        # Trailing stop holds shares: close_position must cancel all orders first
-        # or Alpaca returns "insufficient qty available for order"
+        # Trailing stop holds shares: close_position must run cancel_open_orders first.
+        # cancel_open_orders now does a scoped cancel (get_orders/cancel_order_by_id)
+        # before attempting close_position.
         from execution.trader import close_position
 
         call_order = []
@@ -517,7 +518,8 @@ class TestClosePosition(unittest.TestCase):
         pos_free.qty = "10"
         pos_free.qty_available = "10"
         client.get_open_position.side_effect = [pos_held, pos_free]
-        client.cancel_orders.side_effect = lambda: call_order.append("cancel")
+        # Track get_orders (scoped cancel) vs close_position to verify ordering
+        client.get_orders.side_effect = lambda req: call_order.append("cancel_scoped") or []
 
         def fake_close(symbol):
             call_order.append("close")
@@ -527,7 +529,7 @@ class TestClosePosition(unittest.TestCase):
         client.get_order_by_id.return_value = _mock_filled_order("close-123")
         with patch("execution.trader.time.sleep"):
             close_position(client, "AAPL")
-        self.assertEqual(call_order, ["cancel", "close"])
+        self.assertEqual(call_order, ["cancel_scoped", "close"])
 
     def test_close_succeeds_even_when_cancel_raises(self):
         from execution.trader import close_position
@@ -550,29 +552,35 @@ class TestCancelOpenOrders(unittest.TestCase):
         return pos
 
     def test_cancels_matching_open_orders(self):
-        # When shares are held (qty_available < qty), cancel_orders() fires.
+        # Phase 1: scoped cancel (get_orders + cancel_order_by_id per order) fires when
+        # shares are held; after scoped cancel the position is freed.
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
+        mock_order = MagicMock()
+        mock_order.id = "order-abc"
         client.get_open_position.side_effect = [
             self._make_held_pos(qty_available=0),  # initial: shares held
-            self._make_held_pos(qty_available=10),  # after cancel: freed
+            self._make_held_pos(qty_available=10),  # after scoped cancel poll: freed
         ]
+        client.get_orders.return_value = [mock_order]
         with patch("execution.trader.time.sleep"):
             cancel_open_orders(client, "AAPL")
-        client.cancel_orders.assert_called_once()
+        client.get_orders.assert_called_once()
+        client.cancel_order_by_id.assert_called_once_with("order-abc")
+        client.cancel_orders.assert_not_called()  # cancel-all fallback not triggered
 
-    def test_cancel_all_called_once_when_shares_held(self):
-        # cancel_open_orders uses cancel-all (not symbol-scoped); safe because
-        # ensure_stops_attached re-covers other positions at end of run.
+    def test_cancel_all_called_once_when_shares_still_held_after_scoped_cancel(self):
+        # Phase 2 fallback: if scoped cancel times out without freeing shares,
+        # cancel_orders() (cancel-all) fires once; ensure_stops_attached re-attaches
+        # stops on other positions at end of run.
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
-        client.get_open_position.side_effect = [
-            self._make_held_pos(qty_available=0),
-            self._make_held_pos(qty_available=10),
-        ]
-        with patch("execution.trader.time.sleep"):
+        client.get_orders.return_value = []  # no symbol-scoped orders found
+        client.get_open_position.return_value = self._make_held_pos(qty_available=0)
+        # _CANCEL_WAIT_SECS=-1 makes both phase deadlines instantly expired
+        with patch("execution.trader._CANCEL_WAIT_SECS", -1):
             cancel_open_orders(client, "AAPL")
         client.cancel_orders.assert_called_once()
 
@@ -1364,14 +1372,17 @@ class TestEnsureStopsAttachedException(unittest.TestCase):
 
 
 class TestGetDailyNotionalException(unittest.TestCase):
-    """Lines 462-463: get_daily_notional exception path returns 0.0."""
+    """get_daily_notional must raise OrderLedgerUnavailable on DB failure (fail-closed)."""
 
-    def test_returns_zero_when_db_raises(self):
+    def test_raises_order_ledger_unavailable_when_db_fails(self):
         from execution.trader import get_daily_notional
+        from models import OrderLedgerUnavailable
 
-        with patch("execution.trader._db", side_effect=Exception("db error")):
-            result = get_daily_notional("2026-01-15")
-        self.assertEqual(result, 0.0)
+        with (
+            patch("execution.trader._db", side_effect=Exception("db error")),
+            self.assertRaises(OrderLedgerUnavailable),
+        ):
+            get_daily_notional("2026-01-15")
 
 
 class TestAddDailyNotionalException(unittest.TestCase):
@@ -1644,21 +1655,25 @@ class TestCancelOpenOrdersCancelRaises(unittest.TestCase):
         pos.qty_available = str(qty_available)
         return pos
 
-    def test_cancel_orders_exception_and_poll_exception(self):
+    def test_scoped_cancel_query_fails_and_poll_exception_graceful(self):
+        # If the scoped cancel query (get_orders) fails, a warning is logged and the
+        # poll loop runs.  If the poll also raises, the position is treated as freed
+        # (exception = "position gone" → graceful return, no cancel-all fallback).
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
         client.get_open_position.side_effect = [
-            self._make_held_pos(),
-            Exception("position gone"),
+            self._make_held_pos(),  # initial: held
+            Exception("position gone"),  # poll raises → treated as freed
         ]
-        client.cancel_orders.side_effect = Exception("cancel failed")
+        client.get_orders.side_effect = Exception("API error")  # scoped query fails
         with (
             patch("execution.trader.time.sleep"),
             patch("execution.trader.time.time", return_value=0),
         ):
             cancel_open_orders(client, "AAPL")
-        client.cancel_orders.assert_called_once()
+        # Exception during poll is treated as "freed" — cancel-all fallback not reached
+        client.cancel_orders.assert_not_called()
 
 
 class TestCancelOpenOrdersSharesStillHeldAfterTimeout(unittest.TestCase):
@@ -2005,15 +2020,16 @@ class TestCancelOpenOrdersPollLoopIterates(unittest.TestCase):
         return pos
 
     def test_shares_freed_on_second_poll(self):
-        """First poll: shares still held (747 False → continue loop to 741).
-        Second poll: shares freed (747 True → return)."""
+        """Scoped cancel phase: poll 1 = still held, poll 2 = freed → return.
+        cancel-all fallback is NOT triggered (shares freed in phase 1)."""
         from execution.trader import cancel_open_orders
 
         client = MagicMock()
+        client.get_orders.return_value = []  # no symbol-scoped orders
         client.get_open_position.side_effect = [
-            self._make_pos(qty=10, qty_available=0),
-            self._make_pos(qty=10, qty_available=0),
-            self._make_pos(qty=10, qty_available=10),
+            self._make_pos(qty=10, qty_available=0),  # initial: held
+            self._make_pos(qty=10, qty_available=0),  # poll 1: still held
+            self._make_pos(qty=10, qty_available=10),  # poll 2: freed → return
         ]
         with (
             patch("execution.trader.time.sleep"),
@@ -2021,4 +2037,206 @@ class TestCancelOpenOrdersPollLoopIterates(unittest.TestCase):
             patch("execution.trader._CANCEL_WAIT_SECS", 10),
         ):
             cancel_open_orders(client, "AAPL")
+        client.get_orders.assert_called_once()
+        client.cancel_orders.assert_not_called()
+
+
+# ── cancel_open_orders Phase 2 (fallback cancel-all) coverage ─────────────────
+
+
+class TestCancelOpenOrdersPhase2CancelRaises(unittest.TestCase):
+    """Lines 908-909: cancel_orders() in fallback phase raises → logged, no re-raise."""
+
+    def _make_held_pos(self, qty=10, qty_available=0):
+        pos = MagicMock()
+        pos.qty = str(qty)
+        pos.qty_available = str(qty_available)
+        return pos
+
+    def test_cancel_orders_fallback_exception_handled(self):
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_orders.return_value = []  # no scoped orders found
+        client.get_open_position.return_value = self._make_held_pos(qty_available=0)
+        client.cancel_orders.side_effect = Exception("broker rejected cancel-all")
+
+        # _CANCEL_WAIT_SECS=-1 forces Phase 1 deadline to be already past → immediate fallback
+        with patch("execution.trader._CANCEL_WAIT_SECS", -1):
+            cancel_open_orders(client, "AAPL")  # must not raise
+
         client.cancel_orders.assert_called_once()
+
+
+class TestCancelOpenOrdersPhase2PollFrees(unittest.TestCase):
+    """Lines 913-916: shares freed during Phase 2 fallback poll → early return."""
+
+    def _make_held_pos(self, qty=10, qty_available=0):
+        pos = MagicMock()
+        pos.qty = str(qty)
+        pos.qty_available = str(qty_available)
+        return pos
+
+    def test_shares_freed_in_phase2_poll(self):
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_orders.return_value = []  # scoped cancel finds nothing
+        client.get_open_position.side_effect = [
+            self._make_held_pos(qty_available=0),  # initial: held
+            self._make_held_pos(qty_available=10),  # Phase 2 poll: freed → return
+        ]
+        # time.time sequence: Phase1-deadline=0→10, Phase1-while=1000 (>10, skip),
+        # Phase2-deadline=0→10, Phase2-while=5 (<10, enter loop → freed → return)
+        with (
+            patch("execution.trader.time.sleep"),
+            patch("execution.trader.time.time", side_effect=[0.0, 1000.0, 0.0, 5.0, 5.0]),
+            patch("execution.trader._CANCEL_WAIT_SECS", 10),
+        ):
+            cancel_open_orders(client, "AAPL")
+
+        client.cancel_orders.assert_called_once()  # fallback triggered
+        self.assertEqual(client.get_open_position.call_count, 2)
+
+    def test_loop_continues_when_not_freed_on_first_poll(self):
+        """Branch 914->912: _shares_freed() False on first Phase 2 poll → while loops back."""
+        from execution.trader import cancel_open_orders
+
+        client = MagicMock()
+        client.get_orders.return_value = []  # scoped cancel finds nothing
+        client.get_open_position.side_effect = [
+            self._make_held_pos(qty_available=0),  # initial: held
+            self._make_held_pos(qty_available=0),  # Phase 2 poll 1: still held → 914->912
+            self._make_held_pos(qty_available=10),  # Phase 2 poll 2: freed → return
+        ]
+        # time sequence: Phase1-deadline=0→10, Phase1-while=1000 (skip),
+        # Phase2-deadline=0→10, poll1-while=5 (<10 enter), poll2-while=5 (<10 enter)
+        with (
+            patch("execution.trader.time.sleep"),
+            patch("execution.trader.time.time", side_effect=[0.0, 1000.0, 0.0, 5.0, 5.0, 5.0]),
+            patch("execution.trader._CANCEL_WAIT_SECS", 10),
+        ):
+            cancel_open_orders(client, "AAPL")
+
+        client.cancel_orders.assert_called_once()
+        self.assertEqual(client.get_open_position.call_count, 3)
+
+
+# ── _record_stop_exit_outcome coverage ────────────────────────────────────────
+
+
+class TestRecordStopExitOutcome(unittest.TestCase):
+    """Coverage for _record_stop_exit_outcome (lines 647-687)."""
+
+    def setUp(self):
+        import utils.db as db_module
+
+        self.tmpdir = tempfile.mkdtemp()
+        self.patchers = _meta_patcher(self.tmpdir)
+        for p in self.patchers:
+            p.start()
+        db_module._initialized = False
+        from utils.db import init_db
+
+        init_db()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def _make_sell_order(self, filled_avg_price=110.0, filled_at_date="2026-01-10"):
+        o = MagicMock()
+        o.side.value = "sell"
+        o.status.value = "filled"
+        o.filled_avg_price = filled_avg_price
+        if filled_at_date:
+            dt = MagicMock()
+            dt.date.return_value.isoformat.return_value = filled_at_date
+            o.filled_at = dt
+        else:
+            o.filled_at = None
+        return o
+
+    def test_records_outcome_with_sell_fill(self):
+        """Lines 647-650, 657: sell fill found → exit_price set, return_pct computed."""
+        from execution.trader import _record_stop_exit_outcome, record_buy
+
+        record_buy("AAPL", 100.0, signal="momentum", confidence=8)
+
+        client = MagicMock()
+        client.get_orders.return_value = [self._make_sell_order(filled_avg_price=110.0)]
+
+        with patch("analysis.performance.record_trade_outcome") as mock_record:
+            _record_stop_exit_outcome(client, "AAPL")
+
+        mock_record.assert_called_once()
+        kwargs = mock_record.call_args[1]
+        self.assertAlmostEqual(kwargs["return_pct"], 10.0, places=1)
+        self.assertAlmostEqual(kwargs["exit_price"], 110.0)
+
+    def test_closed_orders_exception_handled(self):
+        """Line 652: get_orders raises → warning logged, record_trade_outcome still called."""
+        from execution.trader import _record_stop_exit_outcome, record_buy
+
+        record_buy("AAPL", 100.0)
+
+        client = MagicMock()
+        client.get_orders.side_effect = Exception("API error")
+
+        with patch("analysis.performance.record_trade_outcome") as mock_record:
+            _record_stop_exit_outcome(client, "AAPL")  # must not raise
+
+        mock_record.assert_called_once()
+
+    def test_bad_exit_date_falls_back_to_zero_hold_days(self):
+        """Lines 665-666: invalid exit_date_str → exception caught, hold_days=0."""
+        from execution.trader import _record_stop_exit_outcome
+
+        # Patch get_position_meta to return a bad entry_date so date arithmetic fails
+        meta = {
+            "entry_price": "100.0",
+            "entry_date": "NOT-A-DATE",
+            "signal": "momentum",
+            "regime": "BULL_TREND",
+            "confidence": "8",
+        }
+        o = self._make_sell_order(filled_avg_price=110.0, filled_at_date="2026-01-10")
+        client = MagicMock()
+        client.get_orders.return_value = [o]
+
+        with (
+            patch("execution.trader.get_position_meta", return_value=meta),
+            patch("analysis.performance.record_trade_outcome") as mock_record,
+        ):
+            _record_stop_exit_outcome(client, "AAPL")  # must not raise
+
+        kwargs = mock_record.call_args[1]
+        self.assertEqual(kwargs["hold_days"], 0)
+
+    def test_record_trade_outcome_exception_handled(self):
+        """Lines 686-687: record_trade_outcome raises → warning logged, no re-raise."""
+        from execution.trader import _record_stop_exit_outcome, record_buy
+
+        record_buy("AAPL", 100.0)
+
+        client = MagicMock()
+        client.get_orders.return_value = []
+
+        with patch("analysis.performance.record_trade_outcome", side_effect=Exception("DB down")):
+            _record_stop_exit_outcome(client, "AAPL")  # must not raise
+
+    def test_records_outcome_when_filled_at_is_none(self):
+        """Line 649 False branch: filled_at=None → exit_date_str stays None → hold_days=0."""
+        from execution.trader import _record_stop_exit_outcome, record_buy
+
+        record_buy("AAPL", 100.0, signal="momentum", confidence=8)
+
+        client = MagicMock()
+        client.get_orders.return_value = [self._make_sell_order(filled_at_date=None)]
+
+        with patch("analysis.performance.record_trade_outcome") as mock_record:
+            _record_stop_exit_outcome(client, "AAPL")
+
+        mock_record.assert_called_once()
+        self.assertEqual(mock_record.call_args[1]["hold_days"], 0)

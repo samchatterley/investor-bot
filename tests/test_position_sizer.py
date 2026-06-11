@@ -27,6 +27,13 @@ from risk.position_sizer import (
 
 
 class TestKellyFraction(unittest.TestCase):
+    def setUp(self):
+        # Isolate from live logs/signal_stats.json — these tests exercise
+        # the LLM-confidence fallback path (no empirical data).
+        self._patcher = patch("risk.position_sizer._SIGNAL_STATS_PATH", "/nonexistent/path")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
     def test_zero_confidence_returns_zero(self):
         self.assertEqual(kelly_fraction(0), 0.0)
 
@@ -91,12 +98,14 @@ class TestRiskBudgetSize(unittest.TestCase):
             self.assertGreaterEqual(risk_budget_size(10_000, confidence=conf), 0.0)
 
     def test_formula_matches_expected_value(self):
-        # Without empirical data, conviction_scale is flat 0.75
+        # Without empirical data, conviction_scale is flat 0.75.
+        # Patch signal stats so live logs/signal_stats.json doesn't interfere.
         equity = 10_000
         risk_usd = equity * config.RISK_PER_TRADE_PCT
         stop_pct = config.TRAILING_STOP_PCT / 100.0
         base = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
-        self.assertAlmostEqual(risk_budget_size(equity, confidence=8), base * 0.75, places=4)
+        with patch("risk.position_sizer._SIGNAL_STATS_PATH", "/nonexistent/path"):
+            self.assertAlmostEqual(risk_budget_size(equity, confidence=8), base * 0.75, places=4)
 
     def test_notional_unaffected_when_kelly_unavailable(self):
         """Kelly is telemetry only — risk_budget_size returns valid notional even if kelly_fraction fails."""
@@ -121,7 +130,8 @@ class TestRiskBudgetSize(unittest.TestCase):
         risk_usd = equity * config.RISK_PER_TRADE_PCT
         stop_pct = config.TRAILING_STOP_PCT / 100.0
         base = min(risk_usd / stop_pct, equity * config.MAX_POSITION_WEIGHT)
-        result = risk_budget_size(equity, confidence=config.MIN_CONFIDENCE)
+        with patch("risk.position_sizer._SIGNAL_STATS_PATH", "/nonexistent/path"):
+            result = risk_budget_size(equity, confidence=config.MIN_CONFIDENCE)
         self.assertAlmostEqual(result, base * 0.75, places=4)
 
     def test_empirical_win_rate_overrides_neutral_scale(self):
@@ -333,8 +343,9 @@ class TestSignalSharpeMultiplier(unittest.TestCase):
     def test_rsi_divergence_is_zero(self):
         self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["rsi_divergence"], 0.0)
 
-    def test_vix_fear_reversion_is_minimal(self):
-        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["vix_fear_reversion"], 0.25)
+    def test_vix_fear_reversion_is_zero(self):
+        # vix_fear_reversion is globally disabled; zeroed to prevent AI from inflating size
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["vix_fear_reversion"], 0.0)
 
     def test_range_reversion_is_baseline(self):
         self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["range_reversion"], 1.0)

@@ -203,22 +203,24 @@ SIGNAL_SHARPE_MULTIPLIER: dict[str, float] = {
     "macd_crossover": 1.0,  # Sharpe +0.03
     "bb_squeeze": 0.5,  # Sharpe +0.05 but 78% of trades, noisy — half size
     "insider_buying": 1.3,  # Fundamental conviction; treat as pead-equivalent
-    "rs_leader": 1.2,  # Cross-sectional strength — when it fires, size up
-    "momentum_12_1": 1.1,  # Factor-based — moderate quality boost
     "gap_and_go": 0.8,  # Sharpe -0.11 in isolation — reduce size
     "trend_pullback": 0.8,  # Sharpe -0.05
     "mean_reversion": 0.8,  # Sharpe -0.06
-    "vix_fear_reversion": 0.25,  # Sharpe -0.38 — pending redesign; minimal size
-    "breakout_52w": 0.0,  # Globally disabled
-    "rsi_divergence": 0.0,  # Globally disabled
+    # Globally disabled — multiplier defined only to prevent KeyError on legacy positions.
+    # These signals can never fire; entries here are harmless and serve as documentation.
+    "breakout_52w": 0.0,
+    "rsi_divergence": 0.0,
+    "rs_leader": 0.0,
+    "momentum_12_1": 0.0,
+    "vix_fear_reversion": 0.0,
 }
 
 
 def get_signal_size_multiplier(signal: str) -> float:
     """Return the Sharpe-based size multiplier for signal.
 
-    Returns 1.0 for unknown signals (conservative default — don't penalise new signals).
-    Returns 0.0 for globally disabled signals (breakout_52w, rsi_divergence).
+    Returns 1.0 for unknown/new signals (conservative default — don't penalise new signals).
+    Returns 0.0 for globally disabled signals.
     """
     return SIGNAL_SHARPE_MULTIPLIER.get(signal, 1.0)
 

@@ -267,8 +267,8 @@ Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [
 
 After validation, position-level risk checks are applied independently of Claude's recommendations:
 
-- **Risk-budget sizing** — position size is set at 0.25% of equity risked per trade (`RISK_PER_TRADE_PCT`), hard-capped at 5% of portfolio per position (`MAX_POSITION_WEIGHT`). Kelly is tracked as secondary telemetry but does not drive order sizes
-- **Hard position limits** — up to 5 positions (2 in small-account mode), capped at 5% of portfolio per position, 10% cash reserve always maintained
+- **Risk-budget sizing** — position size is set at 0.6% of equity risked per trade (`RISK_PER_TRADE_PCT`), hard-capped at 15% of portfolio per position (`MAX_POSITION_WEIGHT`) enforced after all 12 scalar multipliers are applied. Kelly fraction is tracked as secondary telemetry but does not drive order sizes
+- **Hard position limits** — up to 5 positions (2 in small-account mode), capped at 15% of portfolio per position, 10% cash reserve always maintained
 - **Fat-finger guard** — single orders above `MAX_SINGLE_ORDER_USD` (default $50,000; $55 in small-account mode) are rejected regardless of instruction
 - **Daily notional cap** — total new deployment above `MAX_DAILY_NOTIONAL_USD` (default $150,000; $75 in small-account mode) in one day halts buying
 - **Sector concentration** — maximum 2 positions in any sector
@@ -276,10 +276,10 @@ After validation, position-level risk checks are applied independently of Claude
 - **VIX-tiered stop adjustment** — trailing stop trail widens automatically: 3% (VIX ≤ 18) → 4% (VIX ≤ 25) → 5.5% (VIX ≤ 35) → 7% (VIX > 35)
 - **Earnings guard** — positions with earnings within 2 calendar days are exited pre-emptively
 - **Circuit breaker** — new buys halted when the portfolio drops 12% from its 5-day peak
-- **Daily loss limit** — all positions closed and halt file created when the portfolio loses 5% from the session open; requires manual `python cli.py resume`
+- **Daily loss limit** — all positions closed when the portfolio loses 5% from the session open; bot auto-resumes the next trading day. If any position close fails during liquidation a halt file is written and manual resume is required (`python cli.py resume`)
 - **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8% (15% in small-account mode); the remaining half runs with the trailing stop
-- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, RSI oversold, news catalyst, vix_fear_reversion (2 days); inside-day breakout, trend pullback, rsi_divergence, range_reversion (3 days); MACD crossover, BB squeeze, iv_compression (4 days); momentum, trend continuation, 52-week breakout, RS leader, gap_and_go, momentum_12_1 (5 days)
-- **Short hedge** — after long buys each open run, bottom-quartile RS stocks are scanned for short positions (max 3 concurrent; capped at 0.5× long notional; sized at 0.5× standard long size); regime-gated to BULL_TREND and NEUTRAL_CHOP only
+- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums: mean-reversion, gap_and_go, range_reversion (2 days); insider_buying, pead, inside-day breakout, trend pullback, candle_exhaustion, obv_divergence, obv_acceleration, volume_climax_reversal (3 days); MACD crossover, BB squeeze, iv_compression, breadth_thrust (4 days); momentum, golden_cross, tax_loss_reversal (5 days); intraday signals (1 day)
+- **Short hedge** — after long buys each open run, bottom-quartile RS stocks are scanned for short positions (max 3 concurrent; capped at 0.5× long notional; sized at 0.5× standard long size); regime-gated to bear regimes only (`STRESS_RISK_OFF`, `HIGH_VOL_DOWNTREND`, `DEFENSIVE_DOWNTREND`, `CREDIT_STRESS`); standalone short book active in bear regimes when no longs are held
 - **Same-day open guard** — only one buy phase executes per calendar day in `open` mode; subsequent open runs (e.g. from scheduler restarts) skip buys entirely
 
 ### Constrained parameter recommendation engine
@@ -575,7 +575,7 @@ By signal:
 | SQLite locked or corrupt | Falls back to in-memory state for the run; alert sent | Automatic recovery on next run |
 | Both API keys invalid | Run fails at client initialisation, alert sent | Fix `.env` and resume |
 | Circuit breaker triggered (−12% from 5-day peak) | New buys halted for the rest of the session; existing positions and stops untouched | Resets automatically at next run |
-| Daily loss limit hit (−5% from open) | All positions liquidated, halt file created, alert sent | Manual resume required: `python cli.py resume` |
+| Daily loss limit hit (−5% from open) | All positions liquidated, alert sent; auto-resumes next day | Automatic; halt file written + manual resume required only if a close fails |
 
 ---
 
@@ -823,6 +823,65 @@ Removes the hedge-only restriction on short entries so the bot can run a directi
 - **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
 - **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
 - **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
+
+---
+
+### 1.96 — June 2026 — Institutional-grade system review: critical safety fixes + registry unification
+
+Full-codebase review identifying and fixing 17 findings across crash safety, sizing, signal governance, data integrity, and documentation accuracy.
+
+**Critical fixes (run-blocking bugs):**
+- **C1 — `risk/regime_policy.py`** — Added `CREDIT_STRESS`, `LATE_CYCLE_BULL`, and `RECOVERY` policies to `REGIME_POLICY`. These three `MarketRegime` enum values had no policy entry, causing a `KeyError` crash mid-run. Added module-level totality assertion (`assert set(MarketRegime) == set(REGIME_POLICY)`) so any future gap is caught at import time. `get_regime_policy()` now uses `dict.get` with a safe UNKNOWN fallback + logged alert instead of bare `[]` access.
+- **H7 — `execution/trader.py`** — `get_daily_notional()` and `get_open_shorts()` previously returned `0.0` / `set()` on DB failure — silently resetting the daily notional cap and bypassing the short-slot count. Both now raise `OrderLedgerUnavailable`, which callers treat as buy/short-blocking.
+- **M7 — `main._evaluate_risk_limits()`** — Daily-loss liquidation loop now wraps each `close_position()` call in a try/except. Failed closes are collected; if any fail, a halt file is written and an alert is sent. Previously a failed close was silently ignored with no verification.
+- **H6 — `execution/trader.cancel_open_orders()`** — Rewrote from cancel-all to a two-phase approach: scoped cancel first (symbol-only orders via `GetOrdersRequest(symbols=[symbol])` + `cancel_order_by_id`), with cancel-all fallback only if shares are still held after the scoped cancel (GTC trailing-stop workaround). This prevents stripping stops from all other positions on every sell.
+
+**Sizing fixes:**
+- **C2+H5 — `main._execute_buy_phase()`** — `regime_policy.position_size_multiplier` (previously a dead field) is now multiplied into the notional chain. After all 12 scalars are applied, a hard cap of `account_now["portfolio_value"] × config.MAX_POSITION_WEIGHT` (15%) is enforced, preventing the joint product of multipliers from exceeding the documented position-weight limit.
+
+**Signal registry unification (H1):**
+- **`signals/registry.py`** (new) — Single source of truth deriving `ACTIVE_LONG_SIGNALS` and `AI_CITEABLE_SIGNALS` from `SIGNAL_PRIORITY − GLOBALLY_DISABLED`. Eliminates five independent copies of the signal list.
+- **`models.VALID_BUY_SIGNALS`** — Now derived from `AI_CITEABLE_SIGNALS`; phantom signals (`news_catalyst`, `rsi_oversold`, `trend_continuation`) and disabled signals removed automatically.
+- **`analysis/ai_analyst._DECISION_TOOL`** — `key_signal` enum now built from `sorted(AI_CITEABLE_SIGNALS)` instead of a hardcoded list. Disabled signals (`rs_leader`, `momentum_12_1`, `vix_fear_reversion`, `breakout_52w`) are no longer offered to the AI.
+- **`risk/position_sizer.SIGNAL_SHARPE_MULTIPLIER`** — Disabled signals zeroed (`rs_leader: 0.0`, `momentum_12_1: 0.0`, `vix_fear_reversion: 0.0`); previous 1.2× and 1.1× boosts for globally-disabled signals removed.
+- **`main._execute_buy_phase()`** — Added `key_signal ∈ matched_signals` cross-check: if the AI cites a signal that didn't actually fire on the candidate, the highest-priority fired signal is used for sizing instead.
+- **`config.SIGNAL_MAX_HOLD_DAYS`** — Added entries for 8 active signals that were missing: `range_reversion` (2d), `golden_cross` (5d), `candle_exhaustion` (3d), `obv_divergence` (3d), `obv_acceleration` (3d), `volume_climax_reversal` (3d), `breadth_thrust` (4d), `tax_loss_reversal` (5d).
+
+**Stop-exit outcome recording (H3):**
+- **`execution/trader.py`** — New `_record_stop_exit_outcome()` function queries recent closed SELL orders for stale symbols during `reconcile_positions()`. Broker-side stop exits are now recorded via `record_trade_outcome()` with actual fill price, fixing the survivorship bias that was systematically inflating signal win-rates.
+
+**Signal correctness:**
+- **M1 — `signals/evaluator.py`** — `tax_loss_reversal` now checks `snapshot.get("price_vs_52w_high_pct") is not None` before evaluating the drawdown threshold. The −999 sentinel default previously satisfied `< −30%` on any snapshot missing that field, causing false signals in January.
+- **M2 — `main._execute_buy_phase()`** — `place_trailing_stop` now receives raw `buy_result.filled_qty` (float) instead of `int(math.floor(...))`. The function's fractional branch (whole-share stop + remainder liquidation) now correctly executes; previously the floor discarded the fractional tail, leaving it unprotected.
+
+**Data integrity:**
+- **M5 — `config.py` / `execution/universe.py`** — Removed `Q` (Quintiles; IQV already present) and `MRSH` (no current S&P 500 constituent) from `STOCK_UNIVERSE`. Both added to `_EXCLUDED_SYMBOLS` to prevent re-entry via dynamic expansion.
+- **M6 — `main._execute_buy_phase()`** — `record_buy` now uses `buy_result.filled_avg_price` as `entry_price` when available, instead of the pre-trade snapshot price.
+
+**Model correctness:**
+- **L1 — `models.PositionDecision`** — Added `confidence: int = Field(ge=1, le=10, default=5)`. The AI tool schema required `confidence` for SELL decisions but the Pydantic model silently dropped it, making `decision.get("confidence")` always return `None` in sell-phase logging.
+
+**Wiring/consistency tests (11 new):**
+- `test_regime_policy_covers_all_regimes` — all MarketRegime members have a REGIME_POLICY entry
+- `test_get_regime_policy_returns_for_every_regime` — no KeyError for any enum value
+- `test_valid_buy_signals_derived_from_registry` — VALID_BUY_SIGNALS == AI_CITEABLE_SIGNALS
+- `test_no_globally_disabled_signal_in_ai_citeable` — disabled signals absent from AI enum
+- `test_all_active_signals_have_hold_days` — no active signal missing SIGNAL_MAX_HOLD_DAYS
+- `test_ai_tool_enum_matches_registry` — tool schema enum == registry set
+- `test_max_position_weight_respected_with_all_scalars_at_max` — post-chain cap holds
+- `test_readme_risk_numbers_match_config` — README percentages match config constants
+- `test_get_daily_notional_raises_on_db_failure` — fail-closed ledger getter
+- `test_get_open_shorts_raises_on_db_failure` — fail-closed ledger getter
+- `test_tax_loss_reversal_does_not_fire_on_missing_data` — sentinel guard
+
+**README corrections (H4):**
+- `RISK_PER_TRADE_PCT`: "0.25%" → "0.6%"
+- `MAX_POSITION_WEIGHT`: "5% per position" → "15% per position" (two instances)
+- Daily-loss halt behaviour: auto-resumes next day; halt file only written on close failure
+- Short regime gate: "BULL_TREND and NEUTRAL_CHOP only" → bear regimes only (STRESS_RISK_OFF, HIGH_VOL_DOWNTREND, DEFENSIVE_DOWNTREND, CREDIT_STRESS)
+- Per-signal hold-days list updated to reflect current active signals
+
+**Tests:** 11 new (all in `tests/test_wiring.py`). 4,220 tests total. 100% coverage on all changed lines.
 
 ---
 

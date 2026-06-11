@@ -131,6 +131,17 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "insider_buying": 5,  # cluster insider purchases — drift plays out over days-weeks
     "pead": 3,  # post-earnings drift — capture the initial repricing window
     "iv_compression": 4,  # vol squeeze → expansion; hold for the directional move
+    # ── Batch 1: OHLCV technical signals ────────────────────────────────────
+    "range_reversion": 2,  # intra-range mean-reversion; resolves quickly
+    "golden_cross": 5,  # 50d/200d trend-following; needs room to develop
+    "candle_exhaustion": 3,  # reversal at exhaustion candle; typically 2-3 day
+    "obv_divergence": 3,  # OBV/price divergence; resolves in a few days
+    "obv_acceleration": 3,  # OBV acceleration momentum; 3-day confirmation window
+    "volume_climax_reversal": 3,  # reversal after climax volume; short relief window
+    # ── Batch 2: universe-level signals ──────────────────────────────────────
+    "breadth_thrust": 4,  # broad-market thrust; hold for the continuation move
+    # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
+    "tax_loss_reversal": 5,  # January seasonal reversal; tends to persist a week
     "unknown": 3,  # conservative default
 }
 
@@ -467,7 +478,6 @@ STOCK_UNIVERSE = [
     "MTB",
     "MPC",
     "MAR",
-    "MRSH",
     "MLM",
     "MAS",
     "MA",
@@ -552,7 +562,6 @@ STOCK_UNIVERSE = [
     "PWR",
     "QCOM",
     "DGX",
-    "Q",
     "RL",
     "RJF",
     "RTX",
