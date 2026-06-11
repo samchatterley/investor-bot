@@ -381,6 +381,8 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         deps.position_sizer.vol_of_vol_scalar.return_value = 1.0
         deps.position_sizer.seasonal_scalar.return_value = 1.0
         deps.position_sizer.macro_scalar.return_value = 1.0
+        deps.position_sizer.correlation_scalar.return_value = 1.0
+        deps.position_sizer.nhl_scalar.return_value = 1.0
         deps.position_sizer.drawdown_scalar.return_value = 1.0
         deps.get_combined_macro_flags.return_value = {}
         deps.market_data.get_vix.return_value = 15.0
