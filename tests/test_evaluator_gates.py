@@ -1,0 +1,71 @@
+"""Tests for dynamic gates in signals/evaluator.py — premarket_gap_quality."""
+
+import unittest
+
+
+def _gap_and_go_snapshot(premarket_gap_retrace: bool = False) -> dict:
+    """Return a snapshot that should fire gap_and_go when premarket_gap_retrace is False."""
+    return {
+        "gap_pct": 3.5,
+        "close_above_open": True,
+        "vol_ratio": 2.5,
+        "adx": 30.0,
+        "rsi_14": 55.0,
+        "bb_pct": 0.5,
+        "macd_diff": 0.1,
+        "ema9_above_ema21": True,
+        "ret_5d_pct": 2.0,
+        "ret_10d_pct": 4.0,
+        "price_vs_ema21_pct": 1.0,
+        "price_vs_52w_high_pct": -5.0,
+        "hv_rank": 0.5,
+        "bb_squeeze": False,
+        "bb_squeeze_days": 0,
+        "is_inside_day": False,
+        "spread_proxy_20d": 0.001,
+        "weekly_trend_up": True,
+        "weekly_rsi": 55.0,
+        "calendar_month": 6,
+        "premarket_gap_retrace": premarket_gap_retrace,
+    }
+
+
+class TestPremarketGapQualityGate(unittest.TestCase):
+    def test_premarket_gap_retrace_suppresses_gap_and_go(self):
+        """When premarket_gap_retrace=True, gap_and_go must not appear in signals."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot(premarket_gap_retrace=True)
+        signals = evaluate_signals(snap)
+        self.assertNotIn("gap_and_go", signals)
+
+    def test_no_retrace_allows_gap_and_go(self):
+        """When premarket_gap_retrace=False, gap_and_go fires normally."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot(premarket_gap_retrace=False)
+        signals = evaluate_signals(snap)
+        self.assertIn("gap_and_go", signals)
+
+    def test_missing_field_defaults_to_no_suppression(self):
+        """When premarket_gap_retrace is absent from snapshot, gap_and_go fires normally."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot()
+        del snap["premarket_gap_retrace"]
+        signals = evaluate_signals(snap)
+        self.assertIn("gap_and_go", signals)
+
+    def test_premarket_retrace_does_not_suppress_other_signals(self):
+        """premarket_gap_retrace only gates gap_and_go, not momentum or other signals."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot(premarket_gap_retrace=True)
+        # Give the snapshot momentum characteristics too
+        snap["macd_crossed_up"] = True
+        snap["vol_ratio"] = 1.5
+        signals = evaluate_signals(snap)
+        # gap_and_go suppressed
+        self.assertNotIn("gap_and_go", signals)
+        # macd_crossover should still fire (adx>=20, vol>=1.2, macd_crossed_up=True)
+        self.assertIn("macd_crossover", signals)

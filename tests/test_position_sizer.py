@@ -10,6 +10,7 @@ from risk.position_sizer import (
     amihud_size_scalar,
     atr_position_size,
     cofiring_boost,
+    correlation_scalar,
     drawdown_scalar,
     get_max_positions,
     get_signal_size_multiplier,
@@ -17,6 +18,7 @@ from risk.position_sizer import (
     macro_scalar,
     momentum_quality_score,
     mqr_size_multiplier,
+    nhl_scalar,
     risk_budget_size,
     seasonal_scalar,
     small_account_size,
@@ -238,6 +240,14 @@ class TestEmpiricalWinRate(unittest.TestCase):
         }
         self._write_stats(stats)
         result = _empirical_win_rate("momentum", "BULL_TRENDING")
+        self.assertIsNone(result)
+
+    def test_returns_none_when_signal_absent_from_stats(self):
+        # Line 41: signal not in stats dict at all → return None immediately
+        from risk.position_sizer import _empirical_win_rate
+
+        self._write_stats({"other_signal": {"trades": 10, "wins": 6}})
+        result = _empirical_win_rate("unknown_signal", "BULL_TREND")
         self.assertIsNone(result)
 
 
@@ -692,3 +702,59 @@ class TestSmallAccountSize(unittest.TestCase):
     def test_custom_max_single_order(self):
         # 500 * 0.8 / 2 = 200 > 100 → cap at custom max
         self.assertEqual(small_account_size(500, max_single_order=100.0), 100.0)
+
+
+class TestCorrelationScalar(unittest.TestCase):
+    def test_high_corr_dampens_size(self):
+        self.assertAlmostEqual(correlation_scalar(0.80), 0.85)
+
+    def test_low_corr_boosts_size(self):
+        self.assertAlmostEqual(correlation_scalar(0.20), 1.10)
+
+    def test_neutral_corr_returns_one(self):
+        self.assertAlmostEqual(correlation_scalar(0.55), 1.0)
+
+    def test_none_returns_one(self):
+        self.assertAlmostEqual(correlation_scalar(None), 1.0)
+
+    def test_exactly_at_high_threshold_returns_one(self):
+        # 0.75 is NOT > 0.75, so no dampening
+        self.assertAlmostEqual(correlation_scalar(0.75), 1.0)
+
+    def test_exactly_at_low_threshold_returns_one(self):
+        # 0.35 is NOT < 0.35, so no boost
+        self.assertAlmostEqual(correlation_scalar(0.35), 1.0)
+
+    def test_just_above_high_threshold_dampens(self):
+        self.assertAlmostEqual(correlation_scalar(0.76), 0.85)
+
+    def test_just_below_low_threshold_boosts(self):
+        self.assertAlmostEqual(correlation_scalar(0.34), 1.10)
+
+
+class TestNHLScalar(unittest.TestCase):
+    def test_high_nhl_boosts_size(self):
+        self.assertAlmostEqual(nhl_scalar(3.0), 1.10)
+
+    def test_low_nhl_dampens_size(self):
+        self.assertAlmostEqual(nhl_scalar(0.3), 0.80)
+
+    def test_neutral_nhl_returns_one(self):
+        self.assertAlmostEqual(nhl_scalar(1.0), 1.0)
+
+    def test_none_returns_one(self):
+        self.assertAlmostEqual(nhl_scalar(None), 1.0)
+
+    def test_exactly_at_expansion_threshold_returns_one(self):
+        # 2.0 is NOT > 2.0, so no boost
+        self.assertAlmostEqual(nhl_scalar(2.0), 1.0)
+
+    def test_exactly_at_contraction_threshold_returns_one(self):
+        # 0.5 is NOT < 0.5, so no dampening
+        self.assertAlmostEqual(nhl_scalar(0.5), 1.0)
+
+    def test_just_above_expansion_threshold_boosts(self):
+        self.assertAlmostEqual(nhl_scalar(2.1), 1.10)
+
+    def test_just_below_contraction_threshold_dampens(self):
+        self.assertAlmostEqual(nhl_scalar(0.4), 0.80)

@@ -1850,6 +1850,10 @@ def _execute_buy_phase(
                 _vov_scalar = _position_sizer.vol_of_vol_scalar(mc.regime.get("vol_of_vol"))
                 _seasonal_scalar = _position_sizer.seasonal_scalar(key_signal)
                 _macro_scalar = _position_sizer.macro_scalar(candidate, key_signal)
+                _corr_scalar = _position_sizer.correlation_scalar(
+                    candidate.get("sector_correlation_20d")
+                )
+                _nhl_scalar = _position_sizer.nhl_scalar(candidate.get("nhl_ratio"))
 
                 # Sector momentum gate — only allow longs in top 4 sectors by 20d return
                 _sym_sector = _sector_data.get_sector(symbol)
@@ -1952,6 +1956,14 @@ def _execute_buy_phase(
                         logger.info(
                             f"  Macro scalar: {key_signal} → size scaled {_macro_scalar:.2f}×"
                         )
+                    if _corr_scalar != 1.0:
+                        logger.info(
+                            f"  Correlation scalar: {symbol} corr={candidate.get('sector_correlation_20d', '?')} → size scaled {_corr_scalar:.2f}×"
+                        )
+                    if _nhl_scalar != 1.0:
+                        logger.info(
+                            f"  NHL scalar: nhl_ratio={candidate.get('nhl_ratio', '?')} → size scaled {_nhl_scalar:.2f}×"
+                        )
                     notional = min(
                         _base
                         * _dd_scalar
@@ -1962,7 +1974,9 @@ def _execute_buy_phase(
                         * _mqr_multiplier
                         * _vov_scalar
                         * _seasonal_scalar
-                        * _macro_scalar,
+                        * _macro_scalar
+                        * _corr_scalar
+                        * _nhl_scalar,
                         available_cash,
                     )
 

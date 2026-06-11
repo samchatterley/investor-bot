@@ -1621,3 +1621,350 @@ class TestSummariseForAIBatch2Fields(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertFalse(result[0].get("breadth_thrust", True))
         self.assertEqual(result[0].get("breadth_symbols_counted", -1), 0)
+        self.assertAlmostEqual(result[0].get("nhl_ratio", -1.0), 1.0)
+
+
+class TestBreadthNHLInjection(unittest.TestCase):
+    """NHL ratio is injected alongside breadth_thrust in get_market_snapshots()."""
+
+    def _base_snap(self):
+        return {
+            "symbol": "AAPL",
+            "current_price": 100.0,
+            "ret_1d_pct": 0.5,
+            "ret_5d_pct": 2.0,
+            "ret_10d_pct": 4.0,
+            "rsi_14": 55.0,
+            "macd_diff": 0.1,
+            "macd_crossed_up": False,
+            "macd_crossed_down": False,
+            "ema9_above_ema21": True,
+            "bb_pct": 0.5,
+            "vol_ratio": 1.2,
+            "price_vs_ema9_pct": 1.0,
+            "weekly_trend_up": True,
+            "weekly_rsi": 55.0,
+        }
+
+    def test_nhl_ratio_injected_from_breadth_snapshot(self):
+        from unittest.mock import MagicMock
+
+        from data.market_data import get_market_snapshots
+
+        mock_breadth = MagicMock()
+        mock_breadth.breadth_thrust = True
+        mock_breadth.symbols_counted = 80
+        mock_breadth.nh_nl_ratio = 2.5
+
+        with (
+            patch("data.market_data._bulk_download", return_value={"AAPL": MagicMock()}),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=self._base_snap()),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=None),
+            patch("data.breadth.get_breadth_snapshot", return_value=mock_breadth),
+            patch("data.sector_correlation.compute_stock_sector_corr", return_value=None),
+            patch("data.sector_data.get_sector_etf", return_value=None),
+        ):
+            result = get_market_snapshots(["AAPL"])
+
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].get("nhl_ratio"), 2.5)
+        self.assertTrue(result[0].get("breadth_thrust"))
+
+
+class TestSectorCorrelationInjection(unittest.TestCase):
+    """sector_correlation_20d is injected per-symbol in get_market_snapshots()."""
+
+    def _base_snap(self, symbol="AAPL"):
+        return {
+            "symbol": symbol,
+            "current_price": 100.0,
+            "ret_1d_pct": 0.5,
+            "ret_5d_pct": 2.0,
+            "ret_10d_pct": 4.0,
+            "rsi_14": 55.0,
+            "macd_diff": 0.1,
+            "macd_crossed_up": False,
+            "macd_crossed_down": False,
+            "ema9_above_ema21": True,
+            "bb_pct": 0.5,
+            "vol_ratio": 1.2,
+            "price_vs_ema9_pct": 1.0,
+            "weekly_trend_up": True,
+            "weekly_rsi": 55.0,
+        }
+
+    def _std_patches(self, snap):
+        from unittest.mock import MagicMock
+
+        mock_breadth = MagicMock()
+        mock_breadth.breadth_thrust = False
+        mock_breadth.symbols_counted = 0
+        mock_breadth.nh_nl_ratio = 1.0
+        return [
+            patch("data.market_data._bulk_download", return_value={"AAPL": MagicMock()}),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=None),
+            patch("data.breadth.get_breadth_snapshot", return_value=mock_breadth),
+        ]
+
+    def test_correlation_injected_when_etf_found_and_compute_returns_float(self):
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap())
+        patches += [
+            patch("data.sector_data.get_sector_etf", return_value="XLK"),
+            patch("data.sector_correlation.compute_stock_sector_corr", return_value=0.82),
+        ]
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+        ):
+            result = get_market_snapshots(["AAPL"])
+
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].get("sector_correlation_20d"), 0.82)
+
+    def test_no_injection_when_get_sector_etf_returns_none(self):
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap())
+        patches += [
+            patch("data.sector_data.get_sector_etf", return_value=None),
+            patch("data.sector_correlation.compute_stock_sector_corr", return_value=0.70),
+        ]
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+        ):
+            result = get_market_snapshots(["AAPL"])
+
+        self.assertEqual(len(result), 1)
+        self.assertNotIn("sector_correlation_20d", result[0])
+
+    def test_no_injection_when_compute_returns_none(self):
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap())
+        patches += [
+            patch("data.sector_data.get_sector_etf", return_value="XLK"),
+            patch("data.sector_correlation.compute_stock_sector_corr", return_value=None),
+        ]
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+            patches[9],
+        ):
+            result = get_market_snapshots(["AAPL"])
+
+        self.assertEqual(len(result), 1)
+        self.assertNotIn("sector_correlation_20d", result[0])
+
+    def test_exception_in_correlation_block_swallowed(self):
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap())
+        patches += [
+            patch("data.sector_data.get_sector_etf", side_effect=RuntimeError("sector down")),
+        ]
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patches[7],
+            patches[8],
+        ):
+            result = get_market_snapshots(["AAPL"])
+
+        self.assertEqual(len(result), 1)
+        self.assertNotIn("sector_correlation_20d", result[0])
+
+
+class TestPremarketGapRetrace(unittest.TestCase):
+    """premarket_gap_retrace field in get_intraday_data() result."""
+
+    def _make_alpaca_bar(self, ts_et, open_=100.0, high=101.0, low=99.0, close=100.5, vol=50_000):
+        bar = MagicMock()
+        bar.timestamp = ts_et
+        bar.open = open_
+        bar.high = high
+        bar.low = low
+        bar.close = close
+        bar.volume = vol
+        return bar
+
+    def _patch_alpaca(self, bars_by_sym: dict):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = bars_by_sym
+        mock_client.get_stock_bars.return_value = mock_resp
+        return patch("data.market_data.StockHistoricalDataClient", return_value=mock_client)
+
+    def _fake_now_et(self, hour=10, minute=30):
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        return datetime(2025, 6, 10, hour, minute, 0, tzinfo=_ET)
+
+    def _build_bars(self, prev_close, day_open, close_at_935):
+        """Build a pre-market bar + 5 regular-session bars for a gap scenario."""
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        # Pre-market bar at 09:00
+        bars = [
+            self._make_alpaca_bar(
+                datetime(2025, 6, 10, 9, 0, 0, tzinfo=_ET),
+                open_=prev_close,
+                high=prev_close,
+                low=prev_close,
+                close=prev_close,
+            )
+        ]
+        # 5 regular-session minute bars starting at 09:30
+        for m in range(5):
+            ts = datetime(2025, 6, 10, 9, 30 + m, 0, tzinfo=_ET)
+            close = close_at_935 if m == 4 else day_open
+            bars.append(
+                self._make_alpaca_bar(
+                    ts, open_=day_open, high=day_open + 0.5, low=day_open - 0.5, close=close
+                )
+            )
+        return bars
+
+    def test_gap_retrace_true_when_more_than_50pct_filled(self):
+        """Gap-up of $2, price at 09:35 has fallen $1.10 (55% retrace) → True."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et()
+        prev_close = 100.0
+        day_open = 102.0  # +2% gap
+        close_935 = 100.9  # fell $1.10 of $2.00 gap (55% retrace)
+        bars = self._build_bars(prev_close, day_open, close_935)
+
+        with (
+            self._patch_alpaca({"AAPL": bars}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertTrue(result["AAPL"]["premarket_gap_retrace"])
+
+    def test_gap_retrace_false_when_gap_holds(self):
+        """Gap-up of $2, price at 09:35 only fell $0.50 (25% retrace) → False."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et()
+        prev_close = 100.0
+        day_open = 102.0
+        close_935 = 101.5  # fell $0.50 (25% retrace)
+        bars = self._build_bars(prev_close, day_open, close_935)
+
+        with (
+            self._patch_alpaca({"AAPL": bars}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertFalse(result["AAPL"]["premarket_gap_retrace"])
+
+    def test_no_significant_gap_sets_retrace_false(self):
+        """Gap < 2% (0.5%) → premarket_gap_retrace stays False."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et()
+        prev_close = 100.0
+        day_open = 100.5  # only 0.5% gap — below the 2% threshold
+        close_935 = 99.0  # would be a retrace but gap_pct < 2 so gate doesn't fire
+        bars = self._build_bars(prev_close, day_open, close_935)
+
+        with (
+            self._patch_alpaca({"AAPL": bars}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertFalse(result["AAPL"]["premarket_gap_retrace"])
+
+    def test_fewer_than_5_bars_sets_retrace_false(self):
+        """Only 3 session bars at call time → fewer than 5, retrace check skipped → False."""
+        from data.market_data import get_intraday_data
+
+        _ET = __import__("zoneinfo").ZoneInfo("America/New_York")
+        fake_now = self._fake_now_et(hour=9, minute=33)
+        prev_close = 100.0
+        day_open = 104.0  # 4% gap-up
+        # Only 3 session bars (09:30, 09:31, 09:32)
+        bars = [
+            self._make_alpaca_bar(
+                datetime(2025, 6, 10, 9, 0, 0, tzinfo=_ET),
+                open_=prev_close,
+                high=prev_close,
+                low=prev_close,
+                close=prev_close,
+            )
+        ]
+        for m in range(3):
+            ts = datetime(2025, 6, 10, 9, 30 + m, 0, tzinfo=_ET)
+            bars.append(
+                self._make_alpaca_bar(
+                    ts,
+                    open_=day_open,
+                    high=day_open + 0.5,
+                    low=day_open - 0.5,
+                    close=day_open - 2.5,
+                )
+            )
+
+        with (
+            self._patch_alpaca({"AAPL": bars}),
+            patch("data.market_data.datetime") as mock_dt,
+        ):
+            mock_dt.now.return_value = fake_now
+            mock_dt.strptime = datetime.strptime
+            result = get_intraday_data(["AAPL"])
+
+        self.assertIn("AAPL", result)
+        self.assertFalse(result["AAPL"]["premarket_gap_retrace"])

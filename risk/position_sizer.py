@@ -393,6 +393,48 @@ _MACRO_COPPER_CYCLICAL_SCALAR = 1.10  # copper-gold expansion ratio → boost cy
 _MACRO_PMI_CYCLICAL_SCALAR = 1.05  # PMI > 55 for 3 months → modest cyclical boost
 
 
+_CORR_HIGH_THRESHOLD = 0.75
+_CORR_LOW_THRESHOLD = 0.35
+_CORR_HIGH_SCALAR = 0.85  # high sector-beta: stock tracks sector closely → reduce
+_CORR_LOW_SCALAR = 1.10  # decorrelated idiosyncratic mover → boost
+
+
+def correlation_scalar(corr: float | None) -> float:
+    """Return position-size multiplier based on 20-day stock-vs-sector correlation.
+
+    High correlation (>0.75): high systemic exposure — dampen size.
+    Low correlation (<0.35): idiosyncratic mover — small boost.
+    """
+    if corr is None:
+        return 1.0
+    if corr > _CORR_HIGH_THRESHOLD:
+        return _CORR_HIGH_SCALAR
+    if corr < _CORR_LOW_THRESHOLD:
+        return _CORR_LOW_SCALAR
+    return 1.0
+
+
+_NHL_EXPANSION_THRESHOLD = 2.0
+_NHL_CONTRACTION_THRESHOLD = 0.5
+_NHL_EXPANSION_SCALAR = 1.10  # NH/NL > 2 → breadth expanding → boost longs
+_NHL_CONTRACTION_SCALAR = 0.80  # NH/NL < 0.5 → breadth deteriorating → dampen longs
+
+
+def nhl_scalar(nhl_ratio: float | None) -> float:
+    """Return position-size multiplier based on new-high / new-low breadth ratio.
+
+    NH/NL > 2.0: expansion regime — more conviction in longs.
+    NH/NL < 0.5: contraction — dampen longs.
+    """
+    if nhl_ratio is None:
+        return 1.0
+    if nhl_ratio > _NHL_EXPANSION_THRESHOLD:
+        return _NHL_EXPANSION_SCALAR
+    if nhl_ratio < _NHL_CONTRACTION_THRESHOLD:
+        return _NHL_CONTRACTION_SCALAR
+    return 1.0
+
+
 def macro_scalar(snapshot: dict, signal: str) -> float:
     """Return a position-size multiplier from macro/rates context.
 

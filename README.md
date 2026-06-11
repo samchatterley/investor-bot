@@ -208,7 +208,7 @@ flowchart TB
 ├── notifications/     Email and alert system
 ├── risk/              Position sizing, earnings/macro calendar, risk checks
 ├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (4119 tests, 100% coverage)
+├── tests/             Unit test suite (4209 tests, 100% coverage)
 ├── utils/             Audit log, portfolio tracker, decision log, validators
 ├── cli.py             Command-line interface (includes demo mode)
 ├── config.py          All configuration and environment variables
@@ -771,7 +771,7 @@ The current system deliberately keeps deployment local and execution synchronous
 
 - **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
 
-- **4119 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
+- **4209 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
 
 ---
 
@@ -823,6 +823,22 @@ Removes the hedge-only restriction on short entries so the bot can run a directi
 - **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
 - **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
 - **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
+
+---
+
+### 1.95d — June 2026 — Batch 5 microstructure signals + NEUTRAL_CHOP confidence fix
+
+Adds three market microstructure signals and fixes the `min_confidence_bump=1` bug in `NEUTRAL_CHOP` (the same regression that was fixed in `DEFENSIVE_DOWNTREND` in v1.95c).
+
+- **`risk/regime_policy.py`** — `NEUTRAL_CHOP.min_confidence_bump` corrected from `1` to `0`. The erroneous value was raising the AI confidence threshold by +1 in a regime where no such bump is warranted.
+- **`data/sector_correlation.py`** (new) — `compute_stock_sector_corr(symbol, etf, price_data)` computes a rolling 20-day Pearson correlation between a stock and its sector ETF (mapped via `get_sector_etf()`). Returns `float | None`; falls back to yfinance if price data is not pre-loaded. `_get_df()` helper handles cache vs. live fetch.
+- **`risk/position_sizer.correlation_scalar(corr)`** — new multiplier: `0.85×` when `corr > 0.75` (dampens size when the stock moves in lockstep with the sector); `1.10×` when `corr < 0.35` (boosts when the stock is decorrelated); `1.0×` otherwise. `None` → `1.0`.
+- **`risk/position_sizer.nhl_scalar(nhl_ratio)`** — new multiplier: `1.10×` when NH/NL ratio `> 2.0` (broad expansion supports longs); `0.80×` when `< 0.5` (contraction pressure); `1.0×` otherwise. `None` → `1.0`.
+- **`data/market_data.get_intraday_data()`** — computes `premarket_gap_retrace`: `True` when a gap ≥ 2% has retraced more than 50% of its opening distance by the 09:35 bar (first 5 one-minute bars). Added to every intraday snapshot dict.
+- **`data/market_data.get_market_snapshots()`** — injects `nhl_ratio` (from `BreadthSnapshot.nh_nl_ratio`) and `sector_correlation_20d` (per-symbol 20d rolling correlation vs. sector ETF) into all live snapshots. ETF price data is bulk-downloaded once via `_bulk_download` and reused across all symbols.
+- **`signals/evaluator.py`** — `premarket_gap_quality` gate: when `premarket_gap_retrace=True`, `gap_and_go` is added to `blocked`. Suppresses the signal when opening gap momentum has already evaporated.
+- **`main._execute_buy_phase()`** — `_corr_scalar` and `_nhl_scalar` multiplied into the notional chain (after `_macro_scalar`); both logged when ≠ 1.0. Notional chain is now 12 multipliers deep.
+- **Tests:** 48 new tests — `TestComputeStockSectorCorr` (8), `TestGetDf` (5) in new `test_sector_correlation.py`; `TestPremarketGapRetraceGate` (4) in new `test_evaluator_gates.py`; `TestCorrelationScalar` (8) + `TestNHLScalar` (8) + 1 coverage gap fix in `test_position_sizer.py`; `TestBreadthNHLInjection` (1) + `TestSectorCorrelationInjection` (4) + `TestPremarketGapRetrace` (4) in `test_market_data.py`; `test_corr_scalar_nonone_logs_and_buys` + `test_nhl_scalar_nonone_logs_and_buys` in `test_main.py`. 4,209 tests total. 100% coverage on all changed lines.
 
 ---
 

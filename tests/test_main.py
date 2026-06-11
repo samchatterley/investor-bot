@@ -872,6 +872,8 @@ class RunInnerBase(unittest.TestCase):
         deps.position_sizer.vol_of_vol_scalar.return_value = 1.0
         deps.position_sizer.seasonal_scalar.return_value = 1.0
         deps.position_sizer.macro_scalar.return_value = 1.0
+        deps.position_sizer.correlation_scalar.return_value = 1.0
+        deps.position_sizer.nhl_scalar.return_value = 1.0
         deps.position_sizer.drawdown_scalar.return_value = 1.0
         deps.get_combined_macro_flags.return_value = {}
         deps.market_data.get_vix.return_value = 18.0
@@ -5903,6 +5905,54 @@ class TestScalarLoggingBranches(RunInnerBase):
             exit_optimiser__compute_atr_pct=None,
         )
         deps.risk_manager.check_vix_stop_adjustment.return_value = config.TRAILING_STOP_PCT
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        buy_mock.assert_called()
+
+    def test_corr_scalar_nonone_logs_and_buys(self):
+        """_corr_scalar != 1.0 triggers correlation scalar logging branch."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        decisions = _decisions(buys=[self._buy_candidate()])
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
+        )
+        deps.position_sizer.correlation_scalar.return_value = 0.85
+        deps.trader.place_buy_order = buy_mock
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        buy_mock.assert_called()
+
+    def test_nhl_scalar_nonone_logs_and_buys(self):
+        """_nhl_scalar != 1.0 triggers NHL scalar logging branch."""
+        buy_mock = MagicMock(
+            return_value=OrderResult(
+                status=OrderStatus.FILLED, symbol="AAPL", broker_order_id="x", filled_qty=1.0
+            )
+        )
+        decisions = _decisions(buys=[self._buy_candidate()])
+        deps = self._make_deps(
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__prefilter_candidates=[
+                {"symbol": "AAPL", "current_price": 150.0, "matched_signals": ["momentum"]}
+            ],
+            market_data__get_market_snapshots=[{"symbol": "AAPL", "current_price": 150.0}],
+            exit_optimiser__compute_atr_pct=None,
+        )
+        deps.position_sizer.nhl_scalar.return_value = 1.10
         deps.trader.place_buy_order = buy_mock
         with self._inner_patches():
             from main import _run_inner

@@ -48,7 +48,7 @@ REGIME_POLICY: dict[MarketRegime, RegimeRiskPolicy] = {
     MarketRegime.NEUTRAL_CHOP: RegimeRiskPolicy(
         block_new_buys=False,
         max_orders_per_run=2,
-        min_confidence_bump=1,
+        min_confidence_bump=0,
         position_size_multiplier=0.75,
     ),
     MarketRegime.UNKNOWN: RegimeRiskPolicy(

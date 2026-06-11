@@ -664,7 +664,7 @@ def get_market_snapshots(
         for s in snapshots:
             s["amihud_illiquid"] = False
 
-    # Breadth-thrust injection (live pipeline only — backtest uses engine-level dict)
+    # Breadth + NHL ratio injection (live pipeline only — backtest uses engine-level dict)
     if live_bulk is not None:
         try:
             from data.breadth import get_breadth_snapshot
@@ -672,14 +672,39 @@ def get_market_snapshots(
             _bsnapshot = get_breadth_snapshot(price_data=live_bulk)
             _bt_flag = bool(_bsnapshot.breadth_thrust)
             _bt_count = int(_bsnapshot.symbols_counted)
+            _nhl = round(float(_bsnapshot.nh_nl_ratio), 4)
             for s in snapshots:
                 s["breadth_thrust"] = _bt_flag
                 s["breadth_symbols_counted"] = _bt_count
+                s["nhl_ratio"] = _nhl
         except Exception as exc:
             logger.warning(f"breadth_thrust injection failed: {exc}")
             for s in snapshots:
                 s.setdefault("breadth_thrust", False)
                 s.setdefault("breadth_symbols_counted", 0)
+                s.setdefault("nhl_ratio", 1.0)
+
+    # Sector correlation injection (live pipeline only)
+    if live_bulk is not None:
+        try:
+            from data.sector_correlation import compute_stock_sector_corr
+            from data.sector_data import SECTOR_ETFS, get_sector_etf
+
+            # Ensure sector ETF price data is available in bulk cache
+            _all_etfs = list(set(SECTOR_ETFS.values()))
+            _etf_data = _bulk_download(_all_etfs, max(days + 150, 200))
+            if _etf_data:
+                live_bulk.update(_etf_data)
+
+            for s in snapshots:
+                _sym = s["symbol"]
+                _etf = get_sector_etf(_sym)
+                if _etf:
+                    _corr = compute_stock_sector_corr(_sym, _etf, price_data=live_bulk)
+                    if _corr is not None:
+                        s["sector_correlation_20d"] = _corr
+        except Exception as exc:
+            logger.warning(f"sector correlation injection failed: {exc}")
 
     return snapshots
 
@@ -773,6 +798,17 @@ def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
             # Gap
             gap_pct = round((day_open / prev_close - 1) * 100, 2) if prev_close else None
 
+            # Premarket gap quality: has the opening gap retraced >50% within the first 5 bars?
+            # Only evaluated for upside gaps (gap_and_go is a long signal requiring gap ≥2%).
+            premarket_gap_retrace = False
+            if gap_pct is not None and gap_pct >= 2.0 and prev_close is not None:
+                first_5_bars = today_bars.head(5)
+                if len(first_5_bars) >= 5:
+                    price_935 = float(first_5_bars["close"].iloc[-1])
+                    gap_abs = day_open - prev_close  # positive (gap-up)
+                    retrace_amount = day_open - price_935  # positive if price fell back
+                    premarket_gap_retrace = retrace_amount > 0.5 * gap_abs
+
             # Intraday change (price action after the open)
             intraday_change_pct = round((current_price / day_open - 1) * 100, 2)
 
@@ -824,6 +860,7 @@ def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
 
             result[sym] = {
                 "gap_pct": gap_pct,
+                "premarket_gap_retrace": premarket_gap_retrace,
                 "intraday_change_pct": intraday_change_pct,
                 "intraday_cumvol": intraday_cumvol,
                 "price_above_vwap": price_above_vwap,

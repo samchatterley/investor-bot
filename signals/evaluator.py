@@ -635,6 +635,10 @@ def evaluate_signals(
     if int(snapshot.get("macro_yield_curve_inverted_days", 0)) >= 20:
         blocked = blocked | _LATE_CYCLE_BULL_BLOCKED
 
+    # premarket_gap_quality: opening gap retraced >50% by 09:35 → weak gap momentum
+    if bool(snapshot.get("premarket_gap_retrace", False)):
+        blocked = blocked | frozenset({"gap_and_go"})
+
     def _f(key: str, default: float) -> float:
         v = snapshot.get(key)
         return float(v) if v is not None else default
