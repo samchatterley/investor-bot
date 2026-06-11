@@ -14,35 +14,57 @@ from __future__ import annotations
 SIGNAL_PRIORITY: dict[str, int] = {
     "vix_fear_reversion": 0,
     "insider_buying": 1,
-    "pead": 2,
+    "activist_13d_signal": 2,  # activist SC 13D filing — catalyst-driven, bypasses quality gates
+    "pead": 3,
+    "guidance_raise_signal": 4,  # positive 8-K guidance event (early entry, no price-confirm required)
     # rs_leader blocked in BULL_TREND (no edge); breakout_52w < momentum_12_1 < gap_and_go
-    "rs_leader": 3,
-    "breakout_52w": 4,
-    "momentum_12_1": 5,
-    "gap_and_go": 6,
-    "bb_squeeze": 7,
-    "inside_day_breakout": 8,
-    "trend_pullback": 9,
-    "iv_compression": 10,
-    "range_reversion": 11,
-    "rsi_divergence": 12,
+    "rs_leader": 5,
+    "breakout_52w": 6,
+    "momentum_12_1": 7,
+    "gap_and_go": 8,
+    "bb_squeeze": 9,
+    "inside_day_breakout": 10,
+    "trend_pullback": 11,
+    "iv_compression": 12,
+    "iv_vs_rv_spread": 13,  # ATM IV/RV < 0.7 = vol genuinely cheap vs realised
+    "range_reversion": 14,
+    "rsi_divergence": 15,
     # mean_reversion outranks momentum (counter-cyclical conviction beats trend-following)
-    "mean_reversion": 13,
-    "momentum": 14,
-    "macd_crossover": 15,
-    "orb_breakout": 16,
-    "vwap_reclaim": 17,
-    "intraday_momentum": 18,
+    "mean_reversion": 16,
+    "momentum": 17,
+    "macd_crossover": 18,
+    "orb_breakout": 19,
+    "vwap_reclaim": 20,
+    "intraday_momentum": 21,
     # ── Batch 1: OHLCV technical signals ────────────────────────────────────
-    "golden_cross": 19,
-    "candle_exhaustion": 20,
-    "obv_divergence": 21,
-    "obv_acceleration": 22,
-    "volume_climax_reversal": 23,
+    "golden_cross": 22,
+    "candle_exhaustion": 23,
+    "obv_divergence": 24,
+    "obv_acceleration": 25,
+    "volume_climax_reversal": 26,
     # ── Batch 2: universe-level signals ──────────────────────────────────────
-    "breadth_thrust": 24,
+    "breadth_thrust": 27,
     # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
-    "tax_loss_reversal": 25,
+    "tax_loss_reversal": 28,
+    # ── Batch 4: fundamental quality signals ─────────────────────────────────
+    "fcf_yield_signal": 29,  # FCF yield > 5% with quality gate
+    # ── Batch 5: options-derived signals ─────────────────────────────────────
+    "options_skew_signal": 30,  # panic put skew → contrarian; call skew spike → informed
+    "unusual_options_activity": 31,  # OTM call OI surge — informed upside buying
+    "put_call_contrarian": 32,  # extreme put-to-call ratio → contrarian long
+    # ── Batch 6: short-squeeze signals ───────────────────────────────────────
+    "squeeze_setup_long": 33,  # crowded dormant short at 20d low — pre-squeeze
+    "squeeze_momentum_long": 34,  # squeeze in motion above 20d high
+    "short_interest_trend_long": 35,  # SI% falling >30% from peak + price rising
+    # ── Batch 7: analyst / institutional signals ──────────────────────────────
+    "analyst_upgrade_signal": 36,  # consensus Hold→Buy shift
+    # ── Batch 8: sentiment signals ────────────────────────────────────────────
+    "aaii_extreme_fear_long": 37,  # AAII bears >50% → contrarian long
+    "fear_greed_extreme_fear": 38,  # composite fear/greed <20 → contrarian long
+    # ── Batch 9: cross-asset signals ─────────────────────────────────────────
+    "sector_pair_mean_reversion": 39,  # intra-sector RS spread reversion
+    # ── Batch 10: alternative data signals ───────────────────────────────────
+    "google_trends_bullish": 40,  # search volume spike with positive context
 }
 
 # Signals that receive a size reduction during OPEX week (vol pinning / gamma effects).
@@ -140,6 +162,32 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "bt_min_symbols": 50,
     # tax_loss_reversal: 52w high drawdown threshold (stock must be >30% below 52w high)
     "tlr_52w_drawdown_max": -30.0,
+    # ── Fundamental gates ────────────────────────────────────────────────────
+    "az_distress_threshold": 1.1,  # Altman Z < 1.1 = distress zone → block trend longs
+    "piotroski_min": 3,  # Piotroski F < 3 → block pead and insider_buying
+    "fwd_pe_max": 60.0,  # forward P/E > 60 → block momentum/breakout longs
+    "gm_trend_min": -0.03,  # gross margin trend < -3pp → block pead, trend_pullback
+    "accruals_max": 0.10,  # accruals ratio > 0.10 → suppress longs
+    "erp_min": 0.01,  # equity risk premium < 1% → block momentum longs
+    # ── fcf_yield_signal ─────────────────────────────────────────────────────
+    "fcf_yield_min": 0.05,  # FCF yield > 5% required
+    "fcf_piotroski_min": 5,  # also requires moderate quality (F ≥ 5)
+    # ── options signals ──────────────────────────────────────────────────────
+    "iv_rv_spread_cheap_max": 0.70,  # IV/RV < 0.70 = vol genuinely cheap
+    "put_call_contrarian_min": 2.5,  # put_call_oi_ratio > 2.5 → contrarian long
+    # ── short-squeeze signals ────────────────────────────────────────────────
+    "squeeze_si_min": 0.15,  # short_pct_float > 15% (0.15 as decimal)
+    "squeeze_dtc_min": 5.0,  # days_to_cover > 5
+    "squeeze_setup_ret5d_max": 5.0,  # dormant: ret_5d < 5%
+    "squeeze_mom_ret5d_min": 10.0,  # momentum: ret_5d > 10%
+    "si_trend_drop_min": 0.30,  # SI fell > 30% from peak to flag trend reversal
+    # ── breadth / macro gates ────────────────────────────────────────────────
+    "nhl_ratio_bear_max": 0.5,  # NHL < 0.5 → block momentum
+    "sector_corr_high": 0.75,  # sector correlation > 0.75 → treat as correlated regime
+    # ── analyst revision signal ──────────────────────────────────────────────
+    "analyst_upgrade_pct_min": 0.10,  # buy % must rise by at least this much
+    # ── pairs mean reversion ─────────────────────────────────────────────────
+    "pairs_zscore_min": 1.5,  # spread z-score must exceed 1.5σ
 }
 
 # Canonical regime-blocked signal set — imported by both the backtest engine and
@@ -209,6 +257,91 @@ _NEUTRAL_CHOP_BLOCKED = frozenset({*_DEFENSIVE_BLOCKED, "mean_reversion", "iv_co
 
 # BULL_TREND: rsi_divergence is a consolidation setup, not a reversal worth buying in uptrends.
 _BULL_TREND_BLOCKED = frozenset({"rsi_divergence"})
+
+# ── Fundamental / quality gate blocked sets ───────────────────────────────────
+
+# Signals blocked in Altman Z distress zone (Z < 1.1): all trend-following and
+# breakout-oriented longs. Counter-cyclical signals (mean_reversion, range_reversion)
+# and fundamental-conviction signals (insider_buying) are preserved.
+_DISTRESS_BLOCKED = frozenset(
+    {
+        "gap_and_go",
+        "bb_squeeze",
+        "inside_day_breakout",
+        "trend_pullback",
+        "iv_compression",
+        "iv_vs_rv_spread",
+        "momentum",
+        "macd_crossover",
+        "golden_cross",
+        "candle_exhaustion",
+        "obv_divergence",
+        "obv_acceleration",
+        "volume_climax_reversal",
+        "breadth_thrust",
+        "tax_loss_reversal",
+        "rs_leader",
+        "breakout_52w",
+        "momentum_12_1",
+        "orb_breakout",
+        "vwap_reclaim",
+        "intraday_momentum",
+        "fcf_yield_signal",
+        "options_skew_signal",
+        "unusual_options_activity",
+        "put_call_contrarian",
+        "short_interest_trend_long",
+        "squeeze_setup_long",
+        "squeeze_momentum_long",
+        "analyst_upgrade_signal",
+        "aaii_extreme_fear_long",
+        "fear_greed_extreme_fear",
+        "sector_pair_mean_reversion",
+        "google_trends_bullish",
+        "pead",
+        "guidance_raise_signal",
+        "activist_13d_signal",
+    }
+)
+
+# Signals blocked on poor Piotroski quality (F < 3): value-oriented and
+# quality-dependent signals. Pure technicals (momentum, breakouts) still fire.
+_PIOTROSKI_GATED = frozenset({"pead", "insider_buying"})
+
+# Signals blocked when forward P/E > 60 (stretched valuation):
+# momentum and breakout strategies require reasonable valuation support.
+_EXPENSIVE_BLOCKED = frozenset(
+    {
+        "momentum",
+        "macd_crossover",
+        "gap_and_go",
+        "bb_squeeze",
+        "inside_day_breakout",
+        "trend_pullback",
+        "momentum_12_1",
+        "breakout_52w",
+    }
+)
+
+# Signals blocked on gross margin deterioration (> 3pp decline):
+# quality-dependent strategies require stable fundamentals.
+_GM_GATE_BLOCKED = frozenset({"pead", "guidance_raise_signal", "trend_pullback"})
+
+# Signals blocked on NHL ratio < nhl_ratio_bear_max (weak breadth — no rising tide):
+# pure momentum and breakout strategies require broad market participation.
+_WEAK_BREADTH_BLOCKED = frozenset(
+    {
+        "momentum",
+        "macd_crossover",
+        "gap_and_go",
+        "bb_squeeze",
+        "inside_day_breakout",
+        "breakout_52w",
+        "momentum_12_1",
+        "short_interest_trend_long",
+        "squeeze_momentum_long",
+    }
+)
 
 # CREDIT_STRESS: credit tightening pre-emptively; treat same as HIGH_VOL (block pure momentum).
 _CREDIT_STRESS_BLOCKED = _HIGH_VOL_BLOCKED
@@ -298,6 +431,14 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "obv_divergence_short": 14,  # price up / OBV down — distribution (disabled pending backtest)
     "obv_acceleration_short": 15,  # OBV selling rate accelerating (disabled pending backtest)
     "volume_climax_reversal_short": 16,  # high-vol streak at 20d high — exhaustion (disabled pending backtest)
+    # ── Batch 2: fundamental distress shorts ─────────────────────────────────
+    "altman_distress_short": 17,  # Altman Z < 1.1 — financial distress zone
+    "piotroski_distress_short": 18,  # Piotroski F ≤ 2 — multi-factor quality failure
+    "gross_margin_deterioration_short": 19,  # GM trend < -3pp — deteriorating unit economics
+    "accruals_quality_short": 20,  # accruals_ratio > 0.15 + extended price — earnings quality risk
+    # ── Batch 3: event-driven shorts ─────────────────────────────────────────
+    "lockup_expiry_short": 21,  # IPO lockup expiry within 5-10 days
+    "analyst_downgrade_signal": 22,  # consensus Buy→Hold/Sell shift
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -338,6 +479,12 @@ DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     "obv_div_vol_min": 1.0,
     "obv_acc_vol_min": 1.2,
     "vcr_streak_min": 3,
+    # Batch 2: fundamental distress short thresholds
+    "az_distress_short_threshold": 1.1,  # Altman Z < 1.1 = distress zone
+    "pf_distress_max": 2,  # Piotroski F ≤ 2 = multi-factor failure
+    "gm_deterioration_short_min": -0.03,  # gross margin trend < -3pp
+    "accruals_short_min": 0.15,  # accruals ratio > 0.15 AND extended price
+    "accruals_short_ret5d_min": 5.0,  # price must be extended >5% in 5 days
 }
 
 
@@ -552,6 +699,64 @@ def evaluate_short_signals(
             "volume_climax_reversal_short"
         )  # pragma: no cover — in SHORT_GLOBALLY_DISABLED
 
+    # ── Batch 2: fundamental distress shorts ─────────────────────────────────
+
+    # altman_distress_short: Altman Z < az_distress_short_threshold → financial distress.
+    # Most reliable when the stock is NOT deeply oversold already (avoid catching falling knives).
+    _az = snapshot.get("altman_z")
+    if (
+        "altman_distress_short" not in blocked
+        and _az is not None
+        and _az < p["az_distress_short_threshold"]
+    ):
+        matched.append("altman_distress_short")
+
+    # piotroski_distress_short: Piotroski F ≤ pf_distress_max → multiple quality failures.
+    # Low F-score alone is weak; combine with price confirmation (below SMA200) for reliability.
+    _pf = snapshot.get("piotroski_f")
+    if (
+        "piotroski_distress_short" not in blocked
+        and _pf is not None
+        and int(_pf) <= p["pf_distress_max"]
+        and snapshot.get("price_below_sma200", False)
+    ):
+        matched.append("piotroski_distress_short")
+
+    # gross_margin_deterioration_short: gross margin trend below gm_deterioration_short_min
+    # (-3pp) signals deteriorating unit economics — often precedes earnings misses.
+    _gm = snapshot.get("gross_margin_trend")
+    if (
+        "gross_margin_deterioration_short" not in blocked
+        and _gm is not None
+        and _gm < p["gm_deterioration_short_min"]
+        and snapshot.get("price_below_sma200", False)
+    ):
+        matched.append("gross_margin_deterioration_short")
+
+    # accruals_quality_short: high accruals (earnings driven by balance-sheet changes,
+    # not cash) + extended price is a mean-reversion short. Sloan (1996) documented
+    # the accruals anomaly; accruals > 0.15 + ret_5d > 5% is a reliable setup.
+    _acc = snapshot.get("accruals_ratio")
+    if (
+        "accruals_quality_short" not in blocked
+        and _acc is not None
+        and _acc > p["accruals_short_min"]
+        and snapshot.get("ret_5d_pct", 0.0) > p["accruals_short_ret5d_min"]
+    ):
+        matched.append("accruals_quality_short")
+
+    # ── Batch 3: event-driven shorts ─────────────────────────────────────────
+
+    # lockup_expiry_short: IPO lockup expiry approaching (5–10 days out).
+    # Early shareholders (founders, VC) can first sell → supply pressure.
+    if "lockup_expiry_short" not in blocked and snapshot.get("lockup_expiry_soon", False):
+        matched.append("lockup_expiry_short")
+
+    # analyst_downgrade_signal: consensus shift from Buy toward Hold/Sell — institutional
+    # coverage degrading. Complement to analyst_upgrade_signal on the long side.
+    if "analyst_downgrade_signal" not in blocked and snapshot.get("analyst_downgrade", False):
+        matched.append("analyst_downgrade_signal")
+
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched
 
@@ -639,6 +844,66 @@ def evaluate_signals(
     if bool(snapshot.get("premarket_gap_retrace", False)):
         blocked = blocked | frozenset({"gap_and_go"})
 
+    # ── Fundamental quality gates ─────────────────────────────────────────────
+
+    # Altman Z distress gate: Z < threshold means likely financial distress.
+    # Block all trend-following longs; preserve counter-cyclical and conviction signals.
+    _altman_z = snapshot.get("altman_z")
+    if _altman_z is not None and float(_altman_z) < p["az_distress_threshold"]:
+        blocked = blocked | _DISTRESS_BLOCKED
+
+    # Piotroski quality gate: F < piotroski_min = weak multi-factor quality.
+    # Block pead and insider_buying (require quality support for these catalysts).
+    _piotroski_f = snapshot.get("piotroski_f")
+    if _piotroski_f is not None and int(_piotroski_f) < p["piotroski_min"]:
+        blocked = blocked | _PIOTROSKI_GATED
+
+    # Forward P/E gate: expensive stocks (P/E > fwd_pe_max) block momentum/breakout.
+    # Stretched valuations reduce the risk/reward for trend-following strategies.
+    _fwd_pe = snapshot.get("forward_pe")
+    if _fwd_pe is not None and float(_fwd_pe) > p["fwd_pe_max"]:
+        blocked = blocked | _EXPENSIVE_BLOCKED
+
+    # Gross margin deterioration gate: GM trend < gm_trend_min (−3pp) blocks
+    # catalyst-driven and trend-pullback longs (deteriorating unit economics undermine these).
+    _gm_trend = snapshot.get("gross_margin_trend")
+    if _gm_trend is not None and float(_gm_trend) < p["gm_trend_min"]:
+        blocked = blocked | _GM_GATE_BLOCKED
+
+    # Accruals quality gate: high accruals (earnings from balance-sheet, not cash)
+    # suppress momentum longs — Sloan anomaly: accruals > 0.10 predicts reversals.
+    _accruals = snapshot.get("accruals_ratio")
+    if _accruals is not None and float(_accruals) > p["accruals_max"]:
+        blocked = blocked | _EXPENSIVE_BLOCKED  # same set — block momentum/breakout
+
+    # ── Market microstructure gates ───────────────────────────────────────────
+
+    # NH/NL ratio breadth gate: when more stocks are making new lows than new highs,
+    # the tide is against momentum and breakout strategies.
+    _nhl = snapshot.get("nhl_ratio")
+    if _nhl is not None and float(_nhl) < p["nhl_ratio_bear_max"]:
+        blocked = blocked | _WEAK_BREADTH_BLOCKED
+
+    # Sector correlation gate: when stocks move together (correlation > 0.75),
+    # stock-specific momentum loses its edge; treat like OPEX dampening.
+    _sector_corr = snapshot.get("sector_correlation_20d")
+    if _sector_corr is not None and float(_sector_corr) > p["sector_corr_high"]:
+        blocked = blocked | frozenset({"momentum", "breakout_52w", "bb_squeeze"})
+
+    # Earnings yield vs bonds gate: equity risk premium < erp_min (1%) means equities
+    # offer little excess return over bonds — dampen momentum longs.
+    _fwd_pe_g = snapshot.get("forward_pe")
+    _10y_yield = snapshot.get("macro_10y_yield")
+    if _fwd_pe_g is not None and _10y_yield is not None and float(_fwd_pe_g) > 0:
+        _erp = (1.0 / float(_fwd_pe_g)) - float(_10y_yield) / 100.0
+        if _erp < p["erp_min"]:
+            blocked = blocked | _EXPENSIVE_BLOCKED
+
+    # AAII sentiment excessive-bulls gate: when >60% investors are bullish for ≥1 week,
+    # complacency risk is elevated — dampen momentum/breakout signals.
+    if bool(snapshot.get("aaii_excessive_bulls", False)):
+        blocked = blocked | frozenset({"momentum", "gap_and_go", "breakout_52w"})
+
     def _f(key: str, default: float) -> float:
         v = snapshot.get(key)
         return float(v) if v is not None else default
@@ -685,6 +950,12 @@ def evaluate_signals(
     if vix_spike and vol > p["vfr_vol_min"] and "vix_fear_reversion" not in blocked:
         matched.append("vix_fear_reversion")  # pragma: no cover — in GLOBALLY_DISABLED
 
+    # activist_13d_signal: SC 13D filing from known activist → management change catalyst.
+    # Fires purely on activist_filing (subset of insider_buying trigger). Separate signal
+    # allows the AI to cite the activist catalyst distinctly from cluster insider buying.
+    if activist_filing and "activist_13d_signal" not in blocked:
+        matched.append("activist_13d_signal")
+
     # Fundamental conviction — bypass regime filter
     if (
         activist_filing
@@ -694,6 +965,11 @@ def evaluate_signals(
         matched.append("insider_buying")
     if (pead_candidate or guidance_positive) and ret_5d > 0 and "pead" not in blocked:
         matched.append("pead")
+
+    # guidance_raise_signal: positive 8-K guidance event before price confirms.
+    # Fires on guidance_positive without requiring ret_5d > 0 — earlier entry than pead.
+    if guidance_positive and "guidance_raise_signal" not in blocked:
+        matched.append("guidance_raise_signal")
 
     # Relative strength leader (requires SPY data; engine-only unless caller provides)
     if (
@@ -783,6 +1059,19 @@ def evaluate_signals(
         and "iv_compression" not in blocked
     ):
         matched.append("iv_compression")
+
+    # iv_vs_rv_spread: ATM IV / 20d realised vol ratio < iv_rv_spread_cheap_max (<0.70).
+    # When the market is pricing vol below recent realised vol, long vol + trend is high EV.
+    # Complement to iv_compression (which uses HV rank); this uses the absolute IV/RV ratio.
+    _iv_rv = snapshot.get("iv_rv_spread")
+    if (
+        "iv_vs_rv_spread" not in blocked
+        and _iv_rv is not None
+        and float(_iv_rv) < p["iv_rv_spread_cheap_max"]
+        and (ema_up or macd_diff > 0)
+        and vol > p["ivc_vol_min"]
+    ):
+        matched.append("iv_vs_rv_spread")
 
     # Range reversion: extreme oversold within confirmed range-bound conditions.
     # The adx < rr_adx_max gate implicitly restricts this to non-trending regimes.
@@ -935,6 +1224,135 @@ def evaluate_signals(
         and "intraday_momentum" not in blocked
     ):
         matched.append("intraday_momentum")
+
+    # ── Batch 4: fundamental quality signals ─────────────────────────────────
+
+    # fcf_yield_signal: FCF yield > fcf_yield_min (5%) with moderate quality (F ≥ 5).
+    # High-FCF + quality = conviction buy; not blocked by distress gate above because
+    # a truly distressed company can't generate FCF.
+    _fcf = snapshot.get("fcf_yield")
+    _pf_fcf = snapshot.get("piotroski_f")
+    if (
+        "fcf_yield_signal" not in blocked
+        and _fcf is not None
+        and float(_fcf) > p["fcf_yield_min"]
+        and (_pf_fcf is None or int(_pf_fcf) >= p["fcf_piotroski_min"])
+    ):
+        matched.append("fcf_yield_signal")
+
+    # ── Batch 5: options-derived signals ─────────────────────────────────────
+
+    # options_skew_signal: extreme put/call IV skew (panic hedging) → contrarian long;
+    # call skew spike (informed upside buying) → trend confirmation.
+    if "options_skew_signal" not in blocked and (
+        bool(snapshot.get("panic_put_skew", False)) or bool(snapshot.get("call_skew_spike", False))
+    ):
+        matched.append("options_skew_signal")
+
+    # unusual_options_activity: large OTM call OI surge signals informed upside conviction.
+    if "unusual_options_activity" not in blocked and bool(snapshot.get("unusual_call_oi", False)):
+        matched.append("unusual_options_activity")
+
+    # put_call_contrarian: extreme put-to-call OI ratio (>2.5) signals panic hedging →
+    # contrarian long. Requires trend structure to avoid catching falling knives.
+    _pc_ratio = snapshot.get("put_call_oi_ratio")
+    if (
+        "put_call_contrarian" not in blocked
+        and _pc_ratio is not None
+        and float(_pc_ratio) > p["put_call_contrarian_min"]
+        and (ema_up or macd_diff > 0)
+    ):
+        matched.append("put_call_contrarian")
+
+    # ── Batch 6: short-squeeze signals ───────────────────────────────────────
+
+    _si_pct = snapshot.get("short_pct_float")
+    _si_dtc = snapshot.get("short_ratio")
+
+    # squeeze_setup_long: crowded dormant short at 20d low — pre-squeeze setup.
+    # High short interest + dormant price (ret_5d < squeeze_setup_ret5d_max) near 20d low.
+    if (
+        "squeeze_setup_long" not in blocked
+        and _si_pct is not None
+        and float(_si_pct) > p["squeeze_si_min"]
+        and _si_dtc is not None
+        and float(_si_dtc) > p["squeeze_dtc_min"]
+        and ret_5d < p["squeeze_setup_ret5d_max"]
+        and bool(snapshot.get("near_20d_low", False))
+    ):
+        matched.append("squeeze_setup_long")
+
+    # squeeze_momentum_long: squeeze in motion — shorts being forced to cover.
+    # High SI + strong recent return + price above 20d high = active squeeze.
+    if (
+        "squeeze_momentum_long" not in blocked
+        and _si_pct is not None
+        and float(_si_pct) > p["squeeze_si_min"]
+        and _si_dtc is not None
+        and float(_si_dtc) > p["squeeze_dtc_min"]
+        and ret_5d > p["squeeze_mom_ret5d_min"]
+        and bool(snapshot.get("near_20d_high", False))
+    ):
+        matched.append("squeeze_momentum_long")
+
+    # short_interest_trend_long: SI% falling >30% from its peak while price is rising —
+    # short covering into strength = informed buying as shorts capitulate.
+    # Requires si_peak field in snapshot (injected from historical cache if available).
+    _si_peak = snapshot.get("si_peak")
+    if (
+        "short_interest_trend_long" not in blocked
+        and _si_pct is not None
+        and _si_peak is not None
+        and _si_peak > 0
+        and (float(_si_peak) - float(_si_pct)) / float(_si_peak) > p["si_trend_drop_min"]
+        and ret_5d > 0
+    ):
+        matched.append("short_interest_trend_long")
+
+    # ── Batch 7: analyst / institutional signals ──────────────────────────────
+
+    # analyst_upgrade_signal: consensus hold→buy shift — institutional coverage improving.
+    if "analyst_upgrade_signal" not in blocked and bool(snapshot.get("analyst_upgrade", False)):
+        matched.append("analyst_upgrade_signal")
+
+    # ── Batch 8: sentiment signals ────────────────────────────────────────────
+
+    # aaii_extreme_fear_long: AAII survey bears > 50% = contrarian long backdrop.
+    # Historically, extreme AAII bearishness has been a reliable 3-6 month contrarian indicator.
+    if "aaii_extreme_fear_long" not in blocked and bool(snapshot.get("aaii_extreme_fear", False)):
+        matched.append("aaii_extreme_fear_long")
+
+    # fear_greed_extreme_fear: composite fear/greed index < 20 = extreme fear backdrop.
+    # Used as a confirmation signal — fires alongside technical signals in fear regimes.
+    _fg_score = snapshot.get("fear_greed_score")
+    if (
+        "fear_greed_extreme_fear" not in blocked
+        and _fg_score is not None
+        and float(_fg_score) < 20.0
+    ):
+        matched.append("fear_greed_extreme_fear")
+
+    # ── Batch 9: cross-asset signals ─────────────────────────────────────────
+
+    # sector_pair_mean_reversion: intra-sector spread is extended (z-score > pairs_zscore_min).
+    # Long the top-RS stock relative to the bottom-RS when their spread is stretched.
+    # Requires pairs_spread_z field (injected from data/pairs.py per symbol).
+    _pairs_z = snapshot.get("pairs_spread_z")
+    if (
+        "sector_pair_mean_reversion" not in blocked
+        and _pairs_z is not None
+        and abs(float(_pairs_z)) > p["pairs_zscore_min"]
+        and float(_pairs_z) > 0  # positive z = this stock is the cheap leg
+        and ema_up
+    ):
+        matched.append("sector_pair_mean_reversion")
+
+    # ── Batch 10: alternative data signals ───────────────────────────────────
+
+    # google_trends_bullish: search volume spike for this ticker with trend confirmation.
+    # Retail attention spike + positive technicals = participation-driven momentum.
+    if "google_trends_bullish" not in blocked and bool(snapshot.get("google_trends_spike", False)):
+        matched.append("google_trends_bullish")
 
     matched.sort(key=lambda s: SIGNAL_PRIORITY.get(s, 99))
     return matched

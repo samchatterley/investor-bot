@@ -672,3 +672,87 @@ class TestPublicGetters:
     def test_get_market_cap_none(self):
         with self._patched("market_cap", None):
             assert get_market_cap("AAPL") is None
+
+    def test_get_accruals_ratio_returns_float(self):
+        with self._patched("accruals_ratio", 0.05):
+            from data.fundamental_cache import get_accruals_ratio
+
+            assert get_accruals_ratio("AAPL") == pytest.approx(0.05)
+
+    def test_get_accruals_ratio_none(self):
+        with self._patched("accruals_ratio", None):
+            from data.fundamental_cache import get_accruals_ratio
+
+            assert get_accruals_ratio("AAPL") is None
+
+
+# ── _compute_accruals_ratio ───────────────────────────────────────────────────
+
+
+class TestComputeAccrualsRatio:
+    from data.fundamental_cache import _compute_accruals_ratio
+
+    def test_happy_path_returns_ratio(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        fin = _df2({"Net Income": 80.0}, {"Net Income": 60.0})
+        bs = _df2({"Total Assets": 1000.0}, {"Total Assets": 900.0})
+        cf = _df2({"Operating Cash Flow": 120.0}, {"Operating Cash Flow": 100.0})
+        t = _ticker(fin, bs, cf)
+        result = _compute_accruals_ratio(t)
+        # accruals = (80 - 120) / 1000 = -0.04
+        assert result == pytest.approx(-0.04, abs=1e-4)
+
+    def test_returns_none_when_fin_empty(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        t = _ticker(pd.DataFrame(), _GOOD_BS, _GOOD_CF)
+        assert _compute_accruals_ratio(t) is None
+
+    def test_returns_none_when_bs_empty(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        t = _ticker(_GOOD_FIN, pd.DataFrame(), _GOOD_CF)
+        assert _compute_accruals_ratio(t) is None
+
+    def test_returns_none_when_cf_empty(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        t = _ticker(_GOOD_FIN, _GOOD_BS, pd.DataFrame())
+        assert _compute_accruals_ratio(t) is None
+
+    def test_returns_none_when_total_assets_zero(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        bs = _df2({"Total Assets": 0.0}, {"Total Assets": 0.0})
+        t = _ticker(_GOOD_FIN, bs, _GOOD_CF)
+        assert _compute_accruals_ratio(t) is None
+
+    def test_returns_none_when_total_assets_missing(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        # No Total Assets row in balance sheet
+        bs = _df2({"Long Term Debt": 100.0}, {"Long Term Debt": 90.0})
+        t = _ticker(_GOOD_FIN, bs, _GOOD_CF)
+        assert _compute_accruals_ratio(t) is None
+
+    def test_returns_none_when_ocf_missing(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        # No Operating Cash Flow row in cashflow
+        cf = _df2({"Capital Expenditure": -50.0}, {"Capital Expenditure": -40.0})
+        t = _ticker(_GOOD_FIN, _GOOD_BS, cf)
+        assert _compute_accruals_ratio(t) is None
+
+    def test_returns_none_on_exception(self):
+        from data.fundamental_cache import _compute_accruals_ratio
+
+        class Broken:
+            @property
+            def financials(self):
+                raise RuntimeError("network error")
+
+            balance_sheet = pd.DataFrame()
+            cashflow = pd.DataFrame()
+
+        assert _compute_accruals_ratio(Broken()) is None

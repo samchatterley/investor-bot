@@ -913,10 +913,13 @@ class TestGuidancePositiveSignal(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIn("pead", result[0]["matched_signals"])
 
-    def test_guidance_positive_with_negative_return_no_signal(self):
+    def test_guidance_positive_with_negative_return_fires_guidance_raise(self):
+        # guidance_raise_signal fires without price-confirm; pead still requires ret_5d > 0
         snap = _snap(guidance_positive=True, pead_candidate=False, ret_5d_pct=-1.0)
         result = prefilter_candidates([snap])
-        self.assertEqual(len(result), 0)
+        self.assertEqual(len(result), 1)
+        self.assertIn("guidance_raise_signal", result[0]["matched_signals"])
+        self.assertNotIn("pead", result[0]["matched_signals"])
 
     def test_guidance_positive_and_pead_candidate_fires_once(self):
         snap = _snap(guidance_positive=True, pead_candidate=True, ret_5d_pct=2.0)

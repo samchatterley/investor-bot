@@ -1374,6 +1374,39 @@ def _build_data_bundle(
                 s["unusual_call_oi"] = iv_snap.unusual_call_oi
                 s["panic_put_skew"] = iv_snap.panic_put_skew
                 s["call_skew_spike"] = iv_snap.call_skew_spike
+                # Extended options fields for new signals
+                s["put_call_oi_ratio"] = iv_snap.put_call_oi_ratio
+                s["iv_rv_spread"] = iv_snap.iv_rv_spread
+                s["skew_25d"] = iv_snap.skew_25d
+
+        # Re-evaluate signals after options injection (options signals are dead code in prefilter).
+        # This ensures options_skew_signal, unusual_options_activity, put_call_contrarian,
+        # iv_vs_rv_spread fire for filtered candidates that now have options data.
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        for s in filtered_candidates:
+            regime_str = s.get("regime", "UNKNOWN")
+            regime_blocked = REGIME_BLOCKED.get(regime_str, frozenset())
+            s["signals"] = evaluate_signals(
+                s,
+                blocked=regime_blocked,
+                params=None,
+                vix_spike=bool(s.get("vix_spike", False)),
+                spy_ret_5d=s.get("spy_ret_5d"),
+                spy_ret_10d=s.get("spy_ret_10d"),
+            )
+
+    # ── Google Trends injection (filtered candidates only — full universe too expensive) ─
+    try:
+        from data.google_trends import get_google_trends_signals
+
+        _gt_syms = [s["symbol"] for s in filtered_candidates]
+        if _gt_syms:
+            _gt_signals = get_google_trends_signals(_gt_syms)
+            for s in filtered_candidates:
+                s["google_trends_spike"] = _gt_signals.get(s["symbol"], False)
+    except Exception as _gt_exc:
+        logger.warning(f"Google Trends injection failed: {_gt_exc}")
 
     # ── News (sanitized against prompt injection) ─────────────────────────────
     # Restrict to symbols the AI actually received snapshots for — sending news

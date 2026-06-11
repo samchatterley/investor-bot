@@ -593,6 +593,11 @@ def get_market_snapshots(
     """Fetch and summarise data for all symbols in parallel."""
     live_bulk: dict[str, pd.DataFrame] | None = None
     fundamentals: dict[str, dict] = {}
+    _fundam_fields: dict[str, dict] = {}
+    _aaii_snap: dict = {}
+    _macro_10y: float | None = None
+    _analyst_revisions: dict[str, dict] = {}
+    _lockup_flags: dict[str, dict] = {}
     if preloaded is not None and as_of is not None:
         spy_5d = _spy_return_from_preloaded(preloaded, as_of, 5)
         spy_10d = _spy_return_from_preloaded(preloaded, as_of, 10)
@@ -611,6 +616,63 @@ def get_market_snapshots(
         # Fundamentals from FMP — cached 24h, negligible cost after first fill
         fundamentals = get_fundamentals(symbols)
 
+        # Deep fundamentals from yfinance — weekly cache, injected per symbol
+        try:
+            from data.fundamental_cache import refresh_fundamental_cache
+
+            refresh_fundamental_cache(symbols)
+            from data.fundamental_cache import (
+                get_accruals_ratio,
+                get_altman_z,
+                get_fcf_yield,
+                get_forward_pe,
+                get_gross_margin_current,
+                get_gross_margin_trend,
+                get_piotroski_f,
+            )
+
+            for _sym in symbols:
+                _fundam_fields[_sym] = {
+                    k: v
+                    for k, v in {
+                        "piotroski_f": get_piotroski_f(_sym),
+                        "altman_z": get_altman_z(_sym),
+                        "fcf_yield": get_fcf_yield(_sym),
+                        "gross_margin_current": get_gross_margin_current(_sym),
+                        "gross_margin_trend": get_gross_margin_trend(_sym),
+                        "accruals_ratio": get_accruals_ratio(_sym),
+                        "forward_pe": get_forward_pe(_sym),
+                    }.items()
+                    if v is not None
+                }
+        except Exception as _exc:
+            logger.warning(f"fundamental_cache injection failed: {_exc}")
+
+        # AAII sentiment + fear/greed — market-wide signals injected into all snapshots
+        try:
+            from data.fred_client import get_10y_yield, get_aaii_sentiment
+
+            _aaii_snap = get_aaii_sentiment()
+            _macro_10y = get_10y_yield()
+        except Exception as _exc:
+            logger.warning(f"AAII/10y injection failed: {_exc}")
+
+        # Analyst revision signals — per-symbol
+        try:
+            from data.analyst_revisions import get_analyst_revisions
+
+            _analyst_revisions = get_analyst_revisions(symbols)
+        except Exception as _exc:
+            logger.warning(f"analyst_revisions injection failed: {_exc}")
+
+        # Lockup expiry flags — per-symbol
+        try:
+            from data.lockup_calendar import get_lockup_expiry_flags
+
+            _lockup_flags = get_lockup_expiry_flags(symbols)
+        except Exception as _exc:
+            logger.warning(f"lockup_calendar injection failed: {_exc}")
+
     def _fetch_one(sym: str):
         # Backtest replay uses preloaded; live runs use bulk cache (fallback: per-symbol fetch)
         data_src = preloaded if preloaded is not None else live_bulk
@@ -628,6 +690,18 @@ def get_market_snapshots(
             snap["rel_strength_20d"] = round(snap["ret_20d_pct"] - spy_20d, 2)
         if sym in fundamentals:
             snap.update(fundamentals[sym])
+        if sym in _fundam_fields:
+            snap.update(_fundam_fields[sym])
+        if _aaii_snap:
+            snap["aaii_extreme_fear"] = _aaii_snap.get("extreme_fear", False)
+            snap["aaii_excessive_bulls"] = _aaii_snap.get("excessive_bulls", False)
+            snap["aaii_bears_pct"] = _aaii_snap.get("bears_pct")
+        if _macro_10y is not None:
+            snap["macro_10y_yield"] = _macro_10y
+        if sym in _analyst_revisions:
+            snap.update(_analyst_revisions[sym])
+        if sym in _lockup_flags:
+            snap.update(_lockup_flags[sym])
         snap["amihud_illiquidity"] = compute_amihud_illiquidity(df)
         return snap
 

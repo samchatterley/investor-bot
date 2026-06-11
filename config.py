@@ -142,6 +142,29 @@ SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "breadth_thrust": 4,  # broad-market thrust; hold for the continuation move
     # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
     "tax_loss_reversal": 5,  # January seasonal reversal; tends to persist a week
+    # ── Batch 4: fundamental quality signals ─────────────────────────────────
+    "fcf_yield_signal": 5,  # fundamental value; drift plays out over days-weeks
+    # ── Batch 5: options-derived signals ─────────────────────────────────────
+    "options_skew_signal": 3,  # skew normalisation usually 1-3 days
+    "unusual_options_activity": 3,  # OTM call build-up resolves within 1-3 days
+    "put_call_contrarian": 3,  # contrarian signal; relief rally 2-3 days
+    "iv_vs_rv_spread": 4,  # vol-regime normalisation; 3-4 day window
+    # ── Batch 6: short-squeeze signals ───────────────────────────────────────
+    "squeeze_setup_long": 5,  # pre-squeeze dormant; hold for the catalyst
+    "squeeze_momentum_long": 4,  # active squeeze; move resolves in 3-4 days
+    "short_interest_trend_long": 5,  # short-cover drift; multi-day momentum
+    # ── Batch 7: analyst signals ─────────────────────────────────────────────
+    "analyst_upgrade_signal": 5,  # consensus revision drift; plays out over days
+    # ── Batch 8: sentiment signals ────────────────────────────────────────────
+    "aaii_extreme_fear_long": 3,  # contrarian; typically resolves in 2-3 days
+    "fear_greed_extreme_fear": 3,  # composite fear reversal; 2-3 day window
+    # ── Batch 9: cross-asset signals ─────────────────────────────────────────
+    "sector_pair_mean_reversion": 5,  # pairs spread reversion; 3-5 day window
+    # ── Batch 10: alternative data ───────────────────────────────────────────
+    "google_trends_bullish": 3,  # attention-driven; typically short-lived
+    # ── Fundamental conviction (new) ─────────────────────────────────────────
+    "activist_13d_signal": 5,  # activist catalyst; medium-term hold
+    "guidance_raise_signal": 3,  # guidance event; catalyst captures initial drift
     "unknown": 3,  # conservative default
 }
 

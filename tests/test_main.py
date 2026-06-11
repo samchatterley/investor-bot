@@ -6116,5 +6116,26 @@ class TestDailyLossCloseFailureHalt(RunInnerBase):
         alert_mock.assert_called()  # HALT alert sent
 
 
+class TestGoogleTrendsInjectionException(RunInnerBase):
+    """Lines 1408-1409: get_google_trends_signals raising → warning logged, run continues."""
+
+    def test_google_trends_exception_swallowed(self):
+        deps = self._make_deps(
+            stock_scanner__prefilter_candidates=[{"symbol": "AAPL", "current_price": 150.0}],
+        )
+        with (
+            self._inner_patches(),
+            patch(
+                "data.google_trends.get_google_trends_signals",
+                side_effect=RuntimeError("quota exceeded"),
+            ),
+            self.assertLogs("main", level="WARNING") as cm,
+        ):
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        self.assertTrue(any("Google Trends" in msg for msg in cm.output))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

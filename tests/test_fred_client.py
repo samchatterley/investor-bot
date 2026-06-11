@@ -479,5 +479,82 @@ class TestGetPmiSnapshot(unittest.TestCase):
         self.assertIsNotNone(result["latest"])
 
 
+class TestGet10yYield(unittest.TestCase):
+    def test_returns_latest_value_when_data_available(self):
+        data = [("2026-06-01", 4.25), ("2026-06-10", 4.30)]
+        with patch("data.fred_client.fetch_series", return_value=data):
+            from data.fred_client import get_10y_yield
+
+            result = get_10y_yield()
+        self.assertAlmostEqual(result, 4.30)
+
+    def test_returns_none_when_no_data(self):
+        with patch("data.fred_client.fetch_series", return_value=[]):
+            from data.fred_client import get_10y_yield
+
+            result = get_10y_yield()
+        self.assertIsNone(result)
+
+
+class TestGetAaiiSentiment(unittest.TestCase):
+    def test_returns_correct_values_when_data_available(self):
+        bulls_data = [("2026-05-01", 35.0), ("2026-06-01", 40.0)]
+        bears_data = [("2026-05-01", 30.0), ("2026-06-01", 45.0)]
+
+        def _mock_fetch(series, **kwargs):
+            if series == "AAIIBULL":
+                return bulls_data
+            if series == "AAIIBEAR":
+                return bears_data
+            return []
+
+        with patch("data.fred_client.fetch_series", side_effect=_mock_fetch):
+            from data.fred_client import get_aaii_sentiment
+
+            result = get_aaii_sentiment()
+        self.assertAlmostEqual(result["bulls_pct"], 40.0)
+        self.assertAlmostEqual(result["bears_pct"], 45.0)
+        self.assertFalse(result["extreme_fear"])  # bears < 50
+        self.assertFalse(result["excessive_bulls"])  # bulls < 60
+
+    def test_extreme_fear_when_bears_above_50(self):
+        bulls_data = [("2026-06-01", 25.0)]
+        bears_data = [("2026-06-01", 55.0)]
+
+        def _mock_fetch(series, **kwargs):
+            return bulls_data if series == "AAIIBULL" else bears_data
+
+        with patch("data.fred_client.fetch_series", side_effect=_mock_fetch):
+            from data.fred_client import get_aaii_sentiment
+
+            result = get_aaii_sentiment()
+        self.assertTrue(result["extreme_fear"])
+        self.assertFalse(result["excessive_bulls"])
+
+    def test_excessive_bulls_when_bulls_above_60(self):
+        bulls_data = [("2026-06-01", 65.0)]
+        bears_data = [("2026-06-01", 20.0)]
+
+        def _mock_fetch(series, **kwargs):
+            return bulls_data if series == "AAIIBULL" else bears_data
+
+        with patch("data.fred_client.fetch_series", side_effect=_mock_fetch):
+            from data.fred_client import get_aaii_sentiment
+
+            result = get_aaii_sentiment()
+        self.assertFalse(result["extreme_fear"])
+        self.assertTrue(result["excessive_bulls"])
+
+    def test_returns_empty_dict_when_no_data(self):
+        with patch("data.fred_client.fetch_series", return_value=[]):
+            from data.fred_client import get_aaii_sentiment
+
+            result = get_aaii_sentiment()
+        self.assertIsNone(result["bulls_pct"])
+        self.assertIsNone(result["bears_pct"])
+        self.assertFalse(result["extreme_fear"])
+        self.assertFalse(result["excessive_bulls"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

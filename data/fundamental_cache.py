@@ -329,6 +329,35 @@ def _compute_gross_margin_trend(
         return None, None, None
 
 
+# ── Accruals quality ─────────────────────────────────────────────────────────
+
+
+def _compute_accruals_ratio(ticker: yf.Ticker) -> float | None:
+    """Compute accruals ratio = (net_income - ocf) / total_assets.
+
+    Sloan (1996): high accruals predict earnings reversals.
+    Positive value = accruals exceed cash earnings (earnings quality risk).
+    Returns None when required data is unavailable.
+    """
+    try:
+        fin = ticker.financials
+        bs = ticker.balance_sheet
+        cf = ticker.cashflow
+        if fin.empty or bs.empty or cf.empty:
+            return None
+        total_assets = _val(_row(bs, "Total Assets"), 0)
+        if not total_assets:
+            return None
+        net_income = _val(_row(fin, "Net Income"), 0)
+        ocf = _val(_row(cf, "Operating Cash Flow"), 0)
+        if net_income is None or ocf is None:
+            return None
+        return round((net_income - ocf) / total_assets, 4)
+    except Exception as e:
+        logger.debug(f"accruals_ratio: {e}")
+        return None
+
+
 # ── Single-symbol fetch ───────────────────────────────────────────────────────
 
 
@@ -345,6 +374,7 @@ def _fetch_symbol(sym: str) -> dict:
             "gross_margin_current": gm_cur,
             "gross_margin_4q_avg": gm_4q,
             "gross_margin_trend": gm_trend,
+            "accruals_ratio": _compute_accruals_ratio(t),
             "forward_pe": info.get("forwardPE"),
             "shares_outstanding": info.get("sharesOutstanding"),
             "market_cap": info.get("marketCap"),
@@ -466,4 +496,13 @@ def get_shares_outstanding(sym: str) -> int | None:
 def get_market_cap(sym: str) -> float | None:
     """Return market cap for sym, or None if unavailable."""
     v = _get_field(sym, "market_cap")
+    return float(v) if v is not None else None
+
+
+def get_accruals_ratio(sym: str) -> float | None:
+    """Return accruals ratio = (net_income - ocf) / total_assets, or None if unavailable.
+
+    Sloan (1996): high accruals (>0.10) predict earnings reversals; suppress longs.
+    """
+    v = _get_field(sym, "accruals_ratio")
     return float(v) if v is not None else None

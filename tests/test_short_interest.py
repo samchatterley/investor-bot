@@ -322,3 +322,27 @@ class TestLoadSaveCacheShortInterest(unittest.TestCase):
             patch("builtins.open", side_effect=OSError("disk full")),
         ):
             _save_cache({_TODAY_KEY: {}})  # should not raise
+
+
+class TestShortPctFloat(unittest.TestCase):
+    def test_invalid_short_pct_float_coerces_to_none(self):
+        """shortPercentOfFloat that can't be cast to float results in pct_float=None."""
+        info = {
+            "shortRatio": 6.0,
+            "shortPercentOfFloat": "n/a",  # unparseable string
+        }
+        mock_ticker = MagicMock()
+        mock_ticker.info = info
+        with (
+            patch("data.short_interest.yf.Ticker", return_value=mock_ticker),
+            patch("data.short_interest.time.sleep"),
+            patch("data.short_interest.today_et", return_value=_TODAY_DATE),
+            patch("data.short_interest._load_cache", return_value={}),
+            patch("data.short_interest._save_cache"),
+        ):
+            from data.short_interest import get_short_interest
+
+            result = get_short_interest(["AAPL"])
+        # short_ratio=6.0 > threshold so entry is not None; pct_float is None due to cast failure
+        self.assertIsNotNone(result.get("AAPL"))
+        self.assertIsNone(result["AAPL"]["short_pct_float"])

@@ -1968,3 +1968,165 @@ class TestPremarketGapRetrace(unittest.TestCase):
 
         self.assertIn("AAPL", result)
         self.assertFalse(result["AAPL"]["premarket_gap_retrace"])
+
+
+class TestNewInjectionBlocks(unittest.TestCase):
+    """Tests for the fundamental_cache, AAII, analyst_revisions, and lockup injection blocks."""
+
+    def _base_snap(self):
+        return {
+            "symbol": "AAPL",
+            "current_price": 100.0,
+            "ret_1d_pct": 0.5,
+            "ret_5d_pct": 2.0,
+            "ret_10d_pct": 4.0,
+            "rsi_14": 55.0,
+            "macd_diff": 0.1,
+            "macd_crossed_up": False,
+            "macd_crossed_down": False,
+            "ema9_above_ema21": True,
+            "bb_pct": 0.5,
+            "vol_ratio": 1.2,
+            "price_vs_ema9_pct": 1.0,
+            "weekly_trend_up": True,
+            "weekly_rsi": 55.0,
+        }
+
+    def _std_patches(self, snap):
+        mock_breadth = MagicMock()
+        mock_breadth.breadth_thrust = False
+        mock_breadth.symbols_counted = 0
+        mock_breadth.nh_nl_ratio = 1.0
+        return [
+            patch("data.market_data._bulk_download", return_value={"AAPL": MagicMock()}),
+            patch("data.market_data.get_fundamentals", return_value={}),
+            patch("data.market_data.fetch_stock_data", return_value=MagicMock()),
+            patch("data.market_data.summarise_for_ai", return_value=snap),
+            patch("data.market_data.get_spy_5d_return", return_value=None),
+            patch("data.market_data.get_spy_10d_return", return_value=None),
+            patch("data.market_data.get_spy_20d_return", return_value=None),
+            patch("data.breadth.get_breadth_snapshot", return_value=mock_breadth),
+        ]
+
+    def test_fundamental_cache_exception_is_swallowed(self):
+        """Line 648-649: fundamental_cache injection failure → warning, snapshots still returned."""
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap()) + [
+            patch(
+                "data.fundamental_cache.get_altman_z",
+                side_effect=RuntimeError("cache down"),
+            ),
+        ]
+        for p in patches:
+            p.__enter__()
+        try:
+            result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
+        self.assertEqual(len(result), 1)
+
+    def test_aaii_10y_exception_is_swallowed(self):
+        """Lines 657-658: AAII/10y injection failure → warning, snapshots still returned."""
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap()) + [
+            patch(
+                "data.fred_client.get_aaii_sentiment",
+                side_effect=RuntimeError("FRED down"),
+            ),
+        ]
+        for p in patches:
+            p.__enter__()
+        try:
+            result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
+        self.assertEqual(len(result), 1)
+
+    def test_analyst_revisions_exception_is_swallowed(self):
+        """Lines 665-666: analyst_revisions injection failure → warning, snapshots still returned."""
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap()) + [
+            patch(
+                "data.analyst_revisions.get_analyst_revisions",
+                side_effect=RuntimeError("revisions down"),
+            ),
+        ]
+        for p in patches:
+            p.__enter__()
+        try:
+            result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
+        self.assertEqual(len(result), 1)
+
+    def test_lockup_exception_is_swallowed(self):
+        """Lines 673-674: lockup_calendar injection failure → warning, snapshots still returned."""
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap()) + [
+            patch(
+                "data.lockup_calendar.get_lockup_expiry_flags",
+                side_effect=RuntimeError("lockup down"),
+            ),
+        ]
+        for p in patches:
+            p.__enter__()
+        try:
+            result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
+        self.assertEqual(len(result), 1)
+
+    def test_macro_10y_yield_injected_into_snapshot(self):
+        """Line 700: macro_10y_yield injected when get_10y_yield returns a value."""
+        from data.market_data import get_market_snapshots
+
+        patches = self._std_patches(self._base_snap()) + [
+            patch(
+                "data.fred_client.get_aaii_sentiment",
+                return_value={
+                    "bulls_pct": 35.0,
+                    "bears_pct": 30.0,
+                    "extreme_fear": False,
+                    "excessive_bulls": False,
+                },
+            ),
+            patch("data.fred_client.get_10y_yield", return_value=4.25),
+        ]
+        for p in patches:
+            p.__enter__()
+        try:
+            result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].get("macro_10y_yield"), 4.25)
+
+    def test_lockup_flags_injected_into_snapshot(self):
+        """Line 704: lockup_expiry_soon injected when get_lockup_expiry_flags returns entry."""
+        from data.market_data import get_market_snapshots
+
+        lockup_data = {
+            "AAPL": {"lockup_expiry_soon": True, "days_to_lockup": 7, "ipo_date": "2025-12-15"}
+        }
+        patches = self._std_patches(self._base_snap()) + [
+            patch("data.lockup_calendar.get_lockup_expiry_flags", return_value=lockup_data),
+        ]
+        for p in patches:
+            p.__enter__()
+        try:
+            result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0].get("lockup_expiry_soon"))
+        self.assertEqual(result[0].get("days_to_lockup"), 7)

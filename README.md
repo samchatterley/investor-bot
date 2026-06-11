@@ -106,7 +106,7 @@ The daily scan universe is built dynamically at runtime rather than from a fixed
 
 ### Signal types
 
-The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of fifteen signal patterns before Claude sees it. This keeps Claude's input focused on genuine technical setups and prevents it from making decisions on featureless data.
+The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of thirty-six active signal patterns before Claude sees it. This keeps Claude's input focused on genuine technical setups and prevents it from making decisions on featureless data.
 
 **Daily signals** (computed from end-of-day bar history via yfinance):
 
@@ -121,12 +121,12 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `trend_pullback` | EMA9 > EMA21, price 0.5–3% below EMA21, RSI 40–58 — buying the dip in a healthy trend; blocked in DEFENSIVE_DOWNTREND | 3 days |
 | `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume; blocked in DEFENSIVE_DOWNTREND | 5 days |
 | `trend_continuation` | AI-classified continuation of an established trend | 5 days |
-| `breakout_52w` | Within 3% of 52-week high + above-average volume + weekly trend intact; blocked in DEFENSIVE_DOWNTREND | 5 days |
+| `breakout_52w` | Within 3% of 52-week high + above-average volume + EMA aligned; **globally disabled** (`GLOBALLY_DISABLED`) — disabled v1.96 (insufficient standalone edge vs. newer signals) | 5 days |
 | `rs_leader` | Outperforming SPY over both 5d and 10d with EMA alignment; **globally disabled** (`GLOBALLY_DISABLED`) — Sharpe −0.93 standalone, best param sweep Sharpe 0.15 over 9 years; no edge in any regime | 5 days |
 | `momentum_12_1` | Jegadeesh-Titman 12-1 factor: 12m return minus 1m return > threshold, EMA aligned, ADX ≥ 20; **globally disabled** (`GLOBALLY_DISABLED`) — WR 48%, avg −0.2% in every tested regime | 5 days |
 | `gap_and_go` | Intraday gap ≥ threshold + volume; blocked in DEFENSIVE_DOWNTREND | 5 days |
-| `vix_fear_reversion` | VIX spike above threshold + vol filter — mean-reversion buy after volatility shock; blocked in non-stress regimes | 3 days |
-| `rsi_divergence` | Price lower than 5 days ago but RSI recovering (bullish structural divergence); ADX < 25, RSI < 45; blocked in BULL_TREND and stress regimes | 3 days |
+| `vix_fear_reversion` | VIX spike above threshold + vol filter — mean-reversion buy after volatility shock; **globally disabled** (`GLOBALLY_DISABLED`) — disabled v1.96 (signal registry unification) | 3 days |
+| `rsi_divergence` | Price lower than 5 days ago but RSI recovering (bullish structural divergence); ADX < 25, RSI < 45; **globally disabled** (`GLOBALLY_DISABLED`) — insufficient edge in live testing | 3 days |
 | `range_reversion` | ADX < 20 (confirmed range-bound) + BB < 0.10 + RSI < 30; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 3 days |
 | `insider_buying` | ≥2 distinct corporate insiders made open-market Form 4 purchases (SEC EDGAR) within 10 days; bypasses weekly trend filter | 5 days |
 | `pead` | Post-Earnings Announcement Drift: EPS beat ≥5% within 30 days + price still drifting up (ret_5d > 0); bypasses weekly trend filter | 3 days |
@@ -136,6 +136,23 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 | `obv_divergence` | OBV 5d slope rising while price 5d negative (accumulation divergence) + vol_ratio ≥ 1.0; blocked in BEAR_DAY | 3 days |
 | `obv_acceleration` | OBV 5d slope > OBV 20d slope (accelerating into price) + EMA aligned or MACD positive + vol_ratio ≥ 1.2; blocked in BEAR_DAY | 3 days |
 | `volume_climax_reversal` | 3+ consecutive days of vol_ratio > 2.5 at 20d price low (exhaustion reversal) | 3 days |
+| `breadth_thrust` | Zweig breadth-thrust: universe breadth jumps from <40% to >60% above 50d SMA within 10 days; EMA9 > EMA21 required | 4 days |
+| `tax_loss_reversal` | January only: price >30% below 52-week high + EMA9 > EMA21 — tax-loss selling pressure reverses at year-start | 5 days |
+| `activist_13d_signal` | SC 13D activist filing within 30 days + EMA aligned — management-change catalyst; bypasses quality gates | 5 days |
+| `guidance_raise_signal` | Positive 8-K guidance event; fires without price confirmation (earlier entry than `pead`); blocked by gross-margin deterioration gate | 3 days |
+| `iv_vs_rv_spread` | ATM IV / 20d realised vol < 0.70 — options market underpricing risk vs realised; EMA or MACD confirmation + volume | 4 days |
+| `fcf_yield_signal` | FCF yield > 5% + Piotroski F ≥ 5 — high-quality free-cash-flow value buy | 5 days |
+| `options_skew_signal` | Panic put-skew spike (contrarian long) or call-skew spike (informed upside); requires options data post-filter injection | 3 days |
+| `unusual_options_activity` | Large OTM call open-interest surge — informed upside conviction; requires options data | 3 days |
+| `put_call_contrarian` | Put/call OI ratio > 2.5 (extreme panic hedging) + EMA or MACD confirmation — contrarian long | 3 days |
+| `squeeze_setup_long` | High short interest + price dormant near 20d low — crowded short pre-squeeze setup | 5 days |
+| `squeeze_momentum_long` | High short interest + strong 5d return + price above 20d high — active short squeeze in motion | 4 days |
+| `short_interest_trend_long` | SI% falling >30% from peak + price rising — short covering into strength (informed capitulation) | 5 days |
+| `analyst_upgrade_signal` | Analyst buy% rose >10pp month-over-month (yfinance recommendations_summary; min 3 analysts) | 5 days |
+| `aaii_extreme_fear_long` | AAII survey bears > 50% — contrarian long backdrop | 3 days |
+| `fear_greed_extreme_fear` | Composite fear/greed index < 20 (VIX 30%, AAII 25%, NH/NL 20%, SPY 15%, breadth 10%) — extreme fear | 3 days |
+| `sector_pair_mean_reversion` | Intra-sector RS spread z-score extended — long the RS laggard as spread reverts to sector mean | 5 days |
+| `google_trends_bullish` | Search-interest spike: current week ≥ 150% of 12-week baseline (minimum baseline 10); `pytrends`-powered | 3 days |
 | `unknown` | Default when Claude can't pinpoint a specific pattern | 3 days |
 
 **Intraday signals** (computed from Alpaca minute bars; available on any run during market hours):
@@ -148,7 +165,7 @@ The prefilter (`execution/stock_scanner.py`) requires every buy candidate to mat
 
 Intraday signals enable the midday run (12:00 ET) to execute new buys, not just manage positions. The 12:00 run now acts on moves that develop after the open rather than waiting until the next day.
 
-Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`, `rsi_divergence`, `range_reversion`), **volatility expansion** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`, `vix_fear_reversion`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `rs_leader`, `breakout_52w`, `macd_crossover`, `momentum_12_1`, `gap_and_go`), **OHLCV technical** (`golden_cross`, `candle_exhaustion`, `obv_divergence`, `obv_acceleration`, `volume_climax_reversal`), **catalyst** (`news_catalyst`), **fundamental** (`insider_buying`, `pead`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`).
+Signals are grouped by family: **mean-reversion** (`mean_reversion`, `rsi_oversold`, `range_reversion`), **volatility/IV** (`bb_squeeze`, `inside_day_breakout`, `iv_compression`, `iv_vs_rv_spread`), **trend/momentum** (`momentum`, `trend_continuation`, `trend_pullback`, `macd_crossover`, `gap_and_go`), **OHLCV technical** (`golden_cross`, `candle_exhaustion`, `obv_divergence`, `obv_acceleration`, `volume_climax_reversal`, `breadth_thrust`), **catalyst/fundamental** (`news_catalyst`, `insider_buying`, `pead`, `guidance_raise_signal`, `activist_13d_signal`, `fcf_yield_signal`, `tax_loss_reversal`), **options** (`options_skew_signal`, `unusual_options_activity`, `put_call_contrarian`), **squeeze** (`squeeze_setup_long`, `squeeze_momentum_long`, `short_interest_trend_long`), **sentiment/alt-data** (`aaii_extreme_fear_long`, `fear_greed_extreme_fear`, `analyst_upgrade_signal`, `google_trends_bullish`), **cross-asset** (`sector_pair_mean_reversion`), and **intraday** (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`). Signals in `GLOBALLY_DISABLED` (`rs_leader`, `momentum_12_1`, `vix_fear_reversion`, `breakout_52w`, `rsi_divergence`) are excluded from all families.
 
 ---
 
@@ -815,14 +832,44 @@ Additional live-mode safety gates active in all modes:
 
 ## Version History
 
-### 1.93 — June 2026 — Standalone short book in bear regimes
+### 1.97 — June 2026 — Five new data pipelines + 15 long / 6 short new signals: analyst revisions, fear/greed, Google Trends, lockup calendar, ERP gate
 
-Removes the hedge-only restriction on short entries so the bot can run a directional short book when no long positions are held during bear market regimes.
+The deepest signal expansion to date: 15 new long signals and 6 new short signals spanning options microstructure, fundamental quality, short-squeeze mechanics, alternative data, and cross-asset pairs, underpinned by 5 new data pipelines. Also fixes a latent options dead-code bug where options signals were evaluated before options data was injected.
 
-- **`main._STANDALONE_SHORT_REGIMES`** — new module-level constant: `{DEFENSIVE_DOWNTREND, HIGH_VOL_DOWNTREND, STRESS_RISK_OFF, CREDIT_STRESS}`. Shorts are allowed without longs only in these regimes.
-- **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
-- **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
-- **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
+**New data modules (4):**
+- **`data/analyst_revisions.py`** — daily-cached analyst recommendations via yfinance `recommendations_summary`. Detects upgrades (buy% rose >10pp month-over-month) and downgrades (sell% rose >10pp or buy% fell >10pp). Minimum 3 analysts required; ETF symbols skipped. `prefetch_analyst_revisions()` warms cache during the pre-market run.
+- **`data/fear_greed.py`** — composite 0–100 fear/greed index: VIX component 30%, AAII 25%, NH/NL breadth 20%, SPY momentum 15%, breadth % above SMA50 10%. `is_extreme_fear(score < 20)` and `is_excessive_greed(score > 80)` predicates.
+- **`data/google_trends.py`** — per-symbol search-interest spike detection via `pytrends`. Spike fires when current week ≥ 150% of 12-week baseline average (minimum baseline 10). Graceful `ImportError` fallback when `pytrends` is not installed. Daily-cached per date key.
+- **`data/lockup_calendar.py`** — IPO lock-up expiry tracker. Detects IPO date from `yf.Ticker.info` (`ipoExpectedDate` or `firstTradeDateEpochUtc`) or price-history first-trade date. Alerts 5–10 calendar days before the 180-day lock-up expires. `refresh_ipo_dates()` prunes stale entries (> 550 days old).
+
+**Updated data modules (4):**
+- **`data/fred_client.py`** — `get_10y_yield()` (latest DGS10) and `get_aaii_sentiment()` (bulls%, bears%, extreme_fear, excessive_bulls) added.
+- **`data/fundamental_cache.py`** — `compute_accruals_ratio()` (net income minus operating cash flow, normalised by average total assets) and `get_accruals_ratio()` public getter added.
+- **`data/short_interest.py`** — `short_pct_float` coercion hardened: non-numeric values (e.g. `"n/a"`) caught by `except (TypeError, ValueError)` → `None`.
+- **`data/market_data.get_market_snapshots()`** — injects `macro_10y_yield`, `aaii_*` sentiment fields, `analyst_*` revision flags, `lockup_expiry_soon`, `lockup_days_to_expiry`, and `google_trends_bullish` into every snapshot. Each pipeline is exception-guarded independently so a single feed failure does not abort the run.
+
+**New gates in `signals/evaluator.py` (9):**
+- *Fundamental quality:* `altman_z < 1.1` → `_DISTRESS_BLOCKED` (momentum, breakout, gap_and_go, bb_squeeze); `piotroski_score < 3` → `_PIOTROSKI_GATED` (momentum, breakout); `forward_pe > 60` → `_EXPENSIVE_BLOCKED` (momentum, breakout, macd_crossover); `gross_margin_trend < −0.03` → `_GM_GATE_BLOCKED` (momentum, trend_pullback, guidance_raise, pead); `accruals_ratio > 0.10` → `_EXPENSIVE_BLOCKED`.
+- *Market microstructure:* `nhl_ratio < 0.5` → `_WEAK_BREADTH_BLOCKED` (gap_and_go, momentum, bb_squeeze, inside_day_breakout, orb_breakout, intraday_momentum); `sector_correlation_20d > 0.75` → blocks momentum, breakout_52w, bb_squeeze; ERP gate (`1/forward_pe − 10y_yield/100 < 0.01`) → `_EXPENSIVE_BLOCKED`; `aaii_excessive_bulls` → blocks gap_and_go, momentum, breakout_52w.
+
+**New long signals in `signals/evaluator.py` (15):**
+- *Options/IV:* `iv_vs_rv_spread` (ATM IV/RV < 0.70 — vol genuinely cheap vs realised), `options_skew_signal` (panic put-skew or call-skew spike), `unusual_options_activity` (OTM call OI surge — informed upside), `put_call_contrarian` (P/C OI > 2.5 + trend → contrarian long).
+- *Squeeze:* `squeeze_setup_long` (crowded dormant short at 20d low — pre-squeeze), `squeeze_momentum_long` (high SI + strong return + above 20d high — squeeze in motion).
+- *Alternative data:* `short_interest_trend_long` (SI% falling >30% from peak + price rising), `analyst_upgrade_signal` (buy% rose >10pp), `aaii_extreme_fear_long` (AAII bears > 50%), `fear_greed_extreme_fear` (composite index < 20), `google_trends_bullish` (search-interest spike).
+- *Fundamental/catalyst:* `activist_13d_signal` (13D filing within 30 days + EMA aligned), `guidance_raise_signal` (positive 8-K guidance; fires without price confirmation), `fcf_yield_signal` (FCF yield > 5% + Piotroski F ≥ 5).
+- *Cross-asset:* `sector_pair_mean_reversion` (intra-sector RS spread z-score extended → long the laggard).
+
+**New short signals in `signals/evaluator.py` (6):**
+`altman_distress_short` (Z < 1.1 in bear/stress regime), `piotroski_distress_short` (F ≤ 2 + bearish EMA), `gross_margin_deterioration_short` (GM trend < −5pp), `accruals_quality_short` (accruals ratio > 0.15 + extended price), `lockup_expiry_short` (lockup expires in 5–10 days + bearish EMA), `analyst_downgrade_signal` (sell% rose >10pp or buy% fell >10pp).
+
+**Options dead-code fix (`main.py`):**
+Options signals require `iv_rank`, `put_call_ratio`, `unusual_call_oi`, and related fields, which are injected by the options pipeline **after** `prefilter_candidates()`. Previously these signals could never fire because the pre-filter ran before injection. Fixed: `_run_inner()` now performs a post-filter signal re-evaluation pass that re-scores filtered candidates against the fully options-enriched snapshot. Google Trends injection also added (exception-guarded, WARNING log on failure).
+
+**`config.SIGNAL_MAX_HOLD_DAYS`** — added entries for all 15 new long signals (2–5 days).
+
+**`SIGNAL_PRIORITY`** now 41 entries (36 active, 5 in `GLOBALLY_DISABLED`). **`SHORT_SIGNAL_PRIORITY`** now 23 entries (9 active, 14 in `SHORT_GLOBALLY_DISABLED`).
+
+**Tests:** ~275 new tests across 11 new/modified test files (`test_new_signals.py`, `test_analyst_revisions.py`, `test_fear_greed.py`, `test_google_trends.py`, `test_lockup_calendar.py`, `test_fred_client.py`, `test_fundamental_cache.py`, `test_short_interest.py`, `test_market_data.py`, `test_main.py`, `test_stock_scanner.py`). 4,494 tests total. 100% line and branch coverage on all new and changed files.
 
 ---
 
@@ -956,6 +1003,17 @@ Adds five new long-side signals and one short-side signal (death_cross) derived 
 - **`backtest/engine._compute_indicators()`** — 13 new OHLCV indicator columns: `golden_cross`, `death_cross`, `obv`, `obv_5d_slope`, `obv_20d_slope`, `obv_divergence_bull`, `obv_divergence_bear`, `obv_accelerating_up`, `obv_accelerating_down`, `near_20d_low`, `near_20d_high`, candle patterns (`hammer`, `bullish_engulf`, `shooting_star`, `bearish_engulf`), `high_vol_streak`. `_row_to_snapshot()` maps all 13 to the snapshot dict consumed by the evaluator.
 - **`data/market_data.fetch_stock_data()`** — same 13 indicator columns computed before `df.tail(days)` return. `summarise_for_ai()` exposes all 13 as typed fields in the scanner snapshot dict.
 - **Tests:** 63 new tests (702 total in `test_backtest.py`; 3 in `test_fetch_stock_data.py`; 3 in `test_market_data.py`). 100% coverage on all changed lines.
+
+---
+
+### 1.93 — June 2026 — Standalone short book in bear regimes
+
+Removes the hedge-only restriction on short entries so the bot can run a directional short book when no long positions are held during bear market regimes.
+
+- **`main._STANDALONE_SHORT_REGIMES`** — new module-level constant: `{DEFENSIVE_DOWNTREND, HIGH_VOL_DOWNTREND, STRESS_RISK_OFF, CREDIT_STRESS}`. Shorts are allowed without longs only in these regimes.
+- **`main._execute_shorts()`** — the `long_notional == 0` early-return is now regime-conditional: non-bear regimes still skip (hedge-only); bear regimes enter standalone mode with the short book capped at `MAX_SHORT_STANDALONE_RATIO × portfolio_value` (default 30%) instead of against long notional. Log message distinguishes `standalone` vs `hedge` mode. Per-order cap check updated accordingly.
+- **`config.MAX_SHORT_STANDALONE_RATIO`** — new config knob, default 0.3, env-overridable.
+- **Tests:** 4 new / 1 renamed test in `test_main.py`. 100% coverage on changed lines.
 
 ---
 

@@ -92,12 +92,19 @@ def _live_fetch_short_interest(
             result[sym] = None
             continue
 
+        short_pct_float = info.get("shortPercentOfFloat")
+        try:
+            pct_float = float(short_pct_float) if short_pct_float is not None else None
+        except (TypeError, ValueError):
+            pct_float = None
+
         if ratio < min_short_ratio:
             result[sym] = None
         else:
             result[sym] = {
                 "short_ratio": ratio,
                 "high_short_interest": True,
+                "short_pct_float": pct_float,
             }
 
     return result
