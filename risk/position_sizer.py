@@ -369,3 +369,63 @@ def seasonal_scalar(signal: str, check_date: _date | None = None) -> float:
         scalar *= _PRE_HOLIDAY_SCALAR
 
     return max(0.70, min(scalar, 1.25))
+
+
+# Signals that represent cyclical / trend-following bets (benefit from expansion).
+_CYCLICAL_SIGNALS: frozenset[str] = frozenset(
+    {
+        "momentum",
+        "gap_and_go",
+        "trend_pullback",
+        "bb_squeeze",
+        "inside_day_breakout",
+        "golden_cross",
+        "obv_acceleration",
+        "rs_leader",
+        "breadth_thrust",
+    }
+)
+
+_MACRO_EXPANSION_SCALAR = 1.10  # steep positive yield curve → expansion boost for cyclicals
+_MACRO_RECESSION_SCALAR = 0.80  # sustained yield-curve inversion → reduce all longs
+_MACRO_USD_STRONG_SCALAR = 0.90  # rising USD → headwind to earnings, risk appetite
+_MACRO_COPPER_CYCLICAL_SCALAR = 1.10  # copper-gold expansion ratio → boost cyclicals
+_MACRO_PMI_CYCLICAL_SCALAR = 1.05  # PMI > 55 for 3 months → modest cyclical boost
+
+
+def macro_scalar(snapshot: dict, signal: str) -> float:
+    """Return a position-size multiplier from macro/rates context.
+
+    Reads macro flags injected into the stock snapshot dict (macro_* keys).
+    Combines ETF-based signals (credit stress, duration flight, copper-gold,
+    USD) with FRED series (yield curve, PMI) into a single scalar.
+    Result is clamped to [0.70, 1.25].
+    """
+    scalar = 1.0
+
+    yc: float | None = snapshot.get("macro_yield_curve")
+    inv_days = int(snapshot.get("macro_yield_curve_inverted_days", 0))
+    copper_gold = bool(snapshot.get("macro_copper_gold_positive", False))
+    usd_strong = bool(snapshot.get("macro_usd_strong", False))
+    pmi_expanding = bool(snapshot.get("macro_pmi_expanding", False))
+
+    # Yield curve: sustained inversion → reduce all longs (recession risk signal)
+    if yc is not None and yc < 0 and inv_days >= 60:
+        scalar *= _MACRO_RECESSION_SCALAR
+    # Yield curve: steep positive + cyclical → expansion boost
+    elif yc is not None and yc >= 1.5 and signal in _CYCLICAL_SIGNALS:
+        scalar *= _MACRO_EXPANSION_SCALAR
+
+    # Copper-gold ratio expanding → boost cyclical signals (risk-on growth regime)
+    if copper_gold and signal in _CYCLICAL_SIGNALS:
+        scalar *= _MACRO_COPPER_CYCLICAL_SCALAR
+
+    # Strong USD → dampen longs (earnings headwind, reduced global risk appetite)
+    if usd_strong:
+        scalar *= _MACRO_USD_STRONG_SCALAR
+
+    # PMI in strong expansion → modest cyclical boost
+    if pmi_expanding and signal in _CYCLICAL_SIGNALS:
+        scalar *= _MACRO_PMI_CYCLICAL_SCALAR
+
+    return max(0.70, min(scalar, 1.25))

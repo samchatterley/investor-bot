@@ -9517,3 +9517,118 @@ class TestBatch3TaxLossReversal(unittest.TestCase):
         self.assertIn("gap_and_go", OPEX_WEEK_DAMPENED)
         self.assertIn("momentum", OPEX_WEEK_DAMPENED)
         self.assertNotIn("pead", OPEX_WEEK_DAMPENED)
+
+
+class TestBatch4MacroFlagsFetch(unittest.TestCase):
+    """_fetch_macro_flags_for_backtest: covers the new Batch 4 macro context precompute."""
+
+    def setUp(self):
+        self._save_patcher = patch("backtest.engine._save_results")
+        self._print_patcher = patch("backtest.engine._print_results")
+        self._save_patcher.start()
+        self._print_patcher.start()
+
+    def tearDown(self):
+        self._save_patcher.stop()
+        self._print_patcher.stop()
+
+    def test_macro_flags_fetch_failure_does_not_abort_backtest(self):
+        raw = _make_raw()
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch(
+                "backtest.engine._fetch_macro_flags_for_backtest",
+                side_effect=RuntimeError("macro data unavailable"),
+            ),
+        ):
+            result = run_backtest(["AAPL", "FLAT"], start_date="2025-03-01", end_date="2025-03-07")
+        self.assertIn("total_trades", result)
+
+    def test_fetch_macro_flags_returns_empty_on_yf_failure(self):
+        from backtest.engine import _fetch_macro_flags_for_backtest
+
+        with patch("backtest.engine.yf.download", return_value=None):
+            result = _fetch_macro_flags_for_backtest("2025-01-01", "2025-01-31")
+        self.assertEqual(result, {})
+
+    def test_fetch_macro_flags_returns_empty_on_non_multiindex(self):
+        import pandas as pd
+
+        from backtest.engine import _fetch_macro_flags_for_backtest
+
+        fake = pd.DataFrame({"Close": [100.0]})
+        with patch("backtest.engine.yf.download", return_value=fake):
+            result = _fetch_macro_flags_for_backtest("2025-01-01", "2025-01-31")
+        self.assertEqual(result, {})
+
+    def test_fetch_macro_flags_returns_empty_on_exception(self):
+        from backtest.engine import _fetch_macro_flags_for_backtest
+
+        with patch("backtest.engine.yf.download", side_effect=RuntimeError("network down")):
+            result = _fetch_macro_flags_for_backtest("2025-01-01", "2025-01-31")
+        self.assertEqual(result, {})
+
+    def test_fetch_macro_flags_happy_path_populates_result(self):
+        """Success path: valid MultiIndex ETF data + FRED series → result dict populated."""
+        import numpy as np
+        import pandas as pd
+
+        from backtest.engine import _fetch_macro_flags_for_backtest
+
+        tickers = ["HYG", "LQD", "IEF", "TLT", "CPER", "GLD", "UUP", "SPY"]
+        dates = pd.bdate_range("2024-10-01", periods=50)
+        columns = pd.MultiIndex.from_product([["Close"], tickers])
+        prices = np.full((50, len(tickers)), 100.0)
+        raw = pd.DataFrame(prices, index=dates, columns=columns)
+
+        yc_data = [("2024-09-01", -0.3), ("2024-11-01", -0.1)]
+        pmi_data = [("2024-09-01", 54.0), ("2024-10-01", 56.0), ("2024-11-01", 57.5)]
+
+        def _mock_fetch(series_id, **kwargs):
+            return yc_data if series_id == "T10Y2Y" else pmi_data
+
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("data.fred_client.fetch_series", side_effect=_mock_fetch),
+        ):
+            result = _fetch_macro_flags_for_backtest("2024-11-20", "2024-11-30")
+
+        self.assertGreater(len(result), 0)
+        sample = next(iter(result.values()))
+        self.assertIn("macro_credit_stress", sample)
+        self.assertIn("macro_yield_curve", sample)
+        self.assertTrue(sample["macro_data_available"])
+        self.assertIsNotNone(sample["macro_yield_curve"])
+
+    def test_fetch_macro_flags_sparse_data_hits_insufficient_roc_branches(self):
+        """_roc / _ratio_roc_bt return None when dropna() leaves len(s) <= n (lines 849, 863)."""
+        import numpy as np
+        import pandas as pd
+
+        from backtest.engine import _fetch_macro_flags_for_backtest
+
+        tickers = ["HYG", "LQD", "IEF", "TLT", "CPER", "GLD", "UUP", "SPY"]
+        dates = pd.bdate_range("2024-10-01", periods=50)
+        columns = pd.MultiIndex.from_product([["Close"], tickers])
+        # All NaN except the last 2 rows — dropna slices are too short for any ROC window
+        prices = np.full((50, len(tickers)), np.nan)
+        prices[-2:, :] = 100.0
+        raw = pd.DataFrame(prices, index=dates, columns=columns)
+
+        yc_data = [("2024-09-01", -0.3), ("2024-11-01", -0.1)]
+        pmi_data = [("2024-09-01", 54.0), ("2024-10-01", 56.0), ("2024-11-01", 57.5)]
+
+        def _mock_fetch(series_id, **kwargs):
+            return yc_data if series_id == "T10Y2Y" else pmi_data
+
+        with (
+            patch("backtest.engine.yf.download", return_value=raw),
+            patch("data.fred_client.fetch_series", side_effect=_mock_fetch),
+        ):
+            result = _fetch_macro_flags_for_backtest("2024-11-20", "2024-11-30")
+
+        # Sparse data → ROC functions return None → stress/flight flags are False
+        if result:
+            sample = next(iter(result.values()))
+            self.assertFalse(sample["macro_credit_stress"])
+            self.assertFalse(sample["macro_duration_flight"])

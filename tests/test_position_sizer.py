@@ -14,10 +14,12 @@ from risk.position_sizer import (
     get_max_positions,
     get_signal_size_multiplier,
     kelly_fraction,
+    macro_scalar,
     momentum_quality_score,
     mqr_size_multiplier,
     risk_budget_size,
     seasonal_scalar,
+    small_account_size,
     vol_of_vol_scalar,
 )
 
@@ -586,3 +588,107 @@ class TestSeasonalScalar(unittest.TestCase):
         ctx = _neutral_ctx(halloween_bullish=True)
         with self._patch(ctx):
             self.assertIsInstance(seasonal_scalar("momentum"), float)
+
+
+class TestMacroScalar(unittest.TestCase):
+    def _neutral(self) -> dict:
+        return {
+            "macro_yield_curve": 0.5,
+            "macro_yield_curve_inverted_days": 0,
+            "macro_copper_gold_positive": False,
+            "macro_usd_strong": False,
+            "macro_pmi_expanding": False,
+        }
+
+    def test_neutral_flags_return_one(self):
+        self.assertEqual(macro_scalar(self._neutral(), "momentum"), 1.0)
+
+    def test_recession_scalar_when_deep_inversion(self):
+        snap = {**self._neutral(), "macro_yield_curve": -0.5, "macro_yield_curve_inverted_days": 60}
+        result = macro_scalar(snap, "mean_reversion")
+        self.assertLess(result, 1.0)
+
+    def test_expansion_boost_for_cyclical_with_steep_curve(self):
+        snap = {**self._neutral(), "macro_yield_curve": 1.8}
+        result = macro_scalar(snap, "momentum")
+        self.assertGreater(result, 1.0)
+
+    def test_expansion_boost_not_applied_to_non_cyclical(self):
+        snap = {**self._neutral(), "macro_yield_curve": 1.8}
+        result = macro_scalar(snap, "mean_reversion")
+        self.assertEqual(result, 1.0)
+
+    def test_copper_gold_positive_boosts_cyclicals(self):
+        snap = {**self._neutral(), "macro_copper_gold_positive": True}
+        result = macro_scalar(snap, "momentum")
+        self.assertGreater(result, 1.0)
+
+    def test_copper_gold_positive_no_boost_for_non_cyclical(self):
+        snap = {**self._neutral(), "macro_copper_gold_positive": True}
+        result = macro_scalar(snap, "mean_reversion")
+        self.assertEqual(result, 1.0)
+
+    def test_usd_strong_reduces_all(self):
+        snap = {**self._neutral(), "macro_usd_strong": True}
+        result = macro_scalar(snap, "momentum")
+        self.assertLess(result, 1.0)
+
+    def test_pmi_expanding_boosts_cyclicals(self):
+        snap = {**self._neutral(), "macro_pmi_expanding": True}
+        result = macro_scalar(snap, "momentum")
+        self.assertGreater(result, 1.0)
+
+    def test_pmi_expanding_no_boost_for_non_cyclical(self):
+        snap = {**self._neutral(), "macro_pmi_expanding": True}
+        result = macro_scalar(snap, "mean_reversion")
+        self.assertEqual(result, 1.0)
+
+    def test_clamp_at_max_125(self):
+        snap = {
+            "macro_yield_curve": 2.0,
+            "macro_yield_curve_inverted_days": 0,
+            "macro_copper_gold_positive": True,
+            "macro_usd_strong": False,
+            "macro_pmi_expanding": True,
+        }
+        result = macro_scalar(snap, "momentum")
+        self.assertLessEqual(result, 1.25)
+
+    def test_clamp_at_min_070(self):
+        snap = {
+            "macro_yield_curve": -0.5,
+            "macro_yield_curve_inverted_days": 65,
+            "macro_copper_gold_positive": False,
+            "macro_usd_strong": True,
+            "macro_pmi_expanding": False,
+        }
+        result = macro_scalar(snap, "momentum")
+        self.assertGreaterEqual(result, 0.70)
+
+    def test_missing_keys_default_to_neutral(self):
+        result = macro_scalar({}, "momentum")
+        self.assertEqual(result, 1.0)
+
+
+class TestSmallAccountSize(unittest.TestCase):
+    def test_zero_portfolio_returns_zero(self):
+        self.assertEqual(small_account_size(0), 0.0)
+
+    def test_negative_portfolio_returns_zero(self):
+        self.assertEqual(small_account_size(-50), 0.0)
+
+    def test_small_portfolio_floored_at_40(self):
+        # 50 * 0.8 / 2 = 20 < 40 → floor
+        self.assertEqual(small_account_size(50), 40.0)
+
+    def test_large_portfolio_capped_at_max_single_order(self):
+        # 500 * 0.8 / 2 = 200 > 55 → cap
+        self.assertEqual(small_account_size(500), 55.0)
+
+    def test_medium_portfolio_returns_computed_value(self):
+        # 120 * 0.8 / 2 = 48; 40 <= 48 <= 55 → 48
+        self.assertAlmostEqual(small_account_size(120), 48.0)
+
+    def test_custom_max_single_order(self):
+        # 500 * 0.8 / 2 = 200 > 100 → cap at custom max
+        self.assertEqual(small_account_size(500, max_single_order=100.0), 100.0)

@@ -268,6 +268,37 @@ def get_macro_snapshot(force_refresh: bool = False) -> MacroSnapshot:
     return snapshot
 
 
+def get_combined_macro_flags() -> dict:
+    """Return combined macro flags from ETF signals and FRED data.
+
+    Merges the ETF-based MacroSnapshot with FRED macro series (yield curve,
+    claims, PMI) into a single flat dict suitable for injection into stock
+    snapshot dicts.  All keys are prefixed with ``macro_`` to avoid collision
+    with stock-level fields.  Degrades gracefully — all flags default to
+    neutral (False/0/None) when data is unavailable.
+    """
+    from data.fred_client import get_macro_snapshot as _fred_snapshot
+    from data.fred_client import get_pmi_snapshot
+
+    etf = get_macro_snapshot()
+    fred = _fred_snapshot()
+    pmi = get_pmi_snapshot()
+
+    return {
+        "macro_credit_stress": etf.credit_stress,
+        "macro_duration_flight": etf.duration_flight,
+        "macro_copper_gold_positive": etf.copper_gold_positive,
+        "macro_usd_strong": etf.usd_strong,
+        "macro_yield_curve": fred.get("yield_curve"),
+        "macro_yield_curve_inverted_days": fred.get("yield_curve_inverted_days", 0),
+        "macro_claims_deteriorating": fred.get("claims_deteriorating", False),
+        "macro_pmi_latest": pmi.get("latest"),
+        "macro_pmi_expanding": pmi.get("expanding", False),
+        "macro_pmi_contracting": pmi.get("contracting", False),
+        "macro_data_available": etf.data_available or fred.get("data_available", False),
+    }
+
+
 def get_credit_stress() -> bool:
     """True when HYG/LQD ratio has fallen >2% over the last 10 trading days."""
     return get_macro_snapshot().credit_stress

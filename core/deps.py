@@ -143,6 +143,7 @@ class TradingDeps:
     load_experiment_baseline: Any
     run_startup_health_check: Any
     get_macro_snapshot: Any
+    get_combined_macro_flags: Any
     get_sentiment_snapshot: Any
     get_short_universe: Any
     scan_short_universe: Any
@@ -173,7 +174,7 @@ class TradingDeps:
         )
         from data import options_data as options_data_module
         from data import sentiment as sentiment_module
-        from data.macro_data import get_macro_snapshot
+        from data.macro_data import get_combined_macro_flags, get_macro_snapshot
         from data.sentiment_client import get_sentiment_snapshot
         from execution import short_risk, stock_scanner, trader
         from execution.quote_gate import check_quote_gate
@@ -235,6 +236,7 @@ class TradingDeps:
             load_experiment_baseline=load_experiment_baseline,
             run_startup_health_check=run_startup_health_check,
             get_macro_snapshot=get_macro_snapshot,
+            get_combined_macro_flags=get_combined_macro_flags,
             get_sentiment_snapshot=get_sentiment_snapshot,
             get_short_universe=get_short_universe,
             scan_short_universe=scan_short_universe,

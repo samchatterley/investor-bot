@@ -385,6 +385,7 @@ def _entry_signal(
     rs_rank_pct: float | None = None,
     breadth_thrust: bool = False,
     calendar_month: int = 0,
+    macro_flags: dict | None = None,
 ) -> str | None:
     """Return the highest-priority matching signal, or None.
 
@@ -406,6 +407,8 @@ def _entry_signal(
         snap["rs_rank_pct"] = rs_rank_pct
     snap["breadth_thrust"] = breadth_thrust
     snap["calendar_month"] = calendar_month
+    if macro_flags:
+        snap.update(macro_flags)
     signals = evaluate_signals(
         snap,
         blocked=blocked,
@@ -783,6 +786,129 @@ def _compute_breadth_thrust_by_date(
     return result
 
 
+def _fetch_macro_flags_for_backtest(
+    start_date: str,
+    end_date: str,
+) -> dict[str, dict]:
+    """Precompute daily macro flags over the backtest date range.
+
+    Downloads ETF price history and FRED macro series to reproduce the same
+    signals as get_combined_macro_flags() for each historical trading day.
+    Returns {date_str: macro_flags_dict}; returns {} on any failure so the
+    backtest continues with neutral macro flags.
+    """
+    import bisect
+
+    from data.fred_client import fetch_series
+
+    _ETF_TICKERS = ["HYG", "LQD", "IEF", "TLT", "CPER", "GLD", "UUP", "SPY"]
+    try:
+        lookback_start = (pd.Timestamp(start_date) - pd.Timedelta(days=35)).strftime("%Y-%m-%d")
+        raw = yf.download(
+            tickers=_ETF_TICKERS,
+            start=lookback_start,
+            end=end_date,
+            auto_adjust=True,
+            progress=False,
+        )
+        if raw is None or raw.empty:
+            return {}
+        if not isinstance(raw.columns, pd.MultiIndex):
+            return {}
+        close = raw["Close"].copy()
+        close.index = pd.DatetimeIndex(close.index).tz_localize(None)
+
+        yc_data = fetch_series("T10Y2Y")
+        pmi_data = fetch_series("NAPM", observation_start="2018-01-01")
+        yc_dict: dict[str, float] = dict(yc_data)
+        pmi_dict: dict[str, float] = dict(pmi_data)
+        yc_dates_sorted = sorted(yc_dict)
+        pmi_dates_sorted = sorted(pmi_dict)
+
+        def _fred_value_on_or_before(
+            fd: dict[str, float], sorted_d: list[str], target: str
+        ) -> float | None:
+            idx = bisect.bisect_right(sorted_d, target) - 1
+            return fd[sorted_d[idx]] if idx >= 0 else None
+
+        # Precompute running inversion-day count for every date in the close index
+        all_dates = [ts.strftime("%Y-%m-%d") for ts in close.index]
+        inv_count = 0
+        inv_days_map: dict[str, int] = {}
+        for d in all_dates:
+            yc_v = _fred_value_on_or_before(yc_dict, yc_dates_sorted, d)
+            if yc_v is not None:
+                inv_count = inv_count + 1 if yc_v < 0 else 0
+            inv_days_map[d] = inv_count
+
+        def _roc(ticker: str, at_idx: int, n: int) -> float | None:
+            if ticker not in close.columns:
+                return None
+            s = close[ticker].iloc[max(0, at_idx - n) : at_idx + 1].dropna()
+            if len(s) <= n:
+                return None
+            prev = float(s.iloc[0])
+            return None if prev == 0 else float((s.iloc[-1] / prev - 1) * 100)
+
+        def _ratio_roc_bt(t1: str, t2: str, at_idx: int, n: int) -> float | None:
+            if t1 not in close.columns or t2 not in close.columns:
+                return None
+            window = close[[t1, t2]].iloc[max(0, at_idx - n - 10) : at_idx + 1].dropna()
+            ratio = (
+                (window[t1] / window[t2])
+                .replace([float("inf"), float("-inf")], float("nan"))
+                .dropna()
+            )
+            if len(ratio) <= n:
+                return None
+            prev_r = float(ratio.iloc[-(n + 1)])
+            return None if prev_r == 0 else float((ratio.iloc[-1] / prev_r - 1) * 100)
+
+        result: dict[str, dict] = {}
+        for date_str in [d for d in all_dates if d >= start_date]:
+            ts = pd.Timestamp(date_str)
+            if ts not in close.index:  # pragma: no cover
+                continue  # pragma: no cover
+            idx = close.index.get_loc(ts)
+            if idx < 21:
+                continue
+
+            credit_roc = _ratio_roc_bt("HYG", "LQD", idx, 10)
+            tlt_5d = _roc("TLT", idx, 5)
+            spy_5d = _roc("SPY", idx, 5)
+            tlt_spy_spread = (
+                round(tlt_5d - spy_5d, 3) if tlt_5d is not None and spy_5d is not None else None
+            )
+            copper_gold_roc = _ratio_roc_bt("CPER", "GLD", idx, 20)
+            usd_20d = _roc("UUP", idx, 20)
+
+            yc_v = _fred_value_on_or_before(yc_dict, yc_dates_sorted, date_str)
+            pmi_v = _fred_value_on_or_before(pmi_dict, pmi_dates_sorted, date_str)
+            recent_pmis = [v for d, v in pmi_data if d <= date_str][-3:]
+            pmi_ma = sum(recent_pmis) / len(recent_pmis) if len(recent_pmis) >= 3 else None
+
+            result[date_str] = {
+                "macro_credit_stress": credit_roc is not None and credit_roc <= -2.0,
+                "macro_duration_flight": tlt_spy_spread is not None and tlt_spy_spread > 3.0,
+                "macro_copper_gold_positive": copper_gold_roc is not None and copper_gold_roc > 0,
+                "macro_usd_strong": usd_20d is not None and usd_20d > 1.0,
+                "macro_yield_curve": yc_v,
+                "macro_yield_curve_inverted_days": inv_days_map.get(date_str, 0),
+                "macro_claims_deteriorating": False,
+                "macro_pmi_latest": pmi_v,
+                "macro_pmi_expanding": pmi_ma is not None and pmi_ma > 55.0,
+                "macro_pmi_contracting": pmi_v is not None and pmi_v < 45.0,
+                "macro_data_available": True,
+            }
+
+        logger.info("Macro flags precomputed for %d backtest dates", len(result))
+        return result
+
+    except Exception as exc:
+        logger.warning("backtest: macro flags fetch failed — macro gates disabled: %s", exc)
+        return {}
+
+
 def _build_regime_map(
     spy_indicators: pd.DataFrame,
     vix_df_for_regime: pd.DataFrame | None,
@@ -1062,6 +1188,7 @@ def _run_simulation(
     rs_top_pct: float = 0.75,
     stop_activation_delay: int = 2,
     breadth_thrust_by_date: dict[str, bool] | None = None,
+    macro_flags_by_date: dict[str, dict] | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo).
@@ -1236,6 +1363,7 @@ def _run_simulation(
                 if breadth_thrust_by_date
                 else False,
                 calendar_month=int(prev_date_str[5:7]),
+                macro_flags=macro_flags_by_date.get(prev_date_str) if macro_flags_by_date else None,
             )
             if signal:
                 if (
@@ -1847,6 +1975,7 @@ def _run_combined_simulation(
     stop_activation_delay: int = 2,
     rs_rank_lag10: dict[str, dict[str, float]] | None = None,
     breadth_thrust_by_date: dict[str, bool] | None = None,
+    macro_flags_by_date: dict[str, dict] | None = None,
 ) -> dict:
     """Combined long/short simulation with a single shared cash pool.
 
@@ -2097,6 +2226,9 @@ def _run_combined_simulation(
                     if breadth_thrust_by_date
                     else False,
                     calendar_month=int(prev_date_str[5:7]),
+                    macro_flags=macro_flags_by_date.get(prev_date_str)
+                    if macro_flags_by_date
+                    else None,
                 )
                 if signal:
                     if (
@@ -2616,6 +2748,13 @@ def run_backtest(
     except Exception as exc:
         logger.warning(f"Breadth-thrust fetch failed — breadth_thrust signal disabled: {exc}")
 
+    # Historical macro flags for credit/duration/yield-curve/PMI gates
+    macro_flags_by_date: dict[str, dict] = {}
+    try:
+        macro_flags_by_date = _fetch_macro_flags_for_backtest(fetch_start, end_date)
+    except Exception as exc:
+        logger.warning(f"Macro flags fetch failed — macro gates disabled: {exc}")
+
     # Alpaca intraday bars for vwap_reclaim / orb_breakout / intraday_momentum
     intraday_data: dict | None = None
     if use_intraday:
@@ -2660,6 +2799,7 @@ def run_backtest(
         rs_ranks=rs_ranks,
         disabled_signals=disabled_signals,
         breadth_thrust_by_date=breadth_thrust_by_date or None,
+        macro_flags_by_date=macro_flags_by_date or None,
     )
     results["start"] = start_date
     results["end"] = end_date

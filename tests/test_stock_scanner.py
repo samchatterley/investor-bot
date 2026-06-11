@@ -1032,3 +1032,78 @@ class TestGloballyDisabledSignals(unittest.TestCase):
 
         snap = _snap(vol_ratio=2.0)
         self.assertNotIn("vix_fear_reversion", evaluate_signals(snap, vix_spike=True))
+
+
+class TestMacroGatesInEvaluateSignals(unittest.TestCase):
+    """Macro flags injected in snapshot suppress signals via evaluate_signals gates."""
+
+    def _momentum_snap(self) -> dict:
+        return _snap(
+            ema9_above_ema21=True,
+            macd_diff=0.5,
+            ret_5d_pct=2.0,
+            vol_ratio=1.5,
+            adx=25,
+        )
+
+    def test_credit_stress_blocks_momentum(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {**self._momentum_snap(), "macro_credit_stress": True}
+        self.assertNotIn("momentum", evaluate_signals(snap))
+
+    def test_no_credit_stress_allows_momentum(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {**self._momentum_snap(), "macro_credit_stress": False}
+        self.assertIn("momentum", evaluate_signals(snap))
+
+    def test_duration_flight_blocks_gap_and_go(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _snap(
+            macro_duration_flight=True,
+            gap_pct=3.0,
+            close_above_open=True,
+            vol_ratio=2.5,
+            ema9_above_ema21=True,
+            adx=25,
+        )
+        self.assertNotIn("gap_and_go", evaluate_signals(snap))
+
+    def test_claims_deteriorating_blocks_momentum(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {**self._momentum_snap(), "macro_claims_deteriorating": True}
+        self.assertNotIn("momentum", evaluate_signals(snap))
+
+    def test_pmi_contracting_blocks_momentum(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {**self._momentum_snap(), "macro_pmi_contracting": True}
+        self.assertNotIn("momentum", evaluate_signals(snap))
+
+    def test_yield_curve_inversion_20d_blocks_late_cycle_signals(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {**self._momentum_snap(), "macro_yield_curve_inverted_days": 20}
+        self.assertNotIn("momentum", evaluate_signals(snap))
+
+    def test_yield_curve_inversion_below_threshold_no_extra_block(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {**self._momentum_snap(), "macro_yield_curve_inverted_days": 5}
+        self.assertIn("momentum", evaluate_signals(snap))
+
+    def test_neutral_macro_no_extra_blocks(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = {
+            **self._momentum_snap(),
+            "macro_credit_stress": False,
+            "macro_duration_flight": False,
+            "macro_claims_deteriorating": False,
+            "macro_pmi_contracting": False,
+            "macro_yield_curve_inverted_days": 0,
+        }
+        self.assertIn("momentum", evaluate_signals(snap))

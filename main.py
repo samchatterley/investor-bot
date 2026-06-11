@@ -46,7 +46,7 @@ from data import (
 from data import (
     sentiment as sentiment_module,
 )
-from data.macro_data import get_macro_snapshot
+from data.macro_data import get_combined_macro_flags, get_macro_snapshot
 from data.sentiment_client import get_sentiment_snapshot
 from execution import short_risk, stock_scanner, trader
 from execution.quote_gate import check_quote_gate
@@ -1203,6 +1203,9 @@ def _build_data_bundle(
     _get_short_universe = deps.get_short_universe if deps is not None else get_short_universe
     _scan_short_universe = deps.scan_short_universe if deps is not None else scan_short_universe
     _audit_log = deps.audit_log if deps is not None else audit_log
+    _get_combined_macro_flags = (
+        deps.get_combined_macro_flags if deps is not None else get_combined_macro_flags
+    )
     logger.info("Scanning for top movers...")
     top_movers = _stock_scanner.get_top_movers(config.TOP_MOVERS_COUNT)
     scan_symbols = list(set(_build_scan_universe(client)) | snap.held_symbols | set(top_movers))
@@ -1213,6 +1216,11 @@ def _build_data_bundle(
     if not snapshots:
         logger.error("No market data. Aborting.")
         return None
+
+    # ── Macro flag injection ──────────────────────────────────────────────────
+    _macro_flags = _get_combined_macro_flags()
+    for s in snapshots:
+        s.update(_macro_flags)
 
     # ── Intraday enrichment (VWAP, ORB, gap, intraday momentum) ─────────────
     intraday = _market_data.get_intraday_data([s["symbol"] for s in snapshots])
@@ -1841,6 +1849,7 @@ def _execute_buy_phase(
                 )
                 _vov_scalar = _position_sizer.vol_of_vol_scalar(mc.regime.get("vol_of_vol"))
                 _seasonal_scalar = _position_sizer.seasonal_scalar(key_signal)
+                _macro_scalar = _position_sizer.macro_scalar(candidate, key_signal)
 
                 # Sector momentum gate — only allow longs in top 4 sectors by 20d return
                 _sym_sector = _sector_data.get_sector(symbol)
@@ -1939,6 +1948,10 @@ def _execute_buy_phase(
                         logger.info(
                             f"  Seasonal scalar: {key_signal} → size scaled {_seasonal_scalar:.2f}×"
                         )
+                    if _macro_scalar != 1.0:
+                        logger.info(
+                            f"  Macro scalar: {key_signal} → size scaled {_macro_scalar:.2f}×"
+                        )
                     notional = min(
                         _base
                         * _dd_scalar
@@ -1948,7 +1961,8 @@ def _execute_buy_phase(
                         * _garch_scalar
                         * _mqr_multiplier
                         * _vov_scalar
-                        * _seasonal_scalar,
+                        * _seasonal_scalar
+                        * _macro_scalar,
                         available_cash,
                     )
 

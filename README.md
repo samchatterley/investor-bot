@@ -826,6 +826,25 @@ Removes the hedge-only restriction on short entries so the bot can run a directi
 
 ---
 
+### 1.95c — June 2026 — Batch 4 macro/rates signals: credit_spread_gate, duration_flight, copper_gold_ratio, dollar_strength, yield_curve regime, PMI regime, initial_claims
+
+Adds eight macro and rates-driven signals/gates that inject real-time credit, FX, yield-curve, and PMI data into the scanner and position sizer.
+
+- **`data/fred_client.get_pmi_snapshot()`** — fetches FRED NAPM series; returns `{latest, ma_3m, expanding (ma_3m > 55), contracting (latest < 45)}`.
+- **`data/macro_data.get_combined_macro_flags()`** — merges ETF-derived `MacroSnapshot` with FRED yield-curve and PMI flags into a flat `macro_*` dict injected into every stock snapshot.
+- **`signals/evaluator.py`** — three new macro gates consuming `macro_*` snapshot fields:
+  - `macro_credit_stress` → adds `_HIGH_VOL_BLOCKED` (`breakout_52w`, `momentum`, `gap_and_go`, `orb_breakout`, `candle_exhaustion`, `breadth_thrust`).
+  - `macro_duration_flight | macro_claims_deteriorating | macro_pmi_contracting` → adds `_DEFENSIVE_BLOCKED` (`breakout_52w`, `momentum`, `gap_and_go`, `macd_crossover`, `inside_day_breakout`, `range_reversion`).
+  - `macro_yield_curve_inverted_days >= 20` → adds `_LATE_CYCLE_BULL_BLOCKED` (`_DEFENSIVE_BLOCKED` + `mean_reversion` + `iv_compression`).
+- **`risk/position_sizer.macro_scalar(snapshot, signal)`** — new multiplier: 0.80× recession (yield curve < 0 for 60+ days); 1.10× expansion (curve ≥ 1.5 and signal in `_CYCLICAL_SIGNALS`); 1.10× copper-gold positive and cyclical; 0.90× USD strong; 1.05× PMI expanding and cyclical. Clamped [0.70, 1.25].
+- **`core/deps.py`** — `get_combined_macro_flags` wired into `TradingDeps` and `production()`.
+- **`main._build_data_bundle()`** — calls `get_combined_macro_flags()` and injects result into every snapshot before candidate scoring.
+- **`main._execute_buy_phase()`** — `macro_scalar` multiplied into the notional chain; logged when ≠ 1.0.
+- **`backtest/engine._fetch_macro_flags_for_backtest()`** — downloads ETF price history and FRED series to reproduce historical macro flags per trading day; passed to `_entry_signal()` in both simulation functions.
+- **Tests:** 42 new tests — `TestGetPmiSnapshot` (5), `TestGetCombinedMacroFlags` (3), `TestMacroGatesInEvaluateSignals` (8), `TestMacroScalar` (12), `TestBatch4MacroFlagsFetch` (6), `TestSmallAccountSize` (6), plus 2 in `TestScalarLoggingBranches`. 4,161 tests total. 100% coverage on all changed lines.
+
+---
+
 ### 1.95b — June 2026 — Batch 3 calendar/seasonal signals: turn_of_month, opex, halloween, quarter-end, tax_loss_reversal, pre_holiday
 
 Adds six calendar- and seasonality-driven signals and position-sizing adjustments that exploit well-documented calendar effects without requiring any external data feed.

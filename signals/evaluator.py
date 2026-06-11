@@ -620,6 +620,21 @@ def evaluate_signals(
     if float(snapshot.get("spread_proxy_20d", 0.0)) > p["spread_proxy_max"]:
         blocked = blocked | _SPREAD_PROXY_GATED
 
+    # ── Macro gates (injected by scanner and backtest engine) ─────────────────
+    # credit_stress: HYG/LQD ratio falling → treat same as HIGH_VOL_DOWNTREND
+    if bool(snapshot.get("macro_credit_stress", False)):
+        blocked = blocked | _HIGH_VOL_BLOCKED
+    # duration_flight / claims deteriorating / PMI contraction → defensive mode
+    if (
+        bool(snapshot.get("macro_duration_flight", False))
+        or bool(snapshot.get("macro_claims_deteriorating", False))
+        or bool(snapshot.get("macro_pmi_contracting", False))
+    ):
+        blocked = blocked | _DEFENSIVE_BLOCKED
+    # Sustained yield-curve inversion → late-cycle; block momentum/breakout longs
+    if int(snapshot.get("macro_yield_curve_inverted_days", 0)) >= 20:
+        blocked = blocked | _LATE_CYCLE_BULL_BLOCKED
+
     def _f(key: str, default: float) -> float:
         v = snapshot.get(key)
         return float(v) if v is not None else default

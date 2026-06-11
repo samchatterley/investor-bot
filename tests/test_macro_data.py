@@ -526,3 +526,115 @@ class TestConvenienceGetters(TestCase):
         snap = self._patch_snapshot(usd_strong=False)
         with patch("data.macro_data.get_macro_snapshot", return_value=snap):
             self.assertFalse(get_usd_strong())
+
+
+class TestGetCombinedMacroFlags(TestCase):
+    def _make_snap(self, **kwargs) -> object:
+        defaults = {
+            "credit_stress": False,
+            "duration_flight": False,
+            "copper_gold_positive": False,
+            "usd_strong": False,
+            "data_available": True,
+        }
+        defaults.update(kwargs)
+        from data.macro_data import MacroSnapshot
+
+        return MacroSnapshot(
+            credit_spread_roc=None,
+            credit_stress=defaults["credit_stress"],
+            tlt_spy_spread_5d=None,
+            duration_flight=defaults["duration_flight"],
+            copper_gold_trend_20d=None,
+            copper_gold_positive=defaults["copper_gold_positive"],
+            usd_trend_20d=None,
+            usd_strong=defaults["usd_strong"],
+            hyg_ief_roc_10d=None,
+            data_available=defaults["data_available"],
+        )
+
+    def test_stress_flags_propagate(self):
+        from data.macro_data import get_combined_macro_flags
+
+        snap = self._make_snap(credit_stress=True, duration_flight=True)
+        fred_snap = {
+            "yield_curve": -0.5,
+            "yield_curve_inverted_days": 25,
+            "claims_deteriorating": True,
+            "data_available": True,
+        }
+        pmi_snap = {"latest": 43.0, "ma_3m": 44.0, "expanding": False, "contracting": True}
+        with (
+            patch("data.macro_data.get_macro_snapshot", return_value=snap),
+            patch("data.fred_client.get_macro_snapshot", return_value=fred_snap),
+            patch("data.fred_client.get_pmi_snapshot", return_value=pmi_snap),
+        ):
+            result = get_combined_macro_flags()
+
+        self.assertTrue(result["macro_credit_stress"])
+        self.assertTrue(result["macro_duration_flight"])
+        self.assertEqual(result["macro_yield_curve"], -0.5)
+        self.assertEqual(result["macro_yield_curve_inverted_days"], 25)
+        self.assertTrue(result["macro_claims_deteriorating"])
+        self.assertTrue(result["macro_pmi_contracting"])
+        self.assertFalse(result["macro_pmi_expanding"])
+        self.assertTrue(result["macro_data_available"])
+
+    def test_neutral_flags(self):
+        from data.macro_data import get_combined_macro_flags
+
+        snap = self._make_snap()
+        fred_snap = {
+            "yield_curve": 1.5,
+            "yield_curve_inverted_days": 0,
+            "claims_deteriorating": False,
+            "data_available": True,
+        }
+        pmi_snap = {"latest": 57.0, "ma_3m": 56.0, "expanding": True, "contracting": False}
+        with (
+            patch("data.macro_data.get_macro_snapshot", return_value=snap),
+            patch("data.fred_client.get_macro_snapshot", return_value=fred_snap),
+            patch("data.fred_client.get_pmi_snapshot", return_value=pmi_snap),
+        ):
+            result = get_combined_macro_flags()
+
+        self.assertFalse(result["macro_credit_stress"])
+        self.assertFalse(result["macro_duration_flight"])
+        self.assertEqual(result["macro_yield_curve"], 1.5)
+        self.assertEqual(result["macro_yield_curve_inverted_days"], 0)
+        self.assertFalse(result["macro_claims_deteriorating"])
+        self.assertTrue(result["macro_pmi_expanding"])
+        self.assertFalse(result["macro_pmi_contracting"])
+
+    def test_all_required_keys_present(self):
+        from data.macro_data import get_combined_macro_flags
+
+        snap = self._make_snap()
+        fred_snap = {
+            "yield_curve": None,
+            "yield_curve_inverted_days": 0,
+            "claims_deteriorating": False,
+            "data_available": False,
+        }
+        pmi_snap = {"latest": None, "ma_3m": None, "expanding": False, "contracting": False}
+        with (
+            patch("data.macro_data.get_macro_snapshot", return_value=snap),
+            patch("data.fred_client.get_macro_snapshot", return_value=fred_snap),
+            patch("data.fred_client.get_pmi_snapshot", return_value=pmi_snap),
+        ):
+            result = get_combined_macro_flags()
+
+        expected_keys = {
+            "macro_credit_stress",
+            "macro_duration_flight",
+            "macro_copper_gold_positive",
+            "macro_usd_strong",
+            "macro_yield_curve",
+            "macro_yield_curve_inverted_days",
+            "macro_claims_deteriorating",
+            "macro_pmi_latest",
+            "macro_pmi_expanding",
+            "macro_pmi_contracting",
+            "macro_data_available",
+        }
+        self.assertEqual(set(result.keys()), expected_keys)
