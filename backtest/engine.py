@@ -6433,6 +6433,14 @@ if __name__ == "__main__":  # pragma: no cover
             STATIC_SHORT_UNIVERSE,
             args.start,
             args.end,
+            param_ranges={
+                # death_cross — 32% WR, −1.14% avg in combined run
+                "dc_vol_min": [0.8, 1.0, 1.5, 2.0, 2.5],
+                # altman_distress_short — 45% WR, −0.17% avg; tighter Z threshold
+                "az_distress_short_threshold": [0.6, 0.8, 1.0, 1.1],
+                # gross_margin_deterioration_short — 40% WR, −1.32% avg
+                "gm_deterioration_short_min": [-0.05, -0.04, -0.03, -0.02],
+            },
             initial_capital=args.capital,
             use_earnings_only=args.use_earnings_only,
         )
@@ -6626,9 +6634,27 @@ if __name__ == "__main__":  # pragma: no cover
             STOCK_UNIVERSE,
             args.start,
             args.end,
-            param_ranges={"rsi_threshold": [28.0, 32.0, 35.0, 40.0, 45.0]},
+            param_ranges={
+                # OBV signals — near-zero edge in combined run; test vol floor tightening
+                "obv_div_vol_min": [1.0, 1.2, 1.5, 2.0, 2.5],
+                "obv_acc_vol_min": [1.2, 1.5, 2.0, 2.5, 3.0],
+                # mean_reversion — 30% WR, −6.10% avg; tighter entry conditions
+                "rsi_threshold": [25.0, 28.0, 30.0, 32.0, 35.0],
+                "bb_threshold": [0.08, 0.10, 0.12, 0.15],
+                "mr_vol_threshold": [1.2, 1.5, 2.0, 2.5],
+                # macd_crossover — 43% WR, −1.34% avg; require stronger vol confirmation
+                "macd_vol_min": [1.2, 1.5, 2.0, 2.5, 3.0],
+                # tax_loss_reversal — 37% WR, −1.02% avg; require deeper drawdown
+                "tlr_52w_drawdown_max": [-40.0, -35.0, -30.0, -25.0],
+                # range_reversion — 2 trades; probe if tighter gates reduce false fires
+                "rr_adx_max": [15.0, 17.0, 20.0],
+                "rr_bb_max": [0.05, 0.07, 0.10],
+                "rr_rsi_max": [20.0, 25.0, 30.0],
+            },
             initial_capital=args.capital,
             per_signal_cap=args.per_signal_cap,
+            use_earnings_only=args.use_earnings_only,
+            use_fundamentals=args.use_fundamentals,
         )
     else:
         run_backtest(
