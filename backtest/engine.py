@@ -26,6 +26,7 @@ import logging
 import math
 import os
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from itertools import product
 from zoneinfo import ZoneInfo
@@ -343,6 +344,20 @@ def _row_to_snapshot(
         snap["insider_comp_ratio"] = float(fundamentals.get("insider_comp_ratio", 0.0))
         snap["activist_filing"] = bool(fundamentals.get("activist_filing", False))
         snap["insider_large_buy"] = bool(fundamentals.get("insider_large_buy", False))
+        # v1.97 quality + short-interest fields (look-ahead proxy when from _prefetch_quality_fundamentals)
+        for _f in (
+            "altman_z",
+            "piotroski_f",
+            "fcf_yield",
+            "accruals_ratio",
+            "gross_margin_trend",
+            "forward_pe",
+            "short_pct_float",
+            "short_ratio",
+        ):
+            _v = fundamentals.get(_f)
+            if _v is not None:
+                snap[_f] = _v
     # ── Batch 1 OHLCV signal fields ───────────────────────────────────────────
     snap["golden_cross"] = bool(row.get("golden_cross", False))
     snap["death_cross"] = bool(row.get("death_cross", False))
@@ -467,6 +482,20 @@ def _short_entry_signal(
             snap["guidance_negative"] = bool(fundamentals["guidance_negative"])
         if "secondary_offering" in fundamentals:
             snap["secondary_offering"] = bool(fundamentals["secondary_offering"])
+        # v1.97 quality fields for fundamental short signals
+        for _f in (
+            "altman_z",
+            "piotroski_f",
+            "fcf_yield",
+            "accruals_ratio",
+            "gross_margin_trend",
+            "forward_pe",
+            "short_pct_float",
+            "short_ratio",
+        ):
+            _v = fundamentals.get(_f)
+            if _v is not None:
+                snap[_f] = _v
 
     # Parabolic exhaustion path — regime-agnostic and VIX-gate-agnostic.
     # Parabolic stocks (up ≥80% in 60d) exist in bull markets; gating behind STRESS_RISK_OFF
@@ -1189,6 +1218,7 @@ def _run_simulation(
     stop_activation_delay: int = 2,
     breadth_thrust_by_date: dict[str, bool] | None = None,
     macro_flags_by_date: dict[str, dict] | None = None,
+    quality_fundamentals: dict[str, dict] | None = None,
 ) -> dict:
     """Core trading simulation on pre-computed indicators. Called by both run_backtest
     and run_walk_forward_optimized (the latter avoids re-downloading data per param combo).
@@ -1338,13 +1368,19 @@ def _run_simulation(
 
             # Point-in-time fundamentals (only computed when histories are loaded)
             fundamentals: dict | None = None
-            if earnings_history is not None or insider_history is not None:
+            if (
+                earnings_history is not None
+                or insider_history is not None
+                or quality_fundamentals is not None
+            ):
                 prev_date = df.index[today_loc - 1].date()
                 fund: dict = {}
                 if earnings_history is not None:
                     fund["pead_active"] = pead_active_on_date(sym, prev_date, earnings_history)
                 if insider_history is not None:
                     fund.update(insider_state_on_date(sym, prev_date, insider_history))
+                if quality_fundamentals is not None and sym in quality_fundamentals:
+                    fund.update(quality_fundamentals[sym])
                 fundamentals = fund
 
             rank_pct: float | None = rs_ranks.get(sym, {}).get(prev_date_str) if rs_ranks else None
@@ -1976,6 +2012,7 @@ def _run_combined_simulation(
     rs_rank_lag10: dict[str, dict[str, float]] | None = None,
     breadth_thrust_by_date: dict[str, bool] | None = None,
     macro_flags_by_date: dict[str, dict] | None = None,
+    quality_fundamentals: dict[str, dict] | None = None,
 ) -> dict:
     """Combined long/short simulation with a single shared cash pool.
 
@@ -2201,13 +2238,19 @@ def _run_combined_simulation(
                 )
 
                 fundamentals: dict | None = None
-                if earnings_history is not None or insider_history is not None:
+                if (
+                    earnings_history is not None
+                    or insider_history is not None
+                    or quality_fundamentals is not None
+                ):
                     prev_date = df.index[today_loc - 1].date()
                     fund: dict = {}
                     if earnings_history is not None:
                         fund["pead_active"] = pead_active_on_date(sym, prev_date, earnings_history)
                     if insider_history is not None:
                         fund.update(insider_state_on_date(sym, prev_date, insider_history))
+                    if quality_fundamentals is not None and sym in quality_fundamentals:
+                        fund.update(quality_fundamentals[sym])
                     fundamentals = fund
 
                 rank_pct: float | None = (
@@ -2288,13 +2331,15 @@ def _run_combined_simulation(
                 )
 
                 fund_s: dict | None = None
-                if earnings_history is not None:
+                if earnings_history is not None or quality_fundamentals is not None:
                     prev_date = df.index[today_loc - 1].date()
-                    fund_s = {
-                        "earnings_miss_active": earnings_miss_active_on_date(
+                    fund_s = {}
+                    if earnings_history is not None:
+                        fund_s["earnings_miss_active"] = earnings_miss_active_on_date(
                             sym, prev_date, earnings_history
                         )
-                    }
+                    if quality_fundamentals is not None and sym in quality_fundamentals:
+                        fund_s.update(quality_fundamentals[sym])
 
                 signals = _short_entry_signal(
                     prev_row,
@@ -2648,6 +2693,65 @@ def _run_intraday_simulation(
         cache_dir=cache_dir,
         bars=bars,
     )
+
+
+def _prefetch_quality_fundamentals(symbols: list[str]) -> dict[str, dict]:
+    """Pre-fetch current fundamental quality metrics + short interest for backtest injection.
+
+    Uses today's values applied uniformly across all historical dates — a look-ahead
+    proxy suitable for directional signal validation but not precise attribution.
+    """
+    from data.fundamental_cache import (
+        get_accruals_ratio,
+        get_altman_z,
+        get_fcf_yield,
+        get_forward_pe,
+        get_gross_margin_trend,
+        get_piotroski_f,
+    )
+    from data.short_interest import _load_cache as _si_load_cache
+    from data.short_interest import prefetch_short_interest
+
+    logger.info(f"Pre-fetching quality fundamentals for {len(symbols)} symbols…")
+    prefetch_short_interest(list(symbols))
+    from config import today_et as _today_et
+
+    si_today: dict[str, dict | None] = _si_load_cache().get(_today_et().isoformat(), {})
+
+    _quality_fns = [
+        ("altman_z", get_altman_z),
+        ("piotroski_f", get_piotroski_f),
+        ("fcf_yield", get_fcf_yield),
+        ("accruals_ratio", get_accruals_ratio),
+        ("gross_margin_trend", get_gross_margin_trend),
+        ("forward_pe", get_forward_pe),
+    ]
+
+    def _fetch_sym(sym: str) -> tuple[str, dict]:
+        d: dict = {}
+        for field, fn in _quality_fns:
+            try:
+                val = fn(sym)
+                if val is not None:
+                    d[field] = val
+            except Exception:
+                pass
+        si = si_today.get(sym)
+        if si is not None:
+            for f in ("short_ratio", "short_pct_float"):
+                if si.get(f) is not None:
+                    d[f] = si[f]
+        return sym, d
+
+    result: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        for fut in as_completed({ex.submit(_fetch_sym, s): s for s in symbols}):
+            sym, data = fut.result()
+            if data:
+                result[sym] = data
+
+    logger.info(f"Quality fundamentals ready: {len(result)}/{len(symbols)} symbols with data")
+    return result
 
 
 def run_backtest(
@@ -3812,6 +3916,7 @@ def run_combined_analysis(
     spread_bps: int | None = None,
     per_signal_cap: int = 2,
     use_earnings_history: bool = True,
+    use_quality_fundamentals: bool = False,
 ) -> dict:
     """Combined long/short backtest with regime-gated short entries and shared capital pool.
 
@@ -3885,6 +3990,10 @@ def run_combined_analysis(
         logger.info("Combined analysis: pre-fetching earnings history…")
         earnings_history = prefetch_earnings_history(symbols)
 
+    quality_fundamentals: dict[str, dict] | None = None
+    if use_quality_fundamentals:
+        quality_fundamentals = _prefetch_quality_fundamentals(list(symbols))
+
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
     rs_rank_lag10 = _compute_rs_rank_lag10(rs_ranks, trading_dates)
@@ -3906,6 +4015,7 @@ def run_combined_analysis(
         earnings_history=earnings_history,
         rs_ranks=rs_ranks,
         rs_rank_lag10=rs_rank_lag10,
+        quality_fundamentals=quality_fundamentals,
     )
     results["start"] = start_date
     results["end"] = end_date
@@ -6369,6 +6479,7 @@ if __name__ == "__main__":  # pragma: no cover
             initial_capital=args.capital,
             per_signal_cap=args.per_signal_cap,
             use_earnings_history=True,
+            use_quality_fundamentals=args.use_fundamentals,
         )
     elif args.walk_forward:
         result = run_walk_forward_optimized(
