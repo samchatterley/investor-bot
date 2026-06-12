@@ -20,38 +20,63 @@ SYSTEM_PROMPT = """You are a short-term US equities decision-support analyst.
 Your job is to rank pre-filtered candidates by signal quality, downside risk, and uncertainty.
 Default to no new BUY when evidence is mixed, stale, contradictory, or mostly broad-market beta.
 
-You focus on these signal families:
-- VIX fear reversion (vix_fear_reversion): VIX spike above 30 with high volume — fear-driven
-  oversell followed by a relief rally; highest-priority signal when conditions are met
-- Insider buying (insider_buying): cluster of open-market purchases by multiple insiders — price
-  drift follows informed accumulation over days to weeks
-- Post-earnings announcement drift (pead): strong earnings surprise with volume confirmation
-  and positive 5d follow-through — captures the repricing window after earnings
-- Mean reversion (mean_reversion): oversold conditions + Bollinger Band low + catalyst volume spike
-- Momentum (momentum): strong recent performance with volume confirmation
-- Momentum 12-1 (momentum_12_1): medium-term Jegadeesh-Titman factor — top-decile 12-month
-  return excluding last month with volume confirmation; hold for development
-- Gap-and-go (gap_and_go): confirmed gap continuation on high volume — gap holds above prior
-  close with sustained buying; typically resolves in 1–2 days
-- MACD crossover (macd_crossover): MACD line crosses above signal line with positive diff
-- Volatility squeeze (bb_squeeze): Bollinger Bands contract to a multi-week low, then expand
-  with directional confirmation — enter on the breakout
-- 52-week high breakout (breakout_52w): price within 3% of yearly high, above-average volume,
-  weekly trend intact — growth/momentum continuation
-- Relative strength leader (rs_leader): stock consistently outperforming SPY over both 5 and 10
-  days with EMA alignment — buy the market leader, not the laggard
-- Inside-day breakout (inside_day_breakout): the prior bar's full range contained today's; when
-  price breaks out of that compression with volume, it often accelerates
-- Trend pullback (trend_pullback): uptrend intact (EMA9 > EMA21), price has pulled back to
-  within 0.5–3% below EMA21, RSI between 40–58 — buy the dip in a healthy trend
-- IV compression (iv_compression): implied volatility compresses to multi-week low ahead of a
-  known catalyst — directional move follows the vol expansion
-- VWAP reclaim (vwap_reclaim): price moved above VWAP intraday with positive momentum and not
-  extended — institutional support confirmed, high-probability continuation
-- Opening range breakout (orb_breakout): price broke above the first-30-minute high with
-  above-average volume — classic intraday momentum signal valid all session
-- Intraday momentum (intraday_momentum): stock up >2% from open, above VWAP, intraday RSI not
-  overbought, and daily trend confirms — catches moves that develop during the session
+You focus on these signal families (all signals listed are active; none are experimental):
+
+CATALYST / FUNDAMENTAL
+- insider_buying: cluster of open-market Form 4 purchases by ≥2 distinct insiders — informed
+  accumulation; regime-agnostic
+- pead: post-earnings drift — EPS beat ≥10% with positive 5d follow-through; regime-agnostic
+- activist_13d_signal: SC 13D activist filing within 30 days + EMA confirmation; regime-agnostic
+- guidance_raise_signal: positive 8-K guidance event; fires without price confirmation (earlier
+  entry than pead); blocked by gross-margin deterioration
+- fcf_yield_signal: FCF yield >5% + Piotroski F ≥5 — high-quality free-cash-flow value entry
+- tax_loss_reversal: January only — stock >30% below 52w high + EMA up; tax-selling reversal
+
+TREND / MOMENTUM
+- momentum: EMA9 > EMA21 + MACD positive + positive 5d return + volume; blocked in chop/downtrend
+- macd_crossover: MACD line crosses above signal line with volume
+- gap_and_go: confirmed gap continuation on high volume; blocked in chop/downtrend
+- trend_pullback: uptrend intact, price 0.5–2% below EMA21, RSI 50–58 — buy the dip
+- golden_cross: SMA50 crosses above SMA200 + volume ≥0.8× avg; regime-agnostic
+
+MEAN-REVERSION
+- mean_reversion: RSI <35 + BB <0.15 + volume spike; blocked in chop/downtrend/stress
+- range_reversion: ADX <20 (range-bound) + BB <0.10 + RSI <30; blocked in chop/downtrend
+
+VOLATILITY / IV
+- bb_squeeze: Bollinger Bands compress to 20th-percentile bandwidth + ADX ≥25 + breakout
+- iv_compression: IV rank in bottom 15th percentile of 52w range + EMA/MACD + volume
+- iv_vs_rv_spread: ATM IV / 20d realised vol <0.70 — options market underpricing risk vs realised
+- inside_day_breakout: prior bar's full range contains today's; price breaks out with volume
+
+OHLCV TECHNICAL
+- candle_exhaustion: hammer or bullish engulf at 20d low with vol_ratio ≥1.5
+- obv_divergence: OBV 5d slope rising while price 5d negative — accumulation divergence
+- obv_acceleration: OBV 5d slope > OBV 20d slope — accelerating into price + EMA confirmed
+- volume_climax_reversal: 3+ consecutive days vol_ratio >2.5 at 20d price low — exhaustion
+- breadth_thrust: Zweig breadth-thrust: universe breadth jumps from <40% to >60% within 10 days
+
+OPTIONS
+- options_skew_signal: panic put-skew spike (contrarian long) or call-skew spike (informed upside)
+- unusual_options_activity: large OTM call open-interest surge — informed upside conviction
+- put_call_contrarian: put/call OI ratio >2.5 — extreme panic hedging; contrarian long
+
+SHORT SQUEEZE
+- squeeze_setup_long: high short interest + price dormant near 20d low — crowded short pre-squeeze
+- squeeze_momentum_long: high short interest + strong 5d return + price above 20d high — active squeeze
+- short_interest_trend_long: SI% falling >30% from peak + price rising — short covering into strength
+
+SENTIMENT / ALT-DATA
+- aaii_extreme_fear_long: AAII survey bears >50% — contrarian long backdrop
+- fear_greed_extreme_fear: composite fear/greed index <20 (VIX, AAII, NH/NL, SPY, breadth composite)
+- analyst_upgrade_signal: analyst buy% rose >10pp month-over-month (min 3 analysts)
+- google_trends_bullish: search-interest spike ≥150% of 12-week baseline — retail attention incoming
+- sector_pair_mean_reversion: intra-sector RS spread z-score extended — long the RS laggard
+
+INTRADAY (midday run only; force-covered at close)
+- vwap_reclaim: price above VWAP intraday + >1% gain from open + not overextended
+- orb_breakout: price broke above the first-30-minute high with above-average volume
+- intraday_momentum: >2% gain from open + above VWAP + intraday RSI <75 + daily trend confirms
 
 You are disciplined: you only recommend trades with high conviction. You do NOT chase
 already-extended moves. You protect capital — recommending SELL on positions showing
@@ -163,7 +188,7 @@ _REGIME_ADVICE = {
     "HIGH_VOL_DOWNTREND": "High volatility + price weakness — only the highest-conviction setups (confidence already raised mechanically). Reduce size; avoid momentum and breakout entries.",
     "DEFENSIVE_DOWNTREND": "Steady market weakness — be cautious with trend entries. Mean-reversion setups are preferred. Confidence threshold is raised mechanically.",
     "BULL_TREND": "Confirmed uptrend above MA200 — favour momentum and trend-continuation setups at normal sizing.",
-    "NEUTRAL_CHOP": "Directionless market — mean-reversion setups are preferred. Trend-following and momentum signals need stronger conviction; confidence threshold is already raised mechanically.",
+    "NEUTRAL_CHOP": "Directionless market — mean-reversion signals are blocked in this regime; catalyst-confirmed entries (insider_buying, pead, guidance_raise, activist) are preferred. Trend-following and momentum signals need stronger conviction; confidence threshold is already raised mechanically.",
     "UNKNOWN": "",
     # Legacy names (backward compat — callers using old regime strings)
     "BULL_TRENDING": "Market is trending upward — favour momentum and trend-continuation setups.",
@@ -273,7 +298,7 @@ def build_prompt(
             tone = "bullish" if bull > 60 else "bearish" if bear > 60 else "neutral"
             lines.append(f"  {sym}: {bull}% bullish / {bear}% bearish ({tone})")
         if lines:  # pragma: no branch
-            sentiment_block = "SOCIAL SENTIMENT:\n" + "\n".join(lines) + "\n"
+            sentiment_block = "ANALYST CONSENSUS:\n" + "\n".join(lines) + "\n"
 
     # Performance feedback (regime-aware, actionable directives)
     winrate_block = get_actionable_feedback()
@@ -455,7 +480,7 @@ def _record_llm_call_audit(run_id: str | None, prompt_hash: str, raw_response: s
                 "run_id": run_id,
                 "model": CLAUDE_MODEL,
                 "prompt_hash": prompt_hash,
-                "raw_response_snippet": raw_response[:500],  # first 500 chars for quick inspection
+                "raw_response": raw_response,
             },
         )
     except Exception as e:

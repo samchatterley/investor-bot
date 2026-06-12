@@ -117,28 +117,46 @@ def _lock_file() -> str:
 # ── Lock file management ──────────────────────────────────────────────────────
 
 
+def _lock_pid_alive(lock_file: str) -> int | None:
+    """Return the PID from the lock file if that process is still running, else None."""
+    try:
+        with open(lock_file) as f:
+            data = json.load(f)
+        pid = int(data["pid"])
+        os.kill(pid, 0)  # signal 0 = existence check; raises ProcessLookupError if dead
+        return pid
+    except (ProcessLookupError, PermissionError):
+        return None  # process is dead
+    except Exception:
+        return None  # unreadable payload → treat as stale
+
+
 def _acquire_lock() -> int | None:
-    """Atomically create the lock file. Returns an open fd on success, None if already locked."""
+    """Atomically create the lock file. Returns an open fd on success, None if already locked.
+
+    Uses PID liveness check (os.kill(pid, 0)) rather than a fixed age heuristic so a
+    stale lock from a crashed run is cleared immediately, not after 30 minutes.  The age
+    fallback is kept for the rare case where the lock file can't be parsed.
+    """
     lock_file = _lock_file()
     os.makedirs(config.LOG_DIR, exist_ok=True)
     try:
         fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
+        live_pid = _lock_pid_alive(lock_file)
+        if live_pid is not None:
+            logger.warning(f"Lock held by running PID {live_pid} — another run is in progress.")
+            return None
+        # PID is dead (or lock is unreadable) — clear the stale lock and retry
         age = time.time() - os.path.getmtime(lock_file)
-        if age > _LOCK_MAX_AGE_SECONDS:
-            logger.warning(f"Stale lock file found ({age / 3600:.1f}h old) — auto-clearing")
-            with contextlib.suppress(OSError):
-                os.remove(lock_file)
-            try:
-                fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                logger.warning(
-                    "Could not acquire lock after stale removal — another run may be in progress."
-                )
-                return None
-        else:
+        logger.warning(f"Stale lock file found (PID dead, {age / 3600:.1f}h old) — auto-clearing")
+        with contextlib.suppress(OSError):
+            os.remove(lock_file)
+        try:
+            fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
             logger.warning(
-                "Lock file exists — another run may be in progress. Remove .lock file to override."
+                "Could not acquire lock after stale removal — another run may be in progress."
             )
             return None
     payload = json.dumps({"pid": os.getpid(), "started_at": datetime.now(UTC).isoformat()})
@@ -627,6 +645,7 @@ def _execute_shorts(
     executed_symbols: set,
     dry_run: bool,
     _live_shadow: bool,
+    today: str = "",
     deps: TradingDeps | None = None,
 ) -> None:
     """Scan for and execute short positions (bottom-quartile RS, rule-gated).
@@ -762,6 +781,26 @@ def _execute_shorts(
             logger.info(f"  Short skip {symbol}: would breach short cap")
             continue
 
+        # Pre-trade controls (fat-finger + daily notional) — shorts were previously exempt.
+        # get_daily_notional may raise OrderLedgerUnavailable; in that case skip the daily
+        # cap check but still enforce the single-order fat-finger guard.
+        _daily_so_far = 0.0
+        if today and not dry_run:
+            try:
+                _daily_so_far = _trader.get_daily_notional(today)
+            except Exception as _ledger_exc:
+                logger.warning(f"  Short {symbol}: could not read daily notional — {_ledger_exc}")
+        _short_approved, _short_reject = check_pre_trade(
+            symbol,
+            order_notional,
+            _daily_so_far,
+            config.MAX_SINGLE_ORDER_USD,
+            config.MAX_DAILY_NOTIONAL_USD,
+        )
+        if not _short_approved:
+            logger.warning(f"  Short pre-trade check failed: {_short_reject}")
+            continue
+
         signals_str = ", ".join(matched_signals) if matched_signals else key_signal
         logger.info(
             f"  SHORT {symbol}: {qty_shares} shares @ ~${current_price:.2f} "
@@ -787,6 +826,8 @@ def _execute_shorts(
                     regime=regime_name,
                     confidence=confidence,
                 )
+                if today:
+                    _trader.add_daily_notional(today, order_notional)
                 _audit_log.log_order_placed(
                     symbol, "SHORT", order_notional, short_result.broker_order_id or ""
                 )
@@ -1387,7 +1428,7 @@ def _build_data_bundle(
         for s in filtered_candidates:
             regime_str = s.get("regime", "UNKNOWN")
             regime_blocked = REGIME_BLOCKED.get(regime_str, frozenset())
-            s["signals"] = evaluate_signals(
+            new_signals = evaluate_signals(
                 s,
                 blocked=regime_blocked,
                 params=None,
@@ -1395,6 +1436,14 @@ def _build_data_bundle(
                 spy_ret_5d=s.get("spy_ret_5d"),
                 spy_ret_10d=s.get("spy_ret_10d"),
             )
+            s["signals"] = new_signals  # keep for compatibility
+            # Merge newly-fired options signals into matched_signals so the cofiring
+            # multiplier, cross-check, and key_signal sizing logic can see them.
+            existing = set(s.get("matched_signals") or [])
+            for sig in new_signals:
+                if sig not in existing:
+                    s.setdefault("matched_signals", []).append(sig)
+                    existing.add(sig)
 
     # ── Google Trends injection (filtered candidates only — full universe too expensive) ─
     try:
@@ -2153,7 +2202,7 @@ def _execute_buy_phase(
                                 if buy_result.filled_avg_price
                                 else (sym_snap["current_price"] if sym_snap else 0.0)
                             )
-                            _signal = candidate.get("key_signal", "unknown")
+                            _signal = key_signal  # use corrected value (hallucination fallback applied above)
                             _trader.record_buy(
                                 symbol,
                                 entry_price,
@@ -2927,6 +2976,7 @@ def _run_inner(
         executed_symbols=executed_symbols,
         dry_run=dry_run,
         _live_shadow=_live_shadow,
+        today=today,
         deps=deps,
     )
 

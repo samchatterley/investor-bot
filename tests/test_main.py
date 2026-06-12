@@ -706,8 +706,10 @@ class TestRunGuards(unittest.TestCase):
         mock_exit.assert_called_with(1)
 
     def test_returns_without_running_if_lock_held(self):
-        with open(self.lock_file, "w"):
-            pass
+        import json as _json
+
+        with open(self.lock_file, "w") as _lf:
+            _lf.write(_json.dumps({"pid": os.getpid(), "started_at": "2026-06-12T10:00:00"}))
         mock_inner = MagicMock()
         with (
             patch("main.config.validate"),

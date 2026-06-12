@@ -273,8 +273,13 @@ class TestOpenBuysGuard(AuditLogBase):
         with patch("utils.db.get_db", return_value=mock_conn):
             self.assertFalse(has_open_buys_run_today("2026-05-27"))
 
-    def test_has_open_buys_run_today_returns_false_on_db_error(self):
+    def test_has_open_buys_run_today_returns_true_on_db_error(self):
+        """On DB failure the guard must fail-closed (return True = already ran).
+
+        The old behaviour (return False) is opposite polarity to every other safety guard:
+        it would allow a duplicate buy run when the DB is unavailable rather than blocking it.
+        """
         from utils.audit_log import has_open_buys_run_today
 
         with patch("utils.db.get_db", side_effect=RuntimeError("db locked")):
-            self.assertFalse(has_open_buys_run_today("2026-05-27"))
+            self.assertTrue(has_open_buys_run_today("2026-05-27"))

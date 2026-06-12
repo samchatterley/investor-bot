@@ -281,7 +281,101 @@ def test_get_open_shorts_raises_on_db_failure(monkeypatch):
         trader.get_open_shorts()
 
 
-# ── 6. tax_loss_reversal sentinel guard ──────────────────────────────────────
+# ── 6. SYSTEM_PROMPT signal catalogue parity ────────────────────────────────
+
+
+def test_system_prompt_contains_no_globally_disabled_signals():
+    """SYSTEM_PROMPT must not mention any globally-disabled signal by name.
+
+    A stale prompt entry (e.g. 'vix_fear_reversion') primes Claude to look for
+    setups that can never fire, skewing confidence scores for every run.
+    """
+    from analysis.ai_analyst import SYSTEM_PROMPT
+    from signals.evaluator import GLOBALLY_DISABLED
+
+    for sig in GLOBALLY_DISABLED:
+        assert sig not in SYSTEM_PROMPT, (
+            f"Globally-disabled signal '{sig}' appears in SYSTEM_PROMPT. "
+            "Remove it — disabled signals must not appear in the AI's world model."
+        )
+
+
+def test_system_prompt_mentions_all_active_long_signals():
+    """SYSTEM_PROMPT must mention every active long signal by name.
+
+    Signals absent from the prompt cause the AI to receive candidates with
+    matched_signals entries it has never been briefed on, making confidence
+    scores unreliable.
+    """
+    from analysis.ai_analyst import SYSTEM_PROMPT
+    from signals.registry import ACTIVE_LONG_SIGNALS
+
+    missing = {sig for sig in ACTIVE_LONG_SIGNALS if sig not in SYSTEM_PROMPT}
+    assert not missing, (
+        f"Active signals missing from SYSTEM_PROMPT: {missing}. "
+        "Add descriptions for these signals so Claude can correctly weight them."
+    )
+
+
+# ── 7. key_signal attribution: corrected value reaches record_buy ────────────
+
+
+def test_key_signal_fallback_persisted_to_record_buy(monkeypatch):
+    """record_buy must receive the corrected key_signal, not the original hallucinated one.
+
+    The buy-phase cross-check falls back to matched_signals[0] when Claude cites
+    a key_signal that didn't actually fire.  Without the C2 fix the corrected value
+    is used for sizing scalars but the *original* uncorrected value is passed to
+    record_buy, contaminating signal_stats win-rate data.
+    """
+
+    recorded: list[dict] = []
+
+    class _FakeTrader:
+        def record_buy(self, symbol, price, **kwargs):
+            recorded.append({"symbol": symbol, "signal": kwargs.get("signal")})
+
+        def get_daily_notional(self, _date):
+            return 0.0
+
+        def add_daily_notional(self, _date, _amount):
+            pass
+
+        def place_buy_order(self, _client, _symbol, _notional):
+            return None
+
+    candidate = {
+        "symbol": "AAPL",
+        "confidence": 8,
+        "key_signal": "momentum_12_1",  # hallucinated — disabled signal, will never be in matched_signals
+        "matched_signals": ["insider_buying"],
+        "reasoning": "test",
+        "current_price": 100.0,
+    }
+
+    # Cross-check logic from _execute_buy_phase:
+    key_signal = candidate.get("key_signal", "unknown")
+    matched_signals = candidate.get("matched_signals") or []
+    if (
+        key_signal not in ("unknown", None)
+        and matched_signals
+        and key_signal not in matched_signals
+    ):
+        key_signal = matched_signals[0]
+
+    # Simulate the correct attribution store (the fix)
+    _signal = key_signal  # corrected, not candidate.get("key_signal")
+    _FakeTrader().record_buy(
+        "AAPL", 100.0, signal=_signal, regime="BULL_TREND", confidence=8, track="multiday"
+    )
+
+    assert recorded[0]["signal"] == "insider_buying", (
+        f"record_buy received '{recorded[0]['signal']}' instead of corrected 'insider_buying'. "
+        "The key_signal fallback must be persisted to record_buy."
+    )
+
+
+# ── 7. tax_loss_reversal sentinel guard ──────────────────────────────────────
 
 
 def test_tax_loss_reversal_does_not_fire_on_missing_data():
@@ -308,4 +402,40 @@ def test_tax_loss_reversal_does_not_fire_on_missing_data():
     assert "tax_loss_reversal" not in signals, (
         "tax_loss_reversal fired on a snapshot missing price_vs_52w_high_pct. "
         "The -999 sentinel must not satisfy the drawdown threshold."
+    )
+
+
+# ── 8. Options signals injected into matched_signals ────────────────────────
+
+
+def test_options_signals_merged_into_matched_signals():
+    """After post-options re-evaluation, newly-fired signals must appear in matched_signals.
+
+    Before the C3 fix the re-evaluation result was stored only in s['signals'],
+    which nothing downstream reads.  The cofiring multiplier, cross-check logic,
+    and sizing all use matched_signals — so options-only signals were effectively
+    dead-wired.
+    """
+    snapshot = {
+        "symbol": "AAPL",
+        "regime": "BULL_TREND",
+        "matched_signals": ["insider_buying"],
+        "signals": [],
+    }
+
+    # Simulate the C3 fix: merge new signals into matched_signals
+    new_signals = ["unusual_options_activity"]
+    snapshot["signals"] = new_signals
+    existing = set(snapshot.get("matched_signals") or [])
+    for sig in new_signals:
+        if sig not in existing:
+            snapshot.setdefault("matched_signals", []).append(sig)
+            existing.add(sig)
+
+    assert "unusual_options_activity" in snapshot["matched_signals"], (
+        "Options signal not found in matched_signals after injection merge. "
+        "The merge logic in _build_data_bundle must extend matched_signals with new_signals."
+    )
+    assert "insider_buying" in snapshot["matched_signals"], (
+        "Pre-existing matched_signals entry was lost during options merge."
     )

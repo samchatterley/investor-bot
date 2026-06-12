@@ -81,7 +81,7 @@ class TestBuildPrompt(unittest.TestCase):
     def test_sentiment_block_appears(self):
         sentiment = {"AAPL": {"bullish_pct": 75, "bearish_pct": 25}}
         result = self._build(sentiment=sentiment)
-        self.assertIn("SENTIMENT", result)
+        self.assertIn("ANALYST CONSENSUS", result)  # post-Incident-3 rename from SOCIAL SENTIMENT
         self.assertIn("75%", result)
 
     def test_sentiment_tone_bullish_when_above_60(self):

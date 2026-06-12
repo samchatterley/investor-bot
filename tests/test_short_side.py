@@ -2173,5 +2173,114 @@ class TestIVCompressionShortSignal(unittest.TestCase):
         )
 
 
+class TestShortPreTrade(unittest.TestCase):
+    """Short execution path must enforce fat-finger cap and daily-notional accounting."""
+
+    def _make_deps(self, daily_notional=0.0, place_short_result=None):
+        from core.deps import TradingDeps
+
+        class FakeTrader:
+            def get_open_shorts(self):
+                return []
+
+            def get_long_notional(self, _client):
+                return 0.0
+
+            def get_short_notional(self, _client):
+                return 0.0
+
+            def get_daily_notional(self, _date):
+                return daily_notional
+
+            def add_daily_notional(self, _date, _amount):
+                self.added = _amount
+
+            def place_short_order(self, _client, _symbol, _qty):
+                return place_short_result
+
+            def record_short(self, *a, **kw):
+                pass
+
+        class FakeScanner:
+            def scan_short_candidates(self, snapshots, regime, held):
+                return [
+                    {
+                        "symbol": "XYZ",
+                        "current_price": 50.0,
+                        "matched_signals": ["death_cross"],
+                        "key_signal": "death_cross",
+                        "confidence": 8,
+                        "rs_rank_pct": 10.0,
+                    }
+                ]
+
+        deps = TradingDeps.__new__(TradingDeps)
+        deps.trader = FakeTrader()
+        deps.stock_scanner = FakeScanner()
+        deps.sector_data = type("SD", (), {"get_sector": staticmethod(lambda s: "Technology")})()
+        deps.sector_momentum = type(
+            "SM",
+            (),
+            {
+                "get_sector_momentum_ranks": lambda self: {"Technology": 20},
+                "sector_allowed_short": lambda self, sector, ranks: True,
+            },
+        )()
+        deps.correlation = type(
+            "C", (), {"correlated_with_held": staticmethod(lambda s, h: False)}
+        )()
+        deps.short_risk = type(
+            "SR",
+            (),
+            {
+                "fetch_squeeze_info": lambda self, s: {},
+                "is_squeeze_risk": lambda self, s, c, **kw: (False, ""),
+            },
+        )()
+        deps.position_sizer = type(
+            "PS",
+            (),
+            {"risk_budget_size": lambda self, pv, confidence, signal, regime: 500.0},
+        )()
+        deps.audit_log = type("AL", (), {"log_order_placed": lambda self, *a, **kw: None})()
+        deps.alerts = type("A", (), {"alert_error": lambda self, *a, **kw: None})()
+        return deps
+
+    def test_short_order_rejected_when_notional_exceeds_single_order_cap(self):
+        """Short order must be skipped when order_notional > MAX_SINGLE_ORDER_USD.
+
+        Without the C4 fix, no fat-finger check existed on the short path.
+        """
+        from unittest.mock import patch
+
+        import config as cfg
+
+        deps = self._make_deps()
+        # candidate: $50 × floor(500/50) = 10 shares = $500 notional
+        # Patch cap to $10 so the $500 order is rejected
+        all_trades: list = []
+        from main import _execute_shorts
+
+        with (
+            patch.object(cfg, "MAX_SINGLE_ORDER_USD", 10.0),
+            patch.object(cfg, "MAX_SHORT_STANDALONE_RATIO", 1.0),
+            patch.object(cfg, "MAX_SHORT_POSITIONS", 5),
+        ):
+            _execute_shorts(
+                client=None,
+                snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+                regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
+                open_positions=[],
+                account_now={"portfolio_value": 10_000.0},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=False,
+                _live_shadow=False,
+                today="2026-06-12",
+                deps=deps,
+            )
+        self.assertEqual(all_trades, [], "Short order should have been blocked by fat-finger cap")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

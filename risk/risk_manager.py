@@ -20,12 +20,12 @@ def check_circuit_breaker(portfolio_history: list[dict]) -> tuple[bool, float]:
     try:
         # Exclude records with implausibly small values — guards against corrupted
         # test/placeholder records that would produce a false -99.9% drawdown signal.
-        _MIN_PLAUSIBLE = 1_000.0
-        values = [
-            r["account_after"]["portfolio_value"]
-            for r in recent
-            if r["account_after"]["portfolio_value"] >= _MIN_PLAUSIBLE
-        ]
+        # Threshold scales with actual account size (half the peak floored at $10)
+        # so the circuit breaker works correctly in SMALL_ACCOUNT_MODE (~$150 accounts).
+        _raw_values = [r["account_after"]["portfolio_value"] for r in recent]
+        _peak_raw = max(_raw_values) if _raw_values else 0.0
+        _MIN_PLAUSIBLE = max(10.0, _peak_raw * 0.5)
+        values = [v for v in _raw_values if v >= _MIN_PLAUSIBLE]
         if len(values) < 2:
             return False, 0.0
         peak = max(values[:-1])

@@ -178,5 +178,8 @@ def has_open_buys_run_today(today: str) -> bool:
                 (f"{today}%", today),
             ).fetchone()
         return row is not None
-    except Exception:
-        return False
+    except Exception as exc:
+        logger.error(
+            f"has_open_buys_run_today: DB check failed — assuming already ran (fail-closed): {exc}"
+        )
+        return True

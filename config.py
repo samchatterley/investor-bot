@@ -808,7 +808,7 @@ MAX_ORDERS_PER_RUN = int(os.getenv("MAX_ORDERS_PER_RUN", "1" if _SAM else "3"))
 MIN_VOLUME = 500_000
 
 # Set to "I-ACCEPT-REAL-MONEY-RISK" to enable live trading without interactive prompt.
-# The scheduler sets this in its environment; a human-initiated run requires typing it.
+# Must be set in .env (or exported) before any live run — the scheduler does not set this automatically.
 LIVE_CONFIRM = os.getenv("LIVE_CONFIRM", "")
 
 # Path for runtime parameter overrides set by the weekly self-review.
