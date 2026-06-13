@@ -25,45 +25,46 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "bb_squeeze": 9,
     "inside_day_breakout": 10,
     "trend_pullback": 11,
-    "iv_compression": 12,
-    "iv_vs_rv_spread": 13,  # ATM IV/RV < 0.7 = vol genuinely cheap vs realised
-    "range_reversion": 14,
-    "rsi_divergence": 15,
+    # fcf_yield elevated from 29→12: 563 backtest trades WR 51% avg +0.16%; quality gate makes
+    # it a fundamentals complement to the catalyst signals above.
+    "fcf_yield_signal": 12,
+    "iv_compression": 13,
+    "iv_vs_rv_spread": 14,  # ATM IV/RV < 0.7 = vol genuinely cheap vs realised
+    "range_reversion": 15,
+    "rsi_divergence": 16,
     # mean_reversion outranks momentum (counter-cyclical conviction beats trend-following)
-    "mean_reversion": 16,
-    "momentum": 17,
-    "macd_crossover": 18,
-    "orb_breakout": 19,
-    "vwap_reclaim": 20,
-    "intraday_momentum": 21,
+    "mean_reversion": 17,
+    "momentum": 18,
+    "macd_crossover": 19,
+    "orb_breakout": 20,
+    "vwap_reclaim": 21,
+    "intraday_momentum": 22,
     # ── Batch 1: OHLCV technical signals ────────────────────────────────────
-    "golden_cross": 22,
-    "candle_exhaustion": 23,
-    "obv_divergence": 24,
-    "obv_acceleration": 25,
-    "volume_climax_reversal": 26,
+    "golden_cross": 23,
+    "candle_exhaustion": 24,
+    "obv_divergence": 25,
+    "obv_acceleration": 26,
+    "volume_climax_reversal": 27,
     # ── Batch 2: universe-level signals ──────────────────────────────────────
-    "breadth_thrust": 27,
+    "breadth_thrust": 28,
     # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
-    "tax_loss_reversal": 28,
-    # ── Batch 4: fundamental quality signals ─────────────────────────────────
-    "fcf_yield_signal": 29,  # FCF yield > 5% with quality gate
-    # ── Batch 5: options-derived signals ─────────────────────────────────────
+    "tax_loss_reversal": 29,
+    # ── Batch 4: options-derived signals (live-only: no historical options data in backtest) ──
     "options_skew_signal": 30,  # panic put skew → contrarian; call skew spike → informed
     "unusual_options_activity": 31,  # OTM call OI surge — informed upside buying
     "put_call_contrarian": 32,  # extreme put-to-call ratio → contrarian long
-    # ── Batch 6: short-squeeze signals ───────────────────────────────────────
+    # ── Batch 5: short-squeeze signals (live-only: current SI data, no historical backtest) ──
     "squeeze_setup_long": 33,  # crowded dormant short at 20d low — pre-squeeze
     "squeeze_momentum_long": 34,  # squeeze in motion above 20d high
     "short_interest_trend_long": 35,  # SI% falling >30% from peak + price rising
-    # ── Batch 7: analyst / institutional signals ──────────────────────────────
+    # ── Batch 6: analyst / institutional signals ──────────────────────────────
     "analyst_upgrade_signal": 36,  # consensus Hold→Buy shift
-    # ── Batch 8: sentiment signals ────────────────────────────────────────────
+    # ── Batch 7: sentiment signals ────────────────────────────────────────────
     "aaii_extreme_fear_long": 37,  # AAII bears >50% → contrarian long
     "fear_greed_extreme_fear": 38,  # composite fear/greed <20 → contrarian long
-    # ── Batch 9: cross-asset signals ─────────────────────────────────────────
+    # ── Batch 8: cross-asset signals ─────────────────────────────────────────
     "sector_pair_mean_reversion": 39,  # intra-sector RS spread reversion
-    # ── Batch 10: alternative data signals ───────────────────────────────────
+    # ── Batch 9: alternative data signals ────────────────────────────────────
     "google_trends_bullish": 40,  # search volume spike with positive context
 }
 
@@ -374,8 +375,26 @@ _RECOVERY_BLOCKED = frozenset(
 #                    (Jun 2026). No threshold produces positive expectancy.
 #   momentum_12_1:   Sharpe -0.26 standalone (n=45); blocked in all regimes except HIGH_VOL
 #                    where it also produces negative expectancy. ΔSharpe +0.08 from removal.
+#   range_reversion: 2 trades in combined production backtest, WR 0%, avg -16.2%.
+#                    Isolation Sharpe +0.14 (n=218) does not survive into the combined pipeline;
+#                    backward elimination removes it Step 3 (ΔSharpe +0.04).
+#                    Conditions (ADX<20 + BB<0.10 + RSI<30) too restrictive to fire reliably.
+#   volume_climax_reversal: 1 trade in combined production backtest, WR 0%, avg -2.8%.
+#                    Fires too rarely to validate and contributes no edge when it does.
+#   tax_loss_reversal: 38 trades, WR 37%, avg -1.02% in combined backtest (Jan 2026 test).
+#                    January-only seasonal with no confirmed reversal edge; survivorship bias
+#                    in the universe inflates the pool of distressed stocks that recovered.
 GLOBALLY_DISABLED: frozenset[str] = frozenset(
-    {"rsi_divergence", "breakout_52w", "vix_fear_reversion", "rs_leader", "momentum_12_1"}
+    {
+        "rsi_divergence",
+        "breakout_52w",
+        "vix_fear_reversion",
+        "rs_leader",
+        "momentum_12_1",
+        "range_reversion",
+        "volume_climax_reversal",
+        "tax_loss_reversal",
+    }
 )
 
 # ── Short-side signal constants ───────────────────────────────────────────────
@@ -1081,7 +1100,7 @@ def evaluate_signals(
         and rsi < p["rr_rsi_max"]
         and "range_reversion" not in blocked
     ):
-        matched.append("range_reversion")
+        matched.append("range_reversion")  # pragma: no cover — range_reversion in GLOBALLY_DISABLED
 
     # RSI divergence: price lower than 5 days ago but RSI recovering — bullish structural
     # divergence in range-bound conditions.  The adx < 25 gate keeps it out of trending
@@ -1169,7 +1188,9 @@ def evaluate_signals(
         and bool(snapshot.get("near_20d_low", False))
         and "volume_climax_reversal" not in blocked
     ):
-        matched.append("volume_climax_reversal")
+        matched.append(
+            "volume_climax_reversal"
+        )  # pragma: no cover — volume_climax_reversal in GLOBALLY_DISABLED
 
     # Breadth thrust (Zweig): universe breadth jumped from <40% to >60% above 50d SMA
     # within 10 days — rare "all-clear" thrust confirming a broad market expansion.
@@ -1200,7 +1221,9 @@ def evaluate_signals(
         and ema_up
         and "tax_loss_reversal" not in blocked
     ):
-        matched.append("tax_loss_reversal")
+        matched.append(
+            "tax_loss_reversal"
+        )  # pragma: no cover — tax_loss_reversal in GLOBALLY_DISABLED
 
     # Intraday signals (only active when intraday fields are present in snapshot)
     if orb_up and "orb_breakout" not in blocked:

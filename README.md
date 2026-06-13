@@ -106,7 +106,7 @@ The daily scan universe is built dynamically at runtime. `execution/universe.py`
 
 ### Signal types
 
-The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of **36 active signal patterns** across 10 families before Claude sees it. Five signals are in `GLOBALLY_DISABLED` after backtest evidence confirmed no edge. See [docs/signals.md](docs/signals.md) for the full signal table with entry conditions, hold limits, regime blocking, fundamental quality gates, and the short signal catalogue.
+The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of **33 active signal patterns** across 10 families before Claude sees it. Eight signals are in `GLOBALLY_DISABLED` after backtest evidence confirmed no edge. See [docs/signals.md](docs/signals.md) for the full signal table with entry conditions, hold limits, regime blocking, fundamental quality gates, and the short signal catalogue.
 
 Signal families: **mean-reversion** · **volatility/IV** · **trend/momentum** · **OHLCV technical** · **catalyst/fundamental** · **options** · **short squeeze** · **sentiment/alt-data** · **cross-asset** · **intraday**
 
@@ -557,9 +557,11 @@ The current system deliberately keeps deployment local and execution synchronous
 
 ## Version History
 
-See [CHANGELOG.md](CHANGELOG.md) for the full version history (v1.0 → v1.97).
+See [CHANGELOG.md](CHANGELOG.md) for the full version history (v1.0 → v1.98).
 
 ### Recent
+
+**1.98 — June 2026** — Institutional-grade codebase audit: 12 critical and high findings across AI governance, broker safety, signal wiring, and observability hardened. Signal book rationalised: 3 signals disabled (`range_reversion`, `volume_climax_reversal`, `tax_loss_reversal`) after combined production backtest confirmed no edge; `fcf_yield_signal` elevated to priority 12 on 563-trade evidence. Options and short-squeeze signals fully wired post-C3 dead-code fix. SYSTEM_PROMPT rewritten for parity with live signal book (41 entries, 8 disabled, 33 active). `SIGNAL_PRIORITY` now 41 entries (33 active, 8 in `GLOBALLY_DISABLED`). Tests: see below.
 
 **1.97 — June 2026** — The deepest signal expansion to date: 15 new long signals and 6 new short signals spanning options microstructure, fundamental quality, short-squeeze mechanics, alternative data, and cross-asset pairs. Five new data pipelines (`analyst_revisions`, `fear_greed`, `google_trends`, `lockup_calendar`; plus `fred_client` / `fundamental_cache` extensions). Nine new fundamental and microstructure gates in the signal evaluator. Fixes a latent options dead-code bug where options signals were evaluated before options data was injected. `SIGNAL_PRIORITY` now 41 entries (36 active, 5 in `GLOBALLY_DISABLED`). `SHORT_SIGNAL_PRIORITY` now 23 entries (9 active, 14 in `SHORT_GLOBALLY_DISABLED`). 4,494 tests total.
 

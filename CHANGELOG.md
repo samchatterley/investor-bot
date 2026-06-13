@@ -4,6 +4,39 @@ Full version history. Most recent first.
 
 ---
 
+### 1.98 — June 2026 — Institutional-grade audit: 12 critical/high findings hardened + signal book rationalisation
+
+Full-codebase institutional audit covering AI governance, broker safety, signal wiring, scheduler reliability, secrets hygiene, and observability. All findings addressed in a single release alongside signal book rationalisation.
+
+**Critical safety fixes:**
+- **C2 — `main._execute_buy_phase()`** — `key_signal` attribution bug: `record_buy` was reading `candidate.get("key_signal")` (the raw, potentially hallucinated AI value) instead of the corrected and validated local `key_signal` variable used for the 12 sizing scalars. One-line fix; regression test added.
+- **C3 — `main._run_inner()`** — Options signals dead-wiring: post-filter re-evaluation stored results in `s["signals"]` but never updated `s["matched_signals"]`, so options signals could never propagate to sizing logic. Merge loop now syncs both structures after re-evaluation; wiring test added.
+- **C4 — `main._execute_shorts()`** — Short execution path lacked fat-finger cap, daily-notional accounting, and `MAX_DEPLOYED_USD` check. Added `check_pre_trade()` + `add_daily_notional()` calls mirroring the long path; `today` param threaded through; test added.
+- **C6 — `utils/audit_log.has_open_buys_run_today()`** — DB exception returned `False` (assume not yet run) — opposite of every other safety guard. Changed to return `True` (fail-closed); test updated.
+
+**Governance fixes:**
+- **C1 — `analysis/ai_analyst.SYSTEM_PROMPT`** — Complete rewrite: removed 4 globally-disabled signals (including `vix_fear_reversion` which was described as "highest-priority"), added all 33 active signals in organised family blocks. Parity tests: `test_system_prompt_contains_no_globally_disabled_signals` + `test_system_prompt_mentions_all_active_long_signals`.
+- **C8** — `NEUTRAL_CHOP` regime description now advises mean-reversion block and catalyst-confirmed entry preference.
+- **C11** — Removed misleading "The scheduler sets this in its environment;" comment from `LIVE_CONFIRM`.
+- **C12** — "SOCIAL SENTIMENT" section header renamed to "ANALYST CONSENSUS" to match actual data source.
+
+**Observability:**
+- **Full LLM response** now persisted to audit store (not just 500-character snippet).
+
+**Infrastructure:**
+- **C7 — `.gitignore`** — Added `.env.*` / `!*.env.example`; ran `git rm --cached .env.canary` to untrack the accidentally committed canary env file.
+- **Lock liveness** — Stale-lock age heuristic (30-min) replaced with PID-based liveness check (`os.kill(pid, 0)`); PID written to lock file payload. Test updated to write valid JSON lock payload.
+- **Circuit-breaker `_MIN_PLAUSIBLE`** — Hardcoded `1_000.0` (which silently disabled the 5-day drawdown circuit breaker for accounts under $1,000) replaced with `max(10.0, peak_raw * 0.5)` — account-size-relative floor.
+
+**Signal book rationalisation:**
+- **Disabled** (`GLOBALLY_DISABLED`, v1.98): `range_reversion` (2 production-backtest trades, WR 0%, avg −16.2%; backward elimination Step 3), `volume_climax_reversal` (1 trade, WR 0%, avg −2.8%), `tax_loss_reversal` (38 trades, WR 37%, avg −1.02%).
+- **Elevated**: `fcf_yield_signal` priority 29 → 12 (563 backtest trades, WR 51%, avg +0.16%).
+- **Wired live**: `options_skew_signal`, `unusual_options_activity`, `put_call_contrarian`, `squeeze_setup_long`, `squeeze_momentum_long`, `short_interest_trend_long` — now fully active post-C3 fix; accumulating live evidence from v1.98.
+- **`SIGNAL_PRIORITY`** now 41 entries (33 active, 8 in `GLOBALLY_DISABLED`).
+- `SYSTEM_PROMPT` signal families and `docs/signals.md` updated for full parity.
+
+---
+
 ### 1.97 — June 2026 — Five new data pipelines + 15 long / 6 short new signals: analyst revisions, fear/greed, Google Trends, lockup calendar, ERP gate
 
 The deepest signal expansion to date: 15 new long signals and 6 new short signals spanning options microstructure, fundamental quality, short-squeeze mechanics, alternative data, and cross-asset pairs, underpinned by 5 new data pipelines. Also fixes a latent options dead-code bug where options signals were evaluated before options data was injected.

@@ -29,8 +29,7 @@ CATALYST / FUNDAMENTAL
 - activist_13d_signal: SC 13D activist filing within 30 days + EMA confirmation; regime-agnostic
 - guidance_raise_signal: positive 8-K guidance event; fires without price confirmation (earlier
   entry than pead); blocked by gross-margin deterioration
-- fcf_yield_signal: FCF yield >5% + Piotroski F ≥5 — high-quality free-cash-flow value entry
-- tax_loss_reversal: January only — stock >30% below 52w high + EMA up; tax-selling reversal
+- fcf_yield_signal: FCF yield >5% + Piotroski F ≥5 — high-quality free-cash-flow value entry (563 backtest trades, WR 51%, avg +0.16%)
 
 TREND / MOMENTUM
 - momentum: EMA9 > EMA21 + MACD positive + positive 5d return + volume; blocked in chop/downtrend
@@ -41,7 +40,6 @@ TREND / MOMENTUM
 
 MEAN-REVERSION
 - mean_reversion: RSI <35 + BB <0.15 + volume spike; blocked in chop/downtrend/stress
-- range_reversion: ADX <20 (range-bound) + BB <0.10 + RSI <30; blocked in chop/downtrend
 
 VOLATILITY / IV
 - bb_squeeze: Bollinger Bands compress to 20th-percentile bandwidth + ADX ≥25 + breakout
@@ -53,7 +51,6 @@ OHLCV TECHNICAL
 - candle_exhaustion: hammer or bullish engulf at 20d low with vol_ratio ≥1.5
 - obv_divergence: OBV 5d slope rising while price 5d negative — accumulation divergence
 - obv_acceleration: OBV 5d slope > OBV 20d slope — accelerating into price + EMA confirmed
-- volume_climax_reversal: 3+ consecutive days vol_ratio >2.5 at 20d price low — exhaustion
 - breadth_thrust: Zweig breadth-thrust: universe breadth jumps from <40% to >60% within 10 days
 
 OPTIONS
