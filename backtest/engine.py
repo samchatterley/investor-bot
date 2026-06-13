@@ -53,6 +53,7 @@ from config import (
     SPREAD_BPS,
     STOCK_UNIVERSE,
 )
+from data.borrow_cost import borrow_cost_usd, estimate_borrow_rate
 from data.market_regime import compute_regime_series, fetch_t10y2y_series
 from data.universe_history import get_universe_for_date
 from execution.short_universe import STATIC_SHORT_UNIVERSE
@@ -1637,6 +1638,7 @@ def _run_short_simulation(
     rs_rank_lag10: dict[str, dict[str, float]] | None = None,
     vix_term_by_date: dict[str, bool] | None = None,
     signals_only: frozenset[str] | None = None,
+    borrow_rate_by_symbol: dict[str, float] | None = None,
 ) -> dict:
     """Short-side simulation — mirrors _run_simulation() but enters short positions.
 
@@ -1655,6 +1657,10 @@ def _run_short_simulation(
     rc = risk_config or RiskConfig.from_config()
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
     _sp_bps_override = spread_bps
+
+    # Borrow rates per symbol (opt-in). Empty when not supplied → borrow_cost_usd returns 0,
+    # keeping legacy backtests cost-free without an extra branch at each cover site.
+    _brates = borrow_rate_by_symbol or {}
 
     cash = initial_capital
     positions: dict[str, dict] = {}
@@ -1723,10 +1729,14 @@ def _run_short_simulation(
                 buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
                 cover_px = fill_base * buy_factor
 
-                pnl = pos["shares"] * (pos["entry_price"] - cover_px)
+                _borrow = borrow_cost_usd(_brates.get(sym, 0.0), pos["notional"], trading_days_held)
+                pnl = pos["shares"] * (pos["entry_price"] - cover_px) - _borrow
                 cash += pos["notional"] + pnl
 
-                pnl_pct_final = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100
+                _borrow_pct = _borrow / pos["notional"] * 100
+                pnl_pct_final = (pos["entry_price"] - cover_px) / pos[
+                    "entry_price"
+                ] * 100 - _borrow_pct
                 trades.append(
                     {
                         "date": today_str,
@@ -1910,15 +1920,17 @@ def _run_short_simulation(
             buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
             cover_px = px * buy_factor
 
-            pnl = pos["shares"] * (pos["entry_price"] - cover_px)
-            cash += pos["notional"] + pnl
-
-            pnl_pct = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100
             days_held = (
                 sum(1 for _ in pd.bdate_range(pos["entry_date"], last_date)) - 1
                 if last_date is not None
                 else 0
             )
+            _borrow = borrow_cost_usd(_brates.get(sym, 0.0), pos["notional"], days_held)
+            pnl = pos["shares"] * (pos["entry_price"] - cover_px) - _borrow
+            cash += pos["notional"] + pnl
+
+            _borrow_pct = _borrow / pos["notional"] * 100
+            pnl_pct = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100 - _borrow_pct
             trades.append(
                 {
                     "date": "end",
@@ -2013,6 +2025,7 @@ def _run_combined_simulation(
     breadth_thrust_by_date: dict[str, bool] | None = None,
     macro_flags_by_date: dict[str, dict] | None = None,
     quality_fundamentals: dict[str, dict] | None = None,
+    borrow_rate_by_symbol: dict[str, float] | None = None,
 ) -> dict:
     """Combined long/short simulation with a single shared cash pool.
 
@@ -2026,6 +2039,10 @@ def _run_combined_simulation(
     rc = risk_config or RiskConfig.from_config()
     s_bps = SLIPPAGE_BPS if slippage_bps is None else slippage_bps
     _sp_bps_override = spread_bps
+
+    # Borrow rates per symbol (opt-in). Empty when not supplied → borrow_cost_usd returns 0,
+    # keeping legacy backtests cost-free without an extra branch at each cover site.
+    _brates = borrow_rate_by_symbol or {}
 
     cash = initial_capital
     long_positions: dict[str, dict] = {}
@@ -2175,9 +2192,13 @@ def _run_combined_simulation(
                 impact = _market_impact_bps(cover_notional, adv_usd)
                 buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
                 cover_px = fill_base * buy_factor
-                pnl = pos["shares"] * (pos["entry_price"] - cover_px)
+                _borrow = borrow_cost_usd(_brates.get(sym, 0.0), pos["notional"], trading_days_held)
+                pnl = pos["shares"] * (pos["entry_price"] - cover_px) - _borrow
                 cash += pos["notional"] + pnl
-                pnl_pct_final = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100
+                _borrow_pct = _borrow / pos["notional"] * 100
+                pnl_pct_final = (pos["entry_price"] - cover_px) / pos[
+                    "entry_price"
+                ] * 100 - _borrow_pct
                 trades.append(
                     {
                         "date": today_str,
@@ -2509,14 +2530,16 @@ def _run_combined_simulation(
             impact = _market_impact_bps(cover_notional, adv_usd)
             buy_factor = 1.0 + (s_bps + sp / 2 + impact) / 10_000
             cover_px = px * buy_factor
-            pnl = pos["shares"] * (pos["entry_price"] - cover_px)
-            cash += pos["notional"] + pnl
-            pnl_pct = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100
             days_held = (
                 sum(1 for _ in pd.bdate_range(pos["entry_date"], last_date)) - 1
                 if last_date is not None
                 else 0
             )
+            _borrow = borrow_cost_usd(_brates.get(sym, 0.0), pos["notional"], days_held)
+            pnl = pos["shares"] * (pos["entry_price"] - cover_px) - _borrow
+            cash += pos["notional"] + pnl
+            _borrow_pct = _borrow / pos["notional"] * 100
+            pnl_pct = (pos["entry_price"] - cover_px) / pos["entry_price"] * 100 - _borrow_pct
             trades.append(
                 {
                     "date": "end",
@@ -2752,6 +2775,53 @@ def _prefetch_quality_fundamentals(symbols: list[str]) -> dict[str, dict]:
 
     logger.info(f"Quality fundamentals ready: {len(result)}/{len(symbols)} symbols with data")
     return result
+
+
+def compute_index_hedge_pnl(
+    spy_close_by_date: dict[str, float],
+    regime_by_date: dict[str, str],
+    hedge_regimes: frozenset[str],
+    weight: float = 0.10,
+    initial_capital: float = 100_000.0,
+) -> dict:
+    """Simulate the portfolio-level index regime hedge over a date range.
+
+    On each date where the regime is in ``hedge_regimes`` the hedge is engaged: a short of
+    ``weight × initial_capital`` notional in the index (shares fixed at the entry close).
+    P&L accrues as the index moves (gains when it falls). The hedge is covered the first day
+    the regime leaves the bear set. This is the backtest counterpart to ``_execute_index_hedge``.
+
+    Returns::
+
+        {"hedge_pnl": float, "hedge_pnl_pct": float, "days_engaged": int, "trades": int}
+    """
+    dates = sorted(spy_close_by_date)
+    pnl = 0.0
+    days_engaged = 0
+    trades = 0
+    shares: float | None = None  # not None ⇒ hedge engaged
+    prev_close: float | None = None
+
+    for d in dates:
+        close = spy_close_by_date[d]
+        engaged = regime_by_date.get(d) in hedge_regimes
+        if engaged:
+            if shares is None and close > 0:
+                shares = (weight * initial_capital) / close  # enter short at today's close
+                trades += 1
+            elif shares is not None and prev_close is not None:
+                pnl += shares * (prev_close - close)  # short gains as the index falls
+            days_engaged += 1
+        else:
+            shares = None  # cover (flat outside bear regimes)
+        prev_close = close
+
+    return {
+        "hedge_pnl": round(pnl, 2),
+        "hedge_pnl_pct": round(pnl / initial_capital * 100, 4) if initial_capital else 0.0,
+        "days_engaged": days_engaged,
+        "trades": trades,
+    }
 
 
 def run_backtest(
@@ -3991,8 +4061,15 @@ def run_combined_analysis(
         earnings_history = prefetch_earnings_history(symbols)
 
     quality_fundamentals: dict[str, dict] | None = None
+    borrow_rate_by_symbol: dict[str, float] | None = None
     if use_quality_fundamentals:
         quality_fundamentals = _prefetch_quality_fundamentals(list(symbols))
+        # Estimate per-symbol borrow rates from the short-interest fields the quality
+        # prefetch already gathered, so short P&L is net of realistic borrow cost.
+        borrow_rate_by_symbol = {
+            sym: estimate_borrow_rate(q.get("short_pct_float"), q.get("short_ratio"))
+            for sym, q in quality_fundamentals.items()
+        }
 
     trading_dates = pd.bdate_range(start=start_date, end=end_date)
     rs_ranks = _compute_rs_ranks(indicators, spy_indicators)
@@ -4016,9 +4093,31 @@ def run_combined_analysis(
         rs_ranks=rs_ranks,
         rs_rank_lag10=rs_rank_lag10,
         quality_fundamentals=quality_fundamentals,
+        borrow_rate_by_symbol=borrow_rate_by_symbol,
     )
     results["start"] = start_date
     results["end"] = end_date
+
+    # Index regime-hedge overlay — informational P&L of shorting the index in bear regimes,
+    # reported alongside the single-name book. Uses the SPY closes already computed for regime.
+    if spy_indicators is not None and regime_by_date:
+        from config import (
+            INDEX_HEDGE_REGIMES,
+            INDEX_HEDGE_WEIGHT,
+        )
+
+        spy_close_by_date = {
+            ts.strftime("%Y-%m-%d"): float(c)
+            for ts, c in spy_indicators["Close"].items()
+            if ts.strftime("%Y-%m-%d") in regime_by_date
+        }
+        results["index_hedge"] = compute_index_hedge_pnl(
+            spy_close_by_date,
+            regime_by_date,
+            INDEX_HEDGE_REGIMES,
+            weight=INDEX_HEDGE_WEIGHT,
+            initial_capital=initial_capital,
+        )
 
     _print_combined_results(results, start_date, end_date)
     return results

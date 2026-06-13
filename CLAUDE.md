@@ -35,3 +35,14 @@ Run this in the `investorbot` tmux session. Do **not** use `python main.py` (tha
 | 10:00 | 15:00 | open_buys |
 | 12:00 | 17:00 | midday |
 | 15:30 | 20:30 | close |
+
+## Disabling a signal — checklist
+
+`evaluate_signals()` and `evaluate_short_signals()` merge `GLOBALLY_DISABLED` / `SHORT_GLOBALLY_DISABLED` into the blocked set, so adding a signal to one of those frozensets silently makes its detection branch unreachable. Every disable **must** do all of the following in the **same commit**, or the suite breaks (this is how v1.98 shipped 7 failing tests):
+
+1. Add the signal name to `GLOBALLY_DISABLED` / `SHORT_GLOBALLY_DISABLED` with a one-line evidence comment (trades, WR, avg, ΔSharpe).
+2. Add `# pragma: no cover — <signal> in GLOBALLY_DISABLED` to the `matched.append("<signal>")` line — the branch can never execute now.
+3. **Update its tests.** Find every `assert "<signal>" in signals` / `assertIn("<signal>", ...)` / `assertEqual(_entry_signal(...), "<signal>")` and convert to the disabled pattern: assert the signal is in the disabled frozenset **and** does not fire when its conditions are met. `grep -rn "<signal>" tests/` to find them all.
+4. Run the affected test files (`test_backtest.py`, `test_new_signals.py`, `test_short_side.py`, `test_wiring.py` — at minimum the ones that reference the signal) before staging.
+5. Update `docs/signals.md` (move to disabled table), `README.md` (active/disabled counts), and `CHANGELOG.md`.
+6. If the signal appeared in `SYSTEM_PROMPT` (`analysis/ai_analyst.py`), remove it — the wiring parity tests in `test_wiring.py` enforce this for long signals.

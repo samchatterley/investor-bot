@@ -46,6 +46,7 @@ from data import (
 from data import (
     sentiment as sentiment_module,
 )
+from data.borrow_cost import estimate_borrow_rate, is_hard_to_borrow
 from data.macro_data import get_combined_macro_flags, get_macro_snapshot
 from data.sentiment_client import get_sentiment_snapshot
 from execution import short_risk, stock_scanner, trader
@@ -745,6 +746,22 @@ def _execute_shorts(
 
         # Squeeze risk gate — blocks crowded shorts and stocks in active squeezes
         _squeeze_info = _short_risk.fetch_squeeze_info(symbol)
+
+        # Borrow-cost gate — estimate the annualized borrow rate from short-interest data and
+        # skip hard-to-borrow names (borrow can spike, the lender can recall, and the cost
+        # erodes a short's edge). Checked before the squeeze gate so HTB names — which carry a
+        # higher short-interest threshold than the squeeze block — are attributed here.
+        _borrow_rate = estimate_borrow_rate(
+            _squeeze_info.get("short_pct_float"), _squeeze_info.get("days_to_cover")
+        )
+        if is_hard_to_borrow(
+            _squeeze_info.get("short_pct_float"), _squeeze_info.get("days_to_cover")
+        ):
+            logger.info(
+                f"  Short skip {symbol}: hard-to-borrow (est. {_borrow_rate:.0%}/yr borrow)"
+            )
+            continue
+
         _squeeze_blocked, _squeeze_reason = _short_risk.is_squeeze_risk(
             symbol, candidate, **_squeeze_info
         )
@@ -857,6 +874,7 @@ def _execute_shorts(
                         "confidence": confidence,
                         "key_signal": key_signal,
                         "reasoning": reasoning,
+                        "borrow_rate_annual": round(_borrow_rate, 4),
                     }
                 )
         elif _live_shadow:
@@ -899,6 +917,115 @@ def _execute_shorts(
             )
             shorts_placed += 1
             executed_symbols.add(symbol)
+
+
+def _execute_index_hedge(
+    client,
+    regime: dict,
+    account_now: dict,
+    all_trades: list,
+    dry_run: bool,
+    _live_shadow: bool,
+    deps: TradingDeps | None = None,
+) -> None:
+    """Portfolio-level index hedge: short ``INDEX_HEDGE_SYMBOL`` in confirmed bear regimes and
+    cover it when the regime exits the bear set.
+
+    Index ETFs borrow cheap, are deeply liquid, and carry no single-name squeeze risk, making
+    this a structurally cleaner short than crowded single names. Opt-in via
+    ``config.INDEX_HEDGE_ENABLED`` (default off) because it is a live order path; honours
+    ``dry_run`` and ``_live_shadow`` exactly like the single-name short book.
+    """
+    if not config.INDEX_HEDGE_ENABLED:
+        return
+
+    _trader = deps.trader if deps is not None else trader
+    _market_data = deps.market_data if deps is not None else market_data
+    _audit_log = deps.audit_log if deps is not None else audit_log
+
+    symbol = config.INDEX_HEDGE_SYMBOL
+    regime_name = regime.get("regime", "UNKNOWN")
+    in_bear = regime_name in config.INDEX_HEDGE_REGIMES
+
+    try:
+        open_shorts = _trader.get_open_shorts()
+    except OrderLedgerUnavailable as e:
+        logger.error(f"Index hedge: short ledger unavailable — skipping: {e}")
+        return
+    hedge_on = symbol in open_shorts
+
+    # Regime no longer bearish → lift the hedge if we hold it.
+    if not in_bear:
+        if hedge_on and not dry_run and not _live_shadow:
+            _trader.close_position(client, symbol)
+            _trader.record_cover(symbol)
+            _audit_log.log_event("INDEX_HEDGE_COVER", {"symbol": symbol, "regime": regime_name})
+            all_trades.append(
+                {
+                    "symbol": symbol,
+                    "action": "COVER",
+                    "decision_type": "index_hedge",
+                    "detail": f"regime {regime_name} no longer bearish",
+                    "reasoning": "index hedge lifted",
+                }
+            )
+            logger.info(f"Index hedge: covered {symbol} — regime {regime_name} no longer bearish")
+        return
+
+    if hedge_on:
+        return  # already hedged
+
+    portfolio_value = account_now.get("portfolio_value", 0.0)
+    notional = portfolio_value * config.INDEX_HEDGE_WEIGHT
+    if notional <= 0:
+        return
+    price = _market_data.get_index_price(symbol)
+    if not price:
+        logger.warning(f"Index hedge: no price for {symbol} — skipping")
+        return
+    qty = int(math.floor(notional / price))
+    if qty < 1:
+        logger.info(f"Index hedge: ${notional:.0f} < 1 share of {symbol} @ ${price:.2f}")
+        return
+
+    if _live_shadow:
+        _audit_log.log_event(
+            "WOULD_INDEX_HEDGE", {"symbol": symbol, "qty": qty, "regime": regime_name}
+        )
+        all_trades.append(
+            {
+                "symbol": symbol,
+                "action": "WOULD_SHORT",
+                "decision_type": "index_hedge",
+                "detail": f"shadow hedge {qty} {symbol} @ ~${price:.2f}",
+                "reasoning": f"index hedge ({regime_name})",
+            }
+        )
+        return
+    if dry_run:
+        logger.info(f"[DRY RUN] Index hedge: would short {qty} {symbol} @ ~${price:.2f}")
+        return
+
+    result = _trader.place_short_order(client, symbol, qty)
+    if result and result.is_success:
+        _trader.record_short(
+            symbol,
+            result.filled_avg_price or price,
+            signal="index_regime_hedge",
+            regime=regime_name,
+            confidence=0,
+        )
+        _audit_log.log_order_placed(symbol, "SHORT", qty * price, result.broker_order_id or "")
+        all_trades.append(
+            {
+                "symbol": symbol,
+                "action": "SHORT",
+                "decision_type": "index_hedge",
+                "detail": f"{qty} {symbol} @ ~${price:.2f}",
+                "reasoning": f"index hedge ({regime_name})",
+            }
+        )
+        logger.info(f"Index hedge: shorted {qty} {symbol} @ ~${price:.2f} ({regime_name})")
 
 
 # ── Pipeline phase helpers ────────────────────────────────────────────────────
@@ -2977,6 +3104,17 @@ def _run_inner(
         dry_run=dry_run,
         _live_shadow=_live_shadow,
         today=today,
+        deps=deps,
+    )
+
+    # ── Index regime hedge (opt-in: short an index ETF in confirmed bear regimes) ──
+    _execute_index_hedge(
+        client=client,
+        regime=mc.regime,
+        account_now=account_now,
+        all_trades=all_trades,
+        dry_run=dry_run,
+        _live_shadow=_live_shadow,
         deps=deps,
     )
 

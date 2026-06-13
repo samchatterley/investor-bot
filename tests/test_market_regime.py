@@ -1737,8 +1737,8 @@ class TestVolOfVolInRegimeFeatures(unittest.TestCase):
         spy = _spy_df_flat(50)
         vix = _make_vix_df_n(30)
         result = compute_regime_features(spy, vix)
-        if result.vol_of_vol is not None:
-            self.assertIsInstance(result.vol_of_vol, float)
+        self.assertIsNotNone(result.vol_of_vol)
+        self.assertIsInstance(result.vol_of_vol, float)
 
     def test_vol_of_vol_none_when_vix_close_empty_after_dropna(self):
         spy = _spy_df_flat(50)

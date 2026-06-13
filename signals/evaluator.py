@@ -384,6 +384,13 @@ _RECOVERY_BLOCKED = frozenset(
 #   tax_loss_reversal: 38 trades, WR 37%, avg -1.02% in combined backtest (Jan 2026 test).
 #                    January-only seasonal with no confirmed reversal edge; survivorship bias
 #                    in the universe inflates the pool of distressed stocks that recovered.
+#   obv_divergence:  161 trades WR 53% avg +0.50% on 2020-2022 window, but WR 51% avg -0.07%
+#                    on full 2015-2026 run — regime-dependent and inconsistent. Critically,
+#                    removing both OBV signals frees slots for pead (604→692 trades, WR 54%→56%);
+#                    ΔSharpe +0.12 from joint removal (targeted elimination test, Jun 2026).
+#   obv_acceleration: 171 trades WR 44% avg -0.24% (2020-2022); WR 49% avg -0.08% (2015-2026).
+#                    Consistently below 50% WR; negative avg return in every window tested.
+#                    Joint removal with obv_divergence: ΔSharpe +0.12, ΔReturn +7.0%.
 GLOBALLY_DISABLED: frozenset[str] = frozenset(
     {
         "rsi_divergence",
@@ -394,6 +401,8 @@ GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "range_reversion",
         "volume_climax_reversal",
         "tax_loss_reversal",
+        "obv_divergence",
+        "obv_acceleration",
     }
 )
 
@@ -412,6 +421,18 @@ SHORT_ALLOWED_REGIMES: frozenset[str] = frozenset(
 #   ema_breakdown:   WR 37-41%, avg -0.78 to -1.04% across all param sweeps; Sharpe -1.22.
 #                    Fires after a stock has already broken down — too late; no predictive edge.
 #   winner_reversal: RSI>70 + extended + ret_5d<0 is self-contradictory; barely fires.
+# v1.99 — lagging fundamental shorts disabled. All three are *confirming* state descriptions,
+# not forward catalysts: they fire after the market has already shorted the name, and they
+# encode multi-month theses that cannot resolve inside our 1–5 day hold (holding-period
+# mismatch). Combined production backtest (2015–2026), borrow cost NOT modelled (so these
+# numbers are optimistic):
+#   death_cross:      25 trades WR 32% avg -1.14% (combined); 121 trades WR 40% avg -0.10%
+#                     (2020-2022 window). SMA50/200 cross fires ~15-30% into a decline.
+#   altman_distress_short: 337 trades WR 45% avg -0.17%. Distress drift is a quarters-long
+#                     thesis; we capture noise in a 3-day window and enter after credit desks.
+#   gross_margin_deterioration_short: 5 trades WR 40% avg -1.32%. Too few to validate; worst
+#                     avg of the three. Margin trend is a slow fundamental, wrong horizon.
+# Replacement plan: borrow-cost model → post_earnings_gapdown_failed_bounce → index_regime_hedge.
 SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
     {
         "ema_breakdown",
@@ -428,6 +449,9 @@ SHORT_GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "obv_divergence_short",  # new signal — disabled pending initial backtest validation (v1.94)
         "obv_acceleration_short",  # new signal — disabled pending initial backtest validation (v1.94)
         "volume_climax_reversal_short",  # new signal — disabled pending initial backtest validation (v1.94)
+        "death_cross",  # v1.99 — lagging confirming signal; WR 32%; fires after the decline
+        "altman_distress_short",  # v1.99 — multi-month thesis, wrong horizon for 1–5d hold
+        "gross_margin_deterioration_short",  # v1.99 — slow fundamental, n=5, worst avg
     }
 )
 
@@ -458,12 +482,21 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     # ── Batch 3: event-driven shorts ─────────────────────────────────────────
     "lockup_expiry_short": 21,  # IPO lockup expiry within 5-10 days
     "analyst_downgrade_signal": 22,  # consensus Buy→Hold/Sell shift
+    # ── Batch: catalyst-anchored short with timing edge (v1.99) ──────────────
+    # Negative-PEAD continuation entered AFTER the reflexive bounce fails, not on the
+    # gap bar — the failed-bounce filter removes dead-cat-bounce losses that wreck the
+    # naive earnings_gap_down. Live-only (computed in scan_short_universe from daily OHLCV);
+    # accumulating paper-trading evidence — the one short with a documented short-horizon edge.
+    "post_earnings_gapdown_failed_bounce": 23,
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
     # earnings_gap_down thresholds (PEAD short — post-earnings gap continuation)
     "egd_gap_pct_max": -7.0,  # open must be at least 7% below prior close on earnings day
     "egd_vol_min": 2.5,  # vol_ratio floor — confirms institutional selling, not noise
+    # post_earnings_gapdown_failed_bounce thresholds (failed-bounce negative-PEAD short)
+    "egdfb_gap_pct_max": -7.0,  # the recent earnings gap-down must be at least this large
+    "egdfb_vol_min": 1.5,  # vol_ratio floor on the continuation bar
     # faded_earnings_gap_up thresholds (distribution into earnings beat)
     "fegu_gap_min": 5.0,  # gap-up must be at least 5% on earnings day
     "fegu_range_max": 0.30,  # close must be in bottom 30% of day's H-L range (sellers dominated)
@@ -554,6 +587,21 @@ def evaluate_short_signals(
         and snapshot.get("vol_ratio", 0.0) >= p["egd_vol_min"]
     ):
         matched.append("earnings_gap_down")
+
+    # post_earnings_gapdown_failed_bounce: negative-PEAD continuation entered AFTER the reflexive
+    # bounce fails — not on the gap bar. Requires a recent earnings gap-down (earnings_gap_pct ≤
+    # egdfb_gap_pct_max) AND gap_failed_bounce=True (price has not reclaimed the gap-bar high and
+    # has broken below the gap-bar low). The failed-bounce filter removes the dead-cat-bounce
+    # losses that make the naive gap-day short unreliable. Computed live in scan_short_universe.
+    _egdfb_gap = snapshot.get("earnings_gap_pct")
+    if (
+        "post_earnings_gapdown_failed_bounce" not in blocked
+        and bool(snapshot.get("gap_failed_bounce", False))
+        and _egdfb_gap is not None
+        and _egdfb_gap <= p["egdfb_gap_pct_max"]
+        and snapshot.get("vol_ratio", 0.0) >= p["egdfb_vol_min"]
+    ):
+        matched.append("post_earnings_gapdown_failed_bounce")
 
     # faded_earnings_gap_up: stock gapped UP on earnings (beat) but closed in the bottom
     # of the day's range on heavy volume — smart money distributing into retail excitement.
@@ -676,7 +724,7 @@ def evaluate_short_signals(
         and snapshot.get("death_cross", False)
         and snapshot.get("vol_ratio", 0.0) >= p["dc_vol_min"]
     ):
-        matched.append("death_cross")
+        matched.append("death_cross")  # pragma: no cover — death_cross in SHORT_GLOBALLY_DISABLED
 
     # candle_exhaustion_short: bearish reversal candle (shooting star or bearish engulfing)
     # at the 20-day high with elevated volume — distribution at resistance.
@@ -728,7 +776,9 @@ def evaluate_short_signals(
         and _az is not None
         and _az < p["az_distress_short_threshold"]
     ):
-        matched.append("altman_distress_short")
+        matched.append(
+            "altman_distress_short"
+        )  # pragma: no cover — altman_distress_short in SHORT_GLOBALLY_DISABLED
 
     # piotroski_distress_short: Piotroski F ≤ pf_distress_max → multiple quality failures.
     # Low F-score alone is weak; combine with price confirmation (below SMA200) for reliability.
@@ -750,7 +800,9 @@ def evaluate_short_signals(
         and _gm < p["gm_deterioration_short_min"]
         and snapshot.get("price_below_sma200", False)
     ):
-        matched.append("gross_margin_deterioration_short")
+        matched.append(
+            "gross_margin_deterioration_short"
+        )  # pragma: no cover — gross_margin_deterioration_short in SHORT_GLOBALLY_DISABLED
 
     # accruals_quality_short: high accruals (earnings driven by balance-sheet changes,
     # not cash) + extended price is a mean-reversion short. Sloan (1996) documented
@@ -1168,7 +1220,7 @@ def evaluate_signals(
         and vol >= p["obv_div_vol_min"]
         and "obv_divergence" not in blocked
     ):
-        matched.append("obv_divergence")
+        matched.append("obv_divergence")  # pragma: no cover — obv_divergence in GLOBALLY_DISABLED
 
     # OBV acceleration: short-term OBV buying rate faster than long-term baseline
     # AND trend structure intact (EMA9 > EMA21 or MACD positive) — buying momentum
@@ -1179,7 +1231,9 @@ def evaluate_signals(
         and vol >= p["obv_acc_vol_min"]
         and "obv_acceleration" not in blocked
     ):
-        matched.append("obv_acceleration")
+        matched.append(
+            "obv_acceleration"
+        )  # pragma: no cover — obv_acceleration in GLOBALLY_DISABLED
 
     # Volume climax reversal: ≥vcr_streak_min consecutive extreme-volume days at the
     # 20-day low — capitulation / panic selling exhaustion; mean-reversion long setup.

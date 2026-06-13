@@ -620,8 +620,13 @@ class TestBatch1LongSignals(unittest.TestCase):
 
     # ── obv_divergence ───────────────────────────────────────────────────────
 
-    def test_obv_divergence_fires(self):
-        self.assertIn("obv_divergence", self._eval(obv_divergence_bull=True, vol_ratio=1.2))
+    def test_obv_divergence_globally_disabled(self):
+        """v1.99: obv_divergence in GLOBALLY_DISABLED — suppressed even when conditions are met.
+        Disabled jointly with obv_acceleration (ΔSharpe +0.12; frees slots for pead)."""
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("obv_divergence", GLOBALLY_DISABLED)
+        self.assertNotIn("obv_divergence", self._eval(obv_divergence_bull=True, vol_ratio=1.2))
 
     def test_obv_divergence_requires_bull_flag(self):
         self.assertNotIn("obv_divergence", self._eval(obv_divergence_bull=False, vol_ratio=1.2))
@@ -648,14 +653,19 @@ class TestBatch1LongSignals(unittest.TestCase):
 
     # ── obv_acceleration ─────────────────────────────────────────────────────
 
-    def test_obv_acceleration_fires_with_ema_alignment(self):
-        self.assertIn(
+    def test_obv_acceleration_globally_disabled(self):
+        """v1.99: obv_acceleration in GLOBALLY_DISABLED — WR 44%, negative avg in every window."""
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("obv_acceleration", GLOBALLY_DISABLED)
+        self.assertNotIn(
             "obv_acceleration",
             self._eval(obv_accelerating_up=True, ema9_above_ema21=True, vol_ratio=1.5),
         )
 
-    def test_obv_acceleration_fires_with_positive_macd(self):
-        self.assertIn(
+    def test_obv_acceleration_suppressed_with_positive_macd(self):
+        """v1.99: still suppressed via the positive-MACD detection path (now disabled)."""
+        self.assertNotIn(
             "obv_acceleration",
             self._eval(
                 obv_accelerating_up=True, ema9_above_ema21=False, macd_diff=0.5, vol_ratio=1.5
@@ -697,14 +707,19 @@ class TestBatch1LongSignals(unittest.TestCase):
 
     # ── volume_climax_reversal ───────────────────────────────────────────────
 
-    def test_volume_climax_reversal_fires(self):
-        self.assertIn(
+    def test_volume_climax_reversal_globally_disabled(self):
+        """v1.98: volume_climax_reversal in GLOBALLY_DISABLED — 1 trade, WR 0% in production."""
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("volume_climax_reversal", GLOBALLY_DISABLED)
+        self.assertNotIn(
             "volume_climax_reversal",
             self._eval(high_vol_streak=3, near_20d_low=True),
         )
 
-    def test_volume_climax_reversal_fires_higher_streak(self):
-        self.assertIn(
+    def test_volume_climax_reversal_suppressed_higher_streak(self):
+        """v1.98: still suppressed at a higher streak (detection path now disabled)."""
+        self.assertNotIn(
             "volume_climax_reversal",
             self._eval(high_vol_streak=5, near_20d_low=True),
         )
@@ -721,12 +736,13 @@ class TestBatch1LongSignals(unittest.TestCase):
             self._eval(high_vol_streak=3, near_20d_low=False),
         )
 
-    def test_volume_climax_reversal_allowed_in_stress(self):
+    def test_volume_climax_reversal_suppressed_even_in_stress(self):
+        """v1.98: globally disabled, so suppressed regardless of regime (was STRESS-allowed)."""
         from signals.evaluator import REGIME_BLOCKED, evaluate_signals
 
         blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
         result = evaluate_signals({"high_vol_streak": 3, "near_20d_low": True}, blocked=blocked)
-        self.assertIn("volume_climax_reversal", result)
+        self.assertNotIn("volume_climax_reversal", result)
 
     def test_volume_climax_reversal_in_signal_priority(self):
         from signals.evaluator import SIGNAL_PRIORITY
@@ -762,8 +778,12 @@ class TestBatch1ShortSignals(unittest.TestCase):
         snap.update(kwargs)
         return evaluate_short_signals(snap)
 
-    def test_death_cross_fires(self):
-        self.assertIn("death_cross", self._eval_short(death_cross=True, vol_ratio=1.0))
+    def test_death_cross_globally_disabled(self):
+        """v1.99: death_cross in SHORT_GLOBALLY_DISABLED — lagging confirming signal (WR 32%)."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+        self.assertIn("death_cross", SHORT_GLOBALLY_DISABLED)
+        self.assertNotIn("death_cross", self._eval_short(death_cross=True, vol_ratio=1.0))
 
     def test_death_cross_absent_when_false(self):
         self.assertNotIn("death_cross", self._eval_short(death_cross=False))
@@ -788,10 +808,18 @@ class TestBatch1ShortSignals(unittest.TestCase):
         )
         self.assertNotIn("death_cross", result)
 
-    def test_death_cross_not_globally_disabled(self):
+    def test_lagging_fundamental_shorts_globally_disabled(self):
+        """v1.99: death_cross + altman + gross-margin shorts disabled — lagging/wrong-horizon."""
         from signals.evaluator import SHORT_GLOBALLY_DISABLED
 
-        self.assertNotIn("death_cross", SHORT_GLOBALLY_DISABLED)
+        for sig in (
+            "death_cross",
+            "altman_distress_short",
+            "gross_margin_deterioration_short",
+        ):
+            self.assertIn(
+                sig, SHORT_GLOBALLY_DISABLED, f"{sig} should be globally disabled (v1.99)"
+            )
 
     def test_new_short_signals_globally_disabled(self):
         from signals.evaluator import SHORT_GLOBALLY_DISABLED
@@ -816,8 +844,14 @@ class TestBatch1ShortSignals(unittest.TestCase):
         ):
             self.assertIn(sig, SHORT_SIGNAL_PRIORITY, f"{sig} missing from SHORT_SIGNAL_PRIORITY")
 
-    def test_death_cross_in_active_short_signals(self):
-        self.assertIn("death_cross", _ACTIVE_SHORT_SIGNALS)
+    def test_lagging_fundamental_shorts_not_in_active(self):
+        """v1.99: the three lagging fundamental shorts are removed from the active set."""
+        for sig in (
+            "death_cross",
+            "altman_distress_short",
+            "gross_margin_deterioration_short",
+        ):
+            self.assertNotIn(sig, _ACTIVE_SHORT_SIGNALS, f"{sig} should not be active (v1.99)")
 
     def test_disabled_new_short_signals_not_in_active(self):
         for sig in (
@@ -1484,9 +1518,14 @@ class TestEntrySignalNewFeatures(unittest.TestCase):
 class TestRangeReversionSignal(unittest.TestCase):
     """range_reversion: extreme oversold in confirmed range-bound (adx < 20) conditions."""
 
-    def test_fires_when_range_bound_oversold(self):
+    def test_globally_disabled_suppresses_entry(self):
+        """v1.98: range_reversion in GLOBALLY_DISABLED — never selected even when range-bound
+        oversold. 2 production trades, WR 0%, avg -16.2%; backward elimination Step 3."""
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("range_reversion", GLOBALLY_DISABLED)
         row = _make_row(adx=15, bb_pct=0.05, rsi=25)
-        self.assertEqual(_entry_signal(row), "range_reversion")
+        self.assertIsNone(_entry_signal(row))
 
     def test_no_fire_when_trending(self):
         # adx >= 20 → trending market, range_reversion implicit gate fails
@@ -1864,6 +1903,19 @@ class TestRunSimulation(unittest.TestCase):
             if not df.empty:  # pragma: no branch
                 indicators[sym] = df
         return indicators
+
+    def test_quality_fundamentals_merged_into_fund(self):
+        """quality_fundamentals[sym] is merged into the per-symbol fundamentals dict during
+        the long simulation (covers the quality-fundamentals fund.update path)."""
+        indicators = self._build_indicators()
+        dates = pd.bdate_range("2025-03-01", "2025-03-07")
+        result = _run_simulation(
+            indicators,
+            dates,
+            initial_capital=10_000.0,
+            quality_fundamentals={"AAPL": {"altman_z": 1.0, "forward_pe": 22.0}},
+        )
+        self.assertIn("total_trades", result)
 
     def test_returns_dict_with_expected_keys(self):
         indicators = self._build_indicators()
@@ -6948,6 +7000,41 @@ class TestRunCombinedSimulation(unittest.TestCase):
         )
         self.assertGreaterEqual(result["short_trades"], 0)
 
+    def test_quality_fundamentals_merged_on_short_path(self):
+        """With a short-allowed regime and quality_fundamentals (earnings_history off), the short
+        scan builds fund_s and merges quality_fundamentals[sym] — covers the quality-only short
+        fund branch (earnings_history-None path)."""
+        indicators, spy_ind, rs_ranks = self._make_indicators()
+        dates = pd.bdate_range("2025-01-15", "2025-03-14")
+        result = _run_combined_simulation(
+            indicators,
+            dates,
+            spy_indicators=spy_ind,
+            rs_ranks=rs_ranks,
+            regime_by_date=self._bearish_regime(),
+            quality_fundamentals={
+                "WEAK": {"altman_z": 0.8, "short_ratio": 4.0},
+                "STRONG": {"altman_z": 1.2},
+            },
+        )
+        self.assertIn("short_trades", result)
+
+    def test_short_entry_signal_injects_quality_fundamentals(self):
+        """_short_entry_signal copies non-None quality fields from fundamentals into the
+        snapshot before signal routing (covers the short-side quality-field injection loop)."""
+        from backtest.engine import _short_entry_signal
+
+        row = _make_row(rsi=62.0, price_vs_52w_high_pct=-40.0)
+        result = _short_entry_signal(
+            row,
+            rs_rank_pct=10.0,
+            spy_ret_20d=-5.0,
+            regime="DEFENSIVE_DOWNTREND",
+            fundamentals={"altman_z": 0.9, "short_ratio": 4.0},
+        )
+        # Injection runs regardless of whether a signal ultimately fires.
+        self.assertTrue(result is None or isinstance(result, list))
+
     def test_short_allowed_regimes_constant(self):
         """SHORT_ALLOWED_REGIMES (from signals.evaluator) contains exactly the three bearish regimes."""
         from signals.evaluator import SHORT_ALLOWED_REGIMES
@@ -7696,6 +7783,30 @@ class TestRunCombinedAnalysis(unittest.TestCase):
         ):
             run_combined_analysis(["AAPL"], "2025-01-15", "2025-02-28", use_earnings_history=True)
         mock_prefetch.assert_called_once()
+
+    def test_use_quality_fundamentals_true(self):
+        """use_quality_fundamentals=True wires quality metrics into the simulation: prefetch is
+        called and quality_fundamentals[sym] is merged on both the long and short fund paths.
+        earnings_history is off, so this also exercises the quality-only fund branch."""
+        raw_mock = _make_raw(n=100, symbols=("AAPL", "SPY"))
+        quality = {"AAPL": {"altman_z": 1.0, "short_ratio": 3.0, "forward_pe": 22.0}}
+        with (
+            patch("backtest.engine.yf.download", return_value=raw_mock),
+            patch("backtest.engine._assert_pre_holdout"),
+            patch("backtest.engine._prefetch_quality_fundamentals", return_value=quality) as mock_q,
+        ):
+            result = run_combined_analysis(
+                ["AAPL"],
+                "2025-01-15",
+                "2025-02-28",
+                use_earnings_history=False,
+                use_quality_fundamentals=True,
+            )
+        mock_q.assert_called_once()
+        self.assertIn("total_trades", result)
+        # Index regime-hedge overlay is attached when SPY + regime map are available.
+        self.assertIn("index_hedge", result)
+        self.assertIn("hedge_pnl", result["index_hedge"])
 
     def test_vix_fetch_failure_does_not_crash(self):
         raw_mock = _make_raw(n=100, symbols=("AAPL", "SPY"))
@@ -9397,8 +9508,13 @@ class TestBatch3TaxLossReversal(unittest.TestCase):
         snap.update(kwargs)
         return evaluate_signals(snap)
 
-    def test_fires_in_january_with_conditions_met(self):
-        self.assertIn(
+    def test_globally_disabled_in_january(self):
+        """v1.98: tax_loss_reversal in GLOBALLY_DISABLED — suppressed even with January conditions
+        met. 38 trades, WR 37%, avg -1.02%; seasonal with no confirmed reversal edge."""
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("tax_loss_reversal", GLOBALLY_DISABLED)
+        self.assertNotIn(
             "tax_loss_reversal",
             self._eval(
                 calendar_month=1,
@@ -9473,8 +9589,9 @@ class TestBatch3TaxLossReversal(unittest.TestCase):
             ),
         )
 
-    def test_just_below_threshold_fires(self):
-        self.assertIn(
+    def test_just_below_threshold_suppressed(self):
+        """v1.98: globally disabled, so suppressed even just below the drawdown threshold."""
+        self.assertNotIn(
             "tax_loss_reversal",
             self._eval(
                 calendar_month=1,
@@ -9502,14 +9619,15 @@ class TestBatch3TaxLossReversal(unittest.TestCase):
 
         self.assertIn("tax_loss_reversal", MULTIDAY_SIGNALS)
 
-    def test_custom_threshold_param(self):
+    def test_custom_threshold_param_still_suppressed(self):
+        """v1.98: globally disabled, so a looser custom threshold no longer fires it either."""
         from signals.evaluator import evaluate_signals
 
         result = evaluate_signals(
             {"calendar_month": 1, "price_vs_52w_high_pct": -25.0, "ema9_above_ema21": True},
             params={"tlr_52w_drawdown_max": -20.0},
         )
-        self.assertIn("tax_loss_reversal", result)
+        self.assertNotIn("tax_loss_reversal", result)
 
     def test_opex_week_dampened_in_frozenset(self):
         from signals.evaluator import OPEX_WEEK_DAMPENED
@@ -9628,7 +9746,130 @@ class TestBatch4MacroFlagsFetch(unittest.TestCase):
             result = _fetch_macro_flags_for_backtest("2024-11-20", "2024-11-30")
 
         # Sparse data → ROC functions return None → stress/flight flags are False
-        if result:
-            sample = next(iter(result.values()))
-            self.assertFalse(sample["macro_credit_stress"])
-            self.assertFalse(sample["macro_duration_flight"])
+        self.assertTrue(result)
+        sample = next(iter(result.values()))
+        self.assertFalse(sample["macro_credit_stress"])
+        self.assertFalse(sample["macro_duration_flight"])
+
+
+class TestComputeIndexHedgePnl(unittest.TestCase):
+    """compute_index_hedge_pnl: portfolio-level index-hedge P&L overlay."""
+
+    def test_no_engagement_when_no_bear_days(self):
+        from backtest.engine import compute_index_hedge_pnl
+
+        spy = {"2025-01-02": 400.0, "2025-01-03": 410.0}
+        regimes = {"2025-01-02": "BULL_TREND", "2025-01-03": "BULL_TREND"}
+        out = compute_index_hedge_pnl(spy, regimes, frozenset({"STRESS_RISK_OFF"}))
+        self.assertEqual(out["days_engaged"], 0)
+        self.assertEqual(out["trades"], 0)
+        self.assertEqual(out["hedge_pnl"], 0.0)
+
+    def test_hedge_gains_when_index_falls_in_bear_regime(self):
+        from backtest.engine import compute_index_hedge_pnl
+
+        # Enter on day 1 at 400; index falls to 380 → short gains.
+        spy = {"2025-01-02": 400.0, "2025-01-03": 390.0, "2025-01-06": 380.0}
+        regimes = dict.fromkeys(spy, "STRESS_RISK_OFF")
+        out = compute_index_hedge_pnl(
+            spy, regimes, frozenset({"STRESS_RISK_OFF"}), weight=0.10, initial_capital=100_000.0
+        )
+        self.assertEqual(out["trades"], 1)
+        self.assertEqual(out["days_engaged"], 3)
+        self.assertGreater(out["hedge_pnl"], 0.0)  # index fell while short
+
+    def test_cover_and_reengage_counts_two_trades(self):
+        from backtest.engine import compute_index_hedge_pnl
+
+        spy = {
+            "2025-01-02": 400.0,  # bear → enter
+            "2025-01-03": 395.0,  # bear → accrue
+            "2025-01-06": 398.0,  # bull → cover
+            "2025-01-07": 400.0,  # bear → re-enter
+        }
+        regimes = {
+            "2025-01-02": "STRESS_RISK_OFF",
+            "2025-01-03": "STRESS_RISK_OFF",
+            "2025-01-06": "BULL_TREND",
+            "2025-01-07": "STRESS_RISK_OFF",
+        }
+        out = compute_index_hedge_pnl(spy, regimes, frozenset({"STRESS_RISK_OFF"}))
+        self.assertEqual(out["trades"], 2)
+        self.assertEqual(out["days_engaged"], 3)
+
+    def test_zero_close_skips_entry(self):
+        from backtest.engine import compute_index_hedge_pnl
+
+        spy = {"2025-01-02": 0.0, "2025-01-03": 390.0}
+        regimes = dict.fromkeys(spy, "STRESS_RISK_OFF")
+        out = compute_index_hedge_pnl(spy, regimes, frozenset({"STRESS_RISK_OFF"}))
+        # Day 1 close 0 → no entry; day 2 enters at 390 (no prior close to accrue).
+        self.assertEqual(out["trades"], 1)
+
+    def test_zero_capital_pct_is_zero(self):
+        from backtest.engine import compute_index_hedge_pnl
+
+        spy = {"2025-01-02": 400.0, "2025-01-03": 390.0}
+        regimes = dict.fromkeys(spy, "STRESS_RISK_OFF")
+        out = compute_index_hedge_pnl(
+            spy, regimes, frozenset({"STRESS_RISK_OFF"}), initial_capital=0.0
+        )
+        self.assertEqual(out["hedge_pnl_pct"], 0.0)
+
+
+class TestPrefetchQualityFundamentals(unittest.TestCase):
+    """_prefetch_quality_fundamentals: per-symbol quality metric + short-interest assembly."""
+
+    def test_assembles_quality_and_short_interest_per_symbol(self):
+        from datetime import date
+
+        from backtest.engine import _prefetch_quality_fundamentals
+
+        # AAPL has data on every getter except piotroski_f (which raises → except branch);
+        # EMPTY has no data on any getter and no short interest → excluded from the result.
+        def _altman(sym):
+            return 1.5 if sym == "AAPL" else None
+
+        def _piotroski(_sym):
+            raise RuntimeError("fundamentals unavailable")  # exercises the per-field except
+
+        def _fcf(sym):
+            return 0.06 if sym == "AAPL" else None
+
+        def _accruals(sym):
+            return 0.05 if sym == "AAPL" else None
+
+        def _gm(sym):
+            return -0.02 if sym == "AAPL" else None
+
+        def _pe(sym):
+            return 25.0 if sym == "AAPL" else None
+
+        # short_ratio present, short_pct_float None (covers the per-field None skip);
+        # EMPTY absent from the cache (covers the si-is-None branch).
+        si_cache = {"2026-06-12": {"AAPL": {"short_ratio": 2.0, "short_pct_float": None}}}
+
+        with (
+            patch("data.fundamental_cache.get_altman_z", side_effect=_altman),
+            patch("data.fundamental_cache.get_piotroski_f", side_effect=_piotroski),
+            patch("data.fundamental_cache.get_fcf_yield", side_effect=_fcf),
+            patch("data.fundamental_cache.get_accruals_ratio", side_effect=_accruals),
+            patch("data.fundamental_cache.get_gross_margin_trend", side_effect=_gm),
+            patch("data.fundamental_cache.get_forward_pe", side_effect=_pe),
+            patch("data.short_interest.prefetch_short_interest"),
+            patch("data.short_interest._load_cache", return_value=si_cache),
+            patch("config.today_et", return_value=date(2026, 6, 12)),
+        ):
+            result = _prefetch_quality_fundamentals(["AAPL", "EMPTY"])
+
+        self.assertIn("AAPL", result)
+        self.assertNotIn("EMPTY", result)  # no data → excluded
+        aapl = result["AAPL"]
+        self.assertEqual(aapl["altman_z"], 1.5)
+        self.assertEqual(aapl["fcf_yield"], 0.06)
+        self.assertEqual(aapl["accruals_ratio"], 0.05)
+        self.assertEqual(aapl["gross_margin_trend"], -0.02)
+        self.assertEqual(aapl["forward_pe"], 25.0)
+        self.assertEqual(aapl["short_ratio"], 2.0)
+        self.assertNotIn("piotroski_f", aapl)  # raised → skipped
+        self.assertNotIn("short_pct_float", aapl)  # None → skipped

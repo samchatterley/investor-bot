@@ -300,6 +300,34 @@ class TestGetVix(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestGetIndexPrice(unittest.TestCase):
+    def test_returns_latest_close(self):
+        from data.market_data import get_index_price
+
+        hist = pd.DataFrame({"Close": [398.0, 399.0, 401.5]})
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = hist
+        with patch("data.market_data.yf.Ticker", return_value=mock_ticker):
+            result = get_index_price("SPY")
+        self.assertEqual(result, 401.5)
+
+    def test_returns_none_when_empty(self):
+        from data.market_data import get_index_price
+
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame({"Close": []})
+        with patch("data.market_data.yf.Ticker", return_value=mock_ticker):
+            result = get_index_price("SPY")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_exception(self):
+        from data.market_data import get_index_price
+
+        with patch("data.market_data.yf.Ticker", side_effect=Exception("timeout")):
+            result = get_index_price("QQQ")
+        self.assertIsNone(result)
+
+
 class TestGetSpy5dReturn(unittest.TestCase):
     def test_returns_correct_pct(self):
         from data.market_data import get_spy_5d_return

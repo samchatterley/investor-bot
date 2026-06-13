@@ -1011,13 +1011,15 @@ class TestGoogleTrendsBullish:
 
 
 class TestAltmanDistressShort:
-    def test_distress_fires_short(self):
-        """altman_z < 1.1 fires altman_distress_short."""
-        from signals.evaluator import evaluate_short_signals
+    def test_distress_globally_disabled(self):
+        """v1.99: altman_distress_short is in SHORT_GLOBALLY_DISABLED — never fires even when
+        altman_z < 1.1. Disabled as a lagging, multi-month thesis wrong for a 1-5d hold."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED, evaluate_short_signals
 
+        assert "altman_distress_short" in SHORT_GLOBALLY_DISABLED
         snap = {"altman_z": 0.8}
         signals = evaluate_short_signals(snap)
-        assert "altman_distress_short" in signals
+        assert "altman_distress_short" not in signals
 
     def test_safe_zone_no_short(self):
         """altman_z >= 1.1 doesn't fire."""
@@ -1042,6 +1044,58 @@ class TestAltmanDistressShort:
         snap = {"altman_z": 0.5}
         signals = evaluate_short_signals(snap, blocked=frozenset({"altman_distress_short"}))
         assert "altman_distress_short" not in signals
+
+
+class TestPostEarningsGapdownFailedBounce:
+    def test_fires_on_gap_plus_failed_bounce(self):
+        """Recent ≥7% earnings gap-down + failed bounce + volume → signal fires."""
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {
+            "earnings_gap_pct": -9.0,
+            "gap_failed_bounce": True,
+            "vol_ratio": 1.8,
+        }
+        assert "post_earnings_gapdown_failed_bounce" in evaluate_short_signals(snap)
+
+    def test_no_fire_without_failed_bounce(self):
+        """Gap-down present but the bounce has not failed → no entry (avoids dead-cat bounce)."""
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"earnings_gap_pct": -9.0, "gap_failed_bounce": False, "vol_ratio": 1.8}
+        assert "post_earnings_gapdown_failed_bounce" not in evaluate_short_signals(snap)
+
+    def test_no_fire_when_gap_too_small(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"earnings_gap_pct": -3.0, "gap_failed_bounce": True, "vol_ratio": 1.8}
+        assert "post_earnings_gapdown_failed_bounce" not in evaluate_short_signals(snap)
+
+    def test_no_fire_on_low_volume(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"earnings_gap_pct": -9.0, "gap_failed_bounce": True, "vol_ratio": 0.8}
+        assert "post_earnings_gapdown_failed_bounce" not in evaluate_short_signals(snap)
+
+    def test_no_fire_when_no_gap_data(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"gap_failed_bounce": True, "vol_ratio": 1.8}
+        assert "post_earnings_gapdown_failed_bounce" not in evaluate_short_signals(snap)
+
+    def test_blocked_when_explicitly_blocked(self):
+        from signals.evaluator import evaluate_short_signals
+
+        snap = {"earnings_gap_pct": -9.0, "gap_failed_bounce": True, "vol_ratio": 1.8}
+        result = evaluate_short_signals(
+            snap, blocked=frozenset({"post_earnings_gapdown_failed_bounce"})
+        )
+        assert "post_earnings_gapdown_failed_bounce" not in result
+
+    def test_in_short_priority(self):
+        from signals.evaluator import SHORT_SIGNAL_PRIORITY
+
+        assert "post_earnings_gapdown_failed_bounce" in SHORT_SIGNAL_PRIORITY
 
 
 class TestPiotroskiDistressShort:
@@ -1087,13 +1141,15 @@ class TestPiotroskiDistressShort:
 
 
 class TestGrossMarginDeteriorationShort:
-    def test_gm_deterioration_with_downtrend_fires(self):
-        """gross_margin_trend < -0.03 + price_below_sma200 fires short signal."""
-        from signals.evaluator import evaluate_short_signals
+    def test_gm_deterioration_globally_disabled(self):
+        """v1.99: gross_margin_deterioration_short is in SHORT_GLOBALLY_DISABLED — never fires.
+        Disabled as a slow fundamental signal (n=5, worst avg of the lagging short trio)."""
+        from signals.evaluator import SHORT_GLOBALLY_DISABLED, evaluate_short_signals
 
+        assert "gross_margin_deterioration_short" in SHORT_GLOBALLY_DISABLED
         snap = {"gross_margin_trend": -0.05, "price_below_sma200": True}
         signals = evaluate_short_signals(snap)
-        assert "gross_margin_deterioration_short" in signals
+        assert "gross_margin_deterioration_short" not in signals
 
     def test_mild_gm_deterioration_no_short(self):
         """gross_margin_trend > -0.03 doesn't fire."""

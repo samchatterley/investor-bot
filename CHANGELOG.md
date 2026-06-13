@@ -4,6 +4,37 @@ Full version history. Most recent first.
 
 ---
 
+### 1.99 — June 2026 — Signal book rationalisation + short-book rebuild (borrow model, catalyst short, index hedge)
+
+Continued the v1.98 rationalisation after a targeted ΔSharpe test and a short-side design review, then rebuilt the short book around the structural problems that review identified.
+
+**Short-book rebuild (new):**
+- **`data/borrow_cost.py`** — stock-borrow cost estimator. No paid cost-to-borrow feed exists, so the annualized borrow rate is estimated from short-interest tiers (the strongest free proxy): <5% float → 0.5% GC, 5–15% → 3%, 15–30% → 10%, 30–50% → 30% (hard-to-borrow), >50% → 80%. `estimate_borrow_rate`, `is_hard_to_borrow`, `borrow_cost_usd`. This closes the blind spot where every prior short backtest modelled borrow as free, overstating short P&L.
+- **Backtest borrow cost** — `_run_short_simulation` and `_run_combined_simulation` net borrow cost from short P&L at every cover (opt-in via `borrow_rate_by_symbol`, default off so legacy results are unchanged). `run_combined_analysis(use_quality_fundamentals=True)` now derives per-symbol borrow rates from the short-interest data it already fetches.
+- **Live borrow gate** — `_execute_shorts` estimates each candidate's borrow rate, skips hard-to-borrow names (before the squeeze gate, which uses a lower SI threshold), and records `borrow_rate_annual` on every short trade.
+- **`post_earnings_gapdown_failed_bounce`** (new active short) — negative-PEAD continuation entered *after* the reflexive bounce fails, not on the gap bar. Computed live in `scan_short_universe` from daily OHLCV (`detect_failed_gapdown`): a ≥7% earnings/news gap-down whose low is subsequently broken. The failed-bounce filter removes the dead-cat-bounce losses that make the naive gap-day short unreliable — the one short with a documented short-horizon edge. Accumulating live evidence.
+- **`index_regime_hedge`** (new, opt-in) — `_execute_index_hedge` shorts an index ETF (`INDEX_HEDGE_SYMBOL`, default SPY) at `INDEX_HEDGE_WEIGHT` of the portfolio in confirmed bear regimes (`INDEX_HEDGE_REGIMES`) and covers when the regime exits. Index ETFs borrow cheap, are deeply liquid, and carry no single-name squeeze risk. Disabled by default (`INDEX_HEDGE_ENABLED`) — it is a live order path; honours `dry_run`/`_live_shadow`. Backtest overlay via `compute_index_hedge_pnl`, reported as `result["index_hedge"]`.
+
+**Long signals disabled (`GLOBALLY_DISABLED`):**
+- `obv_divergence` + `obv_acceleration` — joint removal **ΔSharpe +0.12, ΔReturn +7.0%** on the 2020–2022 combined long/short window (targeted elimination test, `scripts/obv_elimination_test.py`). The two together were 44% of all long trades but the mechanism is slot competition: removing them frees slots for `pead` (604→692 trades, WR 54%→56%). `obv_acceleration` was WR 44% / negative avg in every window; `obv_divergence` was regime-inconsistent (+0.50% in 2020–2022, −0.07% on the full 2015–2026 run).
+
+**Short signals disabled (`SHORT_GLOBALLY_DISABLED`):**
+- `death_cross`, `altman_distress_short`, `gross_margin_deterioration_short` — the three active fundamental shorts that were dragging in the combined production backtest. All three are *confirming* signals (fire after the market has already shorted the name) and encode multi-month theses that cannot resolve inside our 1–5 day hold.
+
+**Long signals disabled (`GLOBALLY_DISABLED`):**
+- `obv_divergence` + `obv_acceleration` — joint removal **ΔSharpe +0.12, ΔReturn +7.0%** on the 2020–2022 combined long/short window (targeted elimination test, `scripts/obv_elimination_test.py`). The two together were 44% of all long trades but the mechanism is slot competition: removing them frees slots for `pead` (604→692 trades, WR 54%→56%). `obv_acceleration` was WR 44% / negative avg in every window; `obv_divergence` was regime-inconsistent (+0.50% in 2020–2022, −0.07% on the full 2015–2026 run).
+
+**Short signals disabled (`SHORT_GLOBALLY_DISABLED`):**
+- `death_cross`, `altman_distress_short`, `gross_margin_deterioration_short` — the three active fundamental shorts that were dragging in the combined production backtest. All three are *confirming* signals (fire after the market has already shorted the name) and encode multi-month theses that cannot resolve inside our 1–5 day hold. `earnings_gap_down` remains the one catalyst-anchored active short.
+
+**Short-book diagnosis:** The structural reasons the short book underperforms — confirming-not-leading signals, holding-period/thesis mismatch, no catalyst anchor, no borrow-cost model, and fighting the equity risk premium — are documented in `docs/signals.md`. The rebuild above addresses the first four directly.
+
+**`SIGNAL_PRIORITY`** now 41 entries (31 active, 10 in `GLOBALLY_DISABLED`). **`SHORT_SIGNAL_PRIORITY`** gains `post_earnings_gapdown_failed_bounce`.
+
+**Tests:** Converted 13 signal-fires tests to globally-disabled assertions across `test_backtest.py` and `test_new_signals.py` (7 were latent failures from the v1.98 disable that shipped without test updates — fixed here). New suites: `test_borrow_cost.py`, plus borrow/gap/hedge coverage in `test_backtest.py`, `test_short_side.py`, `test_new_signals.py`, `test_main.py`, `test_market_data.py`. Full 100% coverage maintained.
+
+---
+
 ### 1.98 — June 2026 — Institutional-grade audit: 12 critical/high findings hardened + signal book rationalisation
 
 Full-codebase institutional audit covering AI governance, broker safety, signal wiring, scheduler reliability, secrets hygiene, and observability. All findings addressed in a single release alongside signal book rationalisation.

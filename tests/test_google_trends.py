@@ -64,8 +64,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         import sys
 
         with patch.dict("sys.modules", {"pytrends": None, "pytrends.request": None}):
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             from data.google_trends import _live_fetch_trends
 
             result = _live_fetch_trends(["AAPL"])
@@ -79,8 +78,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             from data.google_trends import _live_fetch_trends
 
             result = _live_fetch_trends(["AAPL"])
@@ -102,8 +100,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:
@@ -127,8 +124,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:
@@ -152,8 +148,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:
@@ -176,8 +171,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:
@@ -200,8 +194,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:
@@ -223,8 +216,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:
@@ -246,8 +238,7 @@ class TestLiveFetchTrends(unittest.TestCase):
         ):
             import sys
 
-            if "data.google_trends" in sys.modules:
-                del sys.modules["data.google_trends"]
+            sys.modules.pop("data.google_trends", None)
             import data.google_trends as gt
 
             with patch.object(gt, "time") as mock_time:

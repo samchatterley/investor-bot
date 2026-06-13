@@ -119,6 +119,19 @@ class TestAcquireLock(LockBase):
         self.assertTrue(result)
         self.assertTrue(os.path.exists(self.lock_file))
 
+    def test_stale_lock_with_dead_pid_cleared(self):
+        """A valid-JSON lock whose recorded PID is dead (os.kill → ProcessLookupError) is
+        cleared and re-acquired. Covers the _lock_pid_alive dead-process branch."""
+        from main import _acquire_lock
+
+        os.makedirs(self.tmpdir, exist_ok=True)
+        with open(self.lock_file, "w") as f:
+            f.write('{"pid": 424242, "started_at": "2026-06-12T10:00:00"}')
+        with patch("main.os.kill", side_effect=ProcessLookupError):
+            result = _acquire_lock()
+        self.assertTrue(result)
+        self.assertTrue(os.path.exists(self.lock_file))
+
 
 class TestReleaseLock(LockBase):
     def test_removes_lock_file(self):
@@ -3803,12 +3816,13 @@ class TestExecuteShorts(unittest.TestCase):
         self.assertEqual(all_trades, [])
 
     def test_squeeze_risk_blocks_short(self):
-        # fetch_squeeze_info returns high short interest → is_squeeze_risk returns True → skipped
+        # short_pct_float 0.25 trips the squeeze gate (>20%) but NOT the borrow/HTB gate
+        # (→10% rate, below the 30% HTB threshold), so the candidate reaches the squeeze block.
         all_trades, _, mocks = self._run(
             dry_run=True,
             **{
                 "main.short_risk.fetch_squeeze_info": {
-                    "short_pct_float": 0.35,
+                    "short_pct_float": 0.25,
                     "days_to_cover": None,
                 }
             },
@@ -5544,6 +5558,91 @@ class TestBuildDataBundleOptionsIV(unittest.TestCase):
         self.assertFalse(cand["panic_put_skew"])
         self.assertFalse(cand["call_skew_spike"])
 
+    def test_reeval_signal_already_in_matched_not_duplicated(self):
+        """Post-options re-evaluation merge must skip signals already in matched_signals
+        (covers the 'sig in existing' branch of the merge loop). golden_cross fires on the
+        candidate and is already present, so it must not be appended twice."""
+        from data.options_data import OptionsSnapshot
+        from main import _build_data_bundle
+        from models import MarketContext, PositionSnapshot
+
+        snap = PositionSnapshot(
+            open_positions=[],
+            held_symbols=set(),
+            position_ages={},
+            stale=[],
+            open_shorts_db=set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+        mc = MarketContext(
+            vix=18.0,
+            regime={"regime": "BULL_TREND"},
+            macro={"is_high_risk": False, "event": ""},
+            sector_perf={},
+            leading_sectors=[],
+            lessons=None,
+        )
+        iv_snap = OptionsSnapshot(
+            atm_iv=0.3,
+            skew_25d=1.0,
+            put_call_oi_ratio=1.0,
+            iv_rv_spread=-0.1,
+            iv_cheap=False,
+            iv_expensive=False,
+            unusual_call_oi=False,
+            panic_put_skew=False,
+            call_skew_spike=False,
+        )
+        # golden_cross fires (regime-agnostic) and is already in matched_signals → skip branch.
+        candidate = {
+            "symbol": "AAPL",
+            "current_price": 50.0,
+            "matched_signals": ["golden_cross"],
+            "golden_cross": True,
+            "vol_ratio": 1.0,
+        }
+        patches = [
+            patch("main.stock_scanner.get_top_movers", return_value=[]),
+            patch("main.build_scan_universe", return_value=[]),
+            patch(
+                "main.market_data.get_market_snapshots",
+                return_value=[{"symbol": "AAPL", "current_price": 50.0}],
+            ),
+            patch("main.market_data.get_intraday_data", return_value={}),
+            patch("main.insider_feed.get_insider_activity", return_value={}),
+            patch("main.av_sentiment.get_av_sentiment", return_value={}),
+            patch("main.earnings_surprise.get_earnings_surprise", return_value={}),
+            patch("main.earnings_surprise.get_earnings_miss", return_value={}),
+            patch("main.short_interest.get_short_interest", return_value={}),
+            patch("main.edgar_client.get_edgar_signals_batch", return_value={}),
+            patch("main.market_data.get_spy_5d_return", return_value=1.5),
+            patch("main.market_data.get_spy_10d_return", return_value=2.5),
+            patch("main.stock_scanner.prefilter_candidates", return_value=[candidate]),
+            patch("main.audit_log.log_event", return_value=None),
+            patch("main.options_scanner.get_options_signals", return_value={}),
+            patch("main.options_data_module.get_options_batch", return_value={"AAPL": iv_snap}),
+            patch("main.news_fetcher.fetch_news", return_value={}),
+            patch("main.sanitize_headlines", return_value={}),
+            patch("main.sentiment_module.get_sentiment", return_value={}),
+            patch("main.get_short_universe", return_value=[]),
+            patch("main.scan_short_universe", return_value=[]),
+        ]
+        try:
+            for p in patches:
+                p.start()
+            db = _build_data_bundle(MagicMock(), snap, mc)
+        finally:
+            for p in patches:
+                p.stop()
+
+        cand = db.filtered_candidates[0]
+        self.assertEqual(
+            cand["matched_signals"].count("golden_cross"),
+            1,
+            "golden_cross already present must not be duplicated by the re-eval merge",
+        )
+
 
 class TestRunInnerNewFeatureGates(RunInnerBase):
     """Coverage for v1.86 feature branches in _run_inner and _execute_shorts."""
@@ -6137,6 +6236,206 @@ class TestGoogleTrendsInjectionException(RunInnerBase):
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         self.assertTrue(any("Google Trends" in msg for msg in cm.output))
+
+
+class TestExecuteIndexHedge(unittest.TestCase):
+    """_execute_index_hedge: opt-in portfolio hedge that shorts an index ETF in bear regimes."""
+
+    def _deps(self, *, open_shorts=None, ledger_raises=False, place_result=None, price=400.0):
+        from core.deps import TradingDeps
+
+        events: list = []
+        orders: list = []
+
+        class FakeTrader:
+            def get_open_shorts(self):
+                if ledger_raises:
+                    from models import OrderLedgerUnavailable
+
+                    raise OrderLedgerUnavailable("ledger down")
+                return set(open_shorts or [])
+
+            def place_short_order(self, _c, sym, qty):
+                orders.append((sym, qty))
+                return place_result
+
+            def record_short(self, *a, **kw):
+                pass
+
+            def close_position(self, _c, sym):
+                events.append(("close", sym))
+
+            def record_cover(self, sym):
+                events.append(("cover", sym))
+
+        class FakeMarketData:
+            def get_index_price(self, sym):
+                return price
+
+        class FakeAudit:
+            def log_event(self, name, payload):
+                events.append((name, payload))
+
+            def log_order_placed(self, *a, **kw):
+                events.append(("order_placed", a))
+
+        deps = TradingDeps.__new__(TradingDeps)
+        deps.trader = FakeTrader()
+        deps.market_data = FakeMarketData()
+        deps.audit_log = FakeAudit()
+        deps._events = events
+        deps._orders = orders
+        return deps
+
+    def _run(self, deps, regime_name, *, dry_run=False, live_shadow=False, pv=100_000.0):
+        from main import _execute_index_hedge
+
+        trades: list = []
+        _execute_index_hedge(
+            client=None,
+            regime={"regime": regime_name},
+            account_now={"portfolio_value": pv},
+            all_trades=trades,
+            dry_run=dry_run,
+            _live_shadow=live_shadow,
+            deps=deps,
+        )
+        return trades
+
+    def test_disabled_by_default_is_noop(self):
+        with patch.object(config, "INDEX_HEDGE_ENABLED", False):
+            deps = self._deps()
+            trades = self._run(deps, "STRESS_RISK_OFF")
+        self.assertEqual(trades, [])
+        self.assertEqual(deps._orders, [])
+
+    def test_places_hedge_in_bear_regime(self):
+        fill = type(
+            "R", (), {"is_success": True, "filled_avg_price": 400.0, "broker_order_id": "OID"}
+        )()
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(place_result=fill, price=400.0)
+            trades = self._run(deps, "STRESS_RISK_OFF")
+        # $100k * 0.10 / $400 = 25 shares
+        self.assertEqual(deps._orders, [("SPY", 25)])
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["action"], "SHORT")
+        self.assertEqual(trades[0]["decision_type"], "index_hedge")
+
+    def test_no_double_hedge_when_already_on(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(open_shorts={"SPY"})
+            trades = self._run(deps, "STRESS_RISK_OFF")
+        self.assertEqual(deps._orders, [])
+        self.assertEqual(trades, [])
+
+    def test_covers_hedge_when_regime_exits_bear(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(open_shorts={"SPY"})
+            trades = self._run(deps, "BULL_TREND")
+        self.assertIn(("close", "SPY"), deps._events)
+        self.assertIn(("cover", "SPY"), deps._events)
+        self.assertEqual(trades[0]["action"], "COVER")
+
+    def test_noop_when_not_bear_and_no_hedge(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps()
+            trades = self._run(deps, "BULL_TREND")
+        self.assertEqual(trades, [])
+
+    def test_dry_run_places_no_order(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps()
+            trades = self._run(deps, "STRESS_RISK_OFF", dry_run=True)
+        self.assertEqual(deps._orders, [])
+        self.assertEqual(trades, [])
+
+    def test_live_shadow_records_would_short(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps()
+            trades = self._run(deps, "STRESS_RISK_OFF", live_shadow=True)
+        self.assertEqual(deps._orders, [])
+        self.assertEqual(trades[0]["action"], "WOULD_SHORT")
+
+    def test_skip_when_no_price(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(price=None)
+            trades = self._run(deps, "STRESS_RISK_OFF")
+        self.assertEqual(trades, [])
+
+    def test_skip_when_qty_below_one(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(price=400.0)
+            # $100 * 0.10 = $10 < $400 → 0 shares
+            trades = self._run(deps, "STRESS_RISK_OFF", pv=100.0)
+        self.assertEqual(deps._orders, [])
+        self.assertEqual(trades, [])
+
+    def test_skip_when_zero_portfolio(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps()
+            trades = self._run(deps, "STRESS_RISK_OFF", pv=0.0)
+        self.assertEqual(trades, [])
+
+    def test_skip_when_ledger_unavailable(self):
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(ledger_raises=True)
+            trades = self._run(deps, "STRESS_RISK_OFF")
+        self.assertEqual(trades, [])
+
+    def test_no_order_when_place_fails(self):
+        """place_short_order returns a non-success result → no record, no trade appended."""
+        fill = type(
+            "R", (), {"is_success": False, "filled_avg_price": None, "broker_order_id": ""}
+        )()
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+        ):
+            deps = self._deps(place_result=fill)
+            trades = self._run(deps, "STRESS_RISK_OFF")
+        self.assertEqual(deps._orders, [("SPY", 25)])  # order attempted
+        self.assertEqual(trades, [])  # but not recorded
 
 
 if __name__ == "__main__":  # pragma: no cover

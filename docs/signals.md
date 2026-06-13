@@ -120,11 +120,42 @@ Active short signals (regime-gated: STRESS_RISK_OFF, HIGH_VOL_DOWNTREND, DEFENSI
 
 | Signal | Entry conditions |
 |--------|-----------------|
-| `earnings_gap_down` | Post-earnings gap down ≥ 7% with vol_ratio ≥ 2.5 — negative PEAD continuation |
-| `death_cross` | SMA50 crosses below SMA200 + vol_ratio ≥ 0.8 |
-| `altman_distress_short` | Altman Z < 1.1 — financial distress zone |
+| `post_earnings_gapdown_failed_bounce` | Recent ≥7% earnings/news gap-down whose low is subsequently broken (the reflexive bounce failed) + vol_ratio ≥ 1.5 — negative-PEAD continuation entered *after* the bounce, not on the gap bar. Computed live in `scan_short_universe`; the one short with a documented short-horizon edge. |
+| `earnings_gap_down` | Post-earnings gap down ≥ 7% with vol_ratio ≥ 2.5 — naive gap-day negative PEAD (superseded live by the failed-bounce variant above) |
 | `piotroski_distress_short` | Piotroski F ≤ 2 + price below SMA200 |
-| `gross_margin_deterioration_short` | GM trend < −3pp + price below SMA200 |
 | `accruals_quality_short` | Accruals ratio > 0.15 + ret_5d > 5% (extended price) |
 | `lockup_expiry_short` | IPO lockup expires in 5–10 calendar days |
 | `analyst_downgrade_signal` | Consensus shift from Buy toward Hold/Sell |
+
+### Borrow cost & hard-to-borrow gate
+
+Every short is now priced against an estimated annualized stock-borrow rate (`data/borrow_cost.py`), derived from short-interest tiers since no paid cost-to-borrow feed is available:
+
+| short % of float | Estimated borrow rate | Tier |
+|------------------|----------------------|------|
+| < 5% | 0.5% | general collateral |
+| 5–15% | 3% | moderate |
+| 15–30% | 10% | elevated |
+| 30–50% | 30% | hard-to-borrow (skipped live) |
+| > 50% | 80% | special / often unborrowable |
+
+- **Backtest**: borrow cost is netted from short P&L at every cover (the combined production backtest derives rates from the short-interest data it fetches). Prior to v1.99, short backtests modelled borrow as free and overstated short returns.
+- **Live**: `_execute_shorts` skips hard-to-borrow names (rate ≥ 30%) and records `borrow_rate_annual` on every short.
+
+### Index regime hedge (opt-in)
+
+`_execute_index_hedge` shorts an index ETF (`INDEX_HEDGE_SYMBOL`, default SPY) at `INDEX_HEDGE_WEIGHT` of the portfolio when the regime is in `INDEX_HEDGE_REGIMES` (default STRESS_RISK_OFF, HIGH_VOL_DOWNTREND), and covers when the regime exits. Index ETFs borrow cheap, are deeply liquid, and carry no single-name squeeze risk — a structurally cleaner short than crowded single names. **Disabled by default** (`INDEX_HEDGE_ENABLED`): it is a live order path and must be explicitly opted into; it honours `dry_run`/`_live_shadow`. The backtest overlay (`compute_index_hedge_pnl`) reports the hedge's P&L contribution as `result["index_hedge"]`.
+
+### Disabled short signals
+
+The short book's core problem is that most short signals are *confirming* indicators, not *predictive* ones: by the time they fire, the market has already shorted the name. The lagging fundamental shorts below also encode multi-month theses that cannot resolve inside our 1–5 day hold. Disabled pending a rebuild around catalyst-anchored shorts + an index regime hedge (and a borrow-cost model, which we currently lack).
+
+| Signal | Reason | Disabled |
+|--------|--------|---------|
+| `death_cross` | SMA50/200 cross fires ~15–30% into a decline; WR 32% (n=25) / 40% (n=121). Lagging confirmation. | v1.99 |
+| `altman_distress_short` | Distress is a quarters-long thesis; 337 trades WR 45% avg −0.17% in a 3-day hold (wrong horizon, entered after credit desks). | v1.99 |
+| `gross_margin_deterioration_short` | Slow fundamental; 5 trades, WR 40%, avg −1.32%. Too few to validate, worst avg of the trio. | v1.99 |
+| `earnings_miss`, `ema_breakdown`, `rs_deterioration`, `faded_earnings_gap_up`, `overbought_downtrend`, `parabolic_exhaustion`, `failed_breakout`, `high_vol_reversal`, `winner_reversal` | Negative expectancy across all isolation/backward-elimination runs (see `SHORT_GLOBALLY_DISABLED` in `signals/evaluator.py`). | v1.x–v1.80 |
+| `iv_compression_short`, `candle_exhaustion_short`, `obv_divergence_short`, `obv_acceleration_short`, `volume_climax_reversal_short` | New short signals disabled pending initial backtest validation. | v1.82–v1.94 |
+
+> **Note on borrow cost:** no short backtest currently models stock-borrow cost, so all historical short results are optimistic. A borrow-cost model is the prerequisite for the planned short-book rebuild (`post_earnings_gapdown_failed_bounce` + `index_regime_hedge`).

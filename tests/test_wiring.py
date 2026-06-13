@@ -335,44 +335,43 @@ def test_key_signal_fallback_persisted_to_record_buy(monkeypatch):
         def record_buy(self, symbol, price, **kwargs):
             recorded.append({"symbol": symbol, "signal": kwargs.get("signal")})
 
-        def get_daily_notional(self, _date):
-            return 0.0
+    def _crosscheck(candidate: dict) -> str:
+        """Cross-check logic from _execute_buy_phase: fall back to matched_signals[0]
+        when the cited key_signal didn't actually fire."""
+        key_signal = candidate.get("key_signal", "unknown")
+        matched_signals = candidate.get("matched_signals") or []
+        if (
+            key_signal not in ("unknown", None)
+            and matched_signals
+            and key_signal not in matched_signals
+        ):
+            key_signal = matched_signals[0]
+        return key_signal
 
-        def add_daily_notional(self, _date, _amount):
-            pass
-
-        def place_buy_order(self, _client, _symbol, _notional):
-            return None
-
-    candidate = {
+    # Case 1 — hallucinated key_signal (disabled signal, never in matched_signals) → fallback fires.
+    hallucinated = {
         "symbol": "AAPL",
         "confidence": 8,
-        "key_signal": "momentum_12_1",  # hallucinated — disabled signal, will never be in matched_signals
+        "key_signal": "momentum_12_1",
         "matched_signals": ["insider_buying"],
         "reasoning": "test",
         "current_price": 100.0,
     }
-
-    # Cross-check logic from _execute_buy_phase:
-    key_signal = candidate.get("key_signal", "unknown")
-    matched_signals = candidate.get("matched_signals") or []
-    if (
-        key_signal not in ("unknown", None)
-        and matched_signals
-        and key_signal not in matched_signals
-    ):
-        key_signal = matched_signals[0]
-
-    # Simulate the correct attribution store (the fix)
-    _signal = key_signal  # corrected, not candidate.get("key_signal")
+    _signal = _crosscheck(hallucinated)  # corrected, not candidate.get("key_signal")
     _FakeTrader().record_buy(
         "AAPL", 100.0, signal=_signal, regime="BULL_TREND", confidence=8, track="multiday"
     )
-
     assert recorded[0]["signal"] == "insider_buying", (
         f"record_buy received '{recorded[0]['signal']}' instead of corrected 'insider_buying'. "
         "The key_signal fallback must be persisted to record_buy."
     )
+
+    # Case 2 — valid key_signal (already in matched_signals) → no fallback, value preserved.
+    valid = {
+        "key_signal": "pead",
+        "matched_signals": ["pead", "insider_buying"],
+    }
+    assert _crosscheck(valid) == "pead", "Valid key_signal must be preserved (no fallback)."
 
 
 # ── 7. tax_loss_reversal sentinel guard ──────────────────────────────────────
@@ -423,8 +422,9 @@ def test_options_signals_merged_into_matched_signals():
         "signals": [],
     }
 
-    # Simulate the C3 fix: merge new signals into matched_signals
-    new_signals = ["unusual_options_activity"]
+    # Simulate the C3 fix: merge new signals into matched_signals.
+    # "insider_buying" is already present (exercises the skip branch); the options signal is new.
+    new_signals = ["insider_buying", "unusual_options_activity"]
     snapshot["signals"] = new_signals
     existing = set(snapshot.get("matched_signals") or [])
     for sig in new_signals:
@@ -435,6 +435,10 @@ def test_options_signals_merged_into_matched_signals():
     assert "unusual_options_activity" in snapshot["matched_signals"], (
         "Options signal not found in matched_signals after injection merge. "
         "The merge logic in _build_data_bundle must extend matched_signals with new_signals."
+    )
+    # No duplicate of the already-present signal.
+    assert snapshot["matched_signals"].count("insider_buying") == 1, (
+        "Already-present signal must not be duplicated by the merge."
     )
     assert "insider_buying" in snapshot["matched_signals"], (
         "Pre-existing matched_signals entry was lost during options merge."

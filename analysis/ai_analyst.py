@@ -49,8 +49,6 @@ VOLATILITY / IV
 
 OHLCV TECHNICAL
 - candle_exhaustion: hammer or bullish engulf at 20d low with vol_ratio ≥1.5
-- obv_divergence: OBV 5d slope rising while price 5d negative — accumulation divergence
-- obv_acceleration: OBV 5d slope > OBV 20d slope — accelerating into price + EMA confirmed
 - breadth_thrust: Zweig breadth-thrust: universe breadth jumps from <40% to >60% within 10 days
 
 OPTIONS

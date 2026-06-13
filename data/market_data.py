@@ -406,6 +406,20 @@ def get_vix() -> float | None:
     return None
 
 
+def get_index_price(symbol: str = "SPY") -> float | None:
+    """Return the latest close price for an index ETF (used to size the index regime hedge).
+
+    Returns None on any fetch failure so the caller can skip the hedge rather than crash.
+    """
+    try:
+        hist = yf.Ticker(symbol).history(period="5d")
+        if len(hist) >= 1:
+            return round(float(hist["Close"].iloc[-1]), 4)
+    except Exception:
+        pass
+    return None
+
+
 def get_spy_5d_return() -> float | None:
     """Return SPY's 5-day return % for relative strength calculation."""
     try:

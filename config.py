@@ -89,6 +89,19 @@ MAX_SHORT_STANDALONE_RATIO = float(
     os.getenv("MAX_SHORT_STANDALONE_RATIO", "0.3")
 )  # max short notional as fraction of portfolio when no longs held (bear regimes only)
 
+# Index regime hedge — short an index ETF in confirmed bear regimes as a portfolio-level
+# hedge (v1.99). Index ETFs are cheap-to-borrow, deep, and carry no single-name squeeze
+# risk — a structurally cleaner short than crowded single names. DISABLED by default: this
+# is a new live order path and must be explicitly opted into.
+INDEX_HEDGE_ENABLED = os.getenv("INDEX_HEDGE_ENABLED", "false").lower() == "true"
+INDEX_HEDGE_SYMBOL = os.getenv("INDEX_HEDGE_SYMBOL", "SPY")
+INDEX_HEDGE_WEIGHT = float(os.getenv("INDEX_HEDGE_WEIGHT", "0.10"))  # portfolio fraction to short
+INDEX_HEDGE_REGIMES = frozenset(
+    s.strip()
+    for s in os.getenv("INDEX_HEDGE_REGIMES", "STRESS_RISK_OFF,HIGH_VOL_DOWNTREND").split(",")
+    if s.strip()
+)
+
 # Risk-budget sizing (replaces Kelly)
 RISK_PER_TRADE_PCT = 0.006  # 0.6% of equity risked per trade
 MAX_POSITION_WEIGHT = 0.15  # 15% of portfolio per position (hard cap)

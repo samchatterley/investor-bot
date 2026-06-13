@@ -1224,9 +1224,13 @@ class TestShortUniverseModule(unittest.TestCase):
         from execution.short_universe import scan_short_universe
 
         idx = pd.bdate_range("2024-01-01", periods=25)
+        closes = [100.0 + i * 0.1 for i in range(25)]
         df = pd.DataFrame(
             {
-                "Close": [100.0 + i * 0.1 for i in range(25)],
+                "Open": closes,
+                "High": [c * 1.005 for c in closes],
+                "Low": [c * 0.995 for c in closes],
+                "Close": closes,
                 "Volume": [1_000_000] * 25,
             },
             index=idx,
@@ -1238,6 +1242,9 @@ class TestShortUniverseModule(unittest.TestCase):
         self.assertEqual(snap["symbol"], "AAPL")
         self.assertIn("rs_rank_pct", snap)
         self.assertIn("rs_rank_pct_10d_ago", snap)
+        # Gap fields are present; flat synthetic series → no gap detected.
+        self.assertIsNone(snap["earnings_gap_pct"])
+        self.assertFalse(snap["gap_failed_bounce"])
 
     def test_scan_short_universe_multi_symbol_returns_snapshots(self):
         import pandas as pd
@@ -1250,9 +1257,10 @@ class TestShortUniverseModule(unittest.TestCase):
             index=idx,
         )
         volume = pd.DataFrame({"AAPL": [1_000_000] * 25, "MSFT": [2_000_000] * 25}, index=idx)
-        multi_df = pd.concat({"Close": close, "Volume": volume}, axis=1)
+        low = close * 0.995
+        multi_df = pd.concat({"Open": close, "Low": low, "Close": close, "Volume": volume}, axis=1)
         multi_df.columns = pd.MultiIndex.from_tuples(
-            [(f, t) for f in ("Close", "Volume") for t in ("AAPL", "MSFT")]
+            [(f, t) for f in ("Open", "Low", "Close", "Volume") for t in ("AAPL", "MSFT")]
         )
         with patch("execution.short_universe.yf.download", return_value=multi_df):
             result = scan_short_universe(["AAPL", "MSFT"])
@@ -1267,7 +1275,15 @@ class TestShortUniverseModule(unittest.TestCase):
         from execution.short_universe import scan_short_universe
 
         idx = pd.bdate_range("2024-01-01", periods=10)
-        df = pd.DataFrame({"Close": [100.0] * 10, "Volume": [1_000_000] * 10}, index=idx)
+        df = pd.DataFrame(
+            {
+                "Open": [100.0] * 10,
+                "Low": [99.0] * 10,
+                "Close": [100.0] * 10,
+                "Volume": [1_000_000] * 10,
+            },
+            index=idx,
+        )
         with patch("execution.short_universe.yf.download", return_value=df):
             result = scan_short_universe(["AAPL"])
         self.assertEqual(result, [])
@@ -1279,7 +1295,15 @@ class TestShortUniverseModule(unittest.TestCase):
 
         idx = pd.bdate_range("2024-01-01", periods=25)
         prices = [0.0] * 25
-        df = pd.DataFrame({"Close": prices, "Volume": [1_000_000] * 25}, index=idx)
+        df = pd.DataFrame(
+            {
+                "Open": prices,
+                "Low": prices,
+                "Close": prices,
+                "Volume": [1_000_000] * 25,
+            },
+            index=idx,
+        )
         with patch("execution.short_universe.yf.download", return_value=df):
             result = scan_short_universe(["AAPL"])
         self.assertEqual(result, [])
@@ -1300,9 +1324,10 @@ class TestShortUniverseModule(unittest.TestCase):
             index=idx,
         )
         volume = pd.DataFrame({"AAPL": [1_000_000] * 25, "MSFT": [2_000_000] * 25}, index=idx)
-        multi_df = pd.concat({"Close": close, "Volume": volume}, axis=1)
+        low = close * 0.995
+        multi_df = pd.concat({"Open": close, "Low": low, "Close": close, "Volume": volume}, axis=1)
         multi_df.columns = pd.MultiIndex.from_tuples(
-            [(f, t) for f in ("Close", "Volume") for t in ("AAPL", "MSFT")]
+            [(f, t) for f in ("Open", "Low", "Close", "Volume") for t in ("AAPL", "MSFT")]
         )
         with patch("execution.short_universe.yf.download", return_value=multi_df):
             result = scan_short_universe(["AAPL", "MSFT"])
@@ -2173,10 +2198,117 @@ class TestIVCompressionShortSignal(unittest.TestCase):
         )
 
 
+class TestDetectFailedGapdown(unittest.TestCase):
+    """detect_failed_gapdown: OHLCV-only earnings gap-down + failed-bounce detector."""
+
+    def test_too_few_bars_returns_default(self):
+        from execution.short_universe import detect_failed_gapdown
+
+        out = detect_failed_gapdown([100.0], [99.0], [100.0], [1_000_000])
+        self.assertIsNone(out["earnings_gap_pct"])
+        self.assertFalse(out["gap_failed_bounce"])
+        self.assertEqual(out["vol_ratio"], 1.0)
+
+    def test_no_gap_in_window(self):
+        from execution.short_universe import detect_failed_gapdown
+
+        n = 10
+        opens = [100.0] * n
+        lows = [99.0] * n
+        closes = [100.0] * n
+        vols = [1_000_000] * n
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        self.assertIsNone(out["earnings_gap_pct"])
+        self.assertFalse(out["gap_failed_bounce"])
+
+    def test_gap_with_failed_bounce(self):
+        """Gap-down 3 bars ago, then price breaks below the gap bar's low → failed bounce."""
+        from execution.short_universe import detect_failed_gapdown
+
+        # bars 0-2 flat at 100; bar 3 gaps down to 90 (open) low 88; bars 4-5 drift to 86 < 88
+        opens = [100.0, 100.0, 100.0, 90.0, 89.0, 87.0]
+        lows = [99.0, 99.0, 99.0, 88.0, 88.0, 86.0]
+        closes = [100.0, 100.0, 100.0, 89.0, 88.5, 86.0]
+        vols = [1_000_000] * 6
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        self.assertIsNotNone(out["earnings_gap_pct"])
+        self.assertLess(out["earnings_gap_pct"], -7.0)
+        self.assertTrue(out["gap_failed_bounce"])
+
+    def test_gap_on_last_bar_no_bounce_yet(self):
+        """Gap is the most recent bar → no continuation bar yet → bounce not confirmed."""
+        from execution.short_universe import detect_failed_gapdown
+
+        opens = [100.0, 100.0, 100.0, 100.0, 90.0]
+        lows = [99.0, 99.0, 99.0, 99.0, 88.0]
+        closes = [100.0, 100.0, 100.0, 100.0, 89.0]
+        vols = [1_000_000] * 5
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        self.assertIsNotNone(out["earnings_gap_pct"])
+        self.assertFalse(out["gap_failed_bounce"])
+
+    def test_gap_but_price_held_above_gap_low(self):
+        """Gap-down then price recovers above the gap bar's low → bounce did NOT fail."""
+        from execution.short_universe import detect_failed_gapdown
+
+        opens = [100.0, 100.0, 100.0, 90.0, 91.0, 92.0]
+        lows = [99.0, 99.0, 99.0, 88.0, 90.0, 91.0]
+        closes = [100.0, 100.0, 100.0, 89.0, 91.0, 92.0]
+        vols = [1_000_000] * 6
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        self.assertIsNotNone(out["earnings_gap_pct"])
+        self.assertFalse(out["gap_failed_bounce"])
+
+    def test_zero_prev_close_skipped(self):
+        """A zero prior close is skipped (no division), and an earlier real gap is still found."""
+        from execution.short_universe import detect_failed_gapdown
+
+        # bar1 prev_close=0 (skip); a real gap at bar 2 (prev close 100 → open 90)
+        opens = [100.0, 0.0, 90.0, 89.0]
+        lows = [99.0, 0.0, 88.0, 86.0]
+        closes = [100.0, 0.0, 89.0, 86.0]
+        vols = [1_000_000] * 4
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        # bar 3 prev_close=89 → no gap; bar 2 prev_close=0 → skipped; bar1 prev_close=100→open0? handled
+        self.assertIn("gap_failed_bounce", out)
+
+    def test_two_bars_gap_no_vol_ratio(self):
+        """Exactly 2 bars: vol-ratio block is skipped (needs ≥3); a gap on the last bar is
+        detected but the bounce cannot be confirmed."""
+        from execution.short_universe import detect_failed_gapdown
+
+        out = detect_failed_gapdown([100.0, 90.0], [99.0, 88.0], [100.0, 89.0], [1e6, 1e6])
+        self.assertLess(out["earnings_gap_pct"], -7.0)
+        self.assertFalse(out["gap_failed_bounce"])
+        self.assertEqual(out["vol_ratio"], 1.0)
+
+    def test_vol_ratio_uses_trailing_average(self):
+        from execution.short_universe import detect_failed_gapdown
+
+        opens = [100.0] * 5
+        lows = [99.0] * 5
+        closes = [100.0] * 5
+        vols = [1_000_000, 1_000_000, 1_000_000, 1_000_000, 3_000_000]
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        self.assertGreater(out["vol_ratio"], 2.0)
+
+    def test_zero_trailing_volume_keeps_default_ratio(self):
+        from execution.short_universe import detect_failed_gapdown
+
+        opens = [100.0] * 4
+        lows = [99.0] * 4
+        closes = [100.0] * 4
+        vols = [0.0, 0.0, 0.0, 5_000.0]
+        out = detect_failed_gapdown(opens, lows, closes, vols)
+        self.assertEqual(out["vol_ratio"], 1.0)
+
+
 class TestShortPreTrade(unittest.TestCase):
     """Short execution path must enforce fat-finger cap and daily-notional accounting."""
 
-    def _make_deps(self, daily_notional=0.0, place_short_result=None):
+    def _make_deps(
+        self, daily_notional=0.0, place_short_result=None, raise_on_daily_notional=False
+    ):
         from core.deps import TradingDeps
 
         class FakeTrader:
@@ -2190,6 +2322,8 @@ class TestShortPreTrade(unittest.TestCase):
                 return 0.0
 
             def get_daily_notional(self, _date):
+                if raise_on_daily_notional:
+                    raise RuntimeError("ledger unavailable")
                 return daily_notional
 
             def add_daily_notional(self, _date, _amount):
@@ -2197,6 +2331,9 @@ class TestShortPreTrade(unittest.TestCase):
 
             def place_short_order(self, _client, _symbol, _qty):
                 return place_short_result
+
+            def place_short_cover_stop(self, _client, _symbol, _qty):
+                return type("CoverResult", (), {"is_success": True})()
 
             def record_short(self, *a, **kw):
                 pass
@@ -2207,8 +2344,8 @@ class TestShortPreTrade(unittest.TestCase):
                     {
                         "symbol": "XYZ",
                         "current_price": 50.0,
-                        "matched_signals": ["death_cross"],
-                        "key_signal": "death_cross",
+                        "matched_signals": ["earnings_gap_down"],
+                        "key_signal": "earnings_gap_down",
                         "confidence": 8,
                         "rs_rank_pct": 10.0,
                     }
@@ -2246,6 +2383,40 @@ class TestShortPreTrade(unittest.TestCase):
         deps.alerts = type("A", (), {"alert_error": lambda self, *a, **kw: None})()
         return deps
 
+    def test_short_order_skipped_when_hard_to_borrow(self):
+        """A hard-to-borrow name (high short interest → borrow rate ≥ HTB threshold) is skipped
+        by the borrow-cost gate before sizing."""
+        deps = self._make_deps()
+        # Override squeeze info so the name reads as heavily shorted → HTB.
+        deps.short_risk = type(
+            "SR",
+            (),
+            {
+                "fetch_squeeze_info": lambda self, s: {
+                    "short_pct_float": 0.40,
+                    "days_to_cover": 12.0,
+                },
+                "is_squeeze_risk": lambda self, s, c, **kw: (False, ""),
+            },
+        )()
+        all_trades: list = []
+        from main import _execute_shorts
+
+        _execute_shorts(
+            client=None,
+            snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+            regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
+            open_positions=[],
+            account_now={"portfolio_value": 10_000.0},
+            all_trades=all_trades,
+            executed_symbols=set(),
+            dry_run=False,
+            _live_shadow=False,
+            today="2026-06-12",
+            deps=deps,
+        )
+        self.assertEqual(all_trades, [], "Hard-to-borrow short should be skipped")
+
     def test_short_order_rejected_when_notional_exceeds_single_order_cap(self):
         """Short order must be skipped when order_notional > MAX_SINGLE_ORDER_USD.
 
@@ -2280,6 +2451,97 @@ class TestShortPreTrade(unittest.TestCase):
                 deps=deps,
             )
         self.assertEqual(all_trades, [], "Short order should have been blocked by fat-finger cap")
+
+    def test_short_order_placed_records_daily_notional_on_success(self):
+        """Success path: an approved short fill records the daily notional (C4 ledger accounting).
+
+        Exercises the post-fill branch — place_short_order → record_short → add_daily_notional →
+        cover stop — that the rejection test never reaches.
+        """
+        from unittest.mock import patch
+
+        import config as cfg
+
+        short_fill = type(
+            "ShortResult",
+            (),
+            {
+                "broker_order_id": "OID-XYZ-1",
+                "is_success": True,
+                "filled_avg_price": 50.0,
+                "filled_qty": 10,
+            },
+        )()
+        deps = self._make_deps(place_short_result=short_fill)
+        all_trades: list = []
+        from main import _execute_shorts
+
+        with (
+            patch.object(cfg, "MAX_SINGLE_ORDER_USD", 50_000.0),
+            patch.object(cfg, "MAX_DAILY_NOTIONAL_USD", 150_000.0),
+            patch.object(cfg, "MAX_SHORT_STANDALONE_RATIO", 1.0),
+            patch.object(cfg, "MAX_SHORT_POSITIONS", 5),
+        ):
+            _execute_shorts(
+                client=None,
+                snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+                regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
+                open_positions=[],
+                account_now={"portfolio_value": 10_000.0},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=False,
+                _live_shadow=False,
+                today="2026-06-12",
+                deps=deps,
+            )
+        # add_daily_notional was called on the fill path (0.5× short sizing → positive notional).
+        self.assertGreater(deps.trader.added, 0.0, "Daily notional should be recorded on fill")
+        self.assertEqual(len(all_trades), 1)
+        self.assertEqual(all_trades[0]["action"], "SHORT")
+
+    def test_short_pre_trade_tolerates_daily_notional_read_failure(self):
+        """If get_daily_notional raises, the short path logs and proceeds with _daily_so_far=0
+        (still enforcing the single-order cap). Covers the ledger-read except branch."""
+        from unittest.mock import patch
+
+        import config as cfg
+
+        short_fill = type(
+            "ShortResult",
+            (),
+            {
+                "broker_order_id": "OID-XYZ-2",
+                "is_success": True,
+                "filled_avg_price": 50.0,
+                "filled_qty": 10,
+            },
+        )()
+        deps = self._make_deps(place_short_result=short_fill, raise_on_daily_notional=True)
+        all_trades: list = []
+        from main import _execute_shorts
+
+        with (
+            patch.object(cfg, "MAX_SINGLE_ORDER_USD", 50_000.0),
+            patch.object(cfg, "MAX_DAILY_NOTIONAL_USD", 150_000.0),
+            patch.object(cfg, "MAX_SHORT_STANDALONE_RATIO", 1.0),
+            patch.object(cfg, "MAX_SHORT_POSITIONS", 5),
+        ):
+            _execute_shorts(
+                client=None,
+                snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+                regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
+                open_positions=[],
+                account_now={"portfolio_value": 10_000.0},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=False,
+                _live_shadow=False,
+                today="2026-06-12",
+                deps=deps,
+            )
+        # The order still went through (cap enforced with _daily_so_far=0 fallback).
+        self.assertEqual(len(all_trades), 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

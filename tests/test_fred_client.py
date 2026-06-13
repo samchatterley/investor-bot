@@ -501,12 +501,10 @@ class TestGetAaiiSentiment(unittest.TestCase):
         bulls_data = [("2026-05-01", 35.0), ("2026-06-01", 40.0)]
         bears_data = [("2026-05-01", 30.0), ("2026-06-01", 45.0)]
 
+        _series_data = {"AAIIBULL": bulls_data, "AAIIBEAR": bears_data}
+
         def _mock_fetch(series, **kwargs):
-            if series == "AAIIBULL":
-                return bulls_data
-            if series == "AAIIBEAR":
-                return bears_data
-            return []
+            return _series_data.get(series, [])
 
         with patch("data.fred_client.fetch_series", side_effect=_mock_fetch):
             from data.fred_client import get_aaii_sentiment

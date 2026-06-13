@@ -100,9 +100,9 @@ class TestComputeStockSectorCorr(unittest.TestCase):
             "XLK": _make_price_df(60, 50.0),
         }
         result = compute_stock_sector_corr("AAPL", "XLK", price_data=price_data)
-        if result is not None:
-            # Should be rounded to 4 decimal places
-            self.assertEqual(result, round(result, 4))
+        self.assertIsNotNone(result)
+        # Should be rounded to 4 decimal places
+        self.assertEqual(result, round(result, 4))
 
     def test_last_corr_is_nan_returns_none(self):
         """If rolling corr produces NaN on the final row (e.g. identical series → std=0

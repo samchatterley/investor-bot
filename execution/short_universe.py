@@ -277,6 +277,57 @@ STATIC_SHORT_UNIVERSE: list[str] = list(
 )
 
 
+def detect_failed_gapdown(
+    opens: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+    gap_pct_max: float = -7.0,
+    lookback: int = 7,
+) -> dict:
+    """Detect a recent earnings/news gap-down whose reflexive bounce has failed.
+
+    This is the live, OHLCV-only detector behind the ``post_earnings_gapdown_failed_bounce``
+    short signal. A single-day drop of ≥7% is almost always an earnings/guidance reaction;
+    the *failed-bounce* condition (price subsequently breaking below the gap bar's low) is the
+    timing filter that removes dead-cat-bounce losses the naive gap-day short suffers.
+
+    Returns a dict with:
+      earnings_gap_pct : float | None  — the gap on the detected gap bar, or None if no
+                                         qualifying gap-down occurred within ``lookback`` bars.
+      gap_failed_bounce: bool          — True when the latest close is below the gap bar's low
+                                         AND at least one bar has printed since the gap.
+      vol_ratio        : float         — latest volume / trailing-20 average (1.0 if too short).
+    """
+    n = len(closes)
+    result = {"earnings_gap_pct": None, "gap_failed_bounce": False, "vol_ratio": 1.0}
+    if n < 2:
+        return result
+
+    # vol_ratio on the latest (continuation) bar.
+    if n >= 3:
+        trailing = volumes[max(0, n - 21) : n - 1]
+        avg_vol = sum(trailing) / len(trailing) if trailing else 0.0
+        if avg_vol > 0:
+            result["vol_ratio"] = volumes[-1] / avg_vol
+
+    # Scan back over the lookback window for the most recent qualifying gap-down bar.
+    earliest = max(1, n - lookback)
+    for i in range(n - 1, earliest - 1, -1):
+        prev_close = closes[i - 1]
+        if prev_close <= 0:
+            continue
+        gap_pct = (opens[i] - prev_close) / prev_close * 100
+        if gap_pct <= gap_pct_max:
+            result["earnings_gap_pct"] = round(gap_pct, 4)
+            # Failed bounce: a later bar broke below the gap bar's low (continuation lower).
+            if i < n - 1 and closes[-1] < lows[i]:
+                result["gap_failed_bounce"] = True
+            return result
+
+    return result
+
+
 def get_short_universe(client, _retries: int = 2, _retry_delay: float = 3.0) -> list[str]:
     """Return STATIC_SHORT_UNIVERSE symbols that are currently easy-to-borrow on Alpaca.
 
@@ -348,15 +399,21 @@ def scan_short_universe(
 
     close_raw = raw["Close"]
     volume_raw = raw["Volume"]
+    open_raw = raw["Open"]
+    low_raw = raw["Low"]
 
     # Single-symbol download returns a Series; promote to DataFrame with ticker column
     if isinstance(close_raw, pd.Series):
         sym = symbols[0]
         close_df = close_raw.to_frame(name=sym).dropna(how="all")
         volume_df = volume_raw.to_frame(name=sym).dropna(how="all")
+        open_df = open_raw.to_frame(name=sym)
+        low_df = low_raw.to_frame(name=sym)
     else:
         close_df = close_raw.dropna(how="all")
         volume_df = volume_raw.dropna(how="all")
+        open_df = open_raw
+        low_df = low_raw
 
     if len(close_df) < 15:
         logger.warning("Short universe: fewer than 15 bars — skipping")
@@ -397,6 +454,24 @@ def scan_short_universe(
         if len(valid_bars) < 10:
             continue
 
+        # Earnings/news gap-down + failed-bounce detection (post_earnings_gapdown_failed_bounce).
+        # Align O/L/C/V on the symbol's own valid dates so a recent gap and its continuation
+        # bar are read from clean, contiguous OHLCV.
+        ohlcv = pd.DataFrame(
+            {
+                "Open": open_df[sym] if sym in open_df.columns else float("nan"),
+                "Low": low_df[sym] if sym in low_df.columns else float("nan"),
+                "Close": close_df[sym],
+                "Volume": volume_df[sym] if sym in volume_df.columns else 0.0,
+            }
+        ).dropna(subset=["Open", "Low", "Close"])
+        gap_info = detect_failed_gapdown(
+            ohlcv["Open"].tolist(),
+            ohlcv["Low"].tolist(),
+            ohlcv["Close"].tolist(),
+            ohlcv["Volume"].fillna(0.0).tolist(),
+        )
+
         snapshots.append(
             {
                 "symbol": sym,
@@ -414,6 +489,9 @@ def scan_short_universe(
                     if sym in rs_rank_lag10.index and not pd.isna(rs_rank_lag10[sym])
                     else None
                 ),
+                "earnings_gap_pct": gap_info["earnings_gap_pct"],
+                "gap_failed_bounce": gap_info["gap_failed_bounce"],
+                "vol_ratio": round(float(gap_info["vol_ratio"]), 4),
             }
         )
 

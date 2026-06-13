@@ -106,7 +106,7 @@ The daily scan universe is built dynamically at runtime. `execution/universe.py`
 
 ### Signal types
 
-The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of **33 active signal patterns** across 10 families before Claude sees it. Eight signals are in `GLOBALLY_DISABLED` after backtest evidence confirmed no edge. See [docs/signals.md](docs/signals.md) for the full signal table with entry conditions, hold limits, regime blocking, fundamental quality gates, and the short signal catalogue.
+The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of **31 active signal patterns** across 10 families before Claude sees it. Ten signals are in `GLOBALLY_DISABLED` after backtest evidence confirmed no edge. See [docs/signals.md](docs/signals.md) for the full signal table with entry conditions, hold limits, regime blocking, fundamental quality gates, and the short signal catalogue.
 
 Signal families: **mean-reversion** · **volatility/IV** · **trend/momentum** · **OHLCV technical** · **catalyst/fundamental** · **options** · **short squeeze** · **sentiment/alt-data** · **cross-asset** · **intraday**
 
@@ -240,7 +240,8 @@ After validation, position-level risk checks are applied independently of Claude
 - **Daily loss limit** — all positions closed when the portfolio loses 5% from the session open; bot auto-resumes the next trading day. If any position close fails during liquidation a halt file is written and manual resume is required (`python cli.py resume`)
 - **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8% (15% in small-account mode); the remaining half runs with the trailing stop
 - **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums (2–5 days depending on signal family)
-- **Short hedge** — after long buys each open run, bottom-quartile RS stocks are scanned for short positions (max 3 concurrent; capped at 0.5× long notional; sized at 0.5× standard long size); regime-gated to bear regimes only (`STRESS_RISK_OFF`, `HIGH_VOL_DOWNTREND`, `DEFENSIVE_DOWNTREND`, `CREDIT_STRESS`); standalone short book active in bear regimes when no longs are held
+- **Short hedge** — after long buys each open run, bottom-quartile RS stocks are scanned for short positions (max 3 concurrent; capped at 0.5× long notional; sized at 0.5× standard long size); regime-gated to bear regimes only (`STRESS_RISK_OFF`, `HIGH_VOL_DOWNTREND`, `DEFENSIVE_DOWNTREND`, `CREDIT_STRESS`); standalone short book active in bear regimes when no longs are held. Every short is priced against an estimated borrow rate (`data/borrow_cost.py`) — hard-to-borrow names are skipped live and borrow cost is netted from short backtests
+- **Index regime hedge** (opt-in, `INDEX_HEDGE_ENABLED`) — shorts an index ETF (default SPY) at a configurable portfolio weight in confirmed bear regimes and covers on regime exit; a structurally cleaner short than crowded single names (cheap borrow, deep liquidity, no squeeze risk)
 - **Same-day open guard** — only one buy phase executes per calendar day in `open` mode; subsequent open runs skip buys entirely
 
 ### Constrained parameter recommendation engine
@@ -557,9 +558,11 @@ The current system deliberately keeps deployment local and execution synchronous
 
 ## Version History
 
-See [CHANGELOG.md](CHANGELOG.md) for the full version history (v1.0 → v1.98).
+See [CHANGELOG.md](CHANGELOG.md) for the full version history (v1.0 → v1.99).
 
 ### Recent
+
+**1.99 — June 2026** — Signal book rationalisation + short-book rebuild. Disabled `obv_divergence` + `obv_acceleration` (joint ΔSharpe +0.12, ΔReturn +7.0% — slot competition was crowding out `pead`) and the three lagging fundamental shorts (`death_cross`, `altman_distress_short`, `gross_margin_deterioration_short`). Rebuilt the short side around the structural problems identified: a **borrow-cost model** (`data/borrow_cost.py` — netted from short backtests, gates hard-to-borrow names live), a **catalyst short** `post_earnings_gapdown_failed_bounce` (negative-PEAD continuation entered after the bounce fails, computed live from daily OHLCV), and an opt-in **index regime hedge** (short SPY in bear regimes — cheap borrow, no squeeze risk). `SIGNAL_PRIORITY` 41 entries (31 active, 10 disabled); `SHORT_SIGNAL_PRIORITY` gains the failed-bounce short.
 
 **1.98 — June 2026** — Institutional-grade codebase audit: 12 critical and high findings across AI governance, broker safety, signal wiring, and observability hardened. Signal book rationalised: 3 signals disabled (`range_reversion`, `volume_climax_reversal`, `tax_loss_reversal`) after combined production backtest confirmed no edge; `fcf_yield_signal` elevated to priority 12 on 563-trade evidence. Options and short-squeeze signals fully wired post-C3 dead-code fix. SYSTEM_PROMPT rewritten for parity with live signal book (41 entries, 8 disabled, 33 active). `SIGNAL_PRIORITY` now 41 entries (33 active, 8 in `GLOBALLY_DISABLED`). Tests: see below.
 
