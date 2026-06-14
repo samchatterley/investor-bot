@@ -1,8 +1,15 @@
 # EXPERIMENT.md — Pre-registration: Does AI contextual judgement add incremental value?
 
-> **Status:** Pre-registration (v1). Freeze this document before collecting any primary data.
+> **Status:** Pre-registration (v1.1, pre-data amendments). Freeze before collecting any primary
+> data. Any change after data collection begins requires a new version and a new evaluation period.
 > Companion docs: `docs/strategic_review.md` (why), `docs/audit_v1.100.md` (code-level audit).
-> Any change after data collection begins requires a new version + a new evaluation period.
+>
+> **v1.1 amendments (no data collected yet, so still a legitimate pre-registration).** Adopted from
+> an external audit of the design: (1) the primary endpoint is recast as a veto / down-weight test on
+> material-context candidates (sections 1 and 3); (2) more research snapshots than trades, with
+> clustered standard errors (section 15.2); (3) negative and positive controls (section 15.3);
+> (4) pre-registered economic-usefulness thresholds (section 15.5); (5) a narrow,
+> high-timestamp-integrity historical context track (section 15.6). Deferred items are in section 16.
 
 ---
 
@@ -20,17 +27,29 @@ governed measurement framework + an honest result (including a null or "not yet 
 
 ## 1. The hypothesis (and what would falsify it)
 
-**H1 (primary):** For an eligible candidate, the AI's explicit context-driven revision of its own
-structured judgement (`context_adjustment`) has **positive incremental predictive power** on
-forward risk-normalised return, **after controlling for the frozen deterministic evidence score**.
+**H1 (primary, v1.1): the veto / down-weight test.** Among deterministic-eligible candidates that
+carry a pre-registered material-context category (section 15.1), the candidates the contextual arm
+(Arm 3) vetoes or marks with a negative `context_adjustment` underperform the non-vetoed candidates
+on forward risk-normalised return, after controlling for `evidence_score_v1` and the structured event
+flags. This is the headline because it is the highest signal-to-noise, most operationalisable, and
+most directly actionable form of the thesis: it yields a governance decision (enable the veto, disable
+it, or keep the LLM advisory-only).
 
-- **Falsified** if `context_adjustment` shows no positive incremental predictive value at the
-  pre-registered test point (a clean, informative negative result).
-- **Supported (not proven)** if it does — claimable only within *this* universe, signal menu,
-  regime window, baseline version, and horizon. Positive results require later replication.
+**H2 (secondary): the incremental-IC test (the former primary).** Across material-context candidates,
+`context_adjustment` has positive incremental predictive power on 5-day forward risk-normalised return
+after controlling for `evidence_score_v1`.
 
-Conclusiveness is **asymmetric**: we can falsify cleanly; we can only *fail to reject* on a narrow
-slice. The artifact is the governed measurement, whichever way the number lands.
+**H3 (decomposition): context vs reasoning.** Arm 3 minus Arm 2 isolates the value of unstructured
+context (the thesis); Arm 2 minus Arm 1 isolates LLM reasoning over identical structured inputs (not
+the thesis).
+
+- **Falsified** if vetoed candidates do not underperform non-vetoed ones at the pre-registered test
+  point (a clean, informative negative result that disables veto authority).
+- **Supported (not proven)** if they do, claimable only within this universe, signal menu, regime
+  window, baseline version, and horizon. Positive results require later replication.
+
+Conclusiveness is asymmetric: we can falsify cleanly; we can only fail to reject on a narrow slice.
+The artifact is the governed measurement, whichever way the number lands.
 
 ---
 
@@ -60,13 +79,19 @@ and the frozen `evidence_score`). They differ only as below.
 
 ## 3. The single pre-registered primary cell
 
-To avoid multiple-comparison fishing across buckets × baselines × horizons × reason-codes, exactly
-**one** cell is the headline test. Everything else is exploratory/robustness — reported, never the
+To avoid multiple-comparison fishing across buckets, baselines, horizons, and reason-codes, exactly
+one cell is the headline test. Everything else is exploratory or robustness: reported, never the
 headline.
 
-> **PRIMARY:** In the **context-present** bucket, does **`context_adjustment`** predict
-> **5-trading-day forward R** after controlling for **`evidence_score_v1`**, at the pre-registered
-> bar (§9), measured at the pre-registered test point (§10)?
+> **PRIMARY (v1.1):** Among deterministic-eligible candidates carrying a pre-registered
+> material-context category (section 15.1), do the candidates that Arm 3 vetoes or marks
+> `context_adjustment = negative` underperform the rest on 5-trading-day forward R, after controlling
+> for `evidence_score_v1` and the structured event flags, at the pre-registered bar (section 9) and
+> test point (section 10)?
+
+The material-context categories are pooled into this one cell; per-category effects (by `reason_code`)
+are exploratory. The former primary, the incremental IC of `context_adjustment` (H2), is the lead
+secondary endpoint.
 
 ---
 
@@ -319,3 +344,79 @@ dependency** (downtime = lost context-present samples).
   adjustments showed positive incremental predictive value."* → requires later replication across
   horizon / regime / signal family / baseline version / time window.
 - Always: *"This is a governed measurement system, not a universal proof of market alpha."*
+
+---
+
+## 15. v1.1 amendments (pre-data, adopted from the experiment audit)
+
+Adopted before any data collection to raise statistical conclusiveness and trading usefulness. These
+amend, and where noted supersede, the sections above.
+
+**15.1 Material-context categories (supersedes the generic context-present primary).** The primary and
+secondary tests run only on candidates carrying at least one pre-registered material-context category,
+which raises signal density by removing the dilution of irrelevant context. Frozen category list:
+earnings surprise or drift; guidance raise or cut; insider cluster buying; secondary offering or
+dilution; FDA, legal, or regulatory event; index inclusion or deletion; major analyst initiation,
+upgrade, or downgrade; M&A rumour or confirmation; accounting or auditor concern; short-squeeze setup.
+A candidate is material-context when a deterministic detector assigns it one of these categories. The
+categories are pooled for the primary; per-category is exploratory.
+
+**15.2 Research snapshots, not more trades (raises N without changing the strategy).** The live-shadow
+track records multiple timestamped research observations per day (for example open plus 30 minutes,
+midday, close minus 30 minutes, post-close), each scored by all arms but only a subset ever tradable.
+The same ticker recurring across snapshots and days creates dependence, so all inference uses
+clustered standard errors by ticker and by date, or a block bootstrap. Target order of magnitude:
+thousands of shadow-scored observations over a year, not hundreds.
+
+**15.3 Negative and positive controls (credibility and leakage guard).** Negative controls, which must
+show no effect: future-shuffled context, randomly reassigned context packets, stale-only context,
+permuted ticker labels, random `reason_code`. If the contextual arm works on any of these, treat it as
+leakage or overfitting and halt. Positive controls, which must be detectable or the harness is not
+sensitive enough to test the thesis: a momentum signal, an earnings-surprise or PEAD proxy, an
+illiquidity or high-spread execution penalty, and elevated MAE under high realised volatility.
+
+**15.4 Secondary endpoints (logged, not headline).** 1-day and 3-day forward ATR return; max adverse
+excursion; max favourable excursion; stop-hit probability; gap-against probability; realised
+volatility; hit rate conditional on the adjustment; top-decile-minus-bottom-decile spread. The veto's
+value is expected to show most in the risk endpoints (MAE, stop-hit, gap-against), not in mean return.
+
+**15.5 Economic-usefulness thresholds (define before significance).** A result must clear an economic
+floor, tied to a trading decision, to count as useful: incremental IC above 0.03; veto avoided loss
+above 0.30 ATR on average; stop-hit reduction above 10 percent relative; Brier improvement above 5
+percent versus baseline; shadow-portfolio Sharpe uplift above 0.2; drawdown reduction above 10 to 15
+percent. Statistical significance without clearing the floor is reported as "real but not economically
+useful."
+
+**15.6 Narrow historical context track (`context_packet_historical_v0`).** To add power without unsafe
+reconstruction, build a thin historical context set from high-timestamp-integrity sources only: SEC
+filings, earnings dates and results, and scheduled macro events. Exclude social sentiment, revised
+fundamentals, and anything whose as-of time is ambiguous. A narrow but clean historical Arm-3-like
+dataset of thousands of observations is worth more than a rich live one with no power.
+
+**15.7 Strong fitted baseline (already in the ladder).** `evidence_score_v2` is a regularised model on
+the same structured features (logistic, ridge, or gradient-boosted trees), fit and frozen on a
+separate period. If Arm 2 beats Champion v1 but not v2, the LLM is a mediocre non-linear combiner, not
+an intelligence layer. v1 reports against v1 only; v2 gets its own evaluation period.
+
+---
+
+## 16. Deferred to v2 or conditional (explicitly not built in v1)
+
+The audit's own top finding was overbuilding risk. These are deferred to protect against it.
+
+- **Rich quantitative LLM output** (probability forecasts, base/bull/bear cases, sizing multiplier):
+  conditional on Gate A showing the coarse instrument is stable. If it passes, add one continuous field
+  (for example `prob_positive_5d`) and calibrate it; do not add a full forecast schema up front. A rich
+  output before Gate A passes would reintroduce the exact instrument noise the gate exists to catch.
+- **Shadow-portfolio factory:** at most three parallel paper books later (Champion, Contextual,
+  Contextual-veto-only) as economic interpretation, not the main statistical test. Not seven.
+- **Universe expansion** (Russell 1000 or 2000) for event density: research-only, later, after the
+  snapshots (15.2) and the historical track (15.6) are exhausted as cheaper sources of N.
+- **Ranking-metric frame:** adopt ranking as closer to how the bot acts, but keep one primary ranking
+  metric, not a suite of five.
+- **Bayesian governance tracking:** a lightweight posterior on the veto effect for promote / demote
+  decisions, later; not a parallel inferential framework.
+- **Two-stage architecture** (LLM emits structured event and materiality labels, a deterministic
+  policy maps labels to action): the right long-run shape, and more robust than trusting raw LLM
+  conviction. Pilot it through load-bearing `reason_code` to action mapping, then graduate after the
+  veto result is in.
