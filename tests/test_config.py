@@ -67,6 +67,32 @@ class TestValidate(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.validate()
 
+    def test_index_hedge_weight_above_half_fails(self):
+        # F1: an oversized hedge weight must be rejected
+        self._patch("INDEX_HEDGE_WEIGHT", 2.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_index_hedge_weight_zero_fails(self):
+        self._patch("INDEX_HEDGE_WEIGHT", 0.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_short_size_scale_above_one_fails(self):
+        self._patch("SHORT_SIZE_SCALE", 1.5)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_max_short_standalone_ratio_above_one_fails(self):
+        self._patch("MAX_SHORT_STANDALONE_RATIO", 1.5)
+        with self.assertRaises(ValueError):
+            config.validate()
+
+    def test_max_short_hedge_ratio_zero_fails(self):
+        self._patch("MAX_SHORT_HEDGE_RATIO", 0.0)
+        with self.assertRaises(ValueError):
+            config.validate()
+
     def test_max_daily_notional_usd_zero_fails(self):
         self._patch("MAX_DAILY_NOTIONAL_USD", 0.0)
         with self.assertRaises(ValueError):

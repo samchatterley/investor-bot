@@ -28,7 +28,7 @@ def _load_pipeline() -> None:
     """
     global _pipeline
     try:
-        from transformers import pipeline as _hf_pipeline  # type: ignore[import]
+        from transformers import pipeline as _hf_pipeline
 
         _pipeline = _hf_pipeline(
             "text-classification",

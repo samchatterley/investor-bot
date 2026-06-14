@@ -14,6 +14,7 @@ import json
 import logging
 import os
 from datetime import date
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
@@ -224,14 +225,20 @@ def _compute_altman_z(ticker: yf.Ticker) -> float | None:
         ebit = _val(_row(fin, "EBIT"), 0)
         revenue = _val(_row(fin, "Total Revenue"), 0)
         total_liab = _val(_row(bs, "Total Liabilities Net Minority Interest"), 0)
-        market_cap = info.get("marketCap")
+        _mc = info.get("marketCap")
+        market_cap = float(_mc) if isinstance(_mc, (int, float)) else None
 
-        if any(
-            v is None
-            for v in [working_capital, retained_earnings, ebit, revenue, total_liab, market_cap]
+        # Explicit per-value None checks (not any()) so the type checker can narrow each to
+        # float for the arithmetic below.
+        if (
+            working_capital is None
+            or retained_earnings is None
+            or ebit is None
+            or revenue is None
+            or total_liab is None
+            or market_cap is None
+            or total_liab == 0
         ):
-            return None
-        if total_liab == 0:
             return None
 
         x1 = working_capital / total_assets
@@ -427,8 +434,12 @@ def refresh_fundamental_cache(
 # ── Per-field getter ──────────────────────────────────────────────────────────
 
 
-def _get_field(sym: str, field: str) -> object:
-    """Return a cached field for sym, fetching if missing or stale."""
+def _get_field(sym: str, field: str) -> Any:
+    """Return a cached field for sym, fetching if missing or stale.
+
+    Values come from a JSON cache (numeric, dynamically typed), so the return is ``Any``;
+    each public getter coerces to its declared type after a None check.
+    """
     cache = _load_cache()
     entry = cache.get(sym)
     if entry is None or _is_stale(entry):

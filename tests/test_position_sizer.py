@@ -313,9 +313,20 @@ class TestDrawdownScalar(unittest.TestCase):
         self.assertEqual(drawdown_scalar(history), 1.0)
 
     def test_implausible_values_filtered_out(self):
-        # Records below $1000 are ignored; only the plausible ones count
+        # Records below the relative plausibility floor (half the peak) are ignored
         history = self._history([100_000, 100_000, 500])
         # Only two plausible values: 100_000 and 100_000 — no drawdown → 1.0
+        self.assertEqual(drawdown_scalar(history), 1.0)
+
+    def test_small_account_drawdown_now_detected(self):
+        # R1: a ~$150 account in >5% drawdown must reduce size. The old hardcoded
+        # $1,000 floor discarded every record on a small account → always returned 1.0.
+        history = self._history([150.0, 150.0, 140.0])  # -6.7% from peak
+        self.assertEqual(drawdown_scalar(history), 0.5)
+
+    def test_small_account_corrupt_record_still_filtered(self):
+        # Relative floor (half of $150 = $75) still discards a corrupt near-zero record.
+        history = self._history([150.0, 150.0, 5.0])  # 5.0 < 75 → filtered
         self.assertEqual(drawdown_scalar(history), 1.0)
 
     def test_only_one_plausible_value_returns_one(self):
@@ -347,8 +358,19 @@ class TestSignalSharpeMultiplier(unittest.TestCase):
         # vix_fear_reversion is globally disabled; zeroed to prevent AI from inflating size
         self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["vix_fear_reversion"], 0.0)
 
-    def test_range_reversion_is_baseline(self):
-        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["range_reversion"], 1.0)
+    def test_range_reversion_is_zero(self):
+        # R2: range_reversion is now globally disabled; multiplier zeroed to match the book.
+        self.assertEqual(SIGNAL_SHARPE_MULTIPLIER["range_reversion"], 0.0)
+
+    def test_v199_disabled_longs_are_zero(self):
+        # R2: OBV longs, volume_climax_reversal and tax_loss_reversal disabled in v1.99.
+        for sig in (
+            "obv_divergence",
+            "obv_acceleration",
+            "volume_climax_reversal",
+            "tax_loss_reversal",
+        ):
+            self.assertEqual(SIGNAL_SHARPE_MULTIPLIER[sig], 0.0, sig)
 
 
 class TestGetSignalSizeMultiplier(unittest.TestCase):

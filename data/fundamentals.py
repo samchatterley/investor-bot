@@ -57,7 +57,7 @@ def _get(path: str, params: dict | None = None) -> dict | list | None:
 
 def _fetch_ratios(sym: str) -> tuple[str, dict]:
     raw = _get("/stock/metric", {"symbol": sym, "metric": "all"})
-    if not raw:
+    if not isinstance(raw, dict):  # None, empty, or an unexpected list shape
         return sym, {}
     m = raw.get("metric") or {}
     # Finnhub reports ROE and margins as percentages — convert to decimal ratios

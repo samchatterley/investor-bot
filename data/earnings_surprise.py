@@ -84,59 +84,61 @@ def _live_fetch_earnings(
         if sym in ETF_SYMBOLS:
             result[sym] = None
             continue
+        # Fetch AND parse are wrapped together (D2): a single symbol with an unexpected
+        # earnings_dates schema must not abort the whole batch — set None and continue.
         try:
             time.sleep(_REQ_DELAY)
             df: pd.DataFrame | None = yf.Ticker(sym).earnings_dates
+
+            if df is None or df.empty:
+                result[sym] = None
+                continue
+
+            df = df.dropna(subset=["Reported EPS", "Surprise(%)"])
+            if df.empty:
+                result[sym] = None
+                continue
+
+            df = df[df.index >= pd.Timestamp(cutoff)]
+            if df.empty:
+                result[sym] = None
+                continue
+
+            row = df.iloc[0]
+            surprise_pct = float(row["Surprise(%)"])
+            earnings_ts = row.name
+            earnings_date_str = earnings_ts.date().isoformat()
+            days_ago = (datetime.now(UTC) - earnings_ts.to_pydatetime()).days
+
+            surprise_data = None
+            if surprise_pct >= _MIN_SURPRISE_PCT:
+                surprise_data = {
+                    "earnings_surprise_pct": round(surprise_pct, 2),
+                    "earnings_date": earnings_date_str,
+                    "earnings_days_ago": days_ago,
+                    "pead_candidate": True,
+                }
+                logger.debug(
+                    f"PEAD {sym}: +{surprise_pct:.1f}% surprise on {earnings_date_str} ({days_ago}d ago)"
+                )
+
+            miss_data = None
+            if surprise_pct <= _MAX_MISS_PCT:
+                miss_data = {
+                    "earnings_miss_pct": round(surprise_pct, 2),
+                    "earnings_miss_date": earnings_date_str,
+                    "earnings_miss_days_ago": days_ago,
+                    "earnings_miss_candidate": True,
+                }
+                logger.debug(
+                    f"Neg-PEAD {sym}: {surprise_pct:.1f}% miss on {earnings_date_str} ({days_ago}d ago)"
+                )
+
+            result[sym] = {"surprise": surprise_data, "miss": miss_data}
         except Exception as exc:
-            logger.debug(f"earnings_dates fetch failed for {sym}: {exc}")
+            logger.debug(f"earnings parse failed for {sym}: {exc}")
             result[sym] = None
             continue
-
-        if df is None or df.empty:
-            result[sym] = None
-            continue
-
-        df = df.dropna(subset=["Reported EPS", "Surprise(%)"])
-        if df.empty:
-            result[sym] = None
-            continue
-
-        df = df[df.index >= pd.Timestamp(cutoff)]
-        if df.empty:
-            result[sym] = None
-            continue
-
-        row = df.iloc[0]
-        surprise_pct = float(row["Surprise(%)"])
-        earnings_ts = row.name
-        earnings_date_str = earnings_ts.date().isoformat()
-        days_ago = (datetime.now(UTC) - earnings_ts.to_pydatetime()).days
-
-        surprise_data = None
-        if surprise_pct >= _MIN_SURPRISE_PCT:
-            surprise_data = {
-                "earnings_surprise_pct": round(surprise_pct, 2),
-                "earnings_date": earnings_date_str,
-                "earnings_days_ago": days_ago,
-                "pead_candidate": True,
-            }
-            logger.debug(
-                f"PEAD {sym}: +{surprise_pct:.1f}% surprise on {earnings_date_str} ({days_ago}d ago)"
-            )
-
-        miss_data = None
-        if surprise_pct <= _MAX_MISS_PCT:
-            miss_data = {
-                "earnings_miss_pct": round(surprise_pct, 2),
-                "earnings_miss_date": earnings_date_str,
-                "earnings_miss_days_ago": days_ago,
-                "earnings_miss_candidate": True,
-            }
-            logger.debug(
-                f"Neg-PEAD {sym}: {surprise_pct:.1f}% miss on {earnings_date_str} ({days_ago}d ago)"
-            )
-
-        result[sym] = {"surprise": surprise_data, "miss": miss_data}
 
     return result
 

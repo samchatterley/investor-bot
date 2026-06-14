@@ -41,9 +41,9 @@ logger = logging.getLogger(__name__)
 _CACHE_PATH = os.path.join(LOG_DIR, "sentiment_cache.json")
 
 try:
-    from pytrends.request import TrendReq as _TrendReq  # type: ignore[import-untyped]
+    from pytrends.request import TrendReq as _TrendReq
 except ImportError:
-    _TrendReq = None  # type: ignore[assignment,misc]
+    _TrendReq = None
 _AAII_URL = "https://www.aaii.com/files/surveys/sentiment.xls"
 _AAII_HEADERS = {
     "User-Agent": (

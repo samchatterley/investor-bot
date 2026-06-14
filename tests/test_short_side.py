@@ -148,6 +148,43 @@ class TestPlaceShortOrder(unittest.TestCase):
             result = place_short_order(client, "WEAK", 3)
         self.assertEqual(result.status, OrderStatus.TIMEOUT)
 
+    def test_late_fill_recovered_after_timeout(self):
+        """E1: a short that fills just after wait_for_fill gives up is recovered as FILLED,
+        not lost to TIMEOUT (mirrors place_buy_order)."""
+        from execution.trader import place_short_order
+
+        client = self._client()
+        # Final get_order_by_id → enum-status "filled" 4.0 (recovery reads status.value).
+        late = _mock_order(filled_qty="4.0", filled_avg_price="50.0")
+        late.status = MagicMock(value="filled")
+        client.get_order_by_id.return_value = late
+        with (
+            _meta_patcher(self.tmpdir),
+            patch("execution.trader.wait_for_fill", return_value=None),  # poll timed out
+        ):
+            result = place_short_order(client, "WEAK", 4)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 4.0)
+
+    def test_late_fill_recovered_without_ledger(self):
+        # trader.py 1102->1110: late-fill recovery returns FILLED when _ledger is False.
+        import sys
+
+        from execution.trader import place_short_order
+
+        client = self._client()
+        late = _mock_order(filled_qty="4.0", filled_avg_price="50.0")
+        late.status = MagicMock(value="filled")
+        client.get_order_by_id.return_value = late
+        with (
+            _meta_patcher(self.tmpdir),
+            patch("execution.trader.wait_for_fill", return_value=None),
+            patch.dict(sys.modules, {"utils.order_ledger": None}),
+        ):
+            result = place_short_order(client, "WEAK", 4)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertAlmostEqual(result.filled_qty, 4.0)
+
     def test_uses_sell_side(self):
         from alpaca.trading.enums import OrderSide
 
@@ -486,6 +523,64 @@ class TestScanShortCandidates(unittest.TestCase):
         result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
         self.assertEqual(len(result), 1)
         self.assertIn("high_short_interest", result[0]["matched_signals"])
+
+    def test_path_d_fires_on_failed_bounce_short(self):
+        """S1: Path D surfaces a mid-RS post-earnings-gapdown failed-bounce candidate."""
+        from execution.stock_scanner import scan_short_candidates
+
+        snaps = [
+            _snap(
+                symbol="GAPPER",
+                rs_rank_pct=50.0,  # mid-band → Paths A/B/C don't fire
+                earnings_gap_pct=-9.0,
+                gap_failed_bounce=True,
+                vol_ratio=1.8,
+                high_short_interest=False,
+                earnings_miss_candidate=False,
+            )
+        ]
+        result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+        self.assertIn("post_earnings_gapdown_failed_bounce", result[0]["matched_signals"])
+
+    def test_path_d_blocks_naive_earnings_gap_down_live(self):
+        """A3: even at high continuation volume, the superseded earnings_gap_down is blocked live;
+        only the failed-bounce short surfaces."""
+        from execution.stock_scanner import scan_short_candidates
+
+        snaps = [
+            _snap(
+                symbol="GAPPER",
+                rs_rank_pct=50.0,
+                earnings_gap_pct=-9.0,
+                gap_failed_bounce=True,
+                vol_ratio=3.0,  # ≥2.5 → earnings_gap_down WOULD fire if not blocked
+                high_short_interest=False,
+                earnings_miss_candidate=False,
+            )
+        ]
+        result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+        self.assertIn("post_earnings_gapdown_failed_bounce", result[0]["matched_signals"])
+        self.assertNotIn("earnings_gap_down", result[0]["matched_signals"])
+
+    def test_path_d_no_failed_bounce_does_not_fire(self):
+        """A recent gap-down with no failed bounce yet is not surfaced by Path D."""
+        from execution.stock_scanner import scan_short_candidates
+
+        snaps = [
+            _snap(
+                symbol="GAPPER",
+                rs_rank_pct=50.0,
+                earnings_gap_pct=-9.0,
+                gap_failed_bounce=False,  # bounce hasn't failed
+                vol_ratio=1.8,
+                high_short_interest=False,
+                earnings_miss_candidate=False,
+            )
+        ]
+        result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
+        self.assertEqual(result, [])
 
     def test_reversal_path_all_signals_disabled_returns_empty(self):
         """Reversal path: rs_rank >= 65 but all signals disabled and no hsi → empty."""
@@ -1695,7 +1790,8 @@ class TestScanShortCandidatesEventPath(unittest.TestCase):
     def _gap_snap(self, **kwargs):
         base = {
             "symbol": "AAPL",
-            "earnings_gap_pct": -8.0,
+            "earnings_gap_pct": -8.0,  # ≤ egdfb_gap_pct_max (-7.0)
+            "gap_failed_bounce": True,  # S1/A3: failed-bounce continuation is the live trigger
             "vol_ratio": 3.0,
             "avg_volume": 1_000_000,
             "rs_rank_pct": 40.0,  # middle band — wouldn't fire on paths A/B/C
@@ -1708,7 +1804,9 @@ class TestScanShortCandidatesEventPath(unittest.TestCase):
 
         result = scan_short_candidates([self._gap_snap()], "STRESS_RISK_OFF", set())
         self.assertEqual(len(result), 1)
-        self.assertIn("earnings_gap_down", result[0]["matched_signals"])
+        # A3: naive earnings_gap_down is blocked live; the failed-bounce short surfaces instead.
+        self.assertIn("post_earnings_gapdown_failed_bounce", result[0]["matched_signals"])
+        self.assertNotIn("earnings_gap_down", result[0]["matched_signals"])
 
     def test_path_d_skips_when_no_gap_field(self):
         from execution.stock_scanner import scan_short_candidates

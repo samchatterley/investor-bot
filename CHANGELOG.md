@@ -4,6 +4,41 @@ Full version history. Most recent first.
 
 ---
 
+### 1.100 — June 2026 — 100th release: full line-by-line audit (all ~89k lines) + mypy gate cleanup
+
+The 100th commit. Audited every source file line-by-line (report in `docs/audit_v1.100.md`) and cleared the mypy backlog. No Critical findings — the fail-closed broker core, fail-safe data layer, and dormant-by-design AI self-modification all held up. The fixes below are the High/Medium items that audit surfaced.
+
+**Risk / sizing:**
+- **R1 — drawdown_scalar plausibility floor is now account-relative.** The hardcoded `_MIN_PLAUSIBLE_VALUE = 1_000.0` would have discarded the entire portfolio-value history of a sub-$1k account (e.g. the ~$150 `SMALL_ACCOUNT_MODE` account), silently disabling the drawdown circuit-breaker. Replaced with `max(10.0, peak * 0.5)` — scales to the account and still rejects implausible zero/garbage reads.
+- **R2 — `SIGNAL_SHARPE_MULTIPLIER` brought back in sync with the book.** `range_reversion` moved to the disabled (0.0) section and the v1.99-disabled longs (`obv_divergence`, `obv_acceleration`, `volume_climax_reversal`, `tax_loss_reversal`) added at 0.0. Documentation/telemetry only — these signals can never fire — but it stops the AI prompt from quoting a non-zero multiplier for a dead signal.
+
+**Macro / calendar:**
+- **M1 — `get_macro_risk` docstring corrected.** NFP is *deliberately* excluded from the high-risk set (it releases pre-market and the reaction is absorbed before our 10:00 ET buy window — enforced by `test_nfp_date_is_not_high_risk`); the docstring wrongly implied it was included.
+- **M2 — macro-calendar expiry warning.** `get_macro_risk` now logs a warning when queried past the last hardcoded macro-event date so a stale calendar can't silently degrade to "no events ever" without an operator signal.
+
+**Short side:**
+- **S1 / A3 — live Path D rebuilt around the failed-bounce short.** `scan_short_candidates` Path D now fires `post_earnings_gapdown_failed_bounce` (the v1.99 catalyst short) and blocks the superseded naive `earnings_gap_down` in every live path (`_live_blocked`); `earnings_gap_down` remains active in the backtest engine only.
+- **E1 — late-fill recovery for shorts.** `place_short_order` now mirrors `place_buy_order`: if the order fills just after `wait_for_fill` gives up, a final `get_order_by_id` check recovers it as FILLED instead of losing it to a spurious TIMEOUT.
+- **D1 — `get_short_interest` schema docstring** now documents the `short_pct_float` field it actually returns.
+- **S2 — `score_candidate` co-firing term clamped.** The stale `n_signals / 8` denominator is now `min(n_signals, 5) / 5`, bounding the telemetry score to [0, 1] (display/ranking only — does not gate trades).
+
+**Index hedge (opt-in, from v1.99):**
+- **A1 — index hedge respects the fat-finger / daily-notional guards.** `_execute_index_hedge` now runs `check_pre_trade` (against `MAX_SINGLE_ORDER_USD` / `MAX_DAILY_NOTIONAL_USD`) before placing, and books the notional into the daily tally on fill — previously the hedge could bypass both limits.
+- **A2 — documented the no-stop design** of the index hedge (covered by regime exit, not a trailing stop) so it reads as intentional.
+
+**Config / data hardening:**
+- **F1 — `config.validate()` bounds new params.** `INDEX_HEDGE_WEIGHT` ∈ (0, 0.5]; `SHORT_SIZE_SCALE`, `MAX_SHORT_STANDALONE_RATIO`, `MAX_SHORT_HEDGE_RATIO` ∈ (0, 1] — fail-fast on misconfiguration.
+- **F2 — pruned stale `SIGNAL_MAX_HOLD_DAYS` entries** for the now-disabled signals so the map reflects only the active book.
+- **D2 — per-symbol fault isolation in `_live_fetch_earnings`.** A malformed payload for one symbol no longer aborts the whole batch — fetch+parse run in a single per-symbol `try`, logging and skipping the bad symbol.
+
+**Types:** cleared the mypy backlog and expanded the `[tool.mypy]` gate to 11 modules (`disable_error_code=["import-untyped"]`); explicit None-checks and coercions in `data/fundamental_cache.py` / `data/fundamentals.py`, casing fix in `risk/exit_optimiser.py`, removed stale `type: ignore`s across the data feeds.
+
+**Methodology note (B-obs):** the v1.98/v1.99 signal disables were validated on a 2020–2022 / 2015–2026 window. They should be re-validated on the pre-2024 holdout window before being treated as permanent; tracked for a future release.
+
+**Tests:** new coverage for every fix above (drawdown floor, macro expiry, Path D failed-bounce, short late-fill recovery, index-hedge pre-trade gating, earnings parse isolation, config bounds). Full 100% coverage maintained.
+
+---
+
 ### 1.99 — June 2026 — Signal book rationalisation + short-book rebuild (borrow model, catalyst short, index hedge)
 
 Continued the v1.98 rationalisation after a targeted ΔSharpe test and a short-side design review, then rebuilt the short book around the structural problems that review identified.
@@ -14,12 +49,6 @@ Continued the v1.98 rationalisation after a targeted ΔSharpe test and a short-s
 - **Live borrow gate** — `_execute_shorts` estimates each candidate's borrow rate, skips hard-to-borrow names (before the squeeze gate, which uses a lower SI threshold), and records `borrow_rate_annual` on every short trade.
 - **`post_earnings_gapdown_failed_bounce`** (new active short) — negative-PEAD continuation entered *after* the reflexive bounce fails, not on the gap bar. Computed live in `scan_short_universe` from daily OHLCV (`detect_failed_gapdown`): a ≥7% earnings/news gap-down whose low is subsequently broken. The failed-bounce filter removes the dead-cat-bounce losses that make the naive gap-day short unreliable — the one short with a documented short-horizon edge. Accumulating live evidence.
 - **`index_regime_hedge`** (new, opt-in) — `_execute_index_hedge` shorts an index ETF (`INDEX_HEDGE_SYMBOL`, default SPY) at `INDEX_HEDGE_WEIGHT` of the portfolio in confirmed bear regimes (`INDEX_HEDGE_REGIMES`) and covers when the regime exits. Index ETFs borrow cheap, are deeply liquid, and carry no single-name squeeze risk. Disabled by default (`INDEX_HEDGE_ENABLED`) — it is a live order path; honours `dry_run`/`_live_shadow`. Backtest overlay via `compute_index_hedge_pnl`, reported as `result["index_hedge"]`.
-
-**Long signals disabled (`GLOBALLY_DISABLED`):**
-- `obv_divergence` + `obv_acceleration` — joint removal **ΔSharpe +0.12, ΔReturn +7.0%** on the 2020–2022 combined long/short window (targeted elimination test, `scripts/obv_elimination_test.py`). The two together were 44% of all long trades but the mechanism is slot competition: removing them frees slots for `pead` (604→692 trades, WR 54%→56%). `obv_acceleration` was WR 44% / negative avg in every window; `obv_divergence` was regime-inconsistent (+0.50% in 2020–2022, −0.07% on the full 2015–2026 run).
-
-**Short signals disabled (`SHORT_GLOBALLY_DISABLED`):**
-- `death_cross`, `altman_distress_short`, `gross_margin_deterioration_short` — the three active fundamental shorts that were dragging in the combined production backtest. All three are *confirming* signals (fire after the market has already shorted the name) and encode multi-month theses that cannot resolve inside our 1–5 day hold.
 
 **Long signals disabled (`GLOBALLY_DISABLED`):**
 - `obv_divergence` + `obv_acceleration` — joint removal **ΔSharpe +0.12, ΔReturn +7.0%** on the 2020–2022 combined long/short window (targeted elimination test, `scripts/obv_elimination_test.py`). The two together were 44% of all long trades but the mechanism is slot competition: removing them frees slots for `pead` (604→692 trades, WR 54%→56%). `obv_acceleration` was WR 44% / negative avg in every window; `obv_divergence` was regime-inconsistent (+0.50% in 2020–2022, −0.07% on the full 2015–2026 run).

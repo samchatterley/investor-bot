@@ -6241,7 +6241,15 @@ class TestGoogleTrendsInjectionException(RunInnerBase):
 class TestExecuteIndexHedge(unittest.TestCase):
     """_execute_index_hedge: opt-in portfolio hedge that shorts an index ETF in bear regimes."""
 
-    def _deps(self, *, open_shorts=None, ledger_raises=False, place_result=None, price=400.0):
+    def _deps(
+        self,
+        *,
+        open_shorts=None,
+        ledger_raises=False,
+        place_result=None,
+        price=400.0,
+        daily_so_far=0.0,
+    ):
         from core.deps import TradingDeps
 
         events: list = []
@@ -6254,6 +6262,12 @@ class TestExecuteIndexHedge(unittest.TestCase):
 
                     raise OrderLedgerUnavailable("ledger down")
                 return set(open_shorts or [])
+
+            def get_daily_notional(self, _date):
+                return daily_so_far
+
+            def add_daily_notional(self, _date, amount):
+                events.append(("daily_notional", amount))
 
             def place_short_order(self, _c, sym, qty):
                 orders.append((sym, qty))
@@ -6287,7 +6301,7 @@ class TestExecuteIndexHedge(unittest.TestCase):
         deps._orders = orders
         return deps
 
-    def _run(self, deps, regime_name, *, dry_run=False, live_shadow=False, pv=100_000.0):
+    def _run(self, deps, regime_name, *, dry_run=False, live_shadow=False, pv=100_000.0, today=""):
         from main import _execute_index_hedge
 
         trades: list = []
@@ -6298,6 +6312,7 @@ class TestExecuteIndexHedge(unittest.TestCase):
             all_trades=trades,
             dry_run=dry_run,
             _live_shadow=live_shadow,
+            today=today,
             deps=deps,
         )
         return trades
@@ -6326,6 +6341,79 @@ class TestExecuteIndexHedge(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         self.assertEqual(trades[0]["action"], "SHORT")
         self.assertEqual(trades[0]["decision_type"], "index_hedge")
+
+    def test_fat_finger_cap_blocks_hedge(self):
+        """A1: the hedge order is rejected when its notional exceeds MAX_SINGLE_ORDER_USD."""
+        fill = type(
+            "R", (), {"is_success": True, "filled_avg_price": 400.0, "broker_order_id": "OID"}
+        )()
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+            patch.object(config, "MAX_SINGLE_ORDER_USD", 100.0),  # $10k order >> $100 cap
+            patch.object(config, "MAX_DAILY_NOTIONAL_USD", 150_000.0),
+        ):
+            deps = self._deps(place_result=fill, price=400.0)
+            trades = self._run(deps, "STRESS_RISK_OFF", today="2026-06-12")
+        self.assertEqual(deps._orders, [])  # blocked before placement
+        self.assertEqual(trades, [])
+
+    def test_records_daily_notional_on_fill(self):
+        """A1/A2: a filled hedge adds its notional to the daily ledger (shares the budget)."""
+        fill = type(
+            "R", (), {"is_success": True, "filled_avg_price": 400.0, "broker_order_id": "OID"}
+        )()
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+            patch.object(config, "MAX_SINGLE_ORDER_USD", 50_000.0),
+            patch.object(config, "MAX_DAILY_NOTIONAL_USD", 150_000.0),
+        ):
+            deps = self._deps(place_result=fill, price=400.0)
+            trades = self._run(deps, "STRESS_RISK_OFF", today="2026-06-12")
+        self.assertEqual(deps._orders, [("SPY", 25)])
+        self.assertIn(("daily_notional", 10000.0), deps._events)  # 25 × $400
+        self.assertEqual(len(trades), 1)
+
+    def test_daily_notional_read_failure_is_tolerated(self):
+        """A1 (main.py 1006-1007): a get_daily_notional error is caught (treated as $0) and
+        the hedge still proceeds through the pre-trade check."""
+        fill = type(
+            "R", (), {"is_success": True, "filled_avg_price": 400.0, "broker_order_id": "OID"}
+        )()
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+            patch.object(config, "MAX_SINGLE_ORDER_USD", 50_000.0),
+            patch.object(config, "MAX_DAILY_NOTIONAL_USD", 150_000.0),
+        ):
+            deps = self._deps(place_result=fill, price=400.0)
+            deps.trader.get_daily_notional = MagicMock(side_effect=Exception("ledger read boom"))
+            trades = self._run(deps, "STRESS_RISK_OFF", today="2026-06-12")
+        self.assertEqual(deps._orders, [("SPY", 25)])  # proceeded despite the read failure
+        self.assertEqual(len(trades), 1)
+
+    def test_daily_notional_cap_blocks_hedge(self):
+        """A1: hedge rejected when it would breach the daily-notional cap."""
+        with (
+            patch.object(config, "INDEX_HEDGE_ENABLED", True),
+            patch.object(config, "INDEX_HEDGE_SYMBOL", "SPY"),
+            patch.object(config, "INDEX_HEDGE_WEIGHT", 0.10),
+            patch.object(config, "INDEX_HEDGE_REGIMES", frozenset({"STRESS_RISK_OFF"})),
+            patch.object(config, "MAX_SINGLE_ORDER_USD", 50_000.0),
+            patch.object(config, "MAX_DAILY_NOTIONAL_USD", 12_000.0),
+        ):
+            # $5k already spent + $10k hedge = $15k > $12k cap
+            deps = self._deps(price=400.0, daily_so_far=5_000.0)
+            trades = self._run(deps, "STRESS_RISK_OFF", today="2026-06-12")
+        self.assertEqual(deps._orders, [])
+        self.assertEqual(trades, [])
 
     def test_no_double_hedge_when_already_on(self):
         with (

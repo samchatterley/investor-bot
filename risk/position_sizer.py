@@ -140,23 +140,24 @@ def get_max_positions(portfolio_value: float) -> int:
 
 _DRAWDOWN_REDUCE_THRESHOLD = -5.0  # % below all-time peak that triggers size reduction
 _DRAWDOWN_SIZE_SCALAR = 0.5  # multiply notional by this when in drawdown
-_MIN_PLAUSIBLE_VALUE = 1_000.0  # ignore placeholder/corrupted records below this
 
 
 def drawdown_scalar(portfolio_history: list[dict]) -> float:
     """Return 0.5 when portfolio is >5% below its all-time peak, else 1.0.
 
     Guards against opening full-size positions into a sustained drawdown.
-    Mirrors the plausibility filter used by the circuit breaker.
+    Plausibility floor scales with account size (half the peak, floored at $10) so the
+    filter works in SMALL_ACCOUNT_MODE — a hardcoded $1,000 floor previously discarded
+    every record on a ~$150 account, silently disabling drawdown-adaptive sizing.
+    Mirrors the filter in risk_manager.check_circuit_breaker.
     """
     if len(portfolio_history) < 2:
         return 1.0
     try:
-        values = [
-            r["account_after"]["portfolio_value"]
-            for r in portfolio_history
-            if r["account_after"]["portfolio_value"] >= _MIN_PLAUSIBLE_VALUE
-        ]
+        _raw_values = [r["account_after"]["portfolio_value"] for r in portfolio_history]
+        _peak_raw = max(_raw_values) if _raw_values else 0.0
+        _min_plausible = max(10.0, _peak_raw * 0.5)
+        values = [v for v in _raw_values if v >= _min_plausible]
         if len(values) < 2:
             return 1.0
         peak = max(values)
@@ -197,7 +198,6 @@ def small_account_size(portfolio_value: float, max_single_order: float = 55.0) -
 SIGNAL_SHARPE_MULTIPLIER: dict[str, float] = {
     "iv_compression": 1.5,  # Sharpe +0.62 in isolation — strongest signal
     "pead": 1.3,  # Sharpe +0.45 — high quality, many trades
-    "range_reversion": 1.0,  # Sharpe +0.16 — baseline
     "inside_day_breakout": 1.0,  # Sharpe +0.09
     "momentum": 1.0,  # Sharpe +0.05
     "macd_crossover": 1.0,  # Sharpe +0.03
@@ -206,13 +206,19 @@ SIGNAL_SHARPE_MULTIPLIER: dict[str, float] = {
     "gap_and_go": 0.8,  # Sharpe -0.11 in isolation — reduce size
     "trend_pullback": 0.8,  # Sharpe -0.05
     "mean_reversion": 0.8,  # Sharpe -0.06
-    # Globally disabled — multiplier defined only to prevent KeyError on legacy positions.
-    # These signals can never fire; entries here are harmless and serve as documentation.
+    # Globally disabled (R2: kept current with GLOBALLY_DISABLED) — multiplier defined only as
+    # documentation. These never fire; get_signal_size_multiplier defaults to 1.0 for any
+    # signal absent here, so new active signals (options/squeeze/sentiment) are unpenalised.
     "breakout_52w": 0.0,
     "rsi_divergence": 0.0,
     "rs_leader": 0.0,
     "momentum_12_1": 0.0,
     "vix_fear_reversion": 0.0,
+    "range_reversion": 0.0,
+    "volume_climax_reversal": 0.0,
+    "tax_loss_reversal": 0.0,
+    "obv_divergence": 0.0,
+    "obv_acceleration": 0.0,
 }
 
 

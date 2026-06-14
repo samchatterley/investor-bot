@@ -1,6 +1,9 @@
+import logging
 from datetime import date, timedelta
 
 from config import today_et
+
+logger = logging.getLogger(__name__)
 
 # High-risk scheduled macro events for 2026.
 # On these days, volatility is structurally elevated and unpredictable —
@@ -158,17 +161,37 @@ def get_seasonal_context(check_date: date | None = None) -> dict:
     }
 
 
+# High-risk days flagged for buy suspension. NFP is deliberately EXCLUDED: it releases at
+# 08:30 ET, before the 10:00 ET buy window, so its gap reaction is already priced by the time
+# we trade. FOMC (14:00 ET, intraday) and CPI (rate-expectation driver with all-day vol) are
+# flagged. NFP dates are still tracked for the calendar-freshness boundary below.
+_HIGH_RISK_DATES = FOMC_ANNOUNCEMENT_DATES | CPI_RELEASE_DATES
+_LAST_MACRO_EVENT_DATE = max(FOMC_ANNOUNCEMENT_DATES | CPI_RELEASE_DATES | NFP_RELEASE_DATES)
+
+
 def get_macro_risk(check_date: date | None = None) -> dict:
     """
     Returns {'is_high_risk': bool, 'event': str | None}.
-    High-risk days: FOMC announcements, CPI releases, NFP releases.
+
+    High-risk days: FOMC announcements and CPI releases. NFP is intentionally NOT flagged —
+    it releases pre-market (08:30 ET), so its reaction is already in prices by the 10:00 ET
+    buy window (see test_nfp_date_is_not_high_risk).
+
+    The calendar is hardcoded through _LAST_MACRO_EVENT_DATE; past that, no days are flagged
+    and a logged warning fires so the silent degradation is visible and the calendar refreshed (M2).
     """
     if check_date is None:
         check_date = today_et()
 
-    all_risk_dates = FOMC_ANNOUNCEMENT_DATES | CPI_RELEASE_DATES
+    if check_date > _LAST_MACRO_EVENT_DATE:
+        logger.warning(
+            "macro_calendar: %s is past the last hardcoded event date (%s) — "
+            "macro high-risk days are no longer flagged. Refresh FOMC/CPI/NFP dates.",
+            check_date,
+            _LAST_MACRO_EVENT_DATE,
+        )
 
-    if check_date in all_risk_dates:
+    if check_date in _HIGH_RISK_DATES:
         return {"is_high_risk": True, "event": EVENT_LABELS.get(check_date, "Macro event")}
 
     return {"is_high_risk": False, "event": None}

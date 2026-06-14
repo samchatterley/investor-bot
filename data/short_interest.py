@@ -161,8 +161,9 @@ def get_short_interest(
     Result schema per symbol::
 
         {
-            "short_ratio":              float,  # days-to-cover from yfinance.info
-            "high_short_interest":      bool,   # always True when present
+            "short_ratio":              float,        # days-to-cover from yfinance.info
+            "high_short_interest":      bool,         # always True when present
+            "short_pct_float":          float | None, # short interest as fraction of float
         }
 
     Symbols with no qualifying data (or below threshold) are omitted.

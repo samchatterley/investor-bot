@@ -82,10 +82,10 @@ def fetch_series(series_id: str, observation_start: str = "2020-01-01") -> list[
     entry = cache.get(series_id, {})
 
     if entry and not _is_series_stale(entry):
-        return [tuple(pair) for pair in entry["data"]]  # type: ignore[return-value]
+        return [tuple(pair) for pair in entry["data"]]
 
     try:
-        from fredapi import Fred  # type: ignore[import-untyped]
+        from fredapi import Fred
 
         fred = Fred(api_key=key)
         raw = fred.get_series(series_id, observation_start=observation_start)

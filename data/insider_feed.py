@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from functools import lru_cache
 
-import requests  # type: ignore[import-untyped]
+import requests
 
 from config import EMAIL_FROM, LOG_DIR, STOCK_UNIVERSE, today_et
 from data.proxy_comp import get_exec_compensation, match_compensation

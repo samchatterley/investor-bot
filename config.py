@@ -123,38 +123,30 @@ MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5" if _SAM else "3"))
 # Per-signal hold limits override MAX_HOLD_DAYS for specific entry types.
 # Momentum and trend trades need room to develop; mean-reversion and news
 # catalysts play out faster and should be exited sooner.
+#
+# F2: only ACTIVE long signals + "unknown" are listed. Disabled signals (rs_leader,
+# breakout_52w, vix_fear_reversion, momentum_12_1, range_reversion, volume_climax_reversal,
+# obv_divergence, obv_acceleration, tax_loss_reversal) and never-defined ones (rsi_oversold,
+# news_catalyst, trend_continuation) were pruned — lookups use .get(signal, MAX_HOLD_DAYS).
 SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "mean_reversion": 2,
-    "rsi_oversold": 2,
-    "news_catalyst": 2,
     "macd_crossover": 4,
     "momentum": 5,
-    "trend_continuation": 5,
     "bb_squeeze": 4,  # volatility squeeze → expansion; hold for the move
-    "breakout_52w": 5,  # 52-week breakout has room to run
-    "rs_leader": 5,  # sustained relative strength leader
     "inside_day_breakout": 3,  # short-duration coil play
     "trend_pullback": 3,  # quick bounce off EMA in uptrend
     "vwap_reclaim": 1,  # intraday flow signal — exit same day or next open
     "orb_breakout": 1,  # intraday breakout — hold expires at next open
     "intraday_momentum": 1,  # intraday continuation — exit same day or next open
     "gap_and_go": 2,  # confirmed gap continuation — typically resolves in 1–2 days
-    "vix_fear_reversion": 3,  # fear-spike bounce — hold for the relief rally
-    "momentum_12_1": 5,  # medium-term Jegadeesh-Titman factor — needs room to develop
     "insider_buying": 5,  # cluster insider purchases — drift plays out over days-weeks
     "pead": 3,  # post-earnings drift — capture the initial repricing window
     "iv_compression": 4,  # vol squeeze → expansion; hold for the directional move
     # ── Batch 1: OHLCV technical signals ────────────────────────────────────
-    "range_reversion": 2,  # intra-range mean-reversion; resolves quickly
     "golden_cross": 5,  # 50d/200d trend-following; needs room to develop
     "candle_exhaustion": 3,  # reversal at exhaustion candle; typically 2-3 day
-    "obv_divergence": 3,  # OBV/price divergence; resolves in a few days
-    "obv_acceleration": 3,  # OBV acceleration momentum; 3-day confirmation window
-    "volume_climax_reversal": 3,  # reversal after climax volume; short relief window
     # ── Batch 2: universe-level signals ──────────────────────────────────────
     "breadth_thrust": 4,  # broad-market thrust; hold for the continuation move
-    # ── Batch 3: calendar/seasonal signals ───────────────────────────────────
-    "tax_loss_reversal": 5,  # January seasonal reversal; tends to persist a week
     # ── Batch 4: fundamental quality signals ─────────────────────────────────
     "fcf_yield_signal": 5,  # fundamental value; drift plays out over days-weeks
     # ── Batch 5: options-derived signals ─────────────────────────────────────
@@ -958,5 +950,14 @@ def validate():
             f"MAX_SINGLE_ORDER_USD ({MAX_SINGLE_ORDER_USD}) > MAX_DAILY_NOTIONAL_USD "
             f"({MAX_DAILY_NOTIONAL_USD}) in SMALL_ACCOUNT_MODE"
         )
+    # Short-side sizing ratios (F1) — guard against a mis-set env var sizing an oversized short.
+    if not (0 < INDEX_HEDGE_WEIGHT <= 0.5):
+        errors.append(f"INDEX_HEDGE_WEIGHT={INDEX_HEDGE_WEIGHT} must be in (0, 0.5]")
+    if not (0 < SHORT_SIZE_SCALE <= 1.0):
+        errors.append(f"SHORT_SIZE_SCALE={SHORT_SIZE_SCALE} must be in (0, 1]")
+    if not (0 < MAX_SHORT_STANDALONE_RATIO <= 1.0):
+        errors.append(f"MAX_SHORT_STANDALONE_RATIO={MAX_SHORT_STANDALONE_RATIO} must be in (0, 1]")
+    if not (0 < MAX_SHORT_HEDGE_RATIO <= 1.0):
+        errors.append(f"MAX_SHORT_HEDGE_RATIO={MAX_SHORT_HEDGE_RATIO} must be in (0, 1]")
     if errors:
         raise ValueError("Config errors:\n" + "\n".join(f"  - {e}" for e in errors))

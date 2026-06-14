@@ -68,6 +68,14 @@ class TestGetMacroRisk(unittest.TestCase):
         self.assertFalse(result["is_high_risk"])
         self.assertIsNone(result["event"])
 
+    def test_past_calendar_horizon_warns_and_not_high_risk(self):
+        # M2: beyond the last hardcoded event date, no day is flagged + a warning fires.
+        future = date(2099, 6, 15)
+        with self.assertLogs("risk.macro_calendar", level="WARNING") as cm:
+            result = get_macro_risk(future)
+        self.assertFalse(result["is_high_risk"])
+        self.assertTrue(any("past the last hardcoded event date" in m for m in cm.output))
+
 
 class TestThirdFriday(unittest.TestCase):
     def test_jan_2026_third_friday(self):

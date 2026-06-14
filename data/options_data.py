@@ -29,7 +29,7 @@ from datetime import datetime
 
 import pandas as pd
 import yfinance as yf
-from scipy.stats import norm  # type: ignore[import-untyped]
+from scipy.stats import norm
 
 from config import LOG_DIR, today_et
 
@@ -203,7 +203,7 @@ def _compute_snapshot(symbol: str) -> OptionsSnapshot:
         # Current spot price
         info = ticker.fast_info
         try:
-            spot = float(info.last_price)  # type: ignore[union-attr]
+            spot = float(info.last_price)
         except Exception:
             spot = 0.0
         if spot <= 0:

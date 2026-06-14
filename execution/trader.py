@@ -1088,6 +1088,34 @@ def place_short_order(
                 filled_qty=filled_qty,
                 filled_avg_price=filled_avg_price,
             )
+        # Late-fill recovery (E1): the order may fill just after wait_for_fill gives up.
+        # Mirror place_buy_order so a late short fill is recorded, not lost to TIMEOUT.
+        try:
+            final = client.get_order_by_id(order_id)
+            final_status = final.status.value
+            if final_status == "filled" and final.filled_qty:
+                late_qty = float(final.filled_qty)
+                late_avg = float(final.filled_avg_price or 0.0)
+                logger.info(
+                    f"SHORT for {symbol} filled on final check: {late_qty} @ {late_avg:.4f}"
+                )
+                if _ledger:
+                    update_intent(client_order_id, "filled")
+                    log_order_event(
+                        client_order_id,
+                        "ORDER_FILLED",
+                        {"filled_qty": late_qty, "filled_avg_price": late_avg},
+                        broker_order_id=order_id,
+                    )
+                return OrderResult(
+                    status=OrderStatus.FILLED,
+                    symbol=symbol,
+                    broker_order_id=order_id,
+                    filled_qty=late_qty,
+                    filled_avg_price=late_avg,
+                )
+        except Exception:
+            pass
         if _ledger:
             update_intent(client_order_id, "timeout")
             log_order_event(client_order_id, "ORDER_TIMEOUT", {}, broker_order_id=order_id)

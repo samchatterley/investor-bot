@@ -23,7 +23,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 
-import requests  # type: ignore[import-untyped]
+import requests
 
 from config import ALPHA_VANTAGE_API_KEY, LOG_DIR, STOCK_UNIVERSE, today_et
 

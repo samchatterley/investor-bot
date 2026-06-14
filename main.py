@@ -926,6 +926,7 @@ def _execute_index_hedge(
     all_trades: list,
     dry_run: bool,
     _live_shadow: bool,
+    today: str = "",
     deps: TradingDeps | None = None,
 ) -> None:
     """Portfolio-level index hedge: short ``INDEX_HEDGE_SYMBOL`` in confirmed bear regimes and
@@ -935,6 +936,13 @@ def _execute_index_hedge(
     this a structurally cleaner short than crowded single names. Opt-in via
     ``config.INDEX_HEDGE_ENABLED`` (default off) because it is a live order path; honours
     ``dry_run`` and ``_live_shadow`` exactly like the single-name short book.
+
+    Pre-trade controls (A1): the hedge order passes through ``check_pre_trade`` (fat-finger
+    single-order cap + daily-notional cap) and its filled notional is added to the daily
+    notional ledger, so it shares the same MiFID-style guards and daily budget as single-name
+    shorts. No protective stop is attached by design (A2): a hedge is meant to offset long-book
+    losses, so stopping it out on an index rally would defeat its purpose — it is instead
+    covered when the regime exits the bear set.
     """
     if not config.INDEX_HEDGE_ENABLED:
         return
@@ -988,6 +996,26 @@ def _execute_index_hedge(
         logger.info(f"Index hedge: ${notional:.0f} < 1 share of {symbol} @ ${price:.2f}")
         return
 
+    order_notional = qty * price
+
+    # Pre-trade controls (A1) — same fat-finger + daily-notional guards as single-name shorts.
+    _daily_so_far = 0.0
+    if today and not dry_run:
+        try:
+            _daily_so_far = _trader.get_daily_notional(today)
+        except Exception as _ledger_exc:
+            logger.warning(f"Index hedge {symbol}: could not read daily notional — {_ledger_exc}")
+    _approved, _reject = check_pre_trade(
+        symbol,
+        order_notional,
+        _daily_so_far,
+        config.MAX_SINGLE_ORDER_USD,
+        config.MAX_DAILY_NOTIONAL_USD,
+    )
+    if not _approved:
+        logger.warning(f"Index hedge pre-trade check failed: {_reject}")
+        return
+
     if _live_shadow:
         _audit_log.log_event(
             "WOULD_INDEX_HEDGE", {"symbol": symbol, "qty": qty, "regime": regime_name}
@@ -1015,7 +1043,9 @@ def _execute_index_hedge(
             regime=regime_name,
             confidence=0,
         )
-        _audit_log.log_order_placed(symbol, "SHORT", qty * price, result.broker_order_id or "")
+        if today:
+            _trader.add_daily_notional(today, order_notional)
+        _audit_log.log_order_placed(symbol, "SHORT", order_notional, result.broker_order_id or "")
         all_trades.append(
             {
                 "symbol": symbol,
@@ -2304,7 +2334,7 @@ def _execute_buy_phase(
 
                 sym_snap = next(
                     (s for s in db.snapshots if s["symbol"] == symbol),
-                    None,  # type: ignore[arg-type]
+                    None,
                 )
                 if notional >= 1.0:
                     # Guard: skip if notional buys < 1 whole share — Alpaca cannot stop-protect sub-share positions
@@ -2656,7 +2686,7 @@ def _reconcile_late_fills(
                         signal = stored.get("signal") or "rs_short"
                         confidence = stored.get("confidence", 0)
                     else:
-                        candidate = next(
+                        candidate: dict = next(
                             (c for c in decisions.get("buy_candidates", []) if c["symbol"] == sym),
                             {},
                         )
@@ -3115,6 +3145,7 @@ def _run_inner(
         all_trades=all_trades,
         dry_run=dry_run,
         _live_shadow=_live_shadow,
+        today=today,
         deps=deps,
     )
 

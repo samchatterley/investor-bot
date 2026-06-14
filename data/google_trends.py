@@ -51,7 +51,7 @@ def _save_cache(cache: dict) -> None:
 def _live_fetch_trends(symbols: list[str]) -> dict[str, bool]:
     """Fetch Google Trends data for each symbol. Returns {sym: spike_detected}."""
     try:
-        from pytrends.request import TrendReq  # type: ignore[import-untyped]
+        from pytrends.request import TrendReq
     except ImportError:
         logger.debug("google_trends: pytrends not installed — signals disabled")
         return dict.fromkeys(symbols, False)

@@ -84,7 +84,7 @@ def compute_garch_vol_scalar(symbol: str) -> float:
         if len(returns) < 30:
             return 1.0
 
-        model = arch_model(returns, vol="Garch", p=1, q=1, rescale=False)
+        model = arch_model(returns, vol="GARCH", p=1, q=1, rescale=False)
         res = model.fit(disp="off", show_warning=False)
         forecast = res.forecast(horizon=1, reindex=False)
         forecast_var = float(forecast.variance.iloc[-1, 0])

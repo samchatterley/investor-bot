@@ -150,6 +150,27 @@ class TestGetEarningsSurprise(unittest.TestCase):
             result = get_earnings_surprise(["AAPL"])
         self.assertEqual(result, {})
 
+    def test_malformed_symbol_does_not_abort_batch(self):
+        """D2: a symbol with an unexpected earnings_dates schema is isolated; the rest still parse."""
+        from data.earnings_surprise import _live_fetch_earnings
+
+        # BAD has no 'Surprise(%)' column → dropna(subset=[...]) raises KeyError mid-batch.
+        bad_df = pd.DataFrame({"Reported EPS": [1.0]}, index=pd.DatetimeIndex([_NOW]))
+
+        def _ticker(sym):
+            m = MagicMock()
+            m.earnings_dates = bad_df if sym == "BAD" else _DF_BEAT
+            return m
+
+        with (
+            patch("data.earnings_surprise.yf.Ticker", side_effect=_ticker),
+            patch("data.earnings_surprise.time.sleep"),
+        ):
+            result = _live_fetch_earnings(["BAD", "GOOD"])
+        self.assertIsNone(result["BAD"])  # isolated — did not raise
+        self.assertIsNotNone(result["GOOD"])  # batch continued
+        self.assertIsNotNone(result["GOOD"]["surprise"])
+
     def test_returns_days_ago_field(self):
         df = _make_earnings_df(
             [{"date": _recent_date(7), "estimate": 1.50, "reported": 1.65, "surprise": 10.0}]

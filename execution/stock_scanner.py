@@ -288,7 +288,8 @@ def score_candidate(snapshot: dict) -> float:
     bb_dist = abs(bb - 0.5) * 2
     vol_score = min((vol - 1.0) / 1.0, 1.0) if vol > 1.0 else 0.0
     rel_score = min(max(rel, 0.0), 5.0) / 5.0
-    sig_score = n_signals / 8
+    # S2: clamp the co-firing contribution to [0, 1]; 5+ co-firing signals = full score.
+    sig_score = min(n_signals, 5) / 5
 
     return round(
         rsi_dist * 0.25 + bb_dist * 0.20 + vol_score * 0.25 + rel_score * 0.20 + sig_score * 0.10,
@@ -335,11 +336,13 @@ def scan_short_candidates(
 
     Regime gate: only runs in SHORT_ALLOWED_REGIMES (stress/downtrend regimes).
 
-    Path D — Event-driven (earnings_gap_pct present): earnings gap-down continuation.
-      RS-rank agnostic — fires when a stock gapped down ≥ 5% on earnings with high volume.
-      Signal checked: earnings_gap_down.
-      Note: earnings_gap_pct is only populated by scan_short_universe() once earnings gap
-      detection is wired into the live scanner; backtest path is in _run_short_simulation().
+    Path D — Event-driven (earnings_gap_pct present): post-earnings gap-down failed-bounce
+      continuation. RS-rank agnostic. Signal checked: post_earnings_gapdown_failed_bounce
+      (fires once the reflexive bounce fails). The naive gap-day earnings_gap_down is blocked
+      live (_live_blocked) since it is superseded by the failed-bounce short; it remains active
+      only in the backtest engine.
+      Note: earnings_gap_pct / gap_failed_bounce are populated by scan_short_universe() in the
+      live scanner; the backtest path is in _run_short_simulation().
 
     Path C — Deterioration (rs_rank_pct_10d_ago > 65, rs_rank_pct < 65): leader-to-laggard
       rotation — was top-35% of universe 10 days ago, now fallen below. Catches early
@@ -364,6 +367,11 @@ def scan_short_candidates(
     if regime not in SHORT_ALLOWED_REGIMES:
         return []
 
+    # The naive gap-day `earnings_gap_down` is superseded live by `post_earnings_gapdown_failed_bounce`
+    # (entered after the reflexive bounce fails). Block it in every live path so it never surfaces
+    # as a candidate or key_signal here; it remains active in the backtest engine (A3/S1).
+    _live_blocked = frozenset({"earnings_gap_down"})
+
     candidates = []
     seen: set[str] = set()
 
@@ -379,10 +387,11 @@ def scan_short_candidates(
         rs_rank = s.get("rs_rank_pct")
         rs_rank_lag = s.get("rs_rank_pct_10d_ago")
 
-        # Path D: event-driven — earnings gap-down, RS-rank agnostic
+        # Path D: event-driven — post-earnings gap-down whose bounce has failed, RS-rank agnostic.
+        # Triggers on the failed-bounce continuation short (computed by scan_short_universe).
         if symbol not in seen and s.get("earnings_gap_pct") is not None:
-            event_sigs = evaluate_short_signals(s)
-            if "earnings_gap_down" in event_sigs:
+            event_sigs = evaluate_short_signals(s, blocked=_live_blocked)
+            if "post_earnings_gapdown_failed_bounce" in event_sigs:
                 confidence = int(len(event_sigs) / len(SHORT_SIGNAL_PRIORITY) * 10)
                 candidates.append(
                     {
@@ -402,7 +411,9 @@ def scan_short_candidates(
             and (rs_rank is None or rs_rank < 65.0)
         ):
             det_signals = evaluate_short_signals(
-                s, blocked=frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"})
+                s,
+                blocked=frozenset({"earnings_miss", "failed_breakout", "high_vol_reversal"})
+                | _live_blocked,
             )
             if det_signals:
                 confidence = int(len(det_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
@@ -418,7 +429,9 @@ def scan_short_candidates(
 
         # Path A: reversal — recently strong, now showing exhaustion
         if symbol not in seen and rs_rank is not None and rs_rank >= 65.0:
-            rev_signals = evaluate_short_signals(s, blocked=frozenset({"earnings_miss"}))
+            rev_signals = evaluate_short_signals(
+                s, blocked=frozenset({"earnings_miss"}) | _live_blocked
+            )
             if rev_signals:
                 confidence = int(len(rev_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
                 candidates.append(
@@ -438,7 +451,7 @@ def scan_short_candidates(
         if s.get("price_vs_ema21_pct", 0.0) >= 0:
             continue
         fund_signals = evaluate_short_signals(
-            s, blocked=frozenset({"failed_breakout", "high_vol_reversal"})
+            s, blocked=frozenset({"failed_breakout", "high_vol_reversal"}) | _live_blocked
         )
         if fund_signals:
             confidence = int(len(fund_signals) / len(SHORT_SIGNAL_PRIORITY) * 10)
