@@ -818,6 +818,7 @@ def _build_weekly_html(
         item.get("lesson", str(item)) if isinstance(item, dict) else item
         for item in review.get("lessons", [])
     ]
+    monitoring = review.get("experiment_monitoring", [])
     applied = [
         c for c in review.get("applied_changes", []) if c["status"] in ("applied", "clamped")
     ]
@@ -917,6 +918,7 @@ def _build_weekly_html(
           {_section("Lessons injected into next week&#39;s prompts", _bullets(lessons, "#1565c0"))}
           {_section("Proposed config changes", changes_block)}
           {rejected_block}
+          {_section("Experiment monitoring (not a hypothesis test)", _bullets(monitoring, "#6a1b9a"))}
           {_build_diagnostics_section(test_report or {})}
 
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#bbb;margin:32px 0 0;text-align:center">

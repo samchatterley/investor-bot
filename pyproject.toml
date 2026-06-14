@@ -64,6 +64,9 @@ files = [
     "data/fundamental_cache.py",
     "data/fundamentals.py",
     "signals/evaluator.py",
+    "experiment/monitoring.py",
+    "experiment/arms.py",
+    "experiment/noise_audit.py",
 ]
 
 [[tool.mypy.overrides]]
@@ -100,6 +103,8 @@ omit = [
     "*/site-packages/*",
     "*/python_files/*",
     "*ms-python*",
+    "scripts/phase0_noise_audit.py",
+    "*/scripts/phase0_noise_audit.py",
 ]
 
 [tool.coverage.report]

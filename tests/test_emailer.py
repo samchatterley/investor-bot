@@ -163,6 +163,17 @@ class TestBuildWeeklyHtml(unittest.TestCase):
         html = _build_weekly_html(self._review(applied_changes=[]))
         self.assertIn("No parameter changes", html)
 
+    def test_experiment_monitoring_section_rendered(self):
+        review = self._review(
+            experiment_monitoring=[
+                "Monitoring only, not a hypothesis test.",
+                "Phase: Phase 0 (pre-data).",
+            ]
+        )
+        html = _build_weekly_html(review)
+        self.assertIn("Experiment monitoring", html)
+        self.assertIn("Phase: Phase 0 (pre-data).", html)
+
     def test_diagnostic_section_included_when_provided(self):
         report = {
             "status": "PASS",

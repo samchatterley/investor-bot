@@ -244,14 +244,20 @@ class TestRunWeeklyReview(unittest.TestCase):
             "analysis.weekly_review.get_attribution", return_value={}
         )
         self.get_win_rates_patcher = patch("analysis.weekly_review.get_win_rates", return_value={})
+        self.explog_patcher = patch(
+            "analysis.weekly_review.EXPERIMENT_LOG_PATH",
+            os.path.join(self.tmpdir, "EXPERIMENT_LOG.md"),
+        )
         self.log_patcher.start()
         self.runtime_patcher.start()
         self.mock_get_attribution = self.get_attribution_patcher.start()
         self.get_win_rates_patcher.start()
+        self.explog_patcher.start()
         self.addCleanup(self.log_patcher.stop)
         self.addCleanup(self.runtime_patcher.stop)
         self.addCleanup(self.get_attribution_patcher.stop)
         self.addCleanup(self.get_win_rates_patcher.stop)
+        self.addCleanup(self.explog_patcher.stop)
         self.addCleanup(shutil.rmtree, self.tmpdir)
 
     def _make_record(self, date_str, pnl=100.0):
@@ -300,6 +306,32 @@ class TestRunWeeklyReview(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("week_summary", result)
         self.assertIn("proposed_changes", result)
+
+    def test_experiment_monitoring_recorded_and_logged(self):
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "Quiet week",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=2)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            result = run_weekly_review()
+        self.assertIn("experiment_monitoring", result)
+        self.assertTrue(result["experiment_monitoring"])
+        with open(os.path.join(self.tmpdir, "EXPERIMENT_LOG.md")) as f:
+            self.assertIn("Monitoring only", f.read())
 
     def test_saves_review_file_to_log_dir(self):
         from analysis.weekly_review import run_weekly_review

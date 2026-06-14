@@ -1,0 +1,35 @@
+[
+  {
+    "symbol": "EXAMPLE_MATERIAL",
+    "evidence_score": 1.40,
+    "regime": "NEUTRAL_CHOP",
+    "rsi_14": 34,
+    "macd_diff": 0.12,
+    "vol_ratio": 2.6,
+    "price_vs_ema21_pct": -1.8,
+    "matched_signals": ["pead", "insider_buying"],
+    "context_block": "Pre-decision 8-K: Q3 EPS beat by 18%; two independent insiders filed open-market Form 4 buys yesterday. Sector (semis) up 2% on the session."
+  },
+  {
+    "symbol": "EXAMPLE_NEUTRAL",
+    "evidence_score": 0.90,
+    "regime": "BULL_TREND",
+    "rsi_14": 55,
+    "macd_diff": 0.04,
+    "vol_ratio": 1.1,
+    "price_vs_ema21_pct": 0.6,
+    "matched_signals": ["momentum"],
+    "context_block": "No admissible symbol-specific news, filings, or events in the 48h window."
+  },
+  {
+    "symbol": "EXAMPLE_BORDERLINE",
+    "evidence_score": 1.05,
+    "regime": "NEUTRAL_CHOP",
+    "rsi_14": 48,
+    "macd_diff": -0.01,
+    "vol_ratio": 1.4,
+    "price_vs_ema21_pct": -0.4,
+    "matched_signals": ["bb_squeeze"],
+    "context_block": "Analyst note reiterates Hold with a modestly raised target; a same-sector peer reported soft guidance two days ago. Read-through to this name is ambiguous."
+  }
+]

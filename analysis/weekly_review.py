@@ -21,11 +21,13 @@ import anthropic
 import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
+from experiment.monitoring import append_log_entry, build_monitoring_lines
 from utils.portfolio_tracker import load_history
 
 logger = logging.getLogger(__name__)
 
 _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
+EXPERIMENT_LOG_PATH = os.path.join("docs", "EXPERIMENT_LOG.md")
 
 # Only these parameters may be auto-adjusted, within these bounds.
 _SAFE_PARAMS: dict[str, dict] = {
@@ -327,6 +329,13 @@ Respond with ONLY this JSON:
         proposed_changes = _apply_config_changes(review.get("config_changes", []))
         review["proposed_changes"] = proposed_changes
         review["week_attribution"] = week_attribution or {}
+
+        # Experiment monitoring: descriptive telemetry only, never a hypothesis test
+        # (docs/EXPERIMENT.md section 2.6). Appended to docs/EXPERIMENT_LOG.md and kept out
+        # of the paper's Results section. append_log_entry is fail-safe.
+        monitoring_lines = build_monitoring_lines()
+        review["experiment_monitoring"] = monitoring_lines
+        append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
         path = os.path.join(LOG_DIR, f"weekly_review_{date.today().isoformat()}.json")
         os.makedirs(LOG_DIR, exist_ok=True)
