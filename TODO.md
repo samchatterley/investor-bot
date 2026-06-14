@@ -1,13 +1,14 @@
 # Pending Work
 
 ### In Progress
-- [ ] Build evidence_score_v1 (frozen, transparent, versioned) — NEEDS a weighting-approach decision; v2 fitted later
+- [ ] HEAVY: point-in-time feature/outcome dataset from the backtest engine (foundation for fitted v2, the ablation, and real expectancy) — needs scoping + decisions
 
 ### Pending
-- [ ] Phase 0 Gate A run (user: ~25-50 stratified fixtures + API; audit veto stability too)
-- [ ] Phase 0 Gate B — wire candidate-flow logging, re-run power analysis on real numbers
-- [ ] Build context_packet_v1 assembler + narrow context_packet_historical_v0 (consumes the ledger)
-- [ ] research-snapshot logging (multi-daily obs) + clustered-SE analysis; negative/positive controls harness
-- [ ] Historical Arm1-vs-Arm2 ablation harness; then first interim report
+- [ ] Fitted evidence_score_v2 (regularised model on the point-in-time dataset; fit/validation/holdout) — the standable benchmark
+- [ ] Historical Arm1-vs-Arm2 ablation harness on the point-in-time dataset
+- [ ] Phase 0 Gate A run (user: stratified fixtures + API; audit veto stability)
+- [ ] Phase 0 Gate B + research-snapshot logging + clustered-SE + negative/positive controls
+- [ ] context_packet_v1 assembler + narrow context_packet_historical_v0 (consumes the ledger)
+- [ ] First interim report
 - [ ] Optional: purge em dashes/symbols from EXPERIMENT.md + other docs
 
