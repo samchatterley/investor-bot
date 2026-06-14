@@ -1,571 +1,357 @@
-# InvestorBot — AI Governance & Execution Control System
+# InvestorBot — Does LLM Contextual Judgement Add Incremental Predictive Value Over a Deterministic Equity Signal Engine?
 
-An AI-governed execution-control system for US equities portfolio management. Claude (Anthropic) performs analysis and issues structured recommendations; a deterministic validator, risk gate, and human-override layer decide whether to act. The system never allows an AI model to place, cancel, or modify orders directly.
+*A pre-registered study and the governed measurement system built to answer it.*
 
-**Paper trading by default.** The system runs in Alpaca's simulation environment until the operator explicitly confirms live mode with a required acknowledgement string. There is no fast path to real orders.
-
-> **Claude cannot:** place, modify, or cancel orders · read or write configuration · access account balances or position metadata · trigger alerts or emails · modify its own operating parameters. Every Claude output is validated by a deterministic layer before any action is taken. See [AI Governance](#ai-governance) for the full authority boundary.
-
----
-
-## Table of Contents
-
-1. [Quick Start](#quick-start)
-2. [How It Works](#how-it-works)
-3. [Architecture](#architecture)
-4. [AI Governance](#ai-governance)
-5. [Setup](#setup)
-6. [Using the System](#using-the-system)
-7. [Deployment & Operations](#deployment--operations)
-8. [Evaluation Evidence](#evaluation-evidence)
-9. [LLM Eval Fixtures](#llm-eval-fixtures)
-10. [Production Story — Day One Incidents](#production-story--day-one-incidents)
-11. [What's Next](#whats-next)
-12. [Why This Demonstrates FDE Skills](#why-this-demonstrates-fde-skills)
-13. [Notes of Interest](#notes-of-interest)
-14. [Version History](#version-history)
+> **Status: pre-registration (v1) — data collection not yet begun.** The hypothesis, design, and
+> analysis plan are frozen in [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md). Results, Discussion, and
+> Conclusion are **pending**; this document states what *will* be measured and how, not what was
+> found. Pre-committing the analysis before seeing the data is deliberate — it is the property that
+> makes a positive result credible. See [References](#references) on pre-registration.
 
 ---
 
-## Quick Start
+## Abstract
 
-No credentials needed:
+Retail algorithmic trading typically collapses into one of two failure modes: full manual control
+(no automation) or opaque model autonomy (no interpretability, override, or audit trail).
+InvestorBot occupies the middle: a deterministic signal engine generates and risk-filters
+candidates, and a large language model (LLM) supplies *contextual judgement* on top. The project's
+central claim — that **an LLM's contextual synthesis adds measurable incremental predictive value
+over a deterministic signal engine** — is treated here as a **falsifiable hypothesis**, not an
+assumption.
+
+We pre-register a three-arm, within-candidate ablation: (1) a frozen deterministic *Champion*
+selector; (2) a structured-only LLM that reasons over identical structured inputs rendered as prose;
+and (3) a contextual LLM identical to (2) plus a timestamp-safe context packet (news, filings,
+events). The decomposition isolates the function-approximator effect (2 − 1) from the contextual
+effect (3 − 2), which is the thesis. The **primary endpoint** is the incremental information
+coefficient (IC) of the LLM's explicit, context-driven conviction revision on 5-day forward
+risk-normalised return, controlling for the frozen evidence score. Measurement runs on two tracks
+— a point-in-time historical backtest (function-approximator question) and a live-shadow forward
+test (the contextual thesis) — gated by two Phase-0 checks (instrument-noise audit and statistical
+power). A preliminary power projection indicates the live track is **underpowered to resolve a
+modest effect within a six-month window**, so it is pre-scoped as a *trend + qualitative* evidence
+layer rather than the primary statistical test. The deliverable is a governed, auditable
+measurement framework and an honest result — including a null — not a profitable trading bot.
+
+---
+
+## 1. Introduction
+
+### 1.1 Background
+
+Automated equity trading systems for non-institutional capital face a credibility gap. Rule-based
+systems are interpretable but brittle and easily over-fit; end-to-end ML systems can be powerful but
+opaque, hard to govern, and difficult to audit when they act on real money. The recent capability
+jump in LLMs reopens an old question in a new form: discretionary portfolio managers have long been
+believed to add value through *synthesis and context* — weighing many weak, noisy, partly-qualitative
+signals against a live market backdrop. If an LLM can replicate even part of that contextual
+judgement at scale, that would be a genuinely novel source of edge. If it cannot — if the LLM merely
+rides edges already present in the underlying signals while dressing them in fluent narrative — then
+the appearance of value is an illusion that careful measurement should expose.
+
+InvestorBot is the apparatus built to put that question to an honest test. It runs on a deliberately
+tiny live account (a ~£150 `SMALL_ACCOUNT_MODE` profile) used as a *realism harness*, not a profit
+engine: the small scale makes friction and operational reality concrete without pretending the live
+P&L could ever reach statistical significance. The LLM is kept central to the system (that is the
+thesis) but every part of its authority is designed to be **measurable, calibrated, and revocable**,
+and it is never permitted to place, modify, or cancel orders directly (see
+[Appendix A](#appendix-a--system-architecture--governance)).
+
+### 1.2 Literature review
+
+**Market efficiency and predictability.** The efficient-market hypothesis (Fama, 1970) sets the null
+that public information is already priced. Yet a large literature documents robust cross-sectional
+return predictability inconsistent with strong-form efficiency: momentum (Jegadeesh & Titman, 1993),
+the size/value factors (Fama & French, 1993), and post-earnings-announcement drift (Ball & Brown,
+1968; Bernard & Thomas, 1989). Behavioural accounts (Kahneman & Tversky, 1979; Black, 1986) explain
+why such drifts persist. InvestorBot's deterministic signal engine is built from exactly these
+documented, commoditised effects — which is precisely why they make a *strong* baseline rather than
+a strawman.
+
+**Machine learning and text in asset pricing.** ML methods improve cross-sectional return prediction
+over linear factor models (Gu, Kelly & Xiu, 2020). A parallel strand shows that *text* carries
+priced information: media tone predicts returns (Tetlock, 2007); domain-specific lexicons and models
+matter (Loughran & McDonald, 2011; FinBERT, Araci, 2019). Most recently, LLMs have been applied
+directly to return prediction (Lopez-Lira & Tang, 2023; BloombergGPT, Wu et al., 2023).
+
+**Measurement and its pitfalls.** The information coefficient and the fundamental law of active
+management (Grinold & Kahn, 2000) provide the natural metric for *incremental* signal value. But the
+field is plagued by multiple testing and backtest overfitting: the cross-section of "discovered"
+predictors is statistically implausible without correction (Harvey, Liu & Zhu, 2016), and reported
+Sharpe ratios require deflation for selection bias (Bailey & López de Prado, 2014). Pre-registration
+is the standard remedy from the wider reproducibility movement (Nosek et al., 2018).
+
+**The gap.** Existing LLM-in-finance work largely asks whether the LLM *alone* predicts returns. It
+rarely asks the question that matters for a system that already has a deterministic engine: does the
+LLM add **incremental** value *over* that engine — and is that increment attributable to *context*
+rather than to the LLM merely being a better non-linear combiner of the same structured inputs? It
+also rarely pre-registers, rarely controls the function-approximator confound, and rarely guards
+against the lookahead leakage that makes contextual backtests produce false positives. This study
+targets that gap directly.
+
+### 1.3 Research question
+
+> Does an LLM's contextual judgement add measurable incremental predictive value over a deterministic
+> equity signal engine, after controlling for (a) the engine's own structured evidence and (b) the
+> LLM's non-contextual reasoning ability?
+
+### 1.4 Hypotheses
+
+- **H1 (primary).** For an eligible candidate, the LLM's explicit context-driven conviction revision
+  (`context_adjustment`) has **positive incremental predictive power** on 5-day forward
+  risk-normalised return, after controlling for the frozen deterministic evidence score.
+- **H2 (decomposition — function approximation).** `Arm 2 − Arm 1`: LLM reasoning over identical
+  structured inputs adds value over the deterministic score. *(Interesting; not the thesis.)*
+- **H3 (decomposition — context).** `Arm 3 − Arm 2`: adding the context packet, with everything else
+  fixed, adds value. *(This is the thesis, isolated.)*
+
+Conclusiveness is **asymmetric**: the design can *falsify* cleanly; a positive result can only *fail
+to reject* within this universe, signal menu, regime window, baseline version, and horizon, and
+requires later replication.
+
+---
+
+## 2. Method
+
+The exact, frozen specifications live in [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md); this section
+summarises them.
+
+### 2.1 Design
+
+A three-arm, **within-candidate ablation**, run at the same decision time on the same eligible
+candidate set with the same structured inputs. Arms differ only as below.
+
+| Arm | Description | Extra input | Isolates |
+|-----|-------------|-------------|----------|
+| 1 — Deterministic Champion v1 | frozen non-LLM scorer/selector | — | the null |
+| 2 — Structured-only LLM | structured evidence as prose | — | LLM as function-approximator |
+| 3 — Contextual LLM | Arm 2's *exact* prompt + context | `context_packet_v1` | **the thesis** |
+
+`Arm 2 − Arm 1` = function-approximation value; `Arm 3 − Arm 2` = contextual value. **Isolation
+constraint:** Arm 3's prompt is Arm 2's exact prompt plus an appended context block; nothing else
+differs, and Arm 3 consumes Arm 2's frozen output (so Arm 3 always implies Arm 2 on the same
+candidate). Two measurement tracks: a **point-in-time historical backtest** (Arm 1 vs Arm 2 only —
+no reconstructable context) and a **live-shadow forward test** (all three arms).
+
+### 2.2 Participants (subjects and agents)
+
+- **Subjects:** the population of *eligible candidates* — symbols from a 507-name US-equity universe
+  (S&P 500 core + ETFs, dynamically extended) that pass the canonical signal evaluator and the
+  deterministic tradability/liquidity/regime/event/risk filters on a given decision.
+- **Sampling per decision (cost-capped):** all *context-present* candidates (flagged by a cheap
+  deterministic context-presence gate) up to a daily cap; a **random control drawn from
+  non-flagged** eligible candidates (audits gate false-negatives — load-bearing, not optional); plus
+  top-K deterministic candidates for the Arm 2 − Arm 1 diagnostic.
+- **Agents under test:** the deterministic Champion (Arm 1) and the LLM (Anthropic Claude) in
+  structured-only (Arm 2) and contextual (Arm 3) configurations.
+
+### 2.3 Materials
+
+- **Data:** OHLCV and intraday bars (Alpaca; yfinance), options-derived features, news/filings/
+  sentiment, sector and macro series. Reconstructability is tiered A/B/C in `docs/EXPERIMENT.md` §6.
+- **Deterministic Champion v1 / `evidence_score_v1`:** a frozen, versioned, *transparent* score
+  (signal expectancy, signal×regime expectancy, confluence, liquidity, trend quality; minus
+  volatility, spread, decay, and known structured event-risk penalties). Component *values* are
+  computed point-in-time; weights are fit and frozen on a train→validation→holdout split.
+- **`context_packet_v1`:** a frozen, mechanically-assembled context bundle (sources, lookback,
+  max items, ordering, exclusions) — never a hand-curated analyst note.
+- **LLM interface:** a structured tool-call schema (typed output), an independent domain validator,
+  and a full prompt/response audit trail; the LLM emits an explicit `context_adjustment` (coarse
+  ordinal + `veto` + `reason_code`), not a noisy difference of two free-form calls.
+- **As-of context ledger:** every context item carries source/seen/retrieved/published timestamps and
+  a `timestamp_confidence` label; only items provably seen before the decision are admissible.
+
+### 2.4 Procedure
+
+At each decision point: the canonical evaluator fires signals → deterministic filters produce the
+eligible set → the context-presence gate partitions it → the scored set (context-present cap +
+non-flagged control + top-K) is assembled → Arm 1 scores all; Arm 2 runs on the scored set; Arm 3
+runs on context-present ∪ control → all outputs and the admissible context packet are logged → after
+a fixed horizon, forward R is computed for every scored candidate. Forward R is path-independent:
+decision-time entry (not next-day open, which would discard same-day context reaction), exit at the
+split/dividend-adjusted close H trading days later, normalised by ATR-at-decision, costs included.
+The capital P&L of the tiny live book is **never** the thesis metric.
+
+### 2.5 Ethics
+
+- **Financial risk & scope.** Live operation uses a deliberately tiny account as a realism harness.
+  This is a research system, **not investment advice**; no third-party capital is solicited or
+  managed. Live mode requires an explicit acknowledgement string and extended paper-trading first.
+- **Research integrity.** The hypothesis, primary endpoint, and analysis plan are pre-registered and
+  frozen before data collection. One primary cell is designated to prevent multiple-comparison
+  fishing; test timepoints are fixed to prevent optional-stopping ("peeking"); negative and null
+  results will be reported in full. Lookahead leakage — the dominant false-positive risk for a
+  contextual study — is controlled by the as-of ledger and a safety buffer.
+- **Data & third parties.** Market, news, and filing data are used within provider terms of service;
+  no personal data is processed; secrets are environment-only and never logged or committed.
+- **Reproducibility.** A credential-free `demo` mode reproduces a full decision cycle on static
+  fixtures (see [Appendix D](#appendix-d--reproducibility--quick-start)).
+- **Conflict of interest.** The author builds and operates the system on their own capital; the
+  framing here is FDE-portfolio and research, not a commercial solicitation.
+
+### 2.6 Analysis plan
+
+- **Primary cell (pre-registered, single):** in the *context-present* bucket, does
+  `context_adjustment` predict **5-day forward R** after controlling for **`evidence_score_v1`**, at
+  the pre-registered bar and the pre-registered test point? Everything else (other buckets,
+  baselines, horizons, `reason_code` breakdowns, veto analysis) is **exploratory** — reported, never
+  the headline.
+- **Effect decomposition:** overall context value = P(material context) × E[effect | material]; a
+  rare-but-real edge is still real.
+- **Phase-0 gates (run first):** *(A)* an instrument **noise audit** — repeated calls on stratified
+  snapshots must reproduce coarse `context_adjustment`; *(B)* a **power analysis** —
+  `min detectable IC ≈ z/√N_eff` against expected candidate flow (see
+  [`scripts/phase0_power_analysis.py`](scripts/phase0_power_analysis.py)). If either fails, the heavy
+  live apparatus is not built as v1.
+- **Sequential discipline:** monthly outputs are *monitoring only*; formal tests occur at fixed
+  `N_eff` milestones; no headline claim before a formal test point.
+- **Governance as adaptive protocol:** LLM authority is staged (modes 0–5), phased by sample size,
+  and **revoked only on significance-gated** underperformance; rejected-trade triggers require a
+  symmetric counterfactual simulation.
+
+---
+
+## 3. Results
+
+> **Pending data collection.** Phase 0 must clear first; the primary cell is tested only at the
+> pre-registered `N_eff` milestones. No confirmatory results exist yet.
+
+### 3.1 Phase 0 (Gate B) — preliminary power *projection* (not data)
+
+Using placeholder candidate-flow assumptions (to be replaced by a week of measured logging), the
+power tool projects:
+
+| Scenario | N_eff (material) | Min. detectable IC | Verdict |
+|----------|------------------|--------------------|---------|
+| Baseline (small-account flow, ~6 months) | ~142 | ~0.165 | underpowered |
+| Optimistic (3× eligibility, full year) | ~1,089 | ~0.059 | still underpowered for IC = 0.05 |
+
+A plausible single-feature incremental IC (~0.03–0.05) needs `N_eff ≈ 1,500+`. **Implication
+(pre-registered):** the live contextual track is scoped as a *trend + qualitative* evidence layer;
+the historical Arm 1 vs Arm 2 ablation and the governed framework itself are the primary v1 outputs.
+This is a projection from assumptions, not a study result.
+
+---
+
+## 4. Discussion
+
+> **Pending results.** Recorded here in advance are the threats to validity the design controls for,
+> so interpretation is pre-committed rather than rationalised after the fact.
+
+- **Function-approximator confound** — addressed by the Arm 2 ablation (H3 = Arm 3 − Arm 2).
+- **Omitted-variable confound** — structured event *existence* lives in `evidence_score_v1`; only its
+  *interpretation* is credited to Arm 3.
+- **Anchoring bias** — eliciting an explicit revision from Arm 2's frozen output reduces variance but
+  biases toward zero, so a positive result is conservative and a null is ambiguous.
+- **Lookahead leakage** — the as-of ledger + safety buffer prevent the contextual arm's chief
+  false-positive vector.
+- **Baseline strength** — any "win" is reported as "vs `evidence_score_v1`"; a stronger fitted
+  baseline (v2) is pre-committed for a later, separate period.
+- **External validity** — a positive result generalises only within this slice and demands
+  replication across horizon, regime, signal family, and baseline version.
+
+---
+
+## 5. Conclusion (interim)
+
+No thesis verdict is claimed. The contribution to date is methodological: a pre-registered design and
+a governed, auditable, lookahead-controlled measurement framework that can *falsify* the
+AI-contextual-value claim, plus tooling that already quantifies the study's own statistical limits.
+Under the project's FDE-first framing, that framework — and an honest result, including a null — is
+the deliverable, independent of which way the number eventually lands.
+
+---
+
+## References
+
+1. Araci, D. (2019). *FinBERT: Financial Sentiment Analysis with Pre-trained Language Models.* arXiv:1908.10063.
+2. Bailey, D. H., & López de Prado, M. (2014). The Deflated Sharpe Ratio. *Journal of Portfolio Management*, 40(5).
+3. Ball, R., & Brown, P. (1968). An Empirical Evaluation of Accounting Income Numbers. *Journal of Accounting Research*, 6(2).
+4. Bernard, V. L., & Thomas, J. K. (1989). Post-Earnings-Announcement Drift: Delayed Price Response or Risk Premium? *Journal of Accounting Research*, 27.
+5. Black, F. (1986). Noise. *The Journal of Finance*, 41(3).
+6. Fama, E. F. (1970). Efficient Capital Markets: A Review of Theory and Empirical Work. *The Journal of Finance*, 25(2).
+7. Fama, E. F., & French, K. R. (1993). Common Risk Factors in the Returns on Stocks and Bonds. *Journal of Financial Economics*, 33(1).
+8. Grinold, R. C., & Kahn, R. N. (2000). *Active Portfolio Management* (2nd ed.). McGraw-Hill.
+9. Gu, S., Kelly, B., & Xiu, D. (2020). Empirical Asset Pricing via Machine Learning. *The Review of Financial Studies*, 33(5).
+10. Harvey, C. R., Liu, Y., & Zhu, H. (2016). … and the Cross-Section of Expected Returns. *The Review of Financial Studies*, 29(1).
+11. Jegadeesh, N., & Titman, S. (1993). Returns to Buying Winners and Selling Losers. *The Journal of Finance*, 48(1).
+12. Kahneman, D., & Tversky, A. (1979). Prospect Theory: An Analysis of Decision under Risk. *Econometrica*, 47(2).
+13. Lopez-Lira, A., & Tang, Y. (2023). *Can ChatGPT Forecast Stock Price Movements? Return Predictability and Large Language Models.* arXiv:2304.07619.
+14. Loughran, T., & McDonald, B. (2011). When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks. *The Journal of Finance*, 66(1).
+15. Nosek, B. A., Ebersole, C. R., DeHaven, A. C., & Mellor, D. T. (2018). The Preregistration Revolution. *PNAS*, 115(11).
+16. Tetlock, P. C. (2007). Giving Content to Investor Sentiment: The Role of Media in the Stock Market. *The Journal of Finance*, 62(3).
+17. Wu, S., et al. (2023). *BloombergGPT: A Large Language Model for Finance.* arXiv:2303.17564.
+
+---
+
+## Appendices
+
+### Appendix A — System architecture & governance
+
+InvestorBot is an AI-governed execution-control system for US equities. Claude performs analysis and
+issues structured recommendations; a deterministic validator, risk gate, and human-override layer
+decide whether to act. **Claude can never place, modify, or cancel orders; read or write config;
+access balances/positions; or modify its own parameters.** Every output is schema-validated and
+risk-gated first.
+
+- **Decision pipeline:** market context → Claude (structured tool call) → two-layer validation
+  (API schema + domain whitelist/confidence/conflict/injection scan) → risk gate (risk-budget
+  sizing, position/sector limits, fat-finger + daily-notional guards, bear filter, VIX-tiered stops,
+  earnings guard, circuit breaker, daily-loss limit) → execution (fractional market orders +
+  trailing stop) → append-only SQLite audit.
+- **Module map:** `data/` (market/news/options/sentiment/macro) · `signals/` (canonical evaluator)
+  · `analysis/` (ai_analyst, weekly_review, performance) · `risk/` (sizing, calendars, checks) ·
+  `execution/` (trader, scanner, universe) · `backtest/` · `utils/` (audit, ledger, validators) ·
+  `notifications/`. Orchestrated by `main.py`; scheduled by `scripts/run_scheduler.py`.
+- **Constrained parameter engine:** the weekly review *proposes* bounded parameter changes; they are
+  validated, logged, and emailed but **never auto-applied** (operator edits `logs/runtime_config.json`).
+- **Human override:** `python cli.py halt` / `resume`; the halt file is checked before every cycle.
+
+Full detail: [`docs/adr/`](docs/adr/) (design decisions), [`docs/signals.md`](docs/signals.md)
+(signal catalogue), [`docs/strategic_review.md`](docs/strategic_review.md) (architecture critique),
+[`docs/audit_v1.100.md`](docs/audit_v1.100.md) (line-by-line audit), [`LIVE_RUNBOOK.md`](LIVE_RUNBOOK.md).
+
+### Appendix B — Prior evaluation evidence (deterministic backtest)
+
+The rule-based backtester is a **proxy for signal quality** — it does not call Claude. Combined
+long/short, 2015-01-01 → 2026-06-12, $25k: total return +31.0%, 5,256 trades, 51% win rate, avg
++0.06%/trade, max drawdown −37.8%, Sharpe 0.22. **Caveats:** rule-based proxy (not live Claude);
+transaction costs modelled (slippage + liquidity-scaled spread + impact); no lookahead (T-1
+indicators, T-open fills); **survivorship bias** (fixed to current S&P 500) and **fundamental
+look-ahead** in distress shorts — pre-2020 and short-book results are upward-biased. This is exactly
+the kind of in-sample evidence the pre-registered study is designed to supersede.
+
+### Appendix C — Engineering rigour
+
+- **Tests:** 4,590 tests, 100% line+branch coverage, enforced on CI; mypy gate clean across the typed
+  modules.
+- **LLM eval fixtures** ([`evals/`](evals/)): prompt-injection headlines, hallucinated tickers,
+  bear-market no-buy, conflicting signals, earnings-risk, malformed tool calls.
+- **Production incident log** ([`docs/incidents.md`](docs/incidents.md)): six day-one paper-trading
+  failures, all diagnosed from structured logs alone.
+- **FDE relevance:** ambiguous problem → governed product; untrusted-AI-output handling
+  (schema + domain validation + audit); multiple fault-tolerant third-party integrations; operator
+  CLI/dashboard; pre-registered, measurable, falsifiable experimental design.
+
+### Appendix D — Reproducibility & quick start
 
 ```bash
 git clone https://github.com/samchatterley/investor-bot
 cd investor-bot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python cli.py demo
+python cli.py demo            # full simulated cycle on static fixtures — no credentials needed
 ```
 
-`demo` mode runs a complete simulated open cycle using static fixture data — no Alpaca account, no Anthropic key, no Gmail. It shows the market context build, AI decision parsing, validation, risk gate, simulated order placement, and audit log output in real time.
-
----
-
-## How It Works
-
-Most retail algorithmic trading tools fall into one of two failure modes: they either require constant manual intervention (defeating the purpose of automation), or they hand full autonomy to an ML model with no interpretability, no human override, and no audit trail.
-
-InvestorBot sits in between — Claude does the analytical heavy lifting, but every decision it makes is validated, logged, bounded, and reversible before it touches real capital.
-
-### Decision pipeline
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '15px', 'lineColor': '#94a3b8'}}}%%
-flowchart TD
-    classDef input    fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f,rx:8
-    classDef ai       fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065,rx:8
-    classDef validate fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d,rx:8
-    classDef risk     fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#431407,rx:8
-    classDef execute  fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#500724,rx:8
-    classDef audit    fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#0f172a,rx:8
-
-    A["📊 &nbsp;Market context
-    OHLCV · options · news · sentiment
-    regime · earnings · macro · past lessons"]:::input
-
-    B["🤖 &nbsp;Claude — structured tool call
-    Full context prompt → typed JSON response
-    Per-symbol decisions · confidence scores · reasoning"]:::ai
-
-    C["✅ &nbsp;Validation — two independent layers
-    API: tool-use schema enforces types at boundary
-    Domain: whitelist · confidence · signal · conflict"]:::validate
-
-    D["🛡️ &nbsp;Risk gate
-    risk-budget sizing · position limits · sector cap
-    fat-finger guard · bear filter · VIX adjustment"]:::risk
-
-    E["⚡ &nbsp;Execute
-    Fractional market orders via Alpaca
-    Trailing stop attached · stop coverage verified"]:::execute
-
-    F["📝 &nbsp;Audit
-    Every decision logged whether executed or not
-    SQLite record · run_id correlation · end-of-day email"]:::audit
-
-    A --> B --> C --> D --> E --> F
-```
-
-### Daily schedule
-
-The scheduler fires four times on every trading day (all times America/New_York):
-
-| Time | Mode | What happens |
-|------|------|-------------|
-| 09:31 | `open_sells` | Earnings exits and AI sell decisions — no new buys into open noise |
-| 10:00 | `open` | Full cycle: market context → Claude → validate → risk gate → long buys + short hedges |
-| 12:00 | `midday` | Partial profit exits, stop checks; intraday-signal buys if setups present |
-| 15:30 | `close` | Force-cover all intraday positions; final position review before market close |
-| 15:00 Sun | `weekly_review` | AI self-review, parameter proposals, diagnostics email |
-
-### Scan universe
-
-The daily scan universe is built dynamically at runtime. `execution/universe.py` fetches Alpaca's full US equity asset catalog (~11,000 names), filters to tradable + fractionable symbols on major exchanges, then applies a fast price (≥ $5) and daily volume (≥ 500K shares) screen via the Alpaca snapshot API. The result — up to 500 symbols — is cached for 24 hours. The static core list in `config.STOCK_UNIVERSE` (509 symbols including the full S&P 500 + 6 ETFs) is always included as a fallback and is merged into the dynamic result.
-
-### Signal types
-
-The prefilter (`execution/stock_scanner.py`) requires every buy candidate to match at least one of **31 active signal patterns** across 10 families before Claude sees it. Ten signals are in `GLOBALLY_DISABLED` after backtest evidence confirmed no edge. See [docs/signals.md](docs/signals.md) for the full signal table with entry conditions, hold limits, regime blocking, fundamental quality gates, and the short signal catalogue.
-
-Signal families: **mean-reversion** · **volatility/IV** · **trend/momentum** · **OHLCV technical** · **catalyst/fundamental** · **options** · **short squeeze** · **sentiment/alt-data** · **cross-asset** · **intraday**
-
-Intraday signals (`vwap_reclaim`, `orb_breakout`, `intraday_momentum`) are computed from Alpaca minute bars and enable the midday run to execute new buys, not just manage positions.
-
----
-
-## Architecture
-
-### Module map
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '15px', 'lineColor': '#94a3b8'}}}%%
-flowchart TB
-    classDef main     fill:#0f172a,stroke:#0f172a,color:#f8fafc,stroke-width:2px
-    classDef data     fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a5f
-    classDef analysis fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#2e1065
-    classDef risk     fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#431407
-    classDef exec     fill:#fce7f3,stroke:#db2777,stroke-width:2px,color:#500724
-    classDef utils    fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
-    classDef notif    fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#451a03
-
-    MAIN["⚙️ &nbsp;main.py
-    Orchestrator — schedule · lock · halt check · run cycle"]:::main
-
-    DATA["📊 &nbsp;data/
-    OHLCV · options · news
-    sentiment · sectors · macro"]:::data
-
-    ANALYSIS["🧠 &nbsp;analysis/
-    ai_analyst · weekly_review
-    performance tracking"]:::analysis
-
-    RISK["🛡️ &nbsp;risk/
-    position sizer · risk manager
-    earnings · macro calendar"]:::risk
-
-    EXEC["🚀 &nbsp;execution/
-    trader · stock_scanner · universe"]:::exec
-
-    UTILS["🔧 &nbsp;utils/
-    audit_log · decision_log · portfolio · validators"]:::utils
-
-    NOTIF["🔔 &nbsp;notifications/
-    Daily email · Emergency alerts"]:::notif
-
-    MAIN --> DATA & ANALYSIS & RISK & EXEC
-    DATA & ANALYSIS & RISK & EXEC --> UTILS
-    UTILS --> NOTIF
-```
-
-### Project structure
-
-```
-├── analysis/          AI analyst, performance tracking, weekly review
-├── backtest/          Rule-based backtesting engine
-├── data/              Market data, news, options, sentiment, sectors
-├── docs/              Signal reference, incident log, ADRs (5 design decisions)
-├── evals/             LLM eval fixtures — prompt injection, hallucinated tickers, bear market, etc.
-├── execution/         Order placement, stock scanner, dynamic universe builder
-├── notifications/     Email and alert system
-├── risk/              Position sizing, earnings/macro calendar, risk checks
-├── scripts/           Scheduler and diagnostics runner
-├── tests/             Unit test suite (4,494 tests, 100% coverage)
-├── utils/             Audit log, portfolio tracker, decision log, validators
-├── cli.py             Command-line interface (includes demo mode)
-├── config.py          All configuration and environment variables
-├── dashboard.py       Streamlit web dashboard
-├── main.py            Core trading logic
-└── start              Launcher shortcut (./start dashboard, ./start status, etc.)
-```
-
-### Architecture tradeoffs
-
-| Decision | Rationale | Tradeoff accepted |
-|----------|-----------|-------------------|
-| Claude as recommender, not executor | Interpretable reasoning, plain-English audit trail, easy to constrain | Higher latency than pure quant model; API cost per run |
-| Rule-based validator as gatekeeper | AI output is untrusted by default — every response schema-checked before acting | Some valid signals rejected by over-strict rules |
-| Paper-first, explicit live opt-in | Prevents accidental live deployment; forces conscious decision | Slightly more setup friction |
-| SQLite state (`logs/investorbot.db`) | ACID transactions, queryability, atomic audit joins — migrated from JSON files after a real overwrite incident | Requires schema migrations as the system evolves |
-| Constrained parameter recommendation engine | Allows adaptation within hard bounds without unbounded drift | Slower adaptation than fully autonomous parameter search |
-
-Full rationale for each decision is in [docs/adr/](docs/adr/).
-
----
-
-## AI Governance
-
-This section describes how the system constrains Claude's decision-making authority. It is the most important section for understanding the design.
-
-### Separation of reasoning and execution
-
-Claude's role is **analysis and recommendation only**. It never calls the Alpaca API directly. Every decision it returns passes through a validation layer and a separate risk layer before any order is placed. Claude cannot:
-
-- Place, modify, or cancel orders
-- Read or write configuration
-- Access position metadata or account balances
-- Trigger alerts or emails
-
-### Validation layer (`utils/validators.py`)
-
-Every Claude response is validated before it reaches the execution layer:
-
-| Check | What it does |
-|-------|-------------|
-| Schema validation | Rejects responses missing required fields (`buy_candidates`, `position_decisions`, `market_summary`) |
-| Universe whitelist | Rejects any BUY recommendation for a symbol not in the scanned universe |
-| Confidence floor | Ignores recommendations below `MIN_CONFIDENCE` (default 7/10) |
-| Action conflict | Rejects BUY recommendations for symbols already held |
-| Signal whitelist | Rejects unknown signal types not in the allowed set |
-| Confidence bounds | Rejects confidence scores outside 1–10 |
-| Prompt injection scan | Headlines and news text are scanned for instruction-like patterns before inclusion in the prompt; suspicious content is dropped and logged |
-
-If validation fails, the run continues with the remaining valid decisions. Partial failures are logged; complete failures abort the run and send an alert.
-
-Validation scenarios are covered by fixtures in [`evals/`](evals/) — see the [LLM Eval Fixtures](#llm-eval-fixtures) section.
-
-### Risk layer (`risk/`)
-
-After validation, position-level risk checks are applied independently of Claude's recommendations:
-
-- **Risk-budget sizing** — position size is set at 0.6% of equity risked per trade (`RISK_PER_TRADE_PCT`), hard-capped at 15% of portfolio per position (`MAX_POSITION_WEIGHT`) enforced after all 12 scalar multipliers are applied. Kelly fraction is tracked as secondary telemetry but does not drive order sizes
-- **Hard position limits** — up to 5 positions (2 in small-account mode), capped at 15% of portfolio per position, 10% cash reserve always maintained
-- **Fat-finger guard** — single orders above `MAX_SINGLE_ORDER_USD` (default $50,000; $55 in small-account mode) are rejected regardless of instruction
-- **Daily notional cap** — total new deployment above `MAX_DAILY_NOTIONAL_USD` (default $150,000; $75 in small-account mode) in one day halts buying
-- **Sector concentration** — maximum 2 positions in any sector
-- **Bear filter** — no new buys when SPY drops more than 1.5% in a session
-- **VIX-tiered stop adjustment** — trailing stop trail widens automatically: 3% (VIX ≤ 18) → 4% (VIX ≤ 25) → 5.5% (VIX ≤ 35) → 7% (VIX > 35)
-- **Earnings guard** — positions with earnings within 2 calendar days are exited pre-emptively
-- **Circuit breaker** — new buys halted when the portfolio drops 12% from its 5-day peak
-- **Daily loss limit** — all positions closed when the portfolio loses 5% from the session open; bot auto-resumes the next trading day. If any position close fails during liquidation a halt file is written and manual resume is required (`python cli.py resume`)
-- **Partial profit taking** — 50% of any position is sold when unrealised gain hits 8% (15% in small-account mode); the remaining half runs with the trailing stop
-- **Per-signal hold limits** — stale positions are time-exited after signal-specific maximums (2–5 days depending on signal family)
-- **Short hedge** — after long buys each open run, bottom-quartile RS stocks are scanned for short positions (max 3 concurrent; capped at 0.5× long notional; sized at 0.5× standard long size); regime-gated to bear regimes only (`STRESS_RISK_OFF`, `HIGH_VOL_DOWNTREND`, `DEFENSIVE_DOWNTREND`, `CREDIT_STRESS`); standalone short book active in bear regimes when no longs are held. Every short is priced against an estimated borrow rate (`data/borrow_cost.py`) — hard-to-borrow names are skipped live and borrow cost is netted from short backtests
-- **Index regime hedge** (opt-in, `INDEX_HEDGE_ENABLED`) — shorts an index ETF (default SPY) at a configurable portfolio weight in confirmed bear regimes and covers on regime exit; a structurally cleaner short than crowded single names (cheap borrow, deep liquidity, no squeeze risk)
-- **Same-day open guard** — only one buy phase executes per calendar day in `open` mode; subsequent open runs skip buys entirely
-
-### Constrained parameter recommendation engine
-
-The weekly self-review enables Claude to propose adjustments to four operating parameters. This is a **constrained recommendation** mechanism — not self-modification. Every proposal:
-
-1. Is validated against hard-coded bounds that cannot be exceeded regardless of what Claude proposes
-2. Is recorded in `logs/weekly_review_YYYY-MM-DD.json` and included in the Sunday email as a proposal — never applied automatically
-3. Can be applied by the operator by manually editing `logs/runtime_config.json`; config loads and bounds-checks this file at every startup
-
-| Parameter | Allowed range |
-|-----------|---------------|
-| `MIN_CONFIDENCE` | 7 – 10 |
-| `TRAILING_STOP_PCT` | 2.0% – 10.0% |
-| `PARTIAL_PROFIT_PCT` | 3.0% – 20.0% |
-| `MAX_HOLD_DAYS` | 1 – 10 days |
-| `MAX_ORDERS_PER_RUN` | 1 – 5 |
-
-Values outside bounds are logged and rejected. The runtime config file is loaded at startup alongside `config.py` — source is never modified by the system. See [ADR-005](docs/adr/ADR-005-bounded-parameter-updates.md) for full rationale.
-
-### Human override
-
-At any point:
-
-```bash
-python cli.py halt      # Creates logs/.HALTED — bot refuses all further runs
-python cli.py resume    # Removes halt file and resumes
-```
-
-The halt command prompts for explicit confirmation before liquidating open positions. The halt file is checked at the start of every run cycle before any data is fetched or any API is called.
-
-### Audit trail
-
-Every Claude recommendation is written to the SQLite audit store regardless of whether it was executed — including the confidence score, plain-English reasoning, signal type, `run_id`, and a flag indicating whether it became a real trade. This log is queryable via `python cli.py decisions` and rendered in the dashboard's AI Decisions page.
-
-Every order placed is recorded with timestamp, symbol, action, price, quantity, run_id, and mode. The `run_id` field links every audit event, decision, and order back to the run that caused them.
-
----
-
-## Setup
-
-**Requirements:** Python 3.12, a free [Alpaca Markets](https://alpaca.markets) account, an [Anthropic API](https://console.anthropic.com) key, and a Gmail account with an App Password.
-
-### Option A — local (Python venv)
-
-```bash
-git clone https://github.com/samchatterley/investor-bot
-cd investor-bot
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Fill in .env with your keys
-python scripts/run_scheduler.py
-```
-
-### Option B — Docker
-
-```bash
-cp .env.example .env
-# Fill in .env with your keys
-docker-compose up -d
-```
-
-This starts two containers: the trading scheduler (`investorbot`) and the web dashboard (`investorbot-dashboard`) at `http://localhost:8501`. Logs are persisted to `./logs/` via a volume mount.
-
-### `.env` keys
-
-| Variable | Description |
-|----------|-------------|
-| `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | Alpaca credentials |
-| `ALPACA_BASE_URL` | `https://paper-api.alpaca.markets` for paper (default), `https://api.alpaca.markets` for live |
-| `ANTHROPIC_API_KEY` | Claude API key |
-| `EMAIL_FROM` | Gmail address the bot sends from |
-| `EMAIL_TO` | Owner address — emergency alerts only |
-| `EMAIL_RECIPIENTS` | Named recipients for daily summary + weekly review: `Sam:sam@gmail.com,Harri:harri@outlook.com` |
-| `EMAIL_APP_PASSWORD` | Gmail App Password (not your login password) |
-| `ALPHA_VANTAGE_API_KEY` | Optional. Alpha Vantage API key for news sentiment enrichment. Free tier: 500 calls/day, 5 calls/min. When absent, AV sentiment is silently disabled. |
-
-**Live trading:** The system is designed as a paper-trading governance and simulation framework. Live mode (changing `ALPACA_BASE_URL` to the live endpoint) additionally requires setting `LIVE_CONFIRM=I-ACCEPT-REAL-MONEY-RISK` in your `.env`. Do this only after extended paper trading, after reviewing all risk parameters, and with full understanding of every circuit breaker and kill switch in the system.
-
----
-
-## Using the System
-
-### CLI
-
-```bash
-python cli.py demo                # Complete simulated run — no credentials needed
-python cli.py status              # Account value, open positions, halt state
-python cli.py positions           # Live positions with P&L
-python cli.py trades --days 10    # Recent trade history
-python cli.py decisions --days 5  # AI decision log with reasoning
-python cli.py run --mode open     # Trigger a trading run
-python cli.py run --dry-run       # Analyse only, no orders placed
-python cli.py halt                # Emergency kill switch
-python cli.py resume              # Clear halt and resume
-python cli.py backtest --start 2025-01-01
-python cli.py dashboard           # Launch web dashboard
-```
-
-### Web dashboard
-
-```bash
-python cli.py dashboard
-```
-
-Opens at `http://localhost:8501`. Five pages:
-
-| Page | Contents |
-|------|----------|
-| Overview | Live portfolio value, equity curve, daily P&L bar chart, open positions |
-| Trades | Full trade history table across all sessions |
-| AI Decisions | Every Claude recommendation — confidence, signal type, reasoning, executed flag |
-| Backtest | Equity curve, Sharpe ratio, win rate, signal breakdown |
-| Diagnostics | Unit test results with pass/fail counts and a run-now button |
-
-### Backtesting
-
-```bash
-python cli.py backtest --start 2015-01-01 --capital 25000
-```
-
-Replays rule-based entry signals on historical OHLCV data without calling Claude. Reports total return, win rate, Sharpe ratio, max drawdown, and performance by signal type. Results are saved to `logs/backtest_results.json` and rendered in the dashboard. See the [Evaluation Evidence](#evaluation-evidence) section for results and caveats.
-
-### Notifications
-
-Each person listed in `EMAIL_RECIPIENTS` receives a personalised email addressed by name.
-
-| Event | Recipients |
-|-------|-----------|
-| End-of-day summary | All `EMAIL_RECIPIENTS` |
-| Sunday weekly review + diagnostics | All `EMAIL_RECIPIENTS` |
-| Circuit breaker / daily loss limit / errors | `EMAIL_TO` only |
-
----
-
-## Deployment & Operations
-
-### Where it runs
-
-Currently running on a local Mac in a `tmux` session with `caffeinate` to prevent sleep. This is intentional for paper-trading — there is no cost, no infrastructure, and no blast radius if something goes wrong. For a production deployment the natural next step would be a small VPS (Hetzner, DigitalOcean) or a Docker container on a cloud host with a persistent volume for `logs/`.
-
-The scheduler (`scripts/run_scheduler.py`) is the single production runner — it handles all four daily runs plus the Sunday weekly review. Do not use cron alongside it; doing so will double-fire every run.
-
-### Secrets handling
-
-All secrets live in `.env` which is gitignored and never committed. Inside the application, credentials are read from environment variables at startup via `python-dotenv` — they are never logged, never included in prompts, and never written to disk.
-
-### Persistence and recovery
-
-- **Lock file** (`logs/.lock_YYYY-MM-DD`): prevents two scheduler instances running simultaneously on the same day.
-- **Halt file** (`logs/.HALTED`): persists across restarts. If the bot is halted by a circuit breaker, it stays halted until manually resumed.
-- **SQLite database** (`logs/investorbot.db`): all position metadata, run records, audit events, and AI decisions. Reconciled against live Alpaca positions at the start of every open run.
-
-### Monitoring
-
-- **Email alerts**: circuit breaker triggers, daily loss limit hits, and run errors all send an immediate email to `EMAIL_TO`.
-- **Daily email**: end-of-day summary to all recipients — acts as a daily heartbeat.
-- **Dashboard**: `http://localhost:8501` shows live portfolio, equity curve, and recent decisions.
-- **Structured logs**: every run emits JSON-structured log lines with `run_id`, `ts`, `event`, and `payload` — queryable via `logs/investorbot.db`.
-- **LLM cost tracking**: token usage for each Claude call is logged (input tokens, output tokens, estimated cost) to the `llm_usage` table.
-
-### Cost
-
-| Component | Cost |
-|-----------|------|
-| Alpaca paper trading | Free |
-| Claude API (sonnet-4-6) | ~$0.03–0.08 per trading day |
-| Infrastructure (local) | $0 |
-| Gmail SMTP | Free |
-
-At current rates, running costs are approximately **$1–2/month** in API fees.
-
-### Runbook
-
-**Bot isn't running / missed a scheduled time:**
-```bash
-tmux attach -t investorbot       # Check if process is alive
-python cli.py status             # Check halt state and account
-python scripts/run_scheduler.py  # Restart if needed
-```
-
-**Unexpected position or suspicious behaviour:**
-```bash
-python cli.py decisions --days 1  # See what Claude decided and why
-python cli.py halt                 # Kill switch if needed
-```
-
-**Full live pre-flight:** See [LIVE_RUNBOOK.md](LIVE_RUNBOOK.md) for the pre-live checklist, canary procedure (single $20 trade to verify the full broker pipeline), and incident response.
-
----
-
-## Evaluation Evidence
-
-### Combined long/short backtest (2015–2026)
-
-The backtester replays rule-based entry signals on historical OHLCV data. This is a **proxy for signal quality** — it does not call Claude, and it does not include news, options data, or macro context that Claude sees in live runs.
-
-```
-COMBINED LONG/SHORT — 2015-01-01 → 2026-06-12
-Initial capital:   $25,000
-Total return:      +31.01%
-Total trades:      5,256  (long: 4,889 · short: 367)
-Win rate:          51.0%  (long: 52% · short: 44%)
-Avg return/trade:  +0.06%
-Max drawdown:      -37.8%
-Sharpe ratio:       0.22
-```
-
-Regime distribution over the backtest window: 63% NEUTRAL_CHOP, 9% STRESS_RISK_OFF, 8% DEFENSIVE_DOWNTREND, 6% BULL_TREND. The predominance of NEUTRAL_CHOP explains why many momentum-oriented signals fire infrequently — they are regime-gated to BULL_TREND.
-
-### Backtest caveats
-
-- **Rule-based proxy, not live Claude decisions.** The backtester uses hardcoded signal rules as a proxy for what Claude would recommend. Live Claude decisions will differ — sometimes better, sometimes worse.
-- **Transaction costs modelled.** Fills include 5 bps slippage, a liquidity-scaled half-spread, and a square-root market impact cost. Costs widen automatically for illiquid names and large orders relative to ADV.
-- **Gap-through-stop.** If today's open is already at or below the stop price, the fill executes at open, reflecting realistic gap risk.
-- **No lookahead bias.** Signals use T-1 bar indicators; entries fill at T open price. Indicator warmup is buffered by 90 days.
-- **Survivorship bias.** The universe is fixed to current S&P 500 constituents — names that have survived and grown. Pre-2020 results are upward-biased.
-- **Fundamental quality data (look-ahead).** Altman Z and Piotroski scores used in signal gates are derived from today's financials projected backwards. Distress-based short signals are particularly affected: the backtest scores companies against today's data, but all are still alive today — a form of survivorship that inflates the short book's edge. The 44% short win rate should be treated with caution.
-
-### Known failure modes
-
-| Scenario | What happens | Recovery |
-|----------|-------------|----------|
-| Claude returns malformed JSON | Validator rejects response, run aborts, alert email sent | Automatic retry on next scheduled run |
-| Claude recommends a symbol outside the universe | Validator rejects that recommendation, others proceed | Logged; no action needed |
-| Alpaca API timeout | Order attempt fails, position not opened, error logged | Bot continues; retried next run |
-| News headline contains injected instructions | Headline is dropped, warning logged | Automatic; review logs if frequent |
-| SQLite locked or corrupt | Falls back to in-memory state for the run; alert sent | Automatic recovery on next run |
-| Both API keys invalid | Run fails at client initialisation, alert sent | Fix `.env` and resume |
-| Circuit breaker triggered (−12% from 5-day peak) | New buys halted for the rest of the session | Resets automatically at next run |
-| Daily loss limit hit (−5% from open) | All positions liquidated, alert sent; auto-resumes next day | Automatic; halt file written + manual resume required only if a close fails |
-
----
-
-## LLM Eval Fixtures
-
-The [`evals/`](evals/) directory contains structured test fixtures for the AI governance layer. Each fixture covers a scenario where Claude's output or input is adversarial, edge-case, or safety-critical:
-
-| Fixture | What it tests |
-|---------|--------------|
-| `prompt_injection_headlines.json` | News headlines containing injection attempts — scanner must drop them |
-| `hallucinated_tickers.json` | AI recommends symbols outside the scanned universe — validator must reject |
-| `bear_market_no_buy.json` | Bear regime + buy candidates — risk gate must suppress buys |
-| `conflicting_signals.json` | BUY and SELL for the same symbol in one response — validator must flag conflict |
-| `earnings_risk.json` | Position with earnings within 2 days — earnings guard must trigger exit |
-| `malformed_tool_calls.json` | Three malformed AI responses — schema validator must reject all |
-
-Run with: `pytest evals/`
-
----
-
-## Production Story — Day One Incidents
-
-The bot went live on paper trading on 27 April 2026. Six distinct failures surfaced in the first two hours, none of which appeared in local testing. All six were diagnosed from logs alone without needing to reproduce locally. See [docs/incidents.md](docs/incidents.md) for full root-cause analysis, fixes, and learnings.
-
-| # | Failure | Category | Time to fix |
-|---|---------|----------|-------------|
-| 1 | Python 3.9 `\|` syntax crash at import | Environment assumption | ~10 min |
-| 2 | News fetcher silent zero results | External API drift | ~15 min |
-| 3 | Sentiment fetcher blocked (Cloudflare) | Third-party dependency | ~30 min |
-| 4 | Trailing stop rejected for fractional shares | Broker constraint untested | ~20 min |
-| 5 | Stop qty rounding above available qty | Numeric precision | ~10 min |
-| 6 | Midday and close runs never scheduled | Configuration gap | ~5 min |
-
-The key pattern: the system's structured logging — a timestamped record for every run with explicit counts like `Fetched news for 0/30 symbols` — made it possible to identify all failures within the first run's output rather than inferring them from missing behaviour.
-
----
-
-## What's Next
-
-The current system deliberately keeps deployment local and execution synchronous. The natural next steps, in priority order:
-
-1. **Live paper-trading evidence** — running continuous paper trading since April 2026. The backtest is signal evidence; paper trading is execution evidence. Next step: move to a small live experiment after sustained paper performance.
-2. **Drawdown-based position sizing** — reduce Kelly fraction automatically when the portfolio is in a drawdown, not just when individual signals are weak.
-3. ~~Post-earnings momentum (PEAD)~~ — implemented in v1.20.
-4. **Centralised logging** — move from local SQLite to a structured log store (Loki, Datadog) to support multi-host deployment and better alerting.
-5. **Account-level performance attribution** — track alpha vs SPY benchmark, not just absolute return. The current metrics don't adjust for beta.
-
----
-
-## Why This Demonstrates FDE Skills
-
-| FDE skill | How it shows up here |
-|-----------|----------------------|
-| Ambiguous problem → working product | Defined scope, constraints, and tradeoffs for an autonomous system operating on a schedule with no human in the loop |
-| Multiple third-party API integrations | Alpaca (brokerage), Anthropic (LLM), yfinance (market data), Gmail (SMTP) — each behind a fault-tolerant adapter with retry logic |
-| AI output treated as untrusted | Every Claude response schema-checked, domain-validated, and risk-gated before any order is placed |
-| Operator dashboard and CLI | Non-code workflows for halt, resume, status, decisions, backtest — all without touching source |
-| Paper-first deployment model | Default `.env.example` points to paper endpoint; live mode requires explicit opt-in with safeguards |
-| Real incident handling | Six production failures on day one, all diagnosed from logs and fixed same session — documented in [docs/incidents.md](docs/incidents.md) |
-| Audit trail for every action | Append-only SQLite record for every recommendation, order, and risk event — whether executed or not |
-| Demo mode, no credentials needed | `python cli.py demo` runs a complete simulated cycle on static fixtures for reviewers who don't have API keys |
-
----
-
-## Notes of Interest
-
-- **Paper-first by design.** The `.env.example` points to Alpaca's paper endpoint. Live trading requires a conscious URL change, a required confirmation string, a re-read of the risk parameters, and an understanding of every circuit breaker in the system.
-
-- **Fractional shares.** All orders use fractional share support, so the full calculated dollar amount is deployed rather than rounding down to whole shares. This matters most for high-price names like NVDA or GOOGL.
-
-- **Python 3.12 throughout.** The venv, Docker image, and scheduler all use Python 3.12. Do not invoke `python3` or `/usr/bin/python3` directly — always use `.venv/bin/python` to ensure the correct interpreter and pinned dependencies are used.
-
-- **MiFID II-style pre-trade controls.** The fat-finger guard (`MAX_SINGLE_ORDER_USD`), runaway algorithm guard (`MAX_DAILY_NOTIONAL_USD`), and open-exposure cap (`MAX_DEPLOYED_USD`) are modelled on Article 17 algorithmic trading obligations — limits that apply regardless of what Claude decides.
-
-- **Small-account experiment mode.** Set `SMALL_ACCOUNT_MODE=true` to activate a £150-scale live experiment profile. This caps single orders at $55, daily notional at $75, max deployed at $125, max positions at 2, and uses explicit-notional sizing ($40–$55 per position) instead of the risk-budget formula.
-
-- **AI explainability.** Every recommendation Claude makes is logged with its confidence score, plain-English reasoning, signal type, and `run_id` — whether or not the trade was ultimately executed.
-
-- **4,494 tests, 100% coverage.** The test suite covers every public function and every unhappy path across all core modules, enforced by a coverage gate on CI. Tests run automatically every Sunday as part of the weekly review job. Results are included in the email and visible in the Diagnostics dashboard page.
-
----
-
-## Version History
-
-See [CHANGELOG.md](CHANGELOG.md) for the full version history (v1.0 → v1.99).
-
-### Recent
-
-**1.99 — June 2026** — Signal book rationalisation + short-book rebuild. Disabled `obv_divergence` + `obv_acceleration` (joint ΔSharpe +0.12, ΔReturn +7.0% — slot competition was crowding out `pead`) and the three lagging fundamental shorts (`death_cross`, `altman_distress_short`, `gross_margin_deterioration_short`). Rebuilt the short side around the structural problems identified: a **borrow-cost model** (`data/borrow_cost.py` — netted from short backtests, gates hard-to-borrow names live), a **catalyst short** `post_earnings_gapdown_failed_bounce` (negative-PEAD continuation entered after the bounce fails, computed live from daily OHLCV), and an opt-in **index regime hedge** (short SPY in bear regimes — cheap borrow, no squeeze risk). `SIGNAL_PRIORITY` 41 entries (31 active, 10 disabled); `SHORT_SIGNAL_PRIORITY` gains the failed-bounce short.
-
-**1.98 — June 2026** — Institutional-grade codebase audit: 12 critical and high findings across AI governance, broker safety, signal wiring, and observability hardened. Signal book rationalised: 3 signals disabled (`range_reversion`, `volume_climax_reversal`, `tax_loss_reversal`) after combined production backtest confirmed no edge; `fcf_yield_signal` elevated to priority 12 on 563-trade evidence. Options and short-squeeze signals fully wired post-C3 dead-code fix. SYSTEM_PROMPT rewritten for parity with live signal book (41 entries, 8 disabled, 33 active). `SIGNAL_PRIORITY` now 41 entries (33 active, 8 in `GLOBALLY_DISABLED`). Tests: see below.
-
-**1.97 — June 2026** — The deepest signal expansion to date: 15 new long signals and 6 new short signals spanning options microstructure, fundamental quality, short-squeeze mechanics, alternative data, and cross-asset pairs. Five new data pipelines (`analyst_revisions`, `fear_greed`, `google_trends`, `lockup_calendar`; plus `fred_client` / `fundamental_cache` extensions). Nine new fundamental and microstructure gates in the signal evaluator. Fixes a latent options dead-code bug where options signals were evaluated before options data was injected. `SIGNAL_PRIORITY` now 41 entries (36 active, 5 in `GLOBALLY_DISABLED`). `SHORT_SIGNAL_PRIORITY` now 23 entries (9 active, 14 in `SHORT_GLOBALLY_DISABLED`). 4,494 tests total.
-
-**1.96 — June 2026** — Institutional-grade system review: 17 findings across crash safety, sizing, signal governance, and data integrity. Critical fixes include `REGIME_POLICY` `KeyError` on 3 missing states, fail-closed ledger getters, daily-loss liquidation error handling, and scoped cancel-order logic. Signal registry unification via `signals/registry.py`. Stop-exit outcome recording to fix win-rate survivorship bias. 11 new wiring/consistency tests. 4,220 tests total.
+Operate: `python cli.py status | positions | trades | decisions | run --dry-run | halt | resume |
+backtest | dashboard`. Live deployment, `.env` keys, Docker, scheduler, monitoring, and the runbook
+are documented in [Appendix A](#appendix-a--system-architecture--governance) sources and
+[`LIVE_RUNBOOK.md`](LIVE_RUNBOOK.md). Run the power gate: `python scripts/phase0_power_analysis.py`.
+
+### Appendix E — Version history
+
+See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 → v1.100). Most recent: **v1.100** — 100th release;
+full line-by-line audit + mypy cleanup ([`docs/audit_v1.100.md`](docs/audit_v1.100.md)). The
+research-program reframing (this document, [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md),
+[`docs/strategic_review.md`](docs/strategic_review.md)) supersedes the prior "feature-manual" README.
