@@ -1,8 +1,15 @@
 # EXPERIMENT.md — Pre-registration: Does AI contextual judgement add incremental value?
 
-> **Status:** Pre-registration (v1.2, pre-data amendments). Freeze before collecting any primary
+> **Status:** Pre-registration (v1.3, pre-data amendments). Freeze before collecting any primary
 > data. Any change after data collection begins requires a new version and a new evaluation period.
 > Companion docs: `docs/strategic_review.md` (why), `docs/audit_v1.100.md` (code-level audit).
+>
+> **v1.3 amendment (pre-data): LLM lookahead control (section 15.8).** The model has a training
+> knowledge cutoff (~Jan 2026), so on historical dates before it the LLM may already know the
+> realised outcome (training-data lookahead, affecting Arm 2 as well as Arm 3). Therefore the
+> contextual thesis is live-forward only (a hard requirement), and the historical Arm1-vs-Arm2
+> ablation feeds Arm 2 only blinded, de-identified features. Holdout boundary stays 2024-01-01 (a
+> longer, multi-regime out-of-sample window for the fitted v2).
 >
 > **v1.2 amendment (pre-data): the standable baseline is the fitted model.** To make a positive
 > result one we can stand on, the headline benchmark is the fitted `evidence_score_v2` (section 15.7),
@@ -417,6 +424,19 @@ Rigour requirements that follow:
   benchmark, and the ablation are mutually consistent and lookahead-clean.
 - **Separate periods.** v2 is fit on training, selected on validation, and judged on holdout; the AI
   comparison runs on the holdout / live-forward only.
+
+**15.8 LLM lookahead control: blinding and the model knowledge cutoff (v1.3).** The LLM has a training
+knowledge cutoff (about January 2026), so for any historical date before it the model may already know
+the realised outcome. This is training-data lookahead and it affects Arm 2 as well as Arm 3.
+Consequences:
+- **Contextual thesis is live-forward only.** A hard rigour requirement, not just a reconstructability
+  preference: there is no clean historical contextual arm.
+- **Historical Arm1-vs-Arm2 ablation blinds Arm 2.** Arm 2 receives only de-identified, normalised
+  features (no ticker, no date, no absolute price; RSI, MACD-diff, BB%, vol-ratio, relative strength,
+  etc.), so the model cannot recall which security and period it is and ride the known outcome. Arm 1
+  (deterministic) is unaffected.
+- **Blinding leakage probe (control).** Periodically ask the blinded model to name the ticker and
+  approximate date from the features alone. If it can, blinding has failed and that batch is excluded.
 
 ---
 
