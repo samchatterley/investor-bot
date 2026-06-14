@@ -69,6 +69,7 @@ files = [
     "experiment/noise_audit.py",
     "experiment/material_context.py",
     "experiment/context_ledger.py",
+    "experiment/evidence_score.py",
 ]
 
 [[tool.mypy.overrides]]

@@ -1,8 +1,15 @@
 # EXPERIMENT.md — Pre-registration: Does AI contextual judgement add incremental value?
 
-> **Status:** Pre-registration (v1.1, pre-data amendments). Freeze before collecting any primary
+> **Status:** Pre-registration (v1.2, pre-data amendments). Freeze before collecting any primary
 > data. Any change after data collection begins requires a new version and a new evaluation period.
 > Companion docs: `docs/strategic_review.md` (why), `docs/audit_v1.100.md` (code-level audit).
+>
+> **v1.2 amendment (pre-data): the standable baseline is the fitted model.** To make a positive
+> result one we can stand on, the headline benchmark is the fitted `evidence_score_v2` (section 15.7),
+> not the transparent hand-weighted `evidence_score_v1`. v1 is the floor and interpretability
+> diagnostic only. All baseline expectancy components must be computed point-in-time (as-of each
+> decision); zero-defaulting an absent expectancy is forbidden (it produces a strawman baseline that
+> also leaks). The AI claim requires beating v2.
 >
 > **v1.1 amendments (no data collected yet, so still a legitimate pre-registration).** Adopted from
 > an external audit of the design: (1) the primary endpoint is recast as a veto / down-weight test on
@@ -393,10 +400,23 @@ filings, earnings dates and results, and scheduled macro events. Exclude social 
 fundamentals, and anything whose as-of time is ambiguous. A narrow but clean historical Arm-3-like
 dataset of thousands of observations is worth more than a rich live one with no power.
 
-**15.7 Strong fitted baseline (already in the ladder).** `evidence_score_v2` is a regularised model on
-the same structured features (logistic, ridge, or gradient-boosted trees), fit and frozen on a
-separate period. If Arm 2 beats Champion v1 but not v2, the LLM is a mediocre non-linear combiner, not
-an intelligence layer. v1 reports against v1 only; v2 gets its own evaluation period.
+**15.7 Strong fitted baseline is the headline benchmark (v1.2).** `evidence_score_v2` is a regularised
+model on the same point-in-time structured features (logistic, ridge, or gradient-boosted trees), fit
+on a training window and frozen on a holdout. It is the benchmark the AI must beat for a standable
+claim. `evidence_score_v1` (transparent, hand-weighted, frozen) is the floor and interpretability
+diagnostic, not the headline. If Arm 2 or Arm 3 beats v1 but not v2, the LLM is a mediocre non-linear
+combiner, not an intelligence layer, and the result is reported as such.
+
+Rigour requirements that follow:
+- **Point-in-time only.** Expectancy components (signal_edge, signal_regime, decay) are computed
+  as-of each decision from prior data; full-sample expectancy is forbidden (it both inflates the
+  baseline and leaks). A candidate without a real point-in-time expectancy is not scoreable for the
+  experiment; the scorer flags this rather than zero-defaulting (no silent strawman).
+- **Shared point-in-time dataset.** v1, v2, and the historical Arm1-vs-Arm2 ablation all run on one
+  point-in-time feature-and-outcome dataset built from the backtest engine, so the baseline, the
+  benchmark, and the ablation are mutually consistent and lookahead-clean.
+- **Separate periods.** v2 is fit on training, selected on validation, and judged on holdout; the AI
+  comparison runs on the holdout / live-forward only.
 
 ---
 
