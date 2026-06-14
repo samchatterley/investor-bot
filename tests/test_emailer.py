@@ -119,6 +119,13 @@ class TestBuildHtml(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", html)
         self.assertIn("</html>", html)
 
+    def test_experiment_section_replaces_glossary(self):
+        html = _build_html(_record())
+        self.assertIn("Experiment", html)
+        self.assertIn("Data under test", html)
+        self.assertIn("Three-arm performance", html)
+        self.assertNotIn("Terms explained", html)  # old FAQ/glossary removed
+
 
 class TestBuildWeeklyHtml(unittest.TestCase):
     def _review(self, **kwargs):

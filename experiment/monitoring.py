@@ -62,6 +62,33 @@ def build_monitoring_lines(state: ExperimentState | None = None) -> list[str]:
     return lines
 
 
+_ARM_LABELS = {
+    "arm1": "Arm 1 (Champion, deterministic)",
+    "arm2": "Arm 2 (structured-only LLM)",
+    "arm3": "Arm 3 (contextual LLM)",
+}
+
+
+def build_three_arm_summary(arm_stats: dict[str, str] | None = None) -> list[str]:
+    """Lines summarising Arm 1 / Arm 2 / Arm 3 performance for the email.
+
+    ``arm_stats`` maps "arm1"/"arm2"/"arm3" to a one-line metric string, with an optional "headline"
+    key for the standable comparison. Empty or None renders a pre-data scaffold line, so the section
+    is honest before the measurement pipeline is collecting.
+    """
+    if not arm_stats:
+        return [
+            "No matched decisions yet. Three-arm performance (Arm 1 Champion vs Arm 2 "
+            "structured-only vs Arm 3 contextual) populates once the measurement pipeline is live."
+        ]
+    lines = [
+        f"{_ARM_LABELS[k]}: {arm_stats[k]}" for k in ("arm1", "arm2", "arm3") if arm_stats.get(k)
+    ]
+    if arm_stats.get("headline"):
+        lines.append(arm_stats["headline"])
+    return lines or ["No arm metrics available yet."]
+
+
 def append_log_entry(
     lines: list[str],
     entry_date: str | None = None,

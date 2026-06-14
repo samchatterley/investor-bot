@@ -9,6 +9,7 @@ from experiment.monitoring import (
     ExperimentState,
     append_log_entry,
     build_monitoring_lines,
+    build_three_arm_summary,
 )
 
 
@@ -86,6 +87,35 @@ class TestAppendLogEntry(unittest.TestCase):
         with patch("builtins.open", side_effect=OSError("disk full")):
             result = append_log_entry(["x"], entry_date="2026-06-14", log_path=path)
         self.assertEqual(result, "")
+
+
+class TestBuildThreeArmSummary(unittest.TestCase):
+    def test_empty_is_scaffold(self):
+        lines = build_three_arm_summary()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("No matched decisions yet", lines[0])
+
+    def test_populated_lists_arms_and_headline(self):
+        lines = build_three_arm_summary(
+            {
+                "arm1": "avg R 0.05 (n=120)",
+                "arm2": "avg R 0.06 (n=120)",
+                "arm3": "avg R 0.11 (n=40)",
+                "headline": "Arm3 minus Arm2 incremental IC 0.04 (not yet significant)",
+            }
+        )
+        joined = "\n".join(lines)
+        self.assertIn("Arm 1 (Champion, deterministic): avg R 0.05 (n=120)", joined)
+        self.assertIn("Arm 3 (contextual LLM): avg R 0.11 (n=40)", joined)
+        self.assertIn("incremental IC 0.04", joined)
+
+    def test_partial_arms(self):
+        self.assertEqual(
+            build_three_arm_summary({"arm1": "x"}), ["Arm 1 (Champion, deterministic): x"]
+        )
+
+    def test_truthy_but_no_known_keys(self):
+        self.assertEqual(build_three_arm_summary({"foo": "bar"}), ["No arm metrics available yet."])
 
 
 if __name__ == "__main__":  # pragma: no cover

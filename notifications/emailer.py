@@ -9,6 +9,7 @@ from email.mime.text import MIMEText
 from html import escape
 
 from config import EMAIL_APP_PASSWORD, EMAIL_CC, EMAIL_FROM, EMAIL_RECIPIENTS, EMAIL_TO
+from experiment.monitoring import build_monitoring_lines, build_three_arm_summary
 
 logger = logging.getLogger(__name__)
 
@@ -160,53 +161,6 @@ _TICKER_NAMES: dict[str, str] = {
     "XLE": "Energy Sector ETF",
     "XLF": "Financials Sector ETF",
 }
-
-_GLOSSARY = [
-    (
-        "Kelly sizing",
-        "A maths-based formula that decides how much to invest in each trade — the more confident the signal, the more capital is deployed.",
-    ),
-    (
-        "Confidence score",
-        "The bot's self-assessed certainty that a trade will work, scored 1–10. Only scores of 7 or above trigger a trade.",
-    ),
-    (
-        "Oversold bounce",
-        "The stock has fallen further than expected and looks likely to recover — the bot buys in anticipation of that recovery.",
-    ),
-    (
-        "Upward momentum",
-        "The stock is trending strongly upward with above-average trading volume, suggesting the move has more to run.",
-    ),
-    (
-        "Continuing uptrend",
-        "The stock is already in an uptrend and the signals suggest it will keep climbing in the short term.",
-    ),
-    (
-        "Momentum shift",
-        "A technical indicator just flipped from negative to positive, suggesting the stock is turning a corner.",
-    ),
-    (
-        "Trailing stop",
-        "A stop-loss that automatically moves up as the stock rises — it locks in gains while still giving the stock room to grow.",
-    ),
-    (
-        "Partial exit",
-        "The bot sold half the position after reaching the profit target, locking in gains while keeping skin in the game.",
-    ),
-    (
-        "Circuit breaker",
-        "A safety rule: if the overall portfolio falls too much in a short period, the bot stops making new trades until things stabilise.",
-    ),
-    (
-        "Bear market filter",
-        "If the broader market drops sharply in a day, the bot skips new buys — it's better to sit out than buy into a falling market.",
-    ),
-    (
-        "Earnings exit",
-        "Companies report earnings quarterly, which can cause big unexpected price swings. The bot exits before earnings to avoid that risk.",
-    ),
-]
 
 
 def _humanise_detail(detail: str) -> str:
@@ -539,6 +493,44 @@ def _build_positions_section(record: dict, all_positions: dict | None = None) ->
     return html
 
 
+def _build_experiment_section(record: dict) -> str:
+    """Daily-email Experiment section: the data under test + three-arm performance.
+
+    Reads record["experiment"] when the measurement pipeline is live; otherwise renders the honest
+    pre-data scaffold. Monitoring only, never a hypothesis test (the paper's Results are separate).
+    """
+    exp = record.get("experiment", {})
+    data_lines = exp.get("monitoring") or build_monitoring_lines()
+    arm_lines = build_three_arm_summary(exp.get("arm_stats"))
+
+    def _lines_html(lines: list[str]) -> str:
+        return "".join(
+            '<p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#555;'
+            'margin:0 0 6px 0;padding-left:12px;border-left:3px solid #e6e0f0;line-height:1.5">'
+            f"{escape(line)}</p>"
+            for line in lines
+        )
+
+    def _label(text: str) -> str:
+        return (
+            '<p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;'
+            'text-transform:uppercase;letter-spacing:.5px;margin:18px 0 10px 0">'
+            f"{text}</p>"
+        )
+
+    return f"""
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;border-top:1px solid #eeeeee">
+            <tr><td style="padding-top:20px">
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#6a1b9a;text-transform:uppercase;letter-spacing:.6px;margin:0 0 4px 0">Experiment</p>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#999;margin:0 0 4px 0">Monitoring only, not a hypothesis test.</p>
+              {_label("Data under test")}
+              {_lines_html(data_lines)}
+              {_label("Three-arm performance")}
+              {_lines_html(arm_lines)}
+            </td></tr>
+          </table>"""
+
+
 def _build_html(record: dict, name: str = "there") -> str:
     pnl = record["daily_pnl"]
     pnl_colour = "#2e7d32" if pnl >= 0 else "#c62828"
@@ -566,14 +558,7 @@ def _build_html(record: dict, name: str = "there") -> str:
     positions_section = _build_positions_section(record, all_live_positions)
     trade_cards = _build_trade_cards(record)
     closed_section = _build_closed_section(record)
-
-    glossary_rows = "".join(
-        f"<tr>"
-        f'<td style="padding:5px 12px 5px 0;color:#555;font-weight:600;vertical-align:top;white-space:nowrap;font-family:Arial,Helvetica,sans-serif;font-size:12px">{term}</td>'
-        f'<td style="padding:5px 0;color:#777;line-height:1.5;font-family:Arial,Helvetica,sans-serif;font-size:12px">{explanation}</td>'
-        f"</tr>"
-        for term, explanation in _GLOSSARY
-    )
+    experiment_section = _build_experiment_section(record)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -654,15 +639,7 @@ def _build_html(record: dict, name: str = "there") -> str:
 
           {closed_section}
 
-          <!-- Glossary -->
-          <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:32px;border-top:1px solid #eeeeee">
-            <tr><td style="padding-top:20px">
-              <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin:0 0 14px 0">Terms explained</p>
-              <table width="100%" cellpadding="0" cellspacing="0">
-                {glossary_rows}
-              </table>
-            </td></tr>
-          </table>
+          {experiment_section}
 
           <!-- Footer -->
           <p style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:{mode_colour};margin:24px 0 0;text-align:center;padding-bottom:28px">
