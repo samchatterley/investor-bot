@@ -9,7 +9,7 @@ import data.finbert as finbert
 
 
 def _make_pipeline_output(pos: float, neg: float, neu: float) -> list[list[dict]]:
-    """Build a mock pipeline return value matching return_all_scores=True format."""
+    """Build a mock pipeline return value matching the top_k=None nested-list format."""
     return [
         [
             {"label": "positive", "score": pos},

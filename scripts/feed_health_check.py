@@ -49,6 +49,22 @@ def _finbert(avail):  # pragma: no cover
     return (OK, "model loaded") if avail else (DEGRADED, "transformers/torch not installed")
 
 
+def _insider_machinery():  # pragma: no cover
+    # Open-market insider BUYS are rare, so get_insider_activity() is legitimately empty most days.
+    # Feed health is whether the Form 4 PIPELINE works: the CIK map loads and recent filings are
+    # reachable for major filers (the XML parse fix itself is covered by unit tests). Returns None
+    # (-> EMPTY) only if the machinery is actually broken.
+    from data.insider_feed import _get_cik_map, _recent_form4_filings
+
+    cmap = _get_cik_map()
+    if not cmap:
+        return None
+    found = sum(
+        len(_recent_form4_filings(cmap[s], 30)) for s in ("JPM", "MSFT", "XOM") if s in cmap
+    )
+    return {"recent_form4": found} if found else None
+
+
 def _probes():  # pragma: no cover
     from data.analyst_revisions import get_analyst_revisions
     from data.breadth import get_breadth_snapshot
@@ -58,7 +74,6 @@ def _probes():  # pragma: no cover
     from data.fundamental_cache import get_altman_z, get_piotroski_f
     from data.fundamentals import get_fundamentals
     from data.google_trends import get_google_trends_signals
-    from data.insider_feed import get_insider_activity
     from data.market_data import get_index_price, get_spy_5d_return, get_vix
     from data.news_fetcher import fetch_news
     from data.options_data import get_options_batch
@@ -71,13 +86,18 @@ def _probes():  # pragma: no cover
         ("market_data SPY 5d ret", get_spy_5d_return, None),
         ("sentiment AAII", get_aaii_sentiment, _aaii),
         ("finbert news sentiment", is_available, _finbert),
+        ("fred api key", lambda: os.getenv("FRED_API_KEY"), None),
         ("fred 10y yield", get_10y_yield, None),
         ("fred yield-curve inv days", get_yield_curve_inverted_days, None),
         ("fundamentals (Finnhub)", lambda: get_fundamentals([_SAMPLE]), None),
         ("fundamental_cache altman_z", lambda: get_altman_z(_SAMPLE), None),
         ("fundamental_cache piotroski", lambda: get_piotroski_f(_SAMPLE), None),
         ("options IV surface", lambda: get_options_batch([_SAMPLE]), None),
-        ("insider feed (EDGAR)", lambda: get_insider_activity([_SAMPLE]), None),
+        (
+            "insider Form4 pipeline",
+            _insider_machinery,
+            lambda v: (OK, f"{v['recent_form4']} filings reachable"),
+        ),
         ("analyst revisions", lambda: get_analyst_revisions([_SAMPLE]), None),
         ("news headlines", lambda: fetch_news([_SAMPLE]), None),
         ("google trends", lambda: get_google_trends_signals([_SAMPLE]), None),

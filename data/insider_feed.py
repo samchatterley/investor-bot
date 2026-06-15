@@ -129,6 +129,11 @@ def _recent_form4_filings(cik: str, lookback_days: int) -> list[dict]:
 
 def _parse_form4(cik: str, accession: str, doc: str) -> list[dict]:
     """Download and parse a Form 4 XML, returning open-market purchase records only."""
+    # EDGAR's primaryDocument now points at the XSL-styled HTML view (e.g.
+    # "xslF345X06/ownership.xml"), which is not parseable as XML. The raw ownership XML lives in
+    # the accession root under the same filename, so strip the leading "xsl.../" styling path.
+    if doc.lower().startswith("xsl") and "/" in doc:
+        doc = doc.split("/", 1)[1]
     url = _FILING_URL.format(cik_int=int(cik), accession=accession, doc=doc)
     try:
         _edgar_sleep()

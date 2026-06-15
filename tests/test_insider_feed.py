@@ -180,6 +180,20 @@ class TestParseForm4(unittest.TestCase):
         self.assertAlmostEqual(txns[0]["shares"], 5000.0)
         self.assertAlmostEqual(txns[0]["price"], 185.50)
 
+    def test_strips_xsl_styling_path_to_reach_raw_xml(self):
+        # EDGAR's primaryDocument points at the XSL HTML view (xslF345X06/ownership.xml), which
+        # is not parseable XML; _parse_form4 must strip the prefix and fetch the raw root file.
+        with (
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.time.sleep"),
+        ):
+            mock_get.return_value = _mock_response(content=_FORM4_XML_SINGLE)
+            txns = _parse_form4("320193", "000032019326000001", "xslF345X06/ownership.xml")
+        url = mock_get.call_args.args[0]
+        self.assertTrue(url.endswith("/ownership.xml"))
+        self.assertNotIn("xslF345X06", url)
+        self.assertEqual(len(txns), 1)
+
     def test_excludes_sales(self):
         with (
             patch("data.insider_feed.requests.get") as mock_get,

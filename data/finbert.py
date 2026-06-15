@@ -33,7 +33,7 @@ def _load_pipeline() -> None:
         _pipeline = _hf_pipeline(
             "text-classification",
             model=_MODEL,
-            return_all_scores=True,
+            top_k=None,  # return every label's score; transformers 5.x dropped return_all_scores
         )
     except Exception as exc:  # includes ImportError, OSError, etc.
         logger.warning("finbert: pipeline unavailable: %s", exc)
