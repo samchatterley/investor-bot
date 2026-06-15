@@ -520,17 +520,23 @@ _MA_AGREEMENT_ITEM = "1.01"  # entry into a material definitive agreement (confi
 _REG_DELISTING_ITEM = "3.01"  # notice of delisting / failure to satisfy a listing rule
 _REG_OTHER_ITEM = "8.01"  # other events (confirm with keywords)
 
+# Event-specific multi-word phrases only. Bare "merger"/"acquisition" appear in debt-covenant
+# boilerplate ("in the event of a merger, disposition or transfer..."), and "securities and exchange
+# commission" / bare "fda" appear in nearly every 8-K, so loose terms produce false positives on
+# financing filings (verified against live JPM/GILD/F 8-Ks). These require the actual deal/regulatory
+# language. Negative tests in test_edgar_client lock in the boilerplate cases that previously fired.
 _MA_KEYWORDS = re.compile(
-    r"\b(merger|acquisition|acquire[ds]?|tender offer|business combination|"
-    r"agreement and plan of merger|definitive agreement to (?:acquire|merge)|"
-    r"to be acquired|takeover)\b",
+    r"(agreement and plan of merger|definitive merger agreement|merger agreement|"
+    r"definitive agreement to acquire|to be acquired by|tender offer|"
+    r"business combination agreement)",
     re.I,
 )
 _REGULATORY_KEYWORDS = re.compile(
-    r"\b(fda|complete response letter|clinical (?:trial|hold)|phase (?:3|iii)|"
-    r"investigation|subpoena|antitrust|consent decree|enforcement action|"
-    r"warning letter|product recall|department of justice|"
-    r"securities and exchange commission|regulatory approval)\b",
+    r"(complete response letter|clinical hold|warning letter|consent decree|"
+    r"enforcement action|product recall|antitrust|subpoena|department of justice|"
+    r"fda\s+(?:has\s+)?(?:approved|cleared|granted|rejected|declined|accepted)|"
+    r"(?:approved|cleared|granted|rejected)\s+by\s+the\s+fda|"
+    r"phase (?:3|iii) (?:trial|study|results|data))",
     re.I,
 )
 

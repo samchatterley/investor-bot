@@ -400,6 +400,14 @@ class TestFetchMaEvent(TestCase):
         with patch("data.edgar_client._fetch_8k_exhibit_text", return_value=""):
             self.assertIsNone(_fetch_ma_event("AAPL", "0000320193", [_f("1.01")]))
 
+    def test_item_101_debt_covenant_boilerplate_not_detected(self):
+        # Live false positive from Ford: bare "merger" in indenture covenant language on a debt 8-K.
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="in the event of a merger, disposition or transfer of substantially all assets",
+        ):
+            self.assertIsNone(_fetch_ma_event("F", "0000037996", [_f("1.01,2.03")]))
+
     def test_unrelated_items_returns_none(self):
         self.assertIsNone(_fetch_ma_event("AAPL", "0000320193", [_f("5.02")]))
 
@@ -431,6 +439,31 @@ class TestFetchRegulatoryEvent(TestCase):
     def test_item_801_empty_text_returns_none(self):
         with patch("data.edgar_client._fetch_8k_exhibit_text", return_value=""):
             self.assertIsNone(_fetch_regulatory_event("AAPL", "0000320193", [_f("8.01")]))
+
+    def test_item_801_fda_action_verb_detected(self):
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="the fda approved the company's new drug application this morning",
+        ):
+            result = _fetch_regulatory_event("MRK", "0000310158", [_f("8.01")])
+        self.assertTrue(result["detected"])
+
+    def test_item_801_fda_approval_noun_boilerplate_not_detected(self):
+        # "FDA approval" as a noun is risk-factor boilerplate; only the action verb counts.
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="our products require fda approval before they can be marketed",
+        ):
+            self.assertIsNone(_fetch_regulatory_event("MRK", "0000310158", [_f("8.01")]))
+
+    def test_item_801_sec_filing_boilerplate_not_detected(self):
+        # Live false positive from JPM/GILD: "securities and exchange commission" is in nearly every
+        # 8-K's standard filing language and must not count as a regulatory event.
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="this report was filed by the company with the securities and exchange commission",
+        ):
+            self.assertIsNone(_fetch_regulatory_event("JPM", "0000019617", [_f("8.01")]))
 
     def test_unrelated_items_returns_none(self):
         self.assertIsNone(_fetch_regulatory_event("AAPL", "0000320193", [_f("5.02")]))
