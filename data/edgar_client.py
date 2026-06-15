@@ -201,21 +201,80 @@ def _get_recent_filings(
     return results
 
 
-def _fetch_filing_text(cik: str, accession: str, doc: str, max_chars: int = 8000) -> str:
-    """Download the primary document of a filing and return the first max_chars chars."""
-    url = _FILING_BASE.format(cik_int=int(cik), accession=accession) + doc
+def _strip_html(raw: str, max_chars: int) -> str:
+    """Strip HTML tags, collapse whitespace, lowercase, THEN truncate.
+
+    Order matters: truncating the raw HTML first (as the original did) keeps only the document
+    header/inline-XBRL boilerplate for modern EDGAR filings and discards the narrative body, which
+    is why keyword classification saw nothing. Strip first so max_chars counts real text.
+    """
+    content = re.sub(r"<[^>]+>", " ", raw)
+    content = re.sub(r"\s+", " ", content).strip().lower()
+    return content[:max_chars]
+
+
+def _fetch_doc_text(url: str, max_chars: int = 8000) -> str:
+    """GET a single filing document and return its stripped text."""
     try:
         time.sleep(_REQ_DELAY)
         resp = requests.get(url, headers=_HEADERS, timeout=15)
         resp.raise_for_status()
-        content = resp.text[:max_chars]
-        # Strip HTML tags for keyword matching
-        content = re.sub(r"<[^>]+>", " ", content)
-        content = re.sub(r"\s+", " ", content).lower()
-        return content
+        return _strip_html(resp.text, max_chars)
     except Exception as exc:
         logger.debug("edgar_client: filing fetch failed %s: %s", url, exc)
         return ""
+
+
+def _fetch_filing_text(cik: str, accession: str, doc: str, max_chars: int = 8000) -> str:
+    """Download the primary document of a filing and return its stripped text."""
+    url = _FILING_BASE.format(cik_int=int(cik), accession=accession) + doc
+    return _fetch_doc_text(url, max_chars)
+
+
+# Filing-index entries that are never the press-release exhibit: the filing index pages, the
+# FilingSummary, and the XBRL viewer report fragments (R1.htm, R2.htm, ...).
+_EXHIBIT_SKIP = re.compile(r"(index|filingsummary|^r\d+\.htm$)", re.I)
+
+
+def _fetch_8k_exhibit_text(
+    cik: str, accession: str, primary_doc: str, max_chars: int = 20000
+) -> str:
+    """Return the combined text of an 8-K's press-release / commentary exhibits.
+
+    The primary 8-K document is usually just the cover page; the results and guidance narrative
+    live in the EX-99.x exhibits (the press release and any CFO commentary). We list the accession's
+    documents and combine the HTML exhibits that are not the cover, the filing index, or XBRL-viewer
+    fragments. Falls back to the primary document when no exhibits are found or the listing fails.
+    """
+    base = _FILING_BASE.format(cik_int=int(cik), accession=accession)
+    try:
+        time.sleep(_REQ_DELAY)
+        resp = requests.get(base + "index.json", headers=_HEADERS, timeout=15)
+        resp.raise_for_status()
+        items = resp.json().get("directory", {}).get("item", [])
+    except Exception as exc:
+        logger.debug("edgar_client: index fetch failed %s: %s", base, exc)
+        return _fetch_doc_text(base + primary_doc, max_chars)
+
+    exhibits = [
+        d["name"]
+        for d in items
+        if d.get("name", "").lower().endswith((".htm", ".html"))
+        and d["name"] != primary_doc
+        and not _EXHIBIT_SKIP.search(d["name"])
+    ]
+    if not exhibits:
+        return _fetch_doc_text(base + primary_doc, max_chars)
+
+    parts: list[str] = []
+    for name in exhibits:
+        chunk = _fetch_doc_text(base + name, max_chars)
+        if chunk:
+            parts.append(chunk)
+        if sum(len(p) for p in parts) >= 2 * max_chars:
+            break
+    combined = " ".join(parts)
+    return combined or _fetch_doc_text(base + primary_doc, max_chars)
 
 
 # ── Keyword classification ────────────────────────────────────────────────────
@@ -248,7 +307,8 @@ def _fetch_8k_guidance(sym: str, cik: str, lookback_days: int) -> dict | None:
         return None
 
     latest = guidance_filings[0]
-    text = _fetch_filing_text(cik, latest["accession"], latest["doc"])
+    # The cover page carries no results/guidance language — read the EX-99.x exhibits.
+    text = _fetch_8k_exhibit_text(cik, latest["accession"], latest["doc"])
     if not text:
         return None
 

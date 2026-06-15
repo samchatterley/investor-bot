@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from data.edgar_client import (
     _classify_guidance,
+    _fetch_8k_exhibit_text,
     _fetch_8k_guidance,
     _fetch_13d_activist,
     _fetch_filing_text,
@@ -271,7 +272,7 @@ class TestFetch8kGuidance(TestCase):
         with (
             patch("data.edgar_client._get_recent_filings", return_value=[self._filing("2.02")]),
             patch(
-                "data.edgar_client._fetch_filing_text",
+                "data.edgar_client._fetch_8k_exhibit_text",
                 return_value="company raises guidance for full-year revenue",
             ),
         ):
@@ -285,7 +286,7 @@ class TestFetch8kGuidance(TestCase):
         with (
             patch("data.edgar_client._get_recent_filings", return_value=[self._filing("7.01")]),
             patch(
-                "data.edgar_client._fetch_filing_text",
+                "data.edgar_client._fetch_8k_exhibit_text",
                 return_value="company lowers guidance headwinds softening demand",
             ),
         ):
@@ -306,7 +307,7 @@ class TestFetch8kGuidance(TestCase):
     def test_empty_text_returns_none(self):
         with (
             patch("data.edgar_client._get_recent_filings", return_value=[self._filing("2.02")]),
-            patch("data.edgar_client._fetch_filing_text", return_value=""),
+            patch("data.edgar_client._fetch_8k_exhibit_text", return_value=""),
         ):
             result = _fetch_8k_guidance("AAPL", "0000320193", 30)
         self.assertIsNone(result)
@@ -315,6 +316,89 @@ class TestFetch8kGuidance(TestCase):
         with patch("data.edgar_client._get_recent_filings", return_value=[]):
             result = _fetch_8k_guidance("AAPL", "0000320193", 30)
         self.assertIsNone(result)
+
+
+class TestFetch8kExhibitText(TestCase):
+    def _index_resp(self, names):
+        r = MagicMock()
+        r.raise_for_status.return_value = None
+        r.json.return_value = {"directory": {"item": [{"name": n} for n in names]}}
+        return r
+
+    def _doc_resp(self, text):
+        r = MagicMock()
+        r.raise_for_status.return_value = None
+        r.text = text
+        return r
+
+    def test_combines_exhibits_excluding_cover_index_xbrl(self):
+        idx = self._index_resp(
+            [
+                "x-index.html",
+                "FilingSummary.xml",
+                "cover.htm",
+                "R1.htm",
+                "pr.htm",
+                "cfo.htm",
+                "logo.jpg",
+            ]
+        )
+        pr = self._doc_resp("<p>raises guidance, record revenue</p>")
+        cfo = self._doc_resp("<p>strong full-year outlook</p>")
+        with (
+            patch("data.edgar_client.requests.get", side_effect=[idx, pr, cfo]),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            txt = _fetch_8k_exhibit_text("320193", "000032019326000001", "cover.htm")
+        self.assertIn("raises guidance", txt)
+        self.assertIn("strong full-year outlook", txt)
+        self.assertNotIn("cover", txt)  # cover page not included
+
+    def test_falls_back_to_primary_when_no_exhibits(self):
+        idx = self._index_resp(["x-index.html", "cover.htm", "R2.htm"])
+        cover = self._doc_resp("<p>cover page only</p>")
+        with (
+            patch("data.edgar_client.requests.get", side_effect=[idx, cover]),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            txt = _fetch_8k_exhibit_text("320193", "000032019326000001", "cover.htm")
+        self.assertIn("cover page only", txt)
+
+    def test_falls_back_when_index_fetch_fails(self):
+        cover = self._doc_resp("<p>cover fallback body</p>")
+        with (
+            patch(
+                "data.edgar_client.requests.get", side_effect=[RuntimeError("index down"), cover]
+            ),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            txt = _fetch_8k_exhibit_text("320193", "000032019326000001", "cover.htm")
+        self.assertIn("cover fallback body", txt)
+
+    def test_empty_exhibits_fall_back_to_primary(self):
+        idx = self._index_resp(["cover.htm", "pr.htm"])
+        empty = self._doc_resp("")
+        cover = self._doc_resp("<p>primary body text</p>")
+        with (
+            patch("data.edgar_client.requests.get", side_effect=[idx, empty, cover]),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            txt = _fetch_8k_exhibit_text("320193", "000032019326000001", "cover.htm")
+        self.assertIn("primary body text", txt)
+
+    def test_stops_after_reaching_size_cap(self):
+        # a (50) + b (50) >= 2*max_chars(50) -> break before fetching c
+        idx = self._index_resp(["cover.htm", "a.htm", "b.htm", "c.htm"])
+        a = self._doc_resp("A" * 100)
+        b = self._doc_resp("B" * 100)
+        with (
+            patch("data.edgar_client.requests.get", side_effect=[idx, a, b]),
+            patch("data.edgar_client.time.sleep"),
+        ):
+            txt = _fetch_8k_exhibit_text("320193", "000032019326000001", "cover.htm", max_chars=50)
+        self.assertIn("a" * 50, txt)
+        self.assertIn("b" * 50, txt)
+        self.assertNotIn("c", txt)  # third exhibit never fetched
 
 
 # ── 13D activist detection ────────────────────────────────────────────────────
