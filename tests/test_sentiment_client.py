@@ -145,6 +145,24 @@ class TestParseAaiiDf(TestCase):
         # Only 2 valid rows
         self.assertEqual(len(result), 2)
 
+    def test_skips_nan_percentage_rows(self):
+        # A valid date with blank (NaN) survey cells must be dropped, not pass through as NaN —
+        # the sum check does not catch it (any comparison with NaN is False). This is the real
+        # AAII XLS failure mode (trailing dated rows with blank survey cells).
+        import math
+
+        rows = [
+            ["2026-05-01", 0.35, 0.30, 0.35, 1.0],
+            ["2026-05-08", 0.40, 0.28, 0.32, 1.0],
+            ["2026-05-15", float("nan"), float("nan"), float("nan"), float("nan")],
+        ]
+        df = self._make_df(rows)
+        result = _parse_aaii_df(df)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)  # NaN row dropped
+        self.assertFalse(math.isnan(result[-1]["bullish"]))
+        self.assertAlmostEqual(result[-1]["bullish"], 0.40, places=3)
+
     def test_exception_returns_none(self):
         # Pass something totally unexpected
         result = _parse_aaii_df(pd.DataFrame([[None, None, None]]))

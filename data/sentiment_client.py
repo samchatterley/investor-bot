@@ -165,6 +165,11 @@ def _parse_aaii_df(df: pd.DataFrame) -> list[dict] | None:
                 bull = float(row[1])
                 neutral = float(row[2])
                 bear = float(row[3])
+                # Skip rows with a valid date but blank survey cells (NaN). The sum check below
+                # does NOT catch these because any comparison with NaN is False, so without this an
+                # all-NaN row passes through and poisons the latest reading.
+                if pd.isna(date_val) or pd.isna(bull) or pd.isna(neutral) or pd.isna(bear):
+                    continue
                 # Convert from percentage to decimal if needed
                 if bull > 1.0:
                     bull, neutral, bear = bull / 100, neutral / 100, bear / 100
