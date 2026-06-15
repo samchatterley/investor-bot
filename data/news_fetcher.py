@@ -3,12 +3,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yfinance as yf
 
+from utils.symbols import to_yf_symbol
+
 logger = logging.getLogger(__name__)
 
 
 def _fetch_single(symbol: str, max_headlines: int) -> tuple[str, list[str]]:
     try:
-        ticker = yf.Ticker(symbol)
+        # Query in yfinance's convention (BRK.B -> BRK-B); return the original symbol as the key.
+        ticker = yf.Ticker(to_yf_symbol(symbol))
         raw = getattr(ticker, "news", None) or []
         headlines = []
         for item in raw[:max_headlines]:

@@ -25,6 +25,7 @@ import time
 import yfinance as yf
 
 from config import ETF_SYMBOLS, LOG_DIR, STOCK_UNIVERSE, today_et
+from utils.symbols import to_yf_symbol
 
 logger = logging.getLogger(__name__)
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
@@ -75,7 +76,7 @@ def _live_fetch_short_interest(
             continue
         try:
             time.sleep(_REQ_DELAY)
-            info = yf.Ticker(sym).info
+            info = yf.Ticker(to_yf_symbol(sym)).info
         except Exception as exc:
             logger.debug(f"short_interest fetch failed for {sym}: {exc}")
             result[sym] = None

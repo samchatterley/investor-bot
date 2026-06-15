@@ -30,6 +30,7 @@ import pandas as pd
 import yfinance as yf
 
 from config import ETF_SYMBOLS, LOG_DIR, STOCK_UNIVERSE, today_et
+from utils.symbols import to_yf_symbol
 
 logger = logging.getLogger(__name__)
 # yfinance logs at ERROR when no earnings exist (normal for ETFs) — suppress that noise
@@ -88,7 +89,7 @@ def _live_fetch_earnings(
         # earnings_dates schema must not abort the whole batch — set None and continue.
         try:
             time.sleep(_REQ_DELAY)
-            df: pd.DataFrame | None = yf.Ticker(sym).earnings_dates
+            df: pd.DataFrame | None = yf.Ticker(to_yf_symbol(sym)).earnings_dates
 
             if df is None or df.empty:
                 result[sym] = None

@@ -16,6 +16,7 @@ from ta.volatility import BollingerBands
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, LOG_DIR
 from data.fundamentals import get_fundamentals
+from utils.symbols import to_yf_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def fetch_stock_data(
             fetch_days = max(days + 150, 200)
             start = end - timedelta(days=fetch_days)
 
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(to_yf_symbol(symbol))
             df = ticker.history(start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"))
 
             if df.empty or len(df) < 35:
@@ -509,9 +510,12 @@ def _download_symbols(symbols: list[str], fetch_days: int) -> dict[str, pd.DataF
     end = datetime.now()
     start = (end - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
+    # Query yfinance in its own ticker convention (BRK.B -> BRK-B) but map results back to the
+    # original symbols so the rest of the system keeps using the dot form.
+    yf_to_orig = {to_yf_symbol(s): s for s in symbols}
     try:
         raw = yf.download(
-            tickers=symbols,
+            tickers=list(yf_to_orig),
             start=start,
             end=end_str,
             auto_adjust=True,
@@ -526,12 +530,12 @@ def _download_symbols(symbols: list[str], fetch_days: int) -> dict[str, pd.DataF
     result: dict[str, pd.DataFrame] = {}
     if isinstance(raw.columns, pd.MultiIndex):
         available = raw.columns.get_level_values(1).unique()
-        for sym in symbols:
-            if sym in available:
+        for yf_sym, orig in yf_to_orig.items():
+            if yf_sym in available:
                 try:
-                    sym_df = raw.xs(sym, level=1, axis=1).dropna(how="all").copy()
+                    sym_df = raw.xs(yf_sym, level=1, axis=1).dropna(how="all").copy()
                     if not sym_df.empty:
-                        result[sym] = sym_df
+                        result[orig] = sym_df
                 except KeyError:
                     pass
     elif len(symbols) == 1:
