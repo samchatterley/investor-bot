@@ -63,6 +63,7 @@ files = [
     "data/borrow_cost.py",
     "data/fundamental_cache.py",
     "data/fundamentals.py",
+    "data/index_membership.py",
     "signals/evaluator.py",
     "experiment/monitoring.py",
     "experiment/arms.py",

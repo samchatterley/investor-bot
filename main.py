@@ -47,6 +47,7 @@ from data import (
     sentiment as sentiment_module,
 )
 from data.borrow_cost import estimate_borrow_rate, is_hard_to_borrow
+from data.index_membership import classify_index_change
 from data.macro_data import get_combined_macro_flags, get_macro_snapshot
 from data.sentiment_client import get_sentiment_snapshot
 from execution import short_risk, stock_scanner, trader
@@ -1629,6 +1630,12 @@ def _build_data_bundle(
     news_symbols = list(ai_known_symbols)
     raw_news = _news_fetcher.fetch_news(news_symbols)
     news = _sanitize_headlines(raw_news)
+
+    # Index inclusion/deletion (material-context enrichment, the 10th category). Index providers have
+    # no clean point-in-time API, but membership changes are reliably newsworthy — detect from the
+    # headlines we already fetched. Direction-agnostic flag read by experiment/material_context.py.
+    for s in snapshots:
+        s["index_change"] = bool(classify_index_change(news.get(s["symbol"], [])))
 
     sent = _sentiment.get_sentiment(list(snap.held_symbols) + top_movers[:10])
 
