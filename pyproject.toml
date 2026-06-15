@@ -71,6 +71,7 @@ files = [
     "experiment/context_ledger.py",
     "experiment/evidence_score.py",
     "experiment/dataset.py",
+    "experiment/feed_health.py",
 ]
 
 [[tool.mypy.overrides]]
@@ -109,6 +110,8 @@ omit = [
     "*ms-python*",
     "scripts/phase0_noise_audit.py",
     "*/scripts/phase0_noise_audit.py",
+    "scripts/feed_health_check.py",
+    "*/scripts/feed_health_check.py",
 ]
 
 [tool.coverage.report]
