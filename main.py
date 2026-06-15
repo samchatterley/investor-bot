@@ -1488,6 +1488,13 @@ def _build_data_bundle(
         s["guidance_negative"] = bool(guidance.get("guidance_negative", False))
         s["activist_filing"] = bool((activist or {}).get("known_activist", False))
         s["secondary_offering"] = bool((offering or {}).get("offering_detected", False))
+        # Narrative material-context flags (experiment enrichment — read by
+        # experiment/material_context.py; the AI judges direction, not the engine).
+        s["ma_event"] = bool((entry.get("ma_event") or {}).get("detected", False))
+        s["accounting_concern"] = bool(
+            (entry.get("accounting_concern") or {}).get("detected", False)
+        )
+        s["regulatory_event"] = bool((entry.get("regulatory_event") or {}).get("detected", False))
 
     # ── Pre-filter buy candidates ─────────────────────────────────────────────
     held_snaps = [s for s in snapshots if s["symbol"] in snap.held_symbols]

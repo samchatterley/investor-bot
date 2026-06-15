@@ -326,7 +326,7 @@ designed to supersede.
 
 ### Appendix C: Engineering rigour
 
-- **Tests:** 4,590 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
+- **Tests:** 4,722 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
   the typed modules.
 - **LLM eval fixtures** ([`evals/`](evals/)): prompt-injection headlines, hallucinated tickers,
   bear-market no-buy, conflicting signals, earnings-risk, malformed tool calls.
@@ -353,7 +353,9 @@ documented in the [Appendix A](#appendix-a-system-architecture-and-governance) s
 
 ### Appendix E: Version history
 
-See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 to v1.100). Most recent: v1.100, the 100th release, a full
-line-by-line audit plus mypy cleanup ([`docs/audit_v1.100.md`](docs/audit_v1.100.md)). The
-research-program reframing (this document, [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md), and
+See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 to v1.101). Most recent: v1.101, a data-feed integrity sweep
+(a new feed-health gate plus repairs to four silently-degraded feeds) and experiment material-context
+coverage (nine of ten categories now wired). v1.100 was the 100th release, a full line-by-line audit
+plus mypy cleanup ([`docs/audit_v1.100.md`](docs/audit_v1.100.md)). The research-program reframing
+(this document, [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md), and
 [`docs/strategic_review.md`](docs/strategic_review.md)) supersedes the prior feature-manual README.

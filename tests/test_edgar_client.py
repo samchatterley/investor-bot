@@ -13,7 +13,10 @@ from data.edgar_client import (
     _fetch_8k_exhibit_text,
     _fetch_8k_guidance,
     _fetch_13d_activist,
+    _fetch_accounting_concern,
     _fetch_filing_text,
+    _fetch_ma_event,
+    _fetch_regulatory_event,
     _fetch_secondary_offering,
     _get_cik_map,
     _get_recent_filings,
@@ -23,10 +26,13 @@ from data.edgar_client import (
     _save_cache,
     _today_entry,
     classify_guidance_text,
+    get_accounting_concern,
     get_activist_filing,
     get_edgar_signals,
     get_edgar_signals_batch,
     get_guidance_sentiment,
+    get_ma_event,
+    get_regulatory_event,
     get_secondary_offering,
     prefetch_edgar_data,
 )
@@ -337,6 +343,118 @@ class TestFetch8kGuidance(TestCase):
         self.assertIsNone(result)
 
 
+def _f(items: str, accession: str = "000032019326000001", doc: str = "d.htm") -> dict:
+    """Minimal 8-K filing record for the narrative-event detectors."""
+    return {
+        "form": "8-K",
+        "filing_date": date.today().isoformat(),
+        "accession": accession,
+        "doc": doc,
+        "items": items,
+    }
+
+
+class TestFetchAccountingConcern(TestCase):
+    def test_item_402_restatement_detected(self):
+        result = _fetch_accounting_concern("AAPL", [_f("4.02,9.01")])
+        self.assertIsNotNone(result)
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["items"], "4.02,9.01")
+
+    def test_item_401_auditor_change_detected(self):
+        result = _fetch_accounting_concern("AAPL", [_f("4.01")])
+        self.assertTrue(result["detected"])
+
+    def test_unrelated_items_returns_none(self):
+        self.assertIsNone(_fetch_accounting_concern("AAPL", [_f("5.02"), _f("2.02")]))
+
+    def test_empty_filings_returns_none(self):
+        self.assertIsNone(_fetch_accounting_concern("AAPL", []))
+
+
+class TestFetchMaEvent(TestCase):
+    def test_item_201_completion_detected_without_text_fetch(self):
+        with patch("data.edgar_client._fetch_8k_exhibit_text") as exhibit:
+            result = _fetch_ma_event("AAPL", "0000320193", [_f("2.01,9.01")])
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["trigger"], "2.01")
+        exhibit.assert_not_called()  # high-precision item needs no text confirmation
+
+    def test_item_101_with_ma_keywords_detected(self):
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="entered into an agreement and plan of merger to be acquired",
+        ):
+            result = _fetch_ma_event("AAPL", "0000320193", [_f("1.01")])
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["trigger"], "1.01+kw")
+
+    def test_item_101_without_keywords_returns_none(self):
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="entered into a new revolving credit facility with its lenders",
+        ):
+            self.assertIsNone(_fetch_ma_event("AAPL", "0000320193", [_f("1.01")]))
+
+    def test_item_101_empty_text_returns_none(self):
+        with patch("data.edgar_client._fetch_8k_exhibit_text", return_value=""):
+            self.assertIsNone(_fetch_ma_event("AAPL", "0000320193", [_f("1.01")]))
+
+    def test_unrelated_items_returns_none(self):
+        self.assertIsNone(_fetch_ma_event("AAPL", "0000320193", [_f("5.02")]))
+
+
+class TestFetchRegulatoryEvent(TestCase):
+    def test_item_301_delisting_detected_without_text_fetch(self):
+        with patch("data.edgar_client._fetch_8k_exhibit_text") as exhibit:
+            result = _fetch_regulatory_event("AAPL", "0000320193", [_f("3.01")])
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["trigger"], "3.01")
+        exhibit.assert_not_called()
+
+    def test_item_801_with_regulatory_keywords_detected(self):
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="received an fda complete response letter for its lead candidate",
+        ):
+            result = _fetch_regulatory_event("AAPL", "0000320193", [_f("8.01")])
+        self.assertTrue(result["detected"])
+        self.assertEqual(result["trigger"], "8.01+kw")
+
+    def test_item_801_without_keywords_returns_none(self):
+        with patch(
+            "data.edgar_client._fetch_8k_exhibit_text",
+            return_value="announced the date of its next quarterly earnings call",
+        ):
+            self.assertIsNone(_fetch_regulatory_event("AAPL", "0000320193", [_f("8.01")]))
+
+    def test_item_801_empty_text_returns_none(self):
+        with patch("data.edgar_client._fetch_8k_exhibit_text", return_value=""):
+            self.assertIsNone(_fetch_regulatory_event("AAPL", "0000320193", [_f("8.01")]))
+
+    def test_unrelated_items_returns_none(self):
+        self.assertIsNone(_fetch_regulatory_event("AAPL", "0000320193", [_f("5.02")]))
+
+
+class TestNarrativeGetters(TestCase):
+    def test_getters_read_today_entry(self):
+        entry = {
+            "ma_event": {"detected": True, "trigger": "2.01"},
+            "accounting_concern": {"detected": True},
+            "regulatory_event": {"detected": True, "trigger": "3.01"},
+        }
+        with patch("data.edgar_client._today_entry", return_value=entry):
+            self.assertEqual(get_ma_event("AAPL")["trigger"], "2.01")
+            self.assertTrue(get_accounting_concern("AAPL")["detected"])
+            self.assertEqual(get_regulatory_event("AAPL")["trigger"], "3.01")
+
+    def test_getters_return_none_when_absent(self):
+        with patch("data.edgar_client._today_entry", return_value={}):
+            self.assertIsNone(get_ma_event("AAPL"))
+            self.assertIsNone(get_accounting_concern("AAPL"))
+            self.assertIsNone(get_regulatory_event("AAPL"))
+
+
 class TestFetch8kExhibitText(TestCase):
     def _index_resp(self, names):
         r = MagicMock()
@@ -545,11 +663,18 @@ class TestLiveFetch(TestCase):
             patch("data.edgar_client._fetch_8k_guidance", return_value=guidance),
             patch("data.edgar_client._fetch_13d_activist", return_value=activist),
             patch("data.edgar_client._fetch_secondary_offering", return_value=offering),
+            patch("data.edgar_client._get_recent_filings", return_value=[]),
+            patch("data.edgar_client._fetch_ma_event", return_value={"detected": True}),
+            patch("data.edgar_client._fetch_accounting_concern", return_value={"detected": True}),
+            patch("data.edgar_client._fetch_regulatory_event", return_value={"detected": True}),
         ):
             result = _live_fetch("AAPL", 30)
         self.assertIn("guidance", result)
         self.assertIn("activist", result)
         self.assertIn("secondary_offering", result)
+        self.assertIn("ma_event", result)
+        self.assertIn("accounting_concern", result)
+        self.assertIn("regulatory_event", result)
 
     def test_no_events_returns_empty_dict(self):
         with (
@@ -557,6 +682,7 @@ class TestLiveFetch(TestCase):
             patch("data.edgar_client._fetch_8k_guidance", return_value=None),
             patch("data.edgar_client._fetch_13d_activist", return_value=None),
             patch("data.edgar_client._fetch_secondary_offering", return_value=None),
+            patch("data.edgar_client._get_recent_filings", return_value=[]),
         ):
             result = _live_fetch("AAPL", 30)
         self.assertEqual(result, {})

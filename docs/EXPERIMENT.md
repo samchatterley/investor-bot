@@ -375,6 +375,17 @@ upgrade, or downgrade; M&A rumour or confirmation; accounting or auditor concern
 A candidate is material-context when a deterministic detector assigns it one of these categories. The
 categories are pooled for the primary; per-category is exploratory.
 
+*Feed coverage (as of 2026-06-15).* Nine of the ten categories now have a live point-in-time feed:
+earnings, guidance, insider cluster, analyst action, and short-squeeze through the signal book;
+secondary offering, M&A, accounting concern, and regulatory event through EDGAR 8-K item codes
+(item 2.01/1.01 for M&A, 4.02/4.01 for accounting, 3.01/8.01 for regulatory; the two broad items are
+keyword-confirmed). Only **index inclusion/deletion remains unwired** — it needs S&P/Russell
+reconstitution announcements, not an 8-K — so it cannot contribute to the realized sample in v1 and is
+deferred to v2. Feed health is checked by `scripts/feed_health_check.py` before each collection window;
+note that several of these feeds are EDGAR/live-only and so are absent from the historical backtest
+sample, which is therefore dominated by the earnings category. The insider-cluster feed was repaired on
+2026-06-15 (Form 4 XSL-path bug), so any pre-fix historical tally undercounts that category.
+
 **15.2 Research snapshots, not more trades (raises N without changing the strategy).** The live-shadow
 track records multiple timestamped research observations per day (for example open plus 30 minutes,
 midday, close minus 30 minutes, post-close), each scored by all arms but only a subset ever tradable.

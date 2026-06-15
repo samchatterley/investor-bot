@@ -504,6 +504,99 @@ def _fetch_secondary_offering(sym: str, cik: str, lookback_days: int) -> dict | 
     }
 
 
+# ── 8-K narrative-event detection (material-context enrichment) ────────────────
+#
+# These flag the material-context categories (ma_event, accounting_concern, regulatory_event) that
+# the experiment's detector reads (experiment/material_context.py). They are direction-agnostic
+# enrichment flags, not trading signals: the deterministic engine still selects the candidate, the
+# flag marks that it carries context worth AI judgement, and the AI decides the implication.
+# Detection is by 8-K item code (cheap, from submissions metadata) — high-precision items fire
+# directly; broad items (1.01 material agreement, 8.01 other events) are confirmed by focused
+# keywords in the exhibit text to suppress unrelated agreements/announcements.
+
+_ACCOUNTING_ITEMS = ("4.02", "4.01")  # non-reliance/restatement; auditor change
+_MA_COMPLETION_ITEM = "2.01"  # completion of acquisition or disposition of assets
+_MA_AGREEMENT_ITEM = "1.01"  # entry into a material definitive agreement (confirm with keywords)
+_REG_DELISTING_ITEM = "3.01"  # notice of delisting / failure to satisfy a listing rule
+_REG_OTHER_ITEM = "8.01"  # other events (confirm with keywords)
+
+_MA_KEYWORDS = re.compile(
+    r"\b(merger|acquisition|acquire[ds]?|tender offer|business combination|"
+    r"agreement and plan of merger|definitive agreement to (?:acquire|merge)|"
+    r"to be acquired|takeover)\b",
+    re.I,
+)
+_REGULATORY_KEYWORDS = re.compile(
+    r"\b(fda|complete response letter|clinical (?:trial|hold)|phase (?:3|iii)|"
+    r"investigation|subpoena|antitrust|consent decree|enforcement action|"
+    r"warning letter|product recall|department of justice|"
+    r"securities and exchange commission|regulatory approval)\b",
+    re.I,
+)
+
+
+def _fetch_accounting_concern(sym: str, filings: list[dict]) -> dict | None:
+    """Detect an accounting-concern 8-K: item 4.02 (non-reliance/restatement) or 4.01 (auditor
+    change). Item codes are unambiguous here, so no text confirmation is needed."""
+    for f in filings:
+        if any(it in f["items"] for it in _ACCOUNTING_ITEMS):
+            logger.info("8-K accounting-concern %s: %s (%s)", sym, f["filing_date"], f["items"])
+            return {"detected": True, "filing_date": f["filing_date"], "items": f["items"]}
+    return None
+
+
+def _fetch_ma_event(sym: str, cik: str, filings: list[dict]) -> dict | None:
+    """Detect an M&A 8-K: item 2.01 (completed acquisition/disposition), or item 1.01 (material
+    definitive agreement) confirmed by M&A keywords in the exhibit text."""
+    for f in filings:
+        items = f["items"]
+        if _MA_COMPLETION_ITEM in items:
+            logger.info("8-K M&A %s: %s (%s) completion", sym, f["filing_date"], items)
+            return {
+                "detected": True,
+                "filing_date": f["filing_date"],
+                "items": items,
+                "trigger": "2.01",
+            }
+        if _MA_AGREEMENT_ITEM in items:
+            text = _fetch_8k_exhibit_text(cik, f["accession"], f["doc"])
+            if text and _MA_KEYWORDS.search(text):
+                logger.info("8-K M&A %s: %s (%s) agreement+kw", sym, f["filing_date"], items)
+                return {
+                    "detected": True,
+                    "filing_date": f["filing_date"],
+                    "items": items,
+                    "trigger": "1.01+kw",
+                }
+    return None
+
+
+def _fetch_regulatory_event(sym: str, cik: str, filings: list[dict]) -> dict | None:
+    """Detect a regulatory-event 8-K: item 3.01 (delisting / listing-rule failure), or item 8.01
+    (other events) confirmed by regulatory keywords in the exhibit text."""
+    for f in filings:
+        items = f["items"]
+        if _REG_DELISTING_ITEM in items:
+            logger.info("8-K regulatory %s: %s (%s) delisting", sym, f["filing_date"], items)
+            return {
+                "detected": True,
+                "filing_date": f["filing_date"],
+                "items": items,
+                "trigger": "3.01",
+            }
+        if _REG_OTHER_ITEM in items:
+            text = _fetch_8k_exhibit_text(cik, f["accession"], f["doc"])
+            if text and _REGULATORY_KEYWORDS.search(text):
+                logger.info("8-K regulatory %s: %s (%s) other+kw", sym, f["filing_date"], items)
+                return {
+                    "detected": True,
+                    "filing_date": f["filing_date"],
+                    "items": items,
+                    "trigger": "8.01+kw",
+                }
+    return None
+
+
 # ── Per-symbol fetch ──────────────────────────────────────────────────────────
 
 
@@ -527,6 +620,21 @@ def _live_fetch(sym: str, lookback_days: int) -> dict:
     offering = _fetch_secondary_offering(sym, cik, lookback_days)
     if offering:
         result["secondary_offering"] = offering
+
+    # The three narrative material-context categories all read 8-K filings — fetch once and share.
+    filings_8k = _get_recent_filings(cik, ["8-K", "8-K/A"], lookback_days)
+
+    ma = _fetch_ma_event(sym, cik, filings_8k)
+    if ma:
+        result["ma_event"] = ma
+
+    accounting = _fetch_accounting_concern(sym, filings_8k)
+    if accounting:
+        result["accounting_concern"] = accounting
+
+    regulatory = _fetch_regulatory_event(sym, cik, filings_8k)
+    if regulatory:
+        result["regulatory_event"] = regulatory
 
     return result
 
@@ -566,12 +674,19 @@ def prefetch_edgar_data(
     n_guidance = sum(1 for v in today_cache.values() if v.get("guidance"))
     n_activist = sum(1 for v in today_cache.values() if v.get("activist"))
     n_offering = sum(1 for v in today_cache.values() if v.get("secondary_offering"))
+    n_ma = sum(1 for v in today_cache.values() if v.get("ma_event"))
+    n_accounting = sum(1 for v in today_cache.values() if v.get("accounting_concern"))
+    n_regulatory = sum(1 for v in today_cache.values() if v.get("regulatory_event"))
     logger.info(
-        "edgar prefetch: %d symbols — guidance=%d activist=%d offerings=%d",
+        "edgar prefetch: %d symbols — guidance=%d activist=%d offerings=%d "
+        "ma=%d accounting=%d regulatory=%d",
         len(missing),
         n_guidance,
         n_activist,
         n_offering,
+        n_ma,
+        n_accounting,
+        n_regulatory,
     )
     return len(missing)
 
@@ -590,7 +705,8 @@ def get_edgar_signals_batch(
     when the 07:00 prefetch ran, this is a pure in-memory operation.
 
     Returns {symbol: entry_dict} for every symbol in ``symbols``.  The entry
-    dict has optional keys "guidance", "activist", "secondary_offering".
+    dict has optional keys "guidance", "activist", "secondary_offering",
+    "ma_event", "accounting_concern", "regulatory_event".
     """
     today = today_et().isoformat()
     cache = _load_cache()
@@ -681,6 +797,45 @@ def get_secondary_offering(
     return entry.get("secondary_offering")
 
 
+def get_ma_event(
+    sym: str,
+    lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
+) -> dict | None:
+    """Return M&A 8-K event data for sym, or None if none found.
+
+    Result schema::
+        {"detected": bool, "filing_date": str, "items": str, "trigger": str}
+    """
+    entry = _today_entry(sym, lookback_days)
+    return entry.get("ma_event")
+
+
+def get_accounting_concern(
+    sym: str,
+    lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
+) -> dict | None:
+    """Return accounting-concern 8-K data for sym, or None if none found.
+
+    Result schema::
+        {"detected": bool, "filing_date": str, "items": str}
+    """
+    entry = _today_entry(sym, lookback_days)
+    return entry.get("accounting_concern")
+
+
+def get_regulatory_event(
+    sym: str,
+    lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
+) -> dict | None:
+    """Return regulatory-event 8-K data for sym, or None if none found.
+
+    Result schema::
+        {"detected": bool, "filing_date": str, "items": str, "trigger": str}
+    """
+    entry = _today_entry(sym, lookback_days)
+    return entry.get("regulatory_event")
+
+
 def get_edgar_signals(
     sym: str,
     lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
@@ -692,6 +847,9 @@ def get_edgar_signals(
       "guidance"           — 8-K guidance classification
       "activist"           — SC 13D/G activist filing
       "secondary_offering" — 424B4/S-3 secondary offering
+      "ma_event"           — 8-K M&A (item 2.01, or 1.01 + keywords)
+      "accounting_concern" — 8-K item 4.02/4.01 (restatement / auditor change)
+      "regulatory_event"   — 8-K (item 3.01 delisting, or 8.01 + keywords)
     """
     entry = _today_entry(sym, lookback_days)
     return dict(entry)

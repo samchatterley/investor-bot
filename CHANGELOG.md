@@ -4,6 +4,26 @@ Full version history. Most recent first.
 
 ---
 
+### 1.101 — June 2026 — data-feed integrity sweep + experiment material-context coverage
+
+Pre-data-collection hardening for the AI-alpha experiment. The bot degrades gracefully on any data failure, so a broken feed returns a neutral default and stays invisible — exactly how several feeds had silently rotted. This release makes feed health explicit and broadens the experiment's material-context coverage.
+
+**New: data-feed health gate.** `experiment/feed_health.py` (pure classifier, 100% covered) plus `scripts/feed_health_check.py` probe every live feed and report OK/EMPTY/DEGRADED/STALE/ERROR, exiting non-zero if any need attention. Run before each collection window and as ongoing monitoring. Feeds that are legitimately empty most days (insider buys, earnings-in-window, high short interest) are probed for *machinery* health, not the rare qualifying result, so the gate does not cry wolf. Current state: 21/21 green.
+
+**Four silently-degraded feeds repaired** (all found via the gate / its build):
+- **AAII sentiment** — missing `xlrd` dependency plus a NaN-row parse bug; survey now parses (added `xlrd==2.0.2`).
+- **8-K guidance** — the classifier read the cover page (always neutral); now reads the EX-99 exhibits, and the keyword lists were enriched (~70 terms each, word-boundary matched).
+- **FinBERT news sentiment** — built with `return_all_scores=True`, which transformers 5.x silently collapses to top-1, so every classification returned None; switched to `top_k=None`. `torch`/`transformers` installed.
+- **Insider Form 4** — EDGAR drifted `primaryDocument` to the XSL-styled HTML view, which is not parseable XML; the error was swallowed, so insider activity was blank for every symbol. Strip the `xsl.../` prefix to fetch the raw ownership XML.
+
+**Experiment: narrative material-context categories wired.** Mapping the ten pre-registered categories to feeds showed four were unwired. Three are now detected from EDGAR 8-K item codes (`data/edgar_client.py`): M&A (item 2.01, or 1.01 + keyword confirmation), accounting concern (4.02/4.01), regulatory event (3.01, or 8.01 + keyword confirmation). These are direction-agnostic enrichment flags merged onto the snapshot (`main.py`) and read by `experiment/material_context.py` — the engine still selects the candidate; the AI judges the implication. Nine of ten categories are now fed; only index inclusion/deletion remains unwired (no clean point-in-time feed) and is deferred to v2. See `docs/EXPERIMENT.md` §15.1.
+
+**Dependencies:** added `xlrd==2.0.2`; installed `torch`/`transformers` (already in requirements); bumped idna, tornado, anthropic, alpaca-py, pydantic for Dependabot advisories.
+
+**Tests:** new coverage for the feed-health classifier, the FinBERT shape fix, the insider XSL-path fix, and the three EDGAR narrative detectors (every item-code and keyword-confirmation branch). 100% coverage maintained.
+
+---
+
 ### 1.100 — June 2026 — 100th release: full line-by-line audit (all ~89k lines) + mypy gate cleanup
 
 The 100th commit. Audited every source file line-by-line (report in `docs/audit_v1.100.md`) and cleared the mypy backlog. No Critical findings — the fail-closed broker core, fail-safe data layer, and dormant-by-design AI self-modification all held up. The fixes below are the High/Medium items that audit surfaced.

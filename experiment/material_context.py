@@ -5,10 +5,11 @@ carry at least one pre-registered *material-context* category. This classifier i
 (no LLM) and point-in-time: it reads only fields already present on a candidate snapshot at decision
 time, so the primary sample is reproducible and lookahead-safe.
 
-Categories already wired through the live signal book (earnings, insider, guidance, analyst upgrade,
-short-squeeze) fire today. Event categories without a current data feed (secondary offering,
-regulatory, index change, M&A, accounting concern) are matched from clearly-named boolean flags and
-simply return False until those feeds are wired, so the detector is forward-compatible.
+Nine of the ten categories are wired to a live feed: earnings, guidance, insider, analyst, and
+short-squeeze via the signal book; secondary offering, M&A, accounting concern, and regulatory event
+via EDGAR 8-K item codes (data/edgar_client.py). Only index_change has no clean point-in-time feed
+(it needs S&P/Russell reconstitution announcements) and still returns False, matched from a
+clearly-named boolean flag so the detector stays forward-compatible.
 """
 
 from __future__ import annotations
