@@ -74,40 +74,143 @@ _ACTIVIST_FUNDS: frozenset[str] = frozenset(
 
 _POSITIVE_KEYWORDS: frozenset[str] = frozenset(
     {
+        # Guidance / outlook raised (stems catch non-contiguous phrasing like
+        # "raised its full-year revenue guidance").
+        "raised",
+        "raises",
+        "raising",
         "raises guidance",
+        "raised guidance",
+        "raised its guidance",
         "increases guidance",
         "raises full-year",
+        "raised full-year",
         "raises fiscal",
-        "exceeds expectations",
-        "beat estimates",
-        "above consensus",
-        "strong demand",
-        "record revenue",
         "raises outlook",
+        "raised outlook",
+        "raised its outlook",
         "raises forecast",
+        "raised forecast",
         "positive guidance",
         "upward revision",
+        # Beats / exceeds
+        "beat",
+        "beats",
+        "exceeded",
+        "exceeds",
+        "exceeding",
+        "exceeds expectations",
+        "exceeded expectations",
+        "exceeded estimates",
+        "beat estimates",
+        "beat expectations",
+        "above consensus",
+        "above expectations",
+        "ahead of expectations",
+        "better than expected",
+        "above the high end",
+        "topped estimates",
+        # Records / strength
+        "record revenue",
+        "record earnings",
+        "record quarter",
+        "record results",
+        "record sales",
+        "all-time high",
+        "strong",
+        "strong demand",
+        "strong growth",
+        "strong results",
+        "strong quarter",
+        "robust",
+        "robust demand",
+        "robust growth",
+        "solid quarter",
+        "outperform",
+        "outperformed",
+        # Growth / margins / capital return
+        "accelerating",
         "accelerating growth",
+        "double-digit growth",
+        "margin expansion",
+        "raised dividend",
+        "increased dividend",
+        "share repurchase",
     }
 )
 
 _NEGATIVE_KEYWORDS: frozenset[str] = frozenset(
     {
+        # Guidance / outlook lowered
+        "lowered",
+        "lowers",
+        "lowering",
         "lowers guidance",
-        "reduces guidance",
+        "lowered guidance",
         "cuts guidance",
-        "below expectations",
-        "missed estimates",
-        "disappointing results",
-        "challenging environment",
-        "headwinds",
+        "cut guidance",
+        "reduces guidance",
+        "reduced guidance",
+        "withdrew guidance",
+        "suspended guidance",
         "lowered outlook",
+        "lowered its outlook",
         "lowered forecast",
+        "reduced outlook",
         "negative guidance",
         "downward revision",
-        "softening demand",
-        "reduced revenue",
+        "cautious outlook",
+        # Misses / below
+        "miss",
+        "missed",
+        "missed estimates",
+        "missed expectations",
+        "below consensus",
+        "below expectations",
+        "below estimates",
+        "below the low end",
+        "short of expectations",
+        "fell short",
+        "worse than expected",
+        "weaker than expected",
+        "shortfall",
         "revenue shortfall",
+        # Weakness / decline
+        "weak",
+        "weaker",
+        "weakness",
+        "weakening",
+        "weak demand",
+        "soft demand",
+        "softening demand",
+        "softening",
+        "deteriorating",
+        "declining",
+        "declined",
+        "revenue decline",
+        "sales decline",
+        "reduced revenue",
+        "margin compression",
+        "margin contraction",
+        # Distress
+        "disappointing",
+        "disappointing results",
+        "headwind",
+        "headwinds",
+        "challenging environment",
+        "net loss",
+        "operating loss",
+        "widening loss",
+        "impairment",
+        "goodwill impairment",
+        "writedown",
+        "write-down",
+        "restructuring",
+        "layoffs",
+        "going concern",
+        "material weakness",
+        "downgrade",
+        "downgraded",
     }
 )
 
@@ -281,9 +384,15 @@ def _fetch_8k_exhibit_text(
 
 
 def _classify_guidance(text: str) -> str:
-    """Return 'positive', 'negative', or 'neutral' based on keyword matching."""
-    pos_hits = sum(1 for kw in _POSITIVE_KEYWORDS if kw in text)
-    neg_hits = sum(1 for kw in _NEGATIVE_KEYWORDS if kw in text)
+    """Return 'positive', 'negative', or 'neutral' from distinct word-boundary keyword hits.
+
+    Matching is word-boundary anchored, not raw substring, for two reasons: it lets single
+    distinctive stems ("raised", "shortfall") count, and it avoids false positives where a keyword
+    is embedded in an unrelated word (e.g. "raised" inside "praised", "lowered" inside "flowered").
+    Counts distinct keywords matched, not total occurrences.
+    """
+    pos_hits = sum(1 for kw in _POSITIVE_KEYWORDS if re.search(rf"\b{re.escape(kw)}\b", text))
+    neg_hits = sum(1 for kw in _NEGATIVE_KEYWORDS if re.search(rf"\b{re.escape(kw)}\b", text))
     if pos_hits > neg_hits:
         return "positive"
     if neg_hits > pos_hits:

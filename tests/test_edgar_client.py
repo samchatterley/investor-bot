@@ -254,6 +254,25 @@ class TestClassifyGuidance(TestCase):
         text = "raises guidance but lowers guidance"
         self.assertEqual(_classify_guidance(text), "neutral")
 
+    def test_enriched_positive_language(self):
+        text = "the company exceeded expectations with record revenue and raised its outlook"
+        self.assertEqual(_classify_guidance(text), "positive")
+
+    def test_enriched_negative_language(self):
+        text = "net loss widened amid an impairment charge and softening demand"
+        self.assertEqual(_classify_guidance(text), "negative")
+
+    def test_non_contiguous_guidance_phrase_caught(self):
+        # The "raised" stem catches phrasing the old contiguous "raised guidance" missed.
+        self.assertEqual(
+            _classify_guidance("management raised its full-year revenue guidance"), "positive"
+        )
+
+    def test_word_boundary_avoids_substring_false_positive(self):
+        # "praised" contains "raised", "flowered" contains "lowered" — neither should count.
+        self.assertEqual(_classify_guidance("analysts praised the new strategy"), "neutral")
+        self.assertEqual(_classify_guidance("the garden flowered nicely"), "neutral")
+
 
 # ── 8-K guidance detection ────────────────────────────────────────────────────
 
