@@ -65,6 +65,29 @@ def _insider_machinery():  # pragma: no cover
     return {"recent_form4": found} if found else None
 
 
+def _earnings_machinery():  # pragma: no cover
+    # PEAD candidates need a >=10% surprise in the last 7 days, so get_earnings_surprise() is
+    # legitimately empty most days. Health is whether yfinance earnings_dates still returns parseable
+    # rows (schema drift is common): reuse the module fetch with a wide lookback so recent reporters
+    # qualify. Returns None (-> EMPTY) only if no major name has any earnings data at all.
+    from data.earnings_surprise import _live_fetch_earnings
+
+    fetched = _live_fetch_earnings(["AAPL", "MSFT", "NVDA"], lookback_days=120)
+    found = sum(1 for v in fetched.values() if v is not None)
+    return {"with_earnings": found} if found else None
+
+
+def _short_interest_machinery():  # pragma: no cover
+    # get_short_interest() keeps only days-to-cover >= 5, so it is legitimately empty when no name is
+    # heavily shorted. Health is whether yfinance.info still exposes shortRatio: reuse the module
+    # fetch with a 0.0 threshold so any valid ratio qualifies.
+    from data.short_interest import _live_fetch_short_interest
+
+    fetched = _live_fetch_short_interest(["AAPL", "MSFT", "TSLA", "GME"], min_short_ratio=0.0)
+    found = sum(1 for v in fetched.values() if v is not None)
+    return {"with_short_ratio": found} if found else None
+
+
 def _probes():  # pragma: no cover
     from data.analyst_revisions import get_analyst_revisions
     from data.breadth import get_breadth_snapshot
@@ -97,6 +120,16 @@ def _probes():  # pragma: no cover
             "insider Form4 pipeline",
             _insider_machinery,
             lambda v: (OK, f"{v['recent_form4']} filings reachable"),
+        ),
+        (
+            "earnings_surprise (yfinance)",
+            _earnings_machinery,
+            lambda v: (OK, f"{v['with_earnings']} names with earnings data"),
+        ),
+        (
+            "short_interest (yfinance)",
+            _short_interest_machinery,
+            lambda v: (OK, f"{v['with_short_ratio']} names with shortRatio"),
         ),
         ("analyst revisions", lambda: get_analyst_revisions([_SAMPLE]), None),
         ("news headlines", lambda: fetch_news([_SAMPLE]), None),
