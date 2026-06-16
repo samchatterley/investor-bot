@@ -127,6 +127,16 @@ class TestAppendObservations(unittest.TestCase):
                 lines = [json.loads(line) for line in fh]
             self.assertEqual(lines, [{"a": 1}, {"b": 2}, {"c": 3}])
 
+    def test_default_path_resolves_to_module_constant(self):
+        # No explicit path -> OBSERVATIONS_PATH, resolved at call time. The conftest autouse fixture
+        # redirects that constant to a temp file, so this also proves tests cannot hit the live log.
+        import experiment.collection as collection_mod
+
+        n = append_observations([{"x": 1}])
+        self.assertEqual(n, 1)
+        with open(collection_mod.OBSERVATIONS_PATH) as fh:
+            self.assertIn("x", fh.read())
+
 
 class TestLogRunObservations(unittest.TestCase):
     def _run(self, path, score_fn=lambda c: 0.5):

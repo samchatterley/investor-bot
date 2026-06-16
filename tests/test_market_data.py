@@ -1764,19 +1764,15 @@ class TestSectorCorrelationInjection(unittest.TestCase):
             patch("data.sector_data.get_sector_etf", return_value="XLK"),
             patch("data.sector_correlation.compute_stock_sector_corr", return_value=0.82),
         ]
-        with (
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
-            patches[9],
-        ):
+        # Enter every patch (the std set grew by one when the AAII fixture was added; a loop avoids
+        # the hardcoded-index fragility that dropped the compute_stock_sector_corr patch).
+        for p in patches:
+            p.__enter__()
+        try:
             result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
 
         self.assertEqual(len(result), 1)
         self.assertAlmostEqual(result[0].get("sector_correlation_20d"), 0.82)

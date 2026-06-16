@@ -75,6 +75,7 @@ files = [
     "experiment/dataset.py",
     "experiment/feed_health.py",
     "experiment/collection.py",
+    "experiment/backfill.py",
 ]
 
 [[tool.mypy.overrides]]
@@ -117,6 +118,8 @@ omit = [
     "*/scripts/feed_health_check.py",
     "scripts/universe_edge_check.py",
     "*/scripts/universe_edge_check.py",
+    "scripts/backfill_outcomes.py",
+    "*/scripts/backfill_outcomes.py",
 ]
 
 [tool.coverage.report]

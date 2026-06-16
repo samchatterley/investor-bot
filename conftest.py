@@ -3,7 +3,22 @@
 from dataclasses import fields
 from unittest.mock import MagicMock
 
+import pytest
+
+import experiment.collection as _collection
 from core.deps import RunConfig, TradingDeps
+
+
+@pytest.fixture(autouse=True)
+def _isolate_experiment_observations(tmp_path, monkeypatch):
+    """Never let the test suite write to the live experiment observations log.
+
+    main._run_ai_phase calls log_run_observations with the default path, which resolves to
+    experiment.collection.OBSERVATIONS_PATH (logs/experiment_observations.jsonl) at call time.
+    Redirect that constant to a per-test temp file so exercising the decision loop in tests cannot
+    pollute the real dataset the bot collects in production.
+    """
+    monkeypatch.setattr(_collection, "OBSERVATIONS_PATH", str(tmp_path / "experiment_obs.jsonl"))
 
 
 def _default_run_config(**overrides) -> RunConfig:

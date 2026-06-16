@@ -112,12 +112,17 @@ def build_observation(
     return record
 
 
-def append_observations(records: list[dict], path: str = OBSERVATIONS_PATH) -> int:
-    """Append observation records as JSON lines. Returns the number written."""
+def append_observations(records: list[dict], path: str | None = None) -> int:
+    """Append observation records as JSON lines. Returns the number written.
+
+    ``path`` is resolved at call time (default OBSERVATIONS_PATH) so tests can redirect the live log
+    via the module constant — see the autouse fixture in conftest.py.
+    """
     if not records:
         return 0
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "a") as fh:
+    target = path if path is not None else OBSERVATIONS_PATH
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    with open(target, "a") as fh:
         for record in records:
             fh.write(json.dumps(record) + "\n")
     return len(records)
@@ -133,7 +138,7 @@ def log_run_observations(
     mode: str,
     market_context: dict,
     score_fn: Callable[[dict], float],
-    path: str = OBSERVATIONS_PATH,
+    path: str | None = None,
 ) -> int:
     """Build and append observations for one decision run; return the number logged.
 
