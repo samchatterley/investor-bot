@@ -450,6 +450,23 @@ Consequences:
 - **Blinding leakage probe (control).** Periodically ask the blinded model to name the ticker and
   approximate date from the features alone. If it can, blinding has failed and that batch is excluded.
 
+**15.9 Frozen prompt; the self-learning loop is a separate ablation (v1.3).** The bot's prompt has two
+outcome-derived blocks — last week's review *lessons* and a regime-aware *performance-feedback* block
+(`config.ADAPTIVE_PROMPT_ENABLED`, gated in `analysis/ai_analyst.build_prompt`). Left on, these mutate
+the contextual arm weekly from realised outcomes, which (a) makes Arm 3 non-stationary so per-decision
+IC/veto cannot be pooled across weeks, and (b) fits the prompt to the very sample being measured — the
+overfitting trap pre-registration exists to prevent. At a ~£150 account a weekly "lesson" is drawn
+from a handful of trades and is almost entirely noise, so the loop is unlikely to be learning signal.
+Therefore:
+- **Core context window: the prompt is frozen** (`ADAPTIVE_PROMPT_ENABLED = False`) so Arm 3 is
+  stationary and the Arm-3-minus-Arm-2 contextual test is clean. The Arm-3 prompt (including the
+  documented material-context flags) is a versioned artifact; a better prompt is a pre-registered new
+  version, never a silent mid-stream edit.
+- **The loop's own value is a separate, pre-registered ablation:** frozen Arm 3 vs Arm 3 + lessons.
+  Each decision logs which mode was in effect (`adaptive_prompt` in the
+  `experiment/collection.py` observation), so the two questions — does *context* help, and does *weekly
+  learning* help — are answered one at a time instead of confounding each other.
+
 ---
 
 ## 16. Deferred to v2 or conditional (explicitly not built in v1)

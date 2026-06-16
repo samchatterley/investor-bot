@@ -126,6 +126,17 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("LESSONS", result)
         self.assertIn("Avoid chasing", result)
 
+    def test_include_adaptive_false_omits_lessons_and_feedback(self):
+        # The experiment freezes the adaptive (outcome-derived) blocks so the contextual arm is
+        # stationary: both the weekly lessons and the performance-feedback block must disappear.
+        with patch("analysis.ai_analyst.get_actionable_feedback", return_value="WINRATE_SENTINEL"):
+            on = self._build(lessons=["Avoid chasing extended moves"], include_adaptive=True)
+            off = self._build(lessons=["Avoid chasing extended moves"], include_adaptive=False)
+        self.assertIn("LESSONS", on)
+        self.assertIn("WINRATE_SENTINEL", on)
+        self.assertNotIn("LESSONS", off)
+        self.assertNotIn("WINRATE_SENTINEL", off)
+
     def test_macro_risk_block_appears(self):
         macro = {"is_high_risk": True, "event": "FOMC Rate Decision"}
         result = self._build(macro_risk=macro)

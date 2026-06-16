@@ -1788,7 +1788,11 @@ def _run_ai_phase(
         decision_date=config.today_et().isoformat(),
         run_id=run_id,
         mode=mode,
-        market_context={"regime": mc.regime.get("regime"), "vix": mc.vix},
+        market_context={
+            "regime": mc.regime.get("regime"),
+            "vix": mc.vix,
+            "adaptive_prompt": config.ADAPTIVE_PROMPT_ENABLED,
+        },
         score_fn=_stock_scanner.score_candidate,
     )
     logger.info(f"Experiment: logged {_n_obs} candidate observations")

@@ -7,7 +7,14 @@ from datetime import UTC
 import anthropic
 
 from analysis.performance import get_actionable_feedback
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HOLD_DAYS, MAX_POSITIONS, MIN_CONFIDENCE
+from config import (
+    ADAPTIVE_PROMPT_ENABLED,
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    MAX_HOLD_DAYS,
+    MAX_POSITIONS,
+    MIN_CONFIDENCE,
+)
 from signals.registry import AI_CITEABLE_SIGNALS
 from utils.validators import validate_ai_response
 
@@ -211,6 +218,7 @@ def build_prompt(
     leading_sectors: list[str] | None = None,
     options_signals: dict | None = None,
     lessons: Sequence[str | dict] | None = None,
+    include_adaptive: bool = True,
 ) -> str:
 
     # Market regime (5-state)
@@ -295,12 +303,15 @@ def build_prompt(
         if lines:  # pragma: no branch
             sentiment_block = "ANALYST CONSENSUS:\n" + "\n".join(lines) + "\n"
 
-    # Performance feedback (regime-aware, actionable directives)
-    winrate_block = get_actionable_feedback()
+    # Adaptive (outcome-derived) blocks — the bot's self-learning loop: regime-aware performance
+    # feedback and last week's review lessons. Both mutate the prompt based on past outcomes, so the
+    # experiment freezes them (include_adaptive=False) during the core context-measurement window to
+    # keep the contextual arm stationary; the loop's value is measured as a separate ablation.
+    winrate_block = get_actionable_feedback() if include_adaptive else ""
 
     # Weekly review lessons — support both plain strings (legacy) and structured dicts
     lessons_block = ""
-    if lessons:
+    if include_adaptive and lessons:
         lessons_block = "LESSONS FROM LAST WEEK'S REVIEW (apply these adjustments today):\n"
         for item in lessons:
             text = item["lesson"] if isinstance(item, dict) else item
@@ -413,6 +424,21 @@ Intraday indicators (from Alpaca minute bars; absent if market not yet open or d
 - intraday_rsi: RSI-14 on 5-minute bars; >75 = short-term overbought, <30 = short-term oversold
 - intraday_cumvol: cumulative shares traded today (compare to avg_volume for pacing context)
 
+Event & context flags (point-in-time; true = the condition holds for that symbol). These are the
+material-context signals — weigh them as catalysts or risks alongside the technicals, never as a
+standalone reason to buy:
+- insider_cluster: ≥2 distinct insiders made open-market purchases recently (informed accumulation)
+- guidance_positive / guidance_negative: most recent 8-K guidance read as raised / cut
+- activist_filing: a known activist disclosed a stake (SC 13D) recently
+- secondary_offering: a 424B/S-3 secondary share offering filed — dilution / supply shock (a risk to a long)
+- ma_event: an M&A 8-K — a completed acquisition or a definitive merger agreement
+- accounting_concern: an 8-K restatement, non-reliance, or auditor change (a risk to a long)
+- regulatory_event: a regulatory 8-K — delisting notice, FDA action, enforcement, or antitrust
+- index_change: the name is being added to or removed from a major index (S&P / Nasdaq-100 / Russell)
+- aaii_extreme_fear / aaii_excessive_bulls: the AAII retail survey is at a bearish / bullish extreme (market-wide)
+- aaii_bears_pct: AAII percent bearish, market-wide (0–100)
+- short_ratio / high_short_interest: days-to-cover and whether short interest is elevated (squeeze context)
+
 PRE-FILTER NOTE: All buy candidates in the snapshots below have already passed a rule-based
 technical screen (confirmed momentum or oversold signal with volume). Your role is to rank
 them by conviction, incorporate news and options context, and identify the 1-{MAX_POSITIONS}
@@ -520,6 +546,7 @@ def get_trading_decisions(
         leading_sectors=leading_sectors,
         options_signals=options_signals,
         lessons=lessons,
+        include_adaptive=ADAPTIVE_PROMPT_ENABLED,
     )
 
     try:

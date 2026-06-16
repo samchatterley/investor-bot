@@ -15,6 +15,13 @@ HOLDOUT_START_DATE: date = date(2024, 1, 1)
 # 2018 Q4 drawdown, 2020 COVID crash, 2022 bear market).
 BACKTEST_DEFAULT_START: str = "2015-01-01"
 
+# Adaptive prompt: when True the AI prompt includes the outcome-derived blocks (weekly-review lessons
+# and performance feedback) — the bot's self-learning loop. The experiment FREEZES this (sets it
+# False) during the core context-measurement window so the contextual arm is stationary; the loop's
+# own value is then measured as a separate, pre-registered ablation (lessons on vs off). Each decision
+# logs which mode was in effect (experiment/collection.py). See docs/EXPERIMENT.md.
+ADAPTIVE_PROMPT_ENABLED: bool = True
+
 load_dotenv()
 
 
