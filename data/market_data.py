@@ -612,7 +612,7 @@ def get_market_snapshots(
     live_bulk: dict[str, pd.DataFrame] | None = None
     fundamentals: dict[str, dict] = {}
     _fundam_fields: dict[str, dict] = {}
-    _aaii_snap: dict = {}
+    _aaii_snap = None
     _macro_10y: float | None = None
     _analyst_revisions: dict[str, dict] = {}
     _lockup_flags: dict[str, dict] = {}
@@ -666,9 +666,11 @@ def get_market_snapshots(
         except Exception as _exc:
             logger.warning(f"fundamental_cache injection failed: {_exc}")
 
-        # AAII sentiment + fear/greed — market-wide signals injected into all snapshots
+        # AAII sentiment + 10y yield — market-wide signals injected into all snapshots. AAII comes
+        # from sentiment_client (aaii.com survey); it is NOT a FRED series. 10y yield is FRED.
         try:
-            from data.fred_client import get_10y_yield, get_aaii_sentiment
+            from data.fred_client import get_10y_yield
+            from data.sentiment_client import get_aaii_sentiment
 
             _aaii_snap = get_aaii_sentiment()
             _macro_10y = get_10y_yield()
@@ -710,10 +712,10 @@ def get_market_snapshots(
             snap.update(fundamentals[sym])
         if sym in _fundam_fields:
             snap.update(_fundam_fields[sym])
-        if _aaii_snap:
-            snap["aaii_extreme_fear"] = _aaii_snap.get("extreme_fear", False)
-            snap["aaii_excessive_bulls"] = _aaii_snap.get("excessive_bulls", False)
-            snap["aaii_bears_pct"] = _aaii_snap.get("bears_pct")
+        if _aaii_snap is not None:
+            snap["aaii_extreme_fear"] = _aaii_snap.extreme_bearish
+            snap["aaii_excessive_bulls"] = _aaii_snap.extreme_bullish
+            snap["aaii_bears_pct"] = round(_aaii_snap.bearish_pct * 100, 1)
         if _macro_10y is not None:
             snap["macro_10y_yield"] = _macro_10y
         if sym in _analyst_revisions:

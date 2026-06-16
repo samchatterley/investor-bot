@@ -9,6 +9,18 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
+from data.sentiment_client import AAIISentiment
+
+# A fixed AAII reading for deterministic, offline market-data injection tests.
+_AAII_FIXTURE = AAIISentiment(
+    bullish_pct=0.35,
+    bearish_pct=0.30,
+    neutral_pct=0.35,
+    bull_bear_spread=0.05,
+    extreme_bearish=False,
+    extreme_bullish=False,
+)
+
 
 def _make_df(rows=3, close_vals=None):
     """Build a minimal DataFrame matching the shape summarise_for_ai expects."""
@@ -1741,6 +1753,7 @@ class TestSectorCorrelationInjection(unittest.TestCase):
             patch("data.market_data.get_spy_10d_return", return_value=None),
             patch("data.market_data.get_spy_20d_return", return_value=None),
             patch("data.breadth.get_breadth_snapshot", return_value=mock_breadth),
+            patch("data.sentiment_client.get_aaii_sentiment", return_value=_AAII_FIXTURE),
         ]
 
     def test_correlation_injected_when_etf_found_and_compute_returns_float(self):
@@ -2034,6 +2047,7 @@ class TestNewInjectionBlocks(unittest.TestCase):
             patch("data.market_data.get_spy_10d_return", return_value=None),
             patch("data.market_data.get_spy_20d_return", return_value=None),
             patch("data.breadth.get_breadth_snapshot", return_value=mock_breadth),
+            patch("data.sentiment_client.get_aaii_sentiment", return_value=_AAII_FIXTURE),
         ]
 
     def test_fundamental_cache_exception_is_swallowed(self):
@@ -2061,8 +2075,8 @@ class TestNewInjectionBlocks(unittest.TestCase):
 
         patches = self._std_patches(self._base_snap()) + [
             patch(
-                "data.fred_client.get_aaii_sentiment",
-                side_effect=RuntimeError("FRED down"),
+                "data.sentiment_client.get_aaii_sentiment",
+                side_effect=RuntimeError("AAII down"),
             ),
         ]
         for p in patches:
@@ -2112,20 +2126,12 @@ class TestNewInjectionBlocks(unittest.TestCase):
                 p.__exit__(None, None, None)
         self.assertEqual(len(result), 1)
 
-    def test_macro_10y_yield_injected_into_snapshot(self):
-        """Line 700: macro_10y_yield injected when get_10y_yield returns a value."""
+    def test_macro_10y_and_aaii_injected_into_snapshot(self):
+        """macro_10y_yield (FRED) + AAII fields (sentiment_client) injected into snapshots."""
         from data.market_data import get_market_snapshots
 
+        # AAII comes from the _std_patches sentiment_client fixture (bearish 0.30, both bools False).
         patches = self._std_patches(self._base_snap()) + [
-            patch(
-                "data.fred_client.get_aaii_sentiment",
-                return_value={
-                    "bulls_pct": 35.0,
-                    "bears_pct": 30.0,
-                    "extreme_fear": False,
-                    "excessive_bulls": False,
-                },
-            ),
             patch("data.fred_client.get_10y_yield", return_value=4.25),
         ]
         for p in patches:
@@ -2137,6 +2143,10 @@ class TestNewInjectionBlocks(unittest.TestCase):
                 p.__exit__(None, None, None)
         self.assertEqual(len(result), 1)
         self.assertAlmostEqual(result[0].get("macro_10y_yield"), 4.25)
+        # AAII mapped from sentiment_client: bearish_pct 0.30 -> 30.0; bools pass through
+        self.assertAlmostEqual(result[0].get("aaii_bears_pct"), 30.0)
+        self.assertFalse(result[0].get("aaii_extreme_fear"))
+        self.assertFalse(result[0].get("aaii_excessive_bulls"))
 
     def test_lockup_flags_injected_into_snapshot(self):
         """Line 704: lockup_expiry_soon injected when get_lockup_expiry_flags returns entry."""

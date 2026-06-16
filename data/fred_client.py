@@ -237,37 +237,6 @@ def get_10y_yield() -> float | None:
     return data[-1][1]
 
 
-def get_aaii_sentiment() -> dict:
-    """Return latest AAII sentiment readings (AAIIBULL / AAIIBEAR series).
-
-    Returns:
-        {
-            "bulls_pct": float | None,     # % bullish investors (0-100)
-            "bears_pct": float | None,     # % bearish investors (0-100)
-            "extreme_fear": bool,          # bears_pct > 50 for latest week
-            "excessive_bulls": bool,       # bulls_pct > 60 for latest week
-        }
-    """
-    _empty: dict = {
-        "bulls_pct": None,
-        "bears_pct": None,
-        "extreme_fear": False,
-        "excessive_bulls": False,
-    }
-    bulls_data = fetch_series("AAIIBULL", observation_start="2022-01-01")
-    bears_data = fetch_series("AAIIBEAR", observation_start="2022-01-01")
-    if not bulls_data or not bears_data:
-        return _empty
-    bulls_pct = bulls_data[-1][1]
-    bears_pct = bears_data[-1][1]
-    return {
-        "bulls_pct": bulls_pct,
-        "bears_pct": bears_pct,
-        "extreme_fear": bears_pct > 50.0,
-        "excessive_bulls": bulls_pct > 60.0,
-    }
-
-
 def get_macro_snapshot() -> dict:
     """Return combined macro snapshot for regime classification.
 
