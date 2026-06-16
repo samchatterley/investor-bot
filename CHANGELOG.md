@@ -4,6 +4,18 @@ Full version history. Most recent first.
 
 ---
 
+### 1.102 — June 2026 — universe expansion to S&P 500 + 400 (large + mid cap)
+
+Widened the tradeable universe from the S&P 500 (507 symbols) to **S&P 500 + S&P 400 (907 symbols)**, large and mid cap, after validating the engine generalises down to mid cap.
+
+**Edge check first (`scripts/universe_edge_check.py`).** An event study + full-pipeline backtest across cap tiers on the pre-holdout window. The raw signal book is large-cap-calibrated, but the live filters (cross-sectional RS-rank, regime blocks, fundamental quality screens, cost model) generalise it to mid caps (S&P 400: +0.23%/trade, +6.6% total, Sharpe 0.39). Small caps (S&P 600) stay negative even fully filtered (−0.11%/trade, Sharpe −0.15), so they are **excluded from live trading** (candidate for experiment-only use later). The universe is frozen and versioned in config for reproducibility (it is a pre-registered experimental variable).
+
+**EDGAR prefetch dedupe.** With ~1.8× the symbols, the daily prefetch had to stay inside its 07:00→09:31 ET window. EDGAR was 58% of it, and each symbol re-downloaded its `CIK.json` up to four times (guidance / activist / secondary / narrative). `_fetch_recent_filings` now fetches the submissions once per (CIK, day), lru-cached, with `_get_recent_filings` a thin form filter over it — roughly quartering EDGAR's submissions cost, which absorbs the universe growth.
+
+100% coverage held; mypy gate clean. README/config provenance updated.
+
+---
+
 ### 1.101 — June 2026 — data-feed integrity sweep + experiment material-context coverage
 
 Pre-data-collection hardening for the AI-alpha experiment. The bot degrades gracefully on any data failure, so a broken feed returns a neutral default and stays invisible — exactly how several feeds had silently rotted. This release makes feed health explicit and broadens the experiment's material-context coverage.

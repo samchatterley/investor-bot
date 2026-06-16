@@ -135,8 +135,9 @@ with no reconstructable context) and a live-shadow forward test (all three arms)
 
 ### 2.2 Participants (subjects and agents)
 
-- **Subjects:** the population of eligible candidates, meaning symbols from a 507-name US-equity
-  universe (S&P 500 core plus ETFs, dynamically extended) that pass the canonical signal evaluator and
+- **Subjects:** the population of eligible candidates, meaning symbols from a ~900-name US-equity
+  universe (S&P 500 + S&P 400, large and mid cap, plus ETFs, dynamically extended) that pass the
+  canonical signal evaluator and
   the deterministic tradability, liquidity, regime, event, and risk filters on a given decision.
 - **Sampling per decision (cost-capped):** all context-present candidates (flagged by a cheap
   deterministic context-presence gate) up to a daily cap; a random control drawn from non-flagged
@@ -320,13 +321,13 @@ The rule-based backtester is a proxy for signal quality; it does not call Claude
 average +0.06% per trade, max drawdown -37.8%, Sharpe 0.22. Caveats: it is a rule-based proxy, not live
 Claude; transaction costs are modelled (slippage, a liquidity-scaled spread, and market impact); there
 is no lookahead (T-1 indicators, T-open fills). Survivorship bias (the universe is fixed to current
-S&P 500 constituents) and fundamental look-ahead in the distress shorts mean pre-2020 and short-book
+S&P 500 + S&P 400 constituents) and fundamental look-ahead in the distress shorts mean pre-2020 and short-book
 results are upward-biased. This is exactly the kind of in-sample evidence the pre-registered study is
 designed to supersede.
 
 ### Appendix C: Engineering rigour
 
-- **Tests:** 4,745 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
+- **Tests:** 4,746 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
   the typed modules.
 - **LLM eval fixtures** ([`evals/`](evals/)): prompt-injection headlines, hallucinated tickers,
   bear-market no-buy, conflicting signals, earnings-risk, malformed tool calls.
@@ -353,9 +354,11 @@ documented in the [Appendix A](#appendix-a-system-architecture-and-governance) s
 
 ### Appendix E: Version history
 
-See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 to v1.101). Most recent: v1.101, a data-feed integrity sweep
-(a new feed-health gate plus repairs to four silently-degraded feeds) and experiment material-context
-coverage (nine of ten categories now wired). v1.100 was the 100th release, a full line-by-line audit
-plus mypy cleanup ([`docs/audit_v1.100.md`](docs/audit_v1.100.md)). The research-program reframing
+See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 to v1.102). Most recent: v1.102, the tradeable universe
+widened to S&P 500 + 400 (large + mid cap, ~900 names) after an edge check validated the engine down
+to mid cap, with small caps excluded; v1.101 was a data-feed integrity sweep (a new feed-health gate
+plus repairs to four silently-degraded feeds) and experiment material-context coverage (all ten
+categories wired). v1.100 was the 100th release, a full line-by-line audit plus mypy cleanup
+([`docs/audit_v1.100.md`](docs/audit_v1.100.md)). The research-program reframing
 (this document, [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md), and
 [`docs/strategic_review.md`](docs/strategic_review.md)) supersedes the prior feature-manual README.
