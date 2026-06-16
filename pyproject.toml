@@ -114,6 +114,8 @@ omit = [
     "*/scripts/phase0_noise_audit.py",
     "scripts/feed_health_check.py",
     "*/scripts/feed_health_check.py",
+    "scripts/universe_edge_check.py",
+    "*/scripts/universe_edge_check.py",
 ]
 
 [tool.coverage.report]
