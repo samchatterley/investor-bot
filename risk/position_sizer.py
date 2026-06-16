@@ -398,7 +398,6 @@ _MACRO_EXPANSION_SCALAR = 1.10  # steep positive yield curve → expansion boost
 _MACRO_RECESSION_SCALAR = 0.80  # sustained yield-curve inversion → reduce all longs
 _MACRO_USD_STRONG_SCALAR = 0.90  # rising USD → headwind to earnings, risk appetite
 _MACRO_COPPER_CYCLICAL_SCALAR = 1.10  # copper-gold expansion ratio → boost cyclicals
-_MACRO_PMI_CYCLICAL_SCALAR = 1.05  # PMI > 55 for 3 months → modest cyclical boost
 
 
 _CORR_HIGH_THRESHOLD = 0.75
@@ -457,7 +456,6 @@ def macro_scalar(snapshot: dict, signal: str) -> float:
     inv_days = int(snapshot.get("macro_yield_curve_inverted_days", 0))
     copper_gold = bool(snapshot.get("macro_copper_gold_positive", False))
     usd_strong = bool(snapshot.get("macro_usd_strong", False))
-    pmi_expanding = bool(snapshot.get("macro_pmi_expanding", False))
 
     # Yield curve: sustained inversion → reduce all longs (recession risk signal)
     if yc is not None and yc < 0 and inv_days >= 60:
@@ -473,9 +471,5 @@ def macro_scalar(snapshot: dict, signal: str) -> float:
     # Strong USD → dampen longs (earnings headwind, reduced global risk appetite)
     if usd_strong:
         scalar *= _MACRO_USD_STRONG_SCALAR
-
-    # PMI in strong expansion → modest cyclical boost
-    if pmi_expanding and signal in _CYCLICAL_SIGNALS:
-        scalar *= _MACRO_PMI_CYCLICAL_SCALAR
 
     return max(0.70, min(scalar, 1.25))

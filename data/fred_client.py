@@ -195,36 +195,6 @@ def get_claims_trend() -> dict:
     }
 
 
-def get_pmi_snapshot() -> dict:
-    """Return ISM Manufacturing PMI (NAPM) status.
-
-    Returns:
-        {
-            "latest": float | None,   # most recent monthly PMI reading
-            "ma_3m": float | None,    # 3-month moving average of PMI
-            "expanding": bool,        # ma_3m > 55 (strong expansion zone)
-            "contracting": bool,      # latest < 45 (contraction zone)
-        }
-    Returns all-None/False dict on any failure.
-    """
-    _empty: dict = {"latest": None, "ma_3m": None, "expanding": False, "contracting": False}
-    data = fetch_series("NAPM", observation_start="2018-01-01")
-    if not data:
-        return _empty
-
-    latest = data[-1][1]
-    ma_3m: float | None = None
-    if len(data) >= 3:
-        ma_3m = round(sum(v for _, v in data[-3:]) / 3, 2)
-
-    return {
-        "latest": latest,
-        "ma_3m": ma_3m,
-        "expanding": ma_3m is not None and ma_3m > 55.0,
-        "contracting": latest < 45.0,
-    }
-
-
 def get_10y_yield() -> float | None:
     """Return latest 10-year Treasury yield (DGS10) in percentage points.
 

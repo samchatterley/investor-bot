@@ -563,11 +563,9 @@ class TestGetCombinedMacroFlags(TestCase):
             "claims_deteriorating": True,
             "data_available": True,
         }
-        pmi_snap = {"latest": 43.0, "ma_3m": 44.0, "expanding": False, "contracting": True}
         with (
             patch("data.macro_data.get_macro_snapshot", return_value=snap),
             patch("data.fred_client.get_macro_snapshot", return_value=fred_snap),
-            patch("data.fred_client.get_pmi_snapshot", return_value=pmi_snap),
         ):
             result = get_combined_macro_flags()
 
@@ -576,8 +574,6 @@ class TestGetCombinedMacroFlags(TestCase):
         self.assertEqual(result["macro_yield_curve"], -0.5)
         self.assertEqual(result["macro_yield_curve_inverted_days"], 25)
         self.assertTrue(result["macro_claims_deteriorating"])
-        self.assertTrue(result["macro_pmi_contracting"])
-        self.assertFalse(result["macro_pmi_expanding"])
         self.assertTrue(result["macro_data_available"])
 
     def test_neutral_flags(self):
@@ -590,11 +586,9 @@ class TestGetCombinedMacroFlags(TestCase):
             "claims_deteriorating": False,
             "data_available": True,
         }
-        pmi_snap = {"latest": 57.0, "ma_3m": 56.0, "expanding": True, "contracting": False}
         with (
             patch("data.macro_data.get_macro_snapshot", return_value=snap),
             patch("data.fred_client.get_macro_snapshot", return_value=fred_snap),
-            patch("data.fred_client.get_pmi_snapshot", return_value=pmi_snap),
         ):
             result = get_combined_macro_flags()
 
@@ -603,8 +597,6 @@ class TestGetCombinedMacroFlags(TestCase):
         self.assertEqual(result["macro_yield_curve"], 1.5)
         self.assertEqual(result["macro_yield_curve_inverted_days"], 0)
         self.assertFalse(result["macro_claims_deteriorating"])
-        self.assertTrue(result["macro_pmi_expanding"])
-        self.assertFalse(result["macro_pmi_contracting"])
 
     def test_all_required_keys_present(self):
         from data.macro_data import get_combined_macro_flags
@@ -616,11 +608,9 @@ class TestGetCombinedMacroFlags(TestCase):
             "claims_deteriorating": False,
             "data_available": False,
         }
-        pmi_snap = {"latest": None, "ma_3m": None, "expanding": False, "contracting": False}
         with (
             patch("data.macro_data.get_macro_snapshot", return_value=snap),
             patch("data.fred_client.get_macro_snapshot", return_value=fred_snap),
-            patch("data.fred_client.get_pmi_snapshot", return_value=pmi_snap),
         ):
             result = get_combined_macro_flags()
 
@@ -632,9 +622,6 @@ class TestGetCombinedMacroFlags(TestCase):
             "macro_yield_curve",
             "macro_yield_curve_inverted_days",
             "macro_claims_deteriorating",
-            "macro_pmi_latest",
-            "macro_pmi_expanding",
-            "macro_pmi_contracting",
             "macro_data_available",
         }
         self.assertEqual(set(result.keys()), expected_keys)

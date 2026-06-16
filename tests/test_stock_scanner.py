@@ -1080,12 +1080,6 @@ class TestMacroGatesInEvaluateSignals(unittest.TestCase):
         snap = {**self._momentum_snap(), "macro_claims_deteriorating": True}
         self.assertNotIn("momentum", evaluate_signals(snap))
 
-    def test_pmi_contracting_blocks_momentum(self):
-        from signals.evaluator import evaluate_signals
-
-        snap = {**self._momentum_snap(), "macro_pmi_contracting": True}
-        self.assertNotIn("momentum", evaluate_signals(snap))
-
     def test_yield_curve_inversion_20d_blocks_late_cycle_signals(self):
         from signals.evaluator import evaluate_signals
 
@@ -1106,7 +1100,6 @@ class TestMacroGatesInEvaluateSignals(unittest.TestCase):
             "macro_credit_stress": False,
             "macro_duration_flight": False,
             "macro_claims_deteriorating": False,
-            "macro_pmi_contracting": False,
             "macro_yield_curve_inverted_days": 0,
         }
         self.assertIn("momentum", evaluate_signals(snap))

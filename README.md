@@ -327,7 +327,7 @@ designed to supersede.
 
 ### Appendix C: Engineering rigour
 
-- **Tests:** 4,755 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
+- **Tests:** 4,747 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
   the typed modules.
 - **LLM eval fixtures** ([`evals/`](evals/)): prompt-injection headlines, hallucinated tickers,
   bear-market no-buy, conflicting signals, earnings-risk, malformed tool calls.
@@ -354,11 +354,12 @@ documented in the [Appendix A](#appendix-a-system-architecture-and-governance) s
 
 ### Appendix E: Version history
 
-See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 to v1.102). Most recent: v1.102, the tradeable universe
-widened to S&P 500 + 400 (large + mid cap, ~900 names) after an edge check validated the engine down
-to mid cap, with small caps excluded; v1.101 was a data-feed integrity sweep (a new feed-health gate
-plus repairs to four silently-degraded feeds) and experiment material-context coverage (all ten
-categories wired). v1.100 was the 100th release, a full line-by-line audit plus mypy cleanup
+See [`CHANGELOG.md`](CHANGELOG.md) (v1.0 to v1.103). Most recent: v1.103 retired two dead FRED series
+(AAII-via-FRED, now sourced from aaii.com; and ISM PMI/NAPM, removed outright). v1.102 widened the
+tradeable universe to S&P 500 + 400 (large + mid cap, ~900 names) after an edge check validated the
+engine down to mid cap, with small caps excluded; v1.101 was a data-feed integrity sweep (a new
+feed-health gate plus repairs to four silently-degraded feeds) and experiment material-context
+coverage (all ten categories wired). v1.100 was the 100th release, a full line-by-line audit plus mypy cleanup
 ([`docs/audit_v1.100.md`](docs/audit_v1.100.md)). The research-program reframing
 (this document, [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md), and
 [`docs/strategic_review.md`](docs/strategic_review.md)) supersedes the prior feature-manual README.

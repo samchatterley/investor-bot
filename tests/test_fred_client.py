@@ -430,55 +430,6 @@ class TestGetMacroSnapshot(unittest.TestCase):
         self.assertFalse(result["yield_curve_inverted"])
 
 
-class TestGetPmiSnapshot(unittest.TestCase):
-    def test_returns_empty_when_no_data(self):
-        with patch("data.fred_client.fetch_series", return_value=[]):
-            from data.fred_client import get_pmi_snapshot
-
-            result = get_pmi_snapshot()
-        self.assertIsNone(result["latest"])
-        self.assertIsNone(result["ma_3m"])
-        self.assertFalse(result["expanding"])
-        self.assertFalse(result["contracting"])
-
-    def test_expanding_when_ma3m_above_55(self):
-        data = [("2026-03-01", 56.0), ("2026-04-01", 57.0), ("2026-05-01", 58.0)]
-        with patch("data.fred_client.fetch_series", return_value=data):
-            from data.fred_client import get_pmi_snapshot
-
-            result = get_pmi_snapshot()
-        self.assertTrue(result["expanding"])
-        self.assertFalse(result["contracting"])
-        self.assertAlmostEqual(result["ma_3m"], 57.0)
-
-    def test_contracting_when_latest_below_45(self):
-        data = [("2026-03-01", 48.0), ("2026-04-01", 46.0), ("2026-05-01", 43.0)]
-        with patch("data.fred_client.fetch_series", return_value=data):
-            from data.fred_client import get_pmi_snapshot
-
-            result = get_pmi_snapshot()
-        self.assertTrue(result["contracting"])
-        self.assertFalse(result["expanding"])
-
-    def test_neutral_between_45_and_55(self):
-        data = [("2026-03-01", 50.0), ("2026-04-01", 51.0), ("2026-05-01", 52.0)]
-        with patch("data.fred_client.fetch_series", return_value=data):
-            from data.fred_client import get_pmi_snapshot
-
-            result = get_pmi_snapshot()
-        self.assertFalse(result["expanding"])
-        self.assertFalse(result["contracting"])
-
-    def test_ma3m_none_with_fewer_than_3_readings(self):
-        data = [("2026-05-01", 52.0), ("2026-06-01", 53.0)]
-        with patch("data.fred_client.fetch_series", return_value=data):
-            from data.fred_client import get_pmi_snapshot
-
-            result = get_pmi_snapshot()
-        self.assertIsNone(result["ma_3m"])
-        self.assertIsNotNone(result["latest"])
-
-
 class TestGet10yYield(unittest.TestCase):
     def test_returns_latest_value_when_data_available(self):
         data = [("2026-06-01", 4.25), ("2026-06-10", 4.30)]

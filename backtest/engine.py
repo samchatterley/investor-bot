@@ -849,11 +849,8 @@ def _fetch_macro_flags_for_backtest(
         close.index = pd.DatetimeIndex(close.index).tz_localize(None)
 
         yc_data = fetch_series("T10Y2Y")
-        pmi_data = fetch_series("NAPM", observation_start="2018-01-01")
         yc_dict: dict[str, float] = dict(yc_data)
-        pmi_dict: dict[str, float] = dict(pmi_data)
         yc_dates_sorted = sorted(yc_dict)
-        pmi_dates_sorted = sorted(pmi_dict)
 
         def _fred_value_on_or_before(
             fd: dict[str, float], sorted_d: list[str], target: str
@@ -913,9 +910,6 @@ def _fetch_macro_flags_for_backtest(
             usd_20d = _roc("UUP", idx, 20)
 
             yc_v = _fred_value_on_or_before(yc_dict, yc_dates_sorted, date_str)
-            pmi_v = _fred_value_on_or_before(pmi_dict, pmi_dates_sorted, date_str)
-            recent_pmis = [v for d, v in pmi_data if d <= date_str][-3:]
-            pmi_ma = sum(recent_pmis) / len(recent_pmis) if len(recent_pmis) >= 3 else None
 
             result[date_str] = {
                 "macro_credit_stress": credit_roc is not None and credit_roc <= -2.0,
@@ -925,9 +919,6 @@ def _fetch_macro_flags_for_backtest(
                 "macro_yield_curve": yc_v,
                 "macro_yield_curve_inverted_days": inv_days_map.get(date_str, 0),
                 "macro_claims_deteriorating": False,
-                "macro_pmi_latest": pmi_v,
-                "macro_pmi_expanding": pmi_ma is not None and pmi_ma > 55.0,
-                "macro_pmi_contracting": pmi_v is not None and pmi_v < 45.0,
                 "macro_data_available": True,
             }
 

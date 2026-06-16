@@ -640,7 +640,6 @@ class TestMacroScalar(unittest.TestCase):
             "macro_yield_curve_inverted_days": 0,
             "macro_copper_gold_positive": False,
             "macro_usd_strong": False,
-            "macro_pmi_expanding": False,
         }
 
     def test_neutral_flags_return_one(self):
@@ -676,23 +675,12 @@ class TestMacroScalar(unittest.TestCase):
         result = macro_scalar(snap, "momentum")
         self.assertLess(result, 1.0)
 
-    def test_pmi_expanding_boosts_cyclicals(self):
-        snap = {**self._neutral(), "macro_pmi_expanding": True}
-        result = macro_scalar(snap, "momentum")
-        self.assertGreater(result, 1.0)
-
-    def test_pmi_expanding_no_boost_for_non_cyclical(self):
-        snap = {**self._neutral(), "macro_pmi_expanding": True}
-        result = macro_scalar(snap, "mean_reversion")
-        self.assertEqual(result, 1.0)
-
     def test_clamp_at_max_125(self):
         snap = {
             "macro_yield_curve": 2.0,
             "macro_yield_curve_inverted_days": 0,
             "macro_copper_gold_positive": True,
             "macro_usd_strong": False,
-            "macro_pmi_expanding": True,
         }
         result = macro_scalar(snap, "momentum")
         self.assertLessEqual(result, 1.25)
@@ -703,7 +691,6 @@ class TestMacroScalar(unittest.TestCase):
             "macro_yield_curve_inverted_days": 65,
             "macro_copper_gold_positive": False,
             "macro_usd_strong": True,
-            "macro_pmi_expanding": False,
         }
         result = macro_scalar(snap, "momentum")
         self.assertGreaterEqual(result, 0.70)

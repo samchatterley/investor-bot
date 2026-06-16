@@ -9700,10 +9700,9 @@ class TestBatch4MacroFlagsFetch(unittest.TestCase):
         raw = pd.DataFrame(prices, index=dates, columns=columns)
 
         yc_data = [("2024-09-01", -0.3), ("2024-11-01", -0.1)]
-        pmi_data = [("2024-09-01", 54.0), ("2024-10-01", 56.0), ("2024-11-01", 57.5)]
 
         def _mock_fetch(series_id, **kwargs):
-            return yc_data if series_id == "T10Y2Y" else pmi_data
+            return yc_data if series_id == "T10Y2Y" else []
 
         with (
             patch("backtest.engine.yf.download", return_value=raw),
@@ -9734,10 +9733,9 @@ class TestBatch4MacroFlagsFetch(unittest.TestCase):
         raw = pd.DataFrame(prices, index=dates, columns=columns)
 
         yc_data = [("2024-09-01", -0.3), ("2024-11-01", -0.1)]
-        pmi_data = [("2024-09-01", 54.0), ("2024-10-01", 56.0), ("2024-11-01", 57.5)]
 
         def _mock_fetch(series_id, **kwargs):
-            return yc_data if series_id == "T10Y2Y" else pmi_data
+            return yc_data if series_id == "T10Y2Y" else []
 
         with (
             patch("backtest.engine.yf.download", return_value=raw),

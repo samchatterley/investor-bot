@@ -4,6 +4,17 @@ Full version history. Most recent first.
 
 ---
 
+### 1.103 — June 2026 — retire dead FRED series (AAII-via-FRED, ISM PMI/NAPM)
+
+Live warnings surfaced two FRED series that no longer exist; both were silent data degradations.
+
+- **AAII (AAIIBULL / AAIIBEAR).** AAII is not a FRED series — the bot already fetches the AAII survey correctly from aaii.com via `sentiment_client`. `fred_client.get_aaii_sentiment` queried two non-existent FRED series, so `market_data` had been injecting empty AAII into every snapshot. Removed it and pointed the injection at `sentiment_client`, mapping `extreme_bearish/extreme_bullish` and `bearish_pct*100`. Restores real AAII context to snapshots.
+- **ISM Manufacturing PMI (NAPM).** ISM withdrew its data from FRED over licensing, and there is no free national replacement (regional Fed surveys use different, 0-centered semantics). The `macro_pmi_*` flags had therefore been always-False, and a monthly manufacturing survey is the wrong timescale for the bot's multi-day holds and is redundant with the faster macro signals already in place (yield curve, jobless claims, VIX, breadth). Removed the feature outright: `get_pmi_snapshot`, the `macro_pmi_*` flags (live and backtest paths), the evaluator defensive-gate term, and the position-sizer cyclical-boost branch. Behaviour-neutral (the flags were already always-False).
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.102 — June 2026 — universe expansion to S&P 500 + 400 (large + mid cap)
 
 Widened the tradeable universe from the S&P 500 (507 symbols) to **S&P 500 + S&P 400 (907 symbols)**, large and mid cap, after validating the engine generalises down to mid cap.
