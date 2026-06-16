@@ -54,7 +54,7 @@ from execution import short_risk, stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.short_universe import get_short_universe, scan_short_universe
 from execution.universe import build_scan_universe
-from experiment.collection import log_run_observations
+from experiment.collection import log_run_observations, log_sell_observations
 from models import (
     BrokerStateUnavailable,
     DataBundle,
@@ -1795,7 +1795,22 @@ def _run_ai_phase(
         },
         score_fn=_stock_scanner.score_candidate,
     )
-    logger.info(f"Experiment: logged {_n_obs} candidate observations")
+    # Sell-side: the AI's HOLD/SELL calls on held positions (the other high-signal AI power).
+    _market_ctx = {
+        "regime": mc.regime.get("regime"),
+        "vix": mc.vix,
+        "adaptive_prompt": config.ADAPTIVE_PROMPT_ENABLED,
+    }
+    _held_snaps = [s for s in db.ai_snapshots if s["symbol"] in snap.held_symbols]
+    _n_sells = log_sell_observations(
+        _held_snaps,
+        decisions.get("position_decisions", []),
+        decision_date=config.today_et().isoformat(),
+        run_id=run_id,
+        mode=mode,
+        market_context=_market_ctx,
+    )
+    logger.info(f"Experiment: logged {_n_obs} buy + {_n_sells} sell observations")
     return decisions
 
 

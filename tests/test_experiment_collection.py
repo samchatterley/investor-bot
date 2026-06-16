@@ -11,7 +11,9 @@ from experiment.collection import (
     _json_safe,
     append_observations,
     build_observation,
+    build_sell_observation,
     log_run_observations,
+    log_sell_observations,
 )
 
 
@@ -86,6 +88,7 @@ class TestBuildObservation(unittest.TestCase):
         self.assertEqual(rec["features"]["rsi_14"], 35.0)
         self.assertIsNone(rec["forward_r"])
         self.assertEqual(rec["expectancy"], {})
+        self.assertEqual(rec["extra"]["decision_type"], "buy_candidate")
         self.assertTrue(rec["extra"]["arm3_ai_selected"])
         self.assertEqual(rec["extra"]["arm3_ai_confidence"], 0.8)
         self.assertEqual(rec["extra"]["arm1_deterministic_rank"], 2)
@@ -176,6 +179,72 @@ class TestLogRunObservations(unittest.TestCase):
 
         # An error anywhere in the build must not propagate (trading must never be blocked).
         self.assertEqual(self._run("/tmp/_unused_failsafe.jsonl", score_fn=boom), 0)
+
+
+class TestBuildSellObservation(unittest.TestCase):
+    def test_sell_action(self):
+        rec = build_sell_observation(
+            {"symbol": "AAPL", "matched_signals": ["pead"], "ma_event": True, "rsi_14": 70.0},
+            decision_date="2026-06-16",
+            action="SELL",
+            confidence=8,
+            run_id="r1",
+            mode="midday",
+            market_context={"regime": "BULL"},
+        )
+        self.assertEqual(rec["extra"]["decision_type"], "held_position")
+        self.assertEqual(rec["extra"]["arm3_ai_action"], "SELL")
+        self.assertEqual(rec["extra"]["arm3_ai_confidence"], 8)
+        self.assertIn("ma_event", rec["material_context"])
+        self.assertEqual(rec["features"]["rsi_14"], 70.0)
+        self.assertIsNone(rec["forward_r"])
+
+    def test_no_decision_action_none(self):
+        rec = build_sell_observation(
+            {"symbol": "T"},
+            decision_date="2026-06-16",
+            action=None,
+            confidence=None,
+            run_id="r2",
+            mode="close",
+        )
+        self.assertIsNone(rec["extra"]["arm3_ai_action"])
+        self.assertEqual(rec["extra"]["market_context"], {})
+
+
+class TestLogSellObservations(unittest.TestCase):
+    def test_logs_held_positions(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "obs.jsonl")
+            held = [{"symbol": "AAPL", "matched_signals": []}, {"symbol": "MSFT"}]
+            decisions = [{"symbol": "AAPL", "action": "SELL", "confidence": 8}]  # MSFT undecided
+            n = log_sell_observations(
+                held,
+                decisions,
+                decision_date="2026-06-16",
+                run_id="r1",
+                mode="midday",
+                market_context={"regime": "BULL"},
+                path=path,
+            )
+            self.assertEqual(n, 2)
+            with open(path) as fh:
+                by_sym = {r["symbol"]: r for r in (json.loads(line) for line in fh)}
+            self.assertEqual(by_sym["AAPL"]["extra"]["arm3_ai_action"], "SELL")
+            self.assertIsNone(by_sym["MSFT"]["extra"]["arm3_ai_action"])  # no decision logged
+
+    def test_failsafe_swallows_errors(self):
+        # A held snapshot missing "symbol" makes the build raise; it must be swallowed (return 0).
+        n = log_sell_observations(
+            [{"no_symbol": True}],
+            [],
+            decision_date="2026-06-16",
+            run_id="r",
+            mode="close",
+            market_context={},
+            path="/tmp/_unused_sell.jsonl",
+        )
+        self.assertEqual(n, 0)
 
 
 if __name__ == "__main__":  # pragma: no cover

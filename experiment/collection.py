@@ -75,6 +75,22 @@ def _features(candidate: dict) -> dict:
     return {k: _json_safe(candidate[k]) for k in _FEATURE_KEYS if k in candidate}
 
 
+def _base_record(snapshot: dict, decision_date: str) -> dict:
+    """The point-in-time row shared by buy and sell observations (features, fired signals, material
+    context, blinded view, split tag; expectancy/forward_r backfilled offline)."""
+    fired = list(snapshot.get("matched_signals") or snapshot.get("signals") or [])
+    row = assemble_row(
+        symbol=snapshot["symbol"],
+        date=decision_date,
+        features=_features(snapshot),
+        fired_signals=fired,
+        material_context=detect_material_context(snapshot),
+        expectancy={},  # backfilled offline (AsOfExpectancy)
+        forward_r_value=None,  # not known at decision time
+    )
+    return asdict(row)
+
+
 def build_observation(
     candidate: dict,
     *,
@@ -87,25 +103,44 @@ def build_observation(
     mode: str,
     market_context: dict | None = None,
 ) -> dict:
-    """Build one point-in-time observation record for an engine-surfaced candidate."""
-    fired = list(candidate.get("matched_signals") or candidate.get("signals") or [])
-    row = assemble_row(
-        symbol=candidate["symbol"],
-        date=decision_date,
-        features=_features(candidate),
-        fired_signals=fired,
-        material_context=detect_material_context(candidate),
-        expectancy={},  # backfilled offline (AsOfExpectancy)
-        forward_r_value=None,  # not known at decision time
-    )
-    record = asdict(row)
+    """Build a buy-side observation: an engine-surfaced candidate the AI selected or vetoed."""
+    record = _base_record(candidate, decision_date)
     record["extra"] = {
         "version": OBSERVATIONS_VERSION,
         "run_id": run_id,
         "mode": mode,
+        "decision_type": "buy_candidate",
         "arm1_deterministic_score": deterministic_score,
         "arm1_deterministic_rank": deterministic_rank,
         "arm3_ai_selected": selected,
+        "arm3_ai_confidence": confidence,
+        "market_context": market_context or {},
+    }
+    return record
+
+
+def build_sell_observation(
+    snapshot: dict,
+    *,
+    decision_date: str,
+    action: str | None,
+    confidence: float | None,
+    run_id: str,
+    mode: str,
+    market_context: dict | None = None,
+) -> dict:
+    """Build a sell-side observation: a held position the AI evaluated for exit (HOLD/SELL).
+
+    The forward return (backfilled, long-direction) measures the decision: a good SELL precedes a
+    falling position, a good HOLD a rising one. The deterministic exit baseline (Arm 1) is deferred.
+    """
+    record = _base_record(snapshot, decision_date)
+    record["extra"] = {
+        "version": OBSERVATIONS_VERSION,
+        "run_id": run_id,
+        "mode": mode,
+        "decision_type": "held_position",
+        "arm3_ai_action": action,
         "arm3_ai_confidence": confidence,
         "market_context": market_context or {},
     }
@@ -167,4 +202,39 @@ def log_run_observations(
         return append_observations(records, path)
     except Exception as exc:
         logger.warning("experiment observation logging failed (non-fatal): %s", exc)
+        return 0
+
+
+def log_sell_observations(
+    held_snapshots: list[dict],
+    position_decisions: list[dict],
+    *,
+    decision_date: str,
+    run_id: str,
+    mode: str,
+    market_context: dict,
+    path: str | None = None,
+) -> int:
+    """Build and append sell-side observations for held positions the AI evaluated; return the count.
+
+    Fail-safe (must never block trading): records each held position with the AI's HOLD/SELL action
+    and confidence (Arm 3). ``position_decisions`` are the AI's per-position calls, keyed by symbol.
+    """
+    try:
+        action_by_sym = {d["symbol"]: d for d in position_decisions}
+        records = [
+            build_sell_observation(
+                snap,
+                decision_date=decision_date,
+                action=action_by_sym.get(snap["symbol"], {}).get("action"),
+                confidence=action_by_sym.get(snap["symbol"], {}).get("confidence"),
+                run_id=run_id,
+                mode=mode,
+                market_context=market_context,
+            )
+            for snap in held_snapshots
+        ]
+        return append_observations(records, path)
+    except Exception as exc:
+        logger.warning("experiment sell-observation logging failed (non-fatal): %s", exc)
         return 0
