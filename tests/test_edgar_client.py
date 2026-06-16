@@ -16,6 +16,7 @@ from data.edgar_client import (
     _fetch_accounting_concern,
     _fetch_filing_text,
     _fetch_ma_event,
+    _fetch_recent_filings,
     _fetch_regulatory_event,
     _fetch_secondary_offering,
     _get_cik_map,
@@ -143,6 +144,31 @@ def _make_submissions_response(
 
 
 class TestGetRecentFilings(TestCase):
+    def setUp(self):
+        _fetch_recent_filings.cache_clear()
+
+    def tearDown(self):
+        _fetch_recent_filings.cache_clear()
+
+    def test_shared_fetch_dedupes_submissions(self):
+        # The per-symbol form lookups (8-K / 13D / 424B) must share ONE network fetch.
+        today = date.today().isoformat()
+        resp = _make_submissions_response(
+            forms=["8-K", "SC 13D"],
+            dates=[today, today],
+            accessions=["0001-23-456789", "0002-34-567890"],
+            docs=["a.htm", "b.htm"],
+            items=["2.02", ""],
+        )
+        with (
+            patch("data.edgar_client.requests.get", return_value=resp) as mock_get,
+            patch("data.edgar_client.time.sleep"),
+        ):
+            _get_recent_filings("0000320193", ["8-K"], lookback_days=30)
+            _get_recent_filings("0000320193", ["SC 13D"], lookback_days=30)
+            _get_recent_filings("0000320193", ["424B4"], lookback_days=30)
+        self.assertEqual(mock_get.call_count, 1)
+
     def test_returns_matching_forms(self):
         today = date.today().isoformat()
         resp = _make_submissions_response(

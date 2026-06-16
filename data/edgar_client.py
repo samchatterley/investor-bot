@@ -257,12 +257,16 @@ def _get_cik_map() -> dict[str, str]:
 # ── SEC submissions helpers ───────────────────────────────────────────────────
 
 
-def _get_recent_filings(
-    cik: str,
-    form_types: list[str],
-    lookback_days: int,
-) -> list[dict]:
-    """Return recent filing metadata for a CIK matching any of the form types."""
+@lru_cache(maxsize=4096)
+def _fetch_recent_filings(cik: str, lookback_days: int, _day: str) -> tuple[dict, ...]:
+    """Fetch a CIK's SEC submissions once and return all recent filings within the window.
+
+    Cached per (cik, lookback, calendar day). _live_fetch does several form-specific lookups for one
+    symbol (guidance / activist / secondary / narrative), which previously re-downloaded the same
+    CIK.json up to four times — sharing a single fetch is the dominant EDGAR-prefetch saving. The
+    ``_day`` argument (today's date) keys the cache so it refreshes daily; ``maxsize`` bounds memory
+    across the universe.
+    """
     try:
         time.sleep(_REQ_DELAY)
         resp = requests.get(_SUBMISSIONS_URL.format(cik=cik), headers=_HEADERS, timeout=15)
@@ -270,7 +274,7 @@ def _get_recent_filings(
         data = resp.json()
     except Exception as exc:
         logger.debug("edgar_client: submissions fetch failed CIK %s: %s", cik, exc)
-        return []
+        return ()
 
     recent = data.get("filings", {}).get("recent", {})
     forms = recent.get("form", [])
@@ -284,14 +288,12 @@ def _get_recent_filings(
     for form, filing_date, accession, doc, item in zip(
         forms, dates, accessions, docs, items, strict=False
     ):
-        if form not in form_types:
-            continue
         try:
             fd = date.fromisoformat(filing_date)
         except ValueError:
             continue
         if fd < cutoff:
-            break
+            break  # submissions are newest-first, so all later filings are older too
         results.append(
             {
                 "form": form,
@@ -301,7 +303,16 @@ def _get_recent_filings(
                 "items": str(item),
             }
         )
-    return results
+    return tuple(results)
+
+
+def _get_recent_filings(cik: str, form_types: list[str], lookback_days: int) -> list[dict]:
+    """Return recent filing metadata for a CIK matching any of the form types.
+
+    Thin filter over ``_fetch_recent_filings`` so the per-symbol form lookups share one network call.
+    """
+    allf = _fetch_recent_filings(cik, lookback_days, date.today().isoformat())
+    return [f for f in allf if f["form"] in form_types]
 
 
 def _strip_html(raw: str, max_chars: int) -> str:
