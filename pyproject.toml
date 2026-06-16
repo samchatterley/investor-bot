@@ -32,8 +32,8 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = [
-    "analysis", "backtest", "config", "core", "data",
-    "execution", "notifications", "pipeline", "risk", "utils",
+    "analysis", "backtest", "config", "core", "data", "execution",
+    "experiment", "notifications", "pipeline", "risk", "utils",
 ]
 
 # ── Mypy ─────────────────────────────────────────────────────────────────────
@@ -74,6 +74,7 @@ files = [
     "experiment/evidence_score.py",
     "experiment/dataset.py",
     "experiment/feed_health.py",
+    "experiment/collection.py",
 ]
 
 [[tool.mypy.overrides]]

@@ -54,6 +54,7 @@ from execution import short_risk, stock_scanner, trader
 from execution.quote_gate import check_quote_gate
 from execution.short_universe import get_short_universe, scan_short_universe
 from execution.universe import build_scan_universe
+from experiment.collection import log_run_observations
 from models import (
     BrokerStateUnavailable,
     DataBundle,
@@ -1778,6 +1779,19 @@ def _run_ai_phase(
             ],
         },
     )
+    # Experiment: capture each surfaced candidate point-in-time (veto/down-weight primary endpoint).
+    # log_run_observations is fail-safe — instrumentation must never block trading.
+    _n_obs = log_run_observations(
+        db.filtered_candidates,
+        buy_candidates=decisions.get("buy_candidates", []),
+        ranked=_ranked,
+        decision_date=config.today_et().isoformat(),
+        run_id=run_id,
+        mode=mode,
+        market_context={"regime": mc.regime.get("regime"), "vix": mc.vix},
+        score_fn=_stock_scanner.score_candidate,
+    )
+    logger.info(f"Experiment: logged {_n_obs} candidate observations")
     return decisions
 
 
