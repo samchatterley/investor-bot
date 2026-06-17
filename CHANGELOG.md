@@ -4,6 +4,21 @@ Full version history. Most recent first.
 
 ---
 
+### 1.107 — June 2026 — pre-go-live audit fixes (circuit-breaker lookback, dust sweep, deprecation)
+
+From the pre-go-live audit (`docs/PRE_GOLIVE_AUDIT_2026-06-17.md`):
+
+- **A1.2 — circuit-breaker lookback.** `check_circuit_breaker` used the last 5 *records* (`[-5:]`); with 4 runs/day that was ~1.25 days, not the documented "5-day peak," so it missed slow multi-day bleeds. It now collapses to one value per calendar day (the day's last record) and takes the last 5 days. Undated records (unit tests) stay distinct.
+- **A4.1 — dust sweep.** Negligible fractional residuals (e.g. a 7.89e-07-share leftover worth <$1) are auto-closed in the sell phase (`DUST_THRESHOLD_USD`) rather than lingering until the AI notices.
+- **A8.1 (partial) — deprecation.** `datetime.utcnow()` → `datetime.now(UTC)` in the regime-state save. The latent `date.today()`→`today_et()` cache-key standardization is **deferred** (never triggers given the 12:00–20:30 BST run schedule; touches cache invalidation + ~13 test sites — better as a focused change).
+- **A2.1 — verified clean (no fix).** Lookahead controls are strong and explicit: backtest earnings/insider/PEAD signals are point-in-time-safe ("strictly before sim_date"), the experiment backfill uses `known_at < decision_date`, live is real-time. The one known leak (distress-short fundamentals, pre-2020) is documented and scoped to the short book the experiment doesn't rely on.
+
+Open items remain **decisions/investigations, not mechanical fixes**: A3.1 (live-only filters vs backtest parity), A7.1 (experiment power), A5.1 (resilience sweep), A9.1 (reconciliation depth), A10.1 (cost-model realism — needs accumulated trade data).
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.106 — June 2026 — harden the sector-cache build (incremental save)
 
 Follow-up to 1.105: `build_sector_map()` fetched all ~907 symbols and saved the cache only at the very end, so a restart/crash mid-build (the first full build takes minutes over yfinance) lost all progress and started over next time. It now persists the partial map every 50 symbols (`_SECTOR_CACHE_SAVE_EVERY`), so an interrupted build resumes from the remaining symbols rather than restarting.

@@ -36,7 +36,7 @@ import logging
 import os
 import pickle
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 
 import pandas as pd
@@ -618,7 +618,7 @@ def save_regime_state(snapshot: MarketRegimeSnapshot) -> None:
                 snapshot.pending_candidate.value if snapshot.pending_candidate else None
             ),
             "pending_count": snapshot.pending_count,
-            "saved_at": datetime.utcnow().isoformat(),
+            "saved_at": datetime.now(UTC).isoformat(),
         }
         with open(_STATE_PATH, "w") as f:
             json.dump(data, f, indent=2)

@@ -199,7 +199,7 @@ class TestCircuitBreakerEdgeCases(unittest.TestCase):
         self.assertFalse(triggered)
 
     def test_peak_zero_guard_line_covered(self):
-        """Line 34: peak <= 0 guard — patch max() to simulate edge case."""
+        """peak <= 0 guard — patch max() to simulate edge case."""
 
         def _r(v):
             return {"account_after": {"portfolio_value": v}}
@@ -209,3 +209,25 @@ class TestCircuitBreakerEdgeCases(unittest.TestCase):
             triggered, drawdown = check_circuit_breaker(history)
         self.assertFalse(triggered)
         self.assertEqual(drawdown, 0.0)
+
+    def test_dedups_intraday_records_by_calendar_day(self):
+        # A1.2: lookback is ~5 calendar days, not 5 records. A slow multi-day bleed across 6 days
+        # (2 intraday runs each) that record-based [-5:] would miss must still trip the breaker.
+        def _r(date, v):
+            return {"date": date, "account_after": {"portfolio_value": v}}
+
+        history = []
+        for day, v in [
+            ("2026-06-10", 110_000),
+            ("2026-06-11", 105_000),
+            ("2026-06-12", 100_000),
+            ("2026-06-15", 95_000),
+            ("2026-06-16", 92_000),
+            ("2026-06-17", 90_000),
+        ]:
+            history.append(_r(f"{day}-open", v + 500))
+            history.append(_r(f"{day}-close", v))
+        # Day-based: last 5 days 06-11..06-17, peak 105k, current 90k -> -14.3% -> triggered.
+        triggered, drawdown = check_circuit_breaker(history)
+        self.assertTrue(triggered)
+        self.assertLess(drawdown, -12.0)

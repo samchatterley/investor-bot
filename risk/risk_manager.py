@@ -16,32 +16,35 @@ def check_circuit_breaker(portfolio_history: list[dict]) -> tuple[bool, float]:
     if len(portfolio_history) < 2:
         return False, 0.0
 
-    recent = portfolio_history[-5:]
-    try:
-        # Exclude records with implausibly small values — guards against corrupted
-        # test/placeholder records that would produce a false -99.9% drawdown signal.
-        # Threshold scales with actual account size (half the peak floored at $10)
-        # so the circuit breaker works correctly in SMALL_ACCOUNT_MODE (~$150 accounts).
-        _raw_values = [r["account_after"]["portfolio_value"] for r in recent]
-        _peak_raw = max(_raw_values) if _raw_values else 0.0
-        _MIN_PLAUSIBLE = max(10.0, _peak_raw * 0.5)
-        values = [v for v in _raw_values if v >= _MIN_PLAUSIBLE]
-        if len(values) < 2:
-            return False, 0.0
-        peak = max(values[:-1])
-        current = values[-1]
-        if peak <= 0:
-            return False, 0.0
-        drawdown = (current / peak - 1) * 100
-        triggered = drawdown <= CIRCUIT_BREAKER_DRAWDOWN_PCT
-        if triggered:
-            logger.warning(
-                f"Circuit breaker triggered: {drawdown:.1f}% drawdown from {peak:.2f} peak"
-            )
-        return triggered, round(drawdown, 2)
-    except (KeyError, IndexError, ZeroDivisionError) as e:
-        logger.error(f"Circuit breaker check failed: {e}")
+    # Collapse to one value per calendar day (the day's last record) so the lookback is ~5 trading
+    # days, not ~5 runs (audit A1.2 — with 4 runs/day, [-5:] records was only ~1.25 days and missed
+    # slow multi-day bleeds). Undated records (e.g. unit tests) are kept distinct via a per-index key.
+    _by_day: dict[str, float] = {}
+    for _i, _r in enumerate(portfolio_history):
+        try:
+            _day = _r["date"][:10] if _r.get("date") else f"_{_i}"
+            _by_day[_day] = _r["account_after"]["portfolio_value"]
+        except (KeyError, TypeError):
+            continue
+    recent_values = [_by_day[k] for k in list(_by_day)[-5:]]
+    # Exclude records with implausibly small values — guards against corrupted
+    # test/placeholder records that would produce a false -99.9% drawdown signal.
+    # Threshold scales with actual account size (half the peak floored at $10)
+    # so the circuit breaker works correctly in SMALL_ACCOUNT_MODE (~$150 accounts).
+    _peak_raw = max(recent_values) if recent_values else 0.0
+    _MIN_PLAUSIBLE = max(10.0, _peak_raw * 0.5)
+    values = [v for v in recent_values if v >= _MIN_PLAUSIBLE]
+    if len(values) < 2:
         return False, 0.0
+    peak = max(values[:-1])
+    current = values[-1]
+    if peak <= 0:
+        return False, 0.0
+    drawdown = (current / peak - 1) * 100
+    triggered = drawdown <= CIRCUIT_BREAKER_DRAWDOWN_PCT
+    if triggered:
+        logger.warning(f"Circuit breaker triggered: {drawdown:.1f}% drawdown from {peak:.2f} peak")
+    return triggered, round(drawdown, 2)
 
 
 def check_daily_loss(value_at_open: float, value_now: float) -> tuple[bool, float]:

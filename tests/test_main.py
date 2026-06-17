@@ -5096,6 +5096,45 @@ class TestExecuteSellPhaseChurnGuard(unittest.TestCase):
         self.assertNotIn("AAPL", self._run(age=0, confidence=9, action="HOLD"))
 
 
+class TestExecuteSellPhaseDustSweep(unittest.TestCase):
+    """A4.1: negligible fractional residuals are auto-closed; normal positions are kept."""
+
+    def test_dust_swept_normal_kept(self):
+        from main import _execute_sell_phase
+        from models import PositionSnapshot
+
+        dust = {"symbol": "CI", "unrealized_plpc": -2.98, "qty": 7.89e-07, "market_value": 0.0002}
+        normal = {"symbol": "AAPL", "unrealized_plpc": 2.0, "qty": 10, "market_value": 1500.0}
+        snap = PositionSnapshot(
+            open_positions=[dust, normal],
+            held_symbols={"CI", "AAPL"},
+            position_ages={"CI": 1, "AAPL": 1},  # age 1 → no stale-exit confound
+            stale=[],
+            open_shorts_db=set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+        all_trades = []
+        with (
+            patch("main._fetch_adverse_vol_for_held", return_value={}),
+            patch("main.exit_optimiser.adverse_volume_triggered", return_value=False),
+        ):
+            _execute_sell_phase(
+                client=MagicMock(),
+                snap=snap,
+                decisions={"position_decisions": []},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=True,
+                _live_shadow=False,
+                snapshots=[],
+                regime_name="BULL_TREND",
+            )
+        sold = [t["symbol"] for t in all_trades]
+        self.assertIn("CI", sold)  # dust auto-closed
+        self.assertNotIn("AAPL", sold)  # real position untouched
+
+
 class TestExecuteSellPhaseRegimeChange(unittest.TestCase):
     """Regime-change exit wired into _execute_sell_phase."""
 

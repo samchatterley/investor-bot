@@ -129,6 +129,10 @@ MIN_CONFIDENCE = 7  # Min confidence score (1-10) to open a position
 # Stop-losses, trailing stops, stale-age, adverse-volume and regime exits are unaffected.
 SAME_DAY_SELL_MIN_CONFIDENCE = 9
 
+# Dust sweep (audit A4.1): auto-close any long position worth less than this — fractional rounding
+# residuals (e.g. a 7.89e-07-share leftover) that would otherwise linger until the AI notices.
+DUST_THRESHOLD_USD = 1.0
+
 # Position hold limit — auto-exit after this many trading days
 MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5" if _SAM else "3"))
 

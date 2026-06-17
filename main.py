@@ -1891,6 +1891,22 @@ def _execute_sell_phase(
         deps=deps,
     )
 
+    # Dust sweep (audit A4.1): auto-close negligible fractional residuals (long positions only) so
+    # they don't linger until the AI happens to notice — e.g. a 7.89e-07-share rounding leftover.
+    for _pos in snap.open_positions:
+        _sym = _pos["symbol"]
+        if _sym in snap.open_shorts_db or _sym in symbols_to_sell:
+            continue
+        _mv = _pos.get("market_value")
+        # Only sweep a present, positive-but-tiny value. A missing or exactly-zero market_value
+        # means the position isn't valued (transient/unmarked) and must NOT be force-closed.
+        if _mv is not None and 0.0 < abs(_mv) < config.DUST_THRESHOLD_USD:
+            logger.info(
+                f"Dust sweep: {_sym} market value ${_mv:.4f} "
+                f"< ${config.DUST_THRESHOLD_USD:.2f} — auto-closing residual."
+            )
+            symbols_to_sell.add(_sym)
+
     for pos in snap.open_positions:
         symbol = pos["symbol"]
         if symbol in snap.open_shorts_db or symbol in symbols_to_sell:
