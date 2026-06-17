@@ -44,6 +44,8 @@ _FEATURE_KEYS: tuple[str, ...] = (
     "weekly_trend_up",
     "earnings_gap_pct",
     "sector",
+    "sector_momentum_rank",  # A3.1: sector's 20d-momentum rank (for measuring the sector gate)
+    "sector_gate_pass",  # A3.1: did the (advisory) sector-momentum gate pass this candidate?
     "guidance_positive",
     "guidance_negative",
     "activist_filing",

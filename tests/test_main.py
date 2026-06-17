@@ -5096,6 +5096,38 @@ class TestExecuteSellPhaseChurnGuard(unittest.TestCase):
         self.assertNotIn("AAPL", self._run(age=0, confidence=9, action="HOLD"))
 
 
+class TestSectorGateSkip(unittest.TestCase):
+    """A3.1: the sector-momentum gate is advisory by default — it records the verdict on the
+    candidate and only causes a skip when SECTOR_MOMENTUM_GATE_ENFORCE is set."""
+
+    def test_pass_records_and_does_not_skip(self):
+        from main import _sector_gate_skip
+
+        c = {"symbol": "AAPL"}
+        self.assertFalse(_sector_gate_skip(c, "AAPL", "Technology", 2, gate_pass=True))
+        self.assertTrue(c["sector_gate_pass"])
+        self.assertEqual(c["sector"], "Technology")
+        self.assertEqual(c["sector_momentum_rank"], 2)
+
+    def test_block_advisory_records_but_does_not_skip(self):
+        from main import _sector_gate_skip
+
+        c = {"symbol": "XOM"}
+        with patch("config.SECTOR_MOMENTUM_GATE_ENFORCE", False):
+            skip = _sector_gate_skip(c, "XOM", "Energy", 9, gate_pass=False)
+        self.assertFalse(skip)  # advisory → kept, not skipped
+        self.assertFalse(c["sector_gate_pass"])
+
+    def test_block_enforced_skips(self):
+        from main import _sector_gate_skip
+
+        c = {"symbol": "XOM"}
+        with patch("config.SECTOR_MOMENTUM_GATE_ENFORCE", True):
+            skip = _sector_gate_skip(c, "XOM", "Energy", None, gate_pass=False)
+        self.assertTrue(skip)  # enforced → skipped
+        self.assertIsNone(c["sector_momentum_rank"])  # rank=None log path
+
+
 class TestExecuteSellPhaseDustSweep(unittest.TestCase):
     """A4.1: negligible fractional residuals are auto-closed; normal positions are kept."""
 
@@ -5784,8 +5816,9 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
             **extra,
         }
 
-    def test_sector_long_gate_blocks_buy(self):
-        """sector_allowed_long=False skips candidate — logs and continues (lines 1726-1730)."""
+    def test_sector_long_gate_enforced_blocks_buy(self):
+        """A3.1: with SECTOR_MOMENTUM_GATE_ENFORCE on, a non-top-4-sector candidate is skipped.
+        (By default the gate is advisory — see TestSectorGateSkip — so it would NOT skip.)"""
         decisions = _decisions(buys=[self._buy_candidate()])
         deps = self._make_deps(
             ai_analyst__get_trading_decisions=decisions,
@@ -5798,7 +5831,7 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
             sector_data__get_sector="Technology",
             sector_momentum__sector_allowed_long=False,
         )
-        with self._inner_patches():
+        with self._inner_patches(), patch("config.SECTOR_MOMENTUM_GATE_ENFORCE", True):
             from main import _run_inner
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)

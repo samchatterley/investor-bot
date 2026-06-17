@@ -133,6 +133,12 @@ SAME_DAY_SELL_MIN_CONFIDENCE = 9
 # residuals (e.g. a 7.89e-07-share leftover) that would otherwise linger until the AI notices.
 DUST_THRESHOLD_USD = 1.0
 
+# Sector-momentum gate (audit A3.1): ADVISORY by default — the gate's pass/block verdict is recorded
+# on each candidate for measurement but does NOT change what trades, so the live deterministic
+# baseline matches the (gate-less) validated backtest. Flip to True to ENFORCE (skip blocked
+# candidates) only once the gate is validated as a real edge in the backtest.
+SECTOR_MOMENTUM_GATE_ENFORCE = False
+
 # Position hold limit — auto-exit after this many trading days
 MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5" if _SAM else "3"))
 

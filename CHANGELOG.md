@@ -4,6 +4,18 @@ Full version history. Most recent first.
 
 ---
 
+### 1.108 — June 2026 — sector-momentum gate → advisory + logged (audit A3.1, step 1)
+
+Resolves the live side of the A3.1 parity gap. The sector-momentum long gate was a **live-only** filter absent from the validated backtest; F7 had activated it, so live diverged from the backtest baseline. It is now **advisory** (`SECTOR_MOMENTUM_GATE_ENFORCE = False`): the gate's verdict (pass/block, sector, 20d-momentum rank) is recorded on each candidate and logged, but it no longer changes what trades — so the live deterministic baseline again matches the (gate-less) validated backtest, keeping the AI experiment clean.
+
+The recorded verdict + each candidate's backfilled forward outcome make the gate a **measurable variable observationally** — no sample split, no contamination of the AI endpoint (per the agreed design). Flip `SECTOR_MOMENTUM_GATE_ENFORCE` to True only once the gate is validated as a real edge.
+
+`_sector_gate_skip` extracted as a pure, unit-tested helper. **Next (separate):** add the gate/cap/churn as backtest toggles for a powered A/B (A3.1 step 2).
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.107 — June 2026 — pre-go-live audit fixes (circuit-breaker lookback, dust sweep, deprecation)
 
 From the pre-go-live audit (`docs/PRE_GOLIVE_AUDIT_2026-06-17.md`):

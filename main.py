@@ -1838,6 +1838,29 @@ def _same_day_exit_allowed(decision: dict, snapshot: dict | None) -> bool:
     return any(bool(snap.get(flag)) for flag in _SAME_DAY_EXIT_CATALYST_FLAGS)
 
 
+def _sector_gate_skip(
+    candidate: dict, symbol: str, sector: str, rank: int | None, gate_pass: bool
+) -> bool:
+    """Record the sector-momentum gate verdict on the candidate and return whether to skip it.
+
+    Advisory by default (audit A3.1): the verdict (pass/block, sector, momentum rank) is attached to
+    the candidate so its forward edge can be measured observationally, but it only causes a skip when
+    ``config.SECTOR_MOMENTUM_GATE_ENFORCE`` is set. This keeps the live deterministic baseline
+    matching the (gate-less) validated backtest until the gate is validated as an edge.
+    """
+    candidate["sector"] = sector
+    candidate["sector_momentum_rank"] = rank
+    candidate["sector_gate_pass"] = gate_pass
+    if gate_pass:
+        return False
+    enforced = config.SECTOR_MOMENTUM_GATE_ENFORCE
+    logger.info(
+        f"Sector-momentum gate {'BLOCK' if enforced else 'advisory (kept)'}: {symbol} "
+        f"sector '{sector}' not in top-4 momentum (rank={rank if rank is not None else '?'})"
+    )
+    return enforced
+
+
 def _execute_sell_phase(
     client,
     snap: PositionSnapshot,
@@ -2229,13 +2252,16 @@ def _execute_buy_phase(
                 )
                 _nhl_scalar = _position_sizer.nhl_scalar(candidate.get("nhl_ratio"))
 
-                # Sector momentum gate — only allow longs in top 4 sectors by 20d return
+                # Sector-momentum gate — advisory by default (audit A3.1): record the verdict for
+                # measurement; only skip when SECTOR_MOMENTUM_GATE_ENFORCE is set.
                 _sym_sector = _sector_data.get_sector(symbol)
-                if not _sector_momentum.sector_allowed_long(_sym_sector, _sector_ranks):
-                    logger.info(
-                        f"Skipping {symbol}: sector '{_sym_sector}' not in top-4 momentum"
-                        f" (rank={_sector_ranks.get(_sym_sector, '?')})"
-                    )
+                if _sector_gate_skip(
+                    candidate,
+                    symbol,
+                    _sym_sector,
+                    _sector_ranks.get(_sym_sector),
+                    _sector_momentum.sector_allowed_long(_sym_sector, _sector_ranks),
+                ):
                     continue
 
                 # Correlation filter — skip if returns too closely track an existing position
