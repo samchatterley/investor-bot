@@ -4,6 +4,18 @@ Full version history. Most recent first.
 
 ---
 
+### 1.105 — June 2026 — wire the symbol→sector cache (audit F7)
+
+Follow-up finding from the live logs (`pead [BULL_TREND | Unknown | 1d | conf=8]`): the symbol→sector cache was **never populated** in the live pipeline — `build_sector_map()` had no caller — so `get_sector()` fell back to a 53-symbol legacy map and returned "Unknown" for ~the entire 907-symbol universe. Same silent-graceful-degradation class as the 1.104 audit, exposed by the 500→907 universe expansion (1.102).
+
+Effects: the **sector-momentum long gate** (`sector_allowed_long`) fails open on "Unknown" (`rank is None → allow`), so it was passing virtually every candidate instead of restricting to the top-4 momentum sectors — a documented selection filter that wasn't filtering; per-signal `by_sector` stats were almost all "Unknown"; short-sector logic was degraded the same way.
+
+Fix: the 07:00 prefetch now calls `build_sector_map()` (incremental — loads the cache, fetches only the missing symbols from yfinance at 0.05 s each, saves), so it's a one-time full build then cheap daily top-ups. Restores both the per-sector signal-stats attribution and the sector-momentum gate. (Open follow-up: confirm the backtest applies the same gate with real sectors — a potential live/backtest divergence.)
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.104 — June 2026 — data-integrity audit fixes (P&L baseline, market-data freshness, churn guard, run-file naming)
 
 A full integrity audit (`docs/INTEGRITY_AUDIT_2026-06-16.md`), prompted by a daily P&L logged as −$310 that was actually −$819 and a "SPY +1.7% today" narrative on a day SPY fell −0.6%, traced four defects. **None were signal-book failures** — all were instrument (data/accounting) defects, which is why the bot appeared to "underperform SPY" while largely sitting in cash or trading on stale data.

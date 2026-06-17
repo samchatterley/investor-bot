@@ -23,6 +23,7 @@ def _load_scheduler_module():
         "data.insider_feed": MagicMock(),
         "data.macro_data": MagicMock(),
         "data.market_data": MagicMock(),
+        "data.sector_data": MagicMock(),
         "data.sentiment_client": MagicMock(),
         "data.short_interest": MagicMock(),
         "notifications": MagicMock(),
@@ -562,6 +563,7 @@ class TestPrefetchNewModules(unittest.TestCase):
         # Also stub the other prefetch functions to avoid side effects
         for attr in (
             "prefetch_market_data",
+            "build_sector_map",
             "prefetch_insider_activity",
             "prefetch_earnings_data",
             "prefetch_short_interest",
@@ -580,6 +582,7 @@ class TestPrefetchNewModules(unittest.TestCase):
         mod.get_fear_greed_composite = MagicMock()
         for attr in (
             "prefetch_market_data",
+            "build_sector_map",
             "prefetch_insider_activity",
             "prefetch_earnings_data",
             "prefetch_short_interest",
@@ -598,6 +601,7 @@ class TestPrefetchNewModules(unittest.TestCase):
         mod.get_fear_greed_composite = MagicMock()
         for attr in (
             "prefetch_market_data",
+            "build_sector_map",
             "prefetch_insider_activity",
             "prefetch_earnings_data",
             "prefetch_short_interest",
@@ -607,6 +611,26 @@ class TestPrefetchNewModules(unittest.TestCase):
         mod.config.STOCK_UNIVERSE = ["AAPL"]
         mod._prefetch()
         mod.get_fear_greed_composite.assert_called_once()
+
+    def test_sector_map_prefetch_called(self):
+        # Audit F7: the prefetch must populate the symbol→sector cache.
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_file"
+        for attr in (
+            "prefetch_market_data",
+            "build_sector_map",
+            "prefetch_insider_activity",
+            "prefetch_earnings_data",
+            "prefetch_short_interest",
+            "prefetch_av_sentiment",
+            "prefetch_edgar_data",
+            "get_macro_snapshot",
+            "get_fear_greed_composite",
+        ):
+            setattr(mod, attr, MagicMock())
+        mod.config.STOCK_UNIVERSE = ["AAPL"]
+        mod._prefetch()
+        mod.build_sector_map.assert_called_once()
 
 
 class TestPrefetchExceptionPaths(unittest.TestCase):
@@ -618,6 +642,7 @@ class TestPrefetchExceptionPaths(unittest.TestCase):
         mod.config.STOCK_UNIVERSE = ["AAPL"]
         for attr in (
             "prefetch_market_data",
+            "build_sector_map",
             "prefetch_insider_activity",
             "prefetch_earnings_data",
             "prefetch_short_interest",
@@ -640,6 +665,12 @@ class TestPrefetchExceptionPaths(unittest.TestCase):
     def test_market_data_exception_non_fatal(self):
         mod = self._stub_mod()
         mod.prefetch_market_data.side_effect = RuntimeError("network error")
+        mod._prefetch()
+        mod.prefetch_insider_activity.assert_called_once()
+
+    def test_sector_map_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.build_sector_map.side_effect = RuntimeError("sector boom")
         mod._prefetch()
         mod.prefetch_insider_activity.assert_called_once()
 

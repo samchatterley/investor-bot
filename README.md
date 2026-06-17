@@ -327,7 +327,7 @@ designed to supersede.
 
 ### Appendix C: Engineering rigour
 
-- **Tests:** 4,807 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
+- **Tests:** 4,809 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
   the typed modules.
 - **LLM eval fixtures** ([`evals/`](evals/)): prompt-injection headlines, hallucinated tickers,
   bear-market no-buy, conflicting signals, earnings-risk, malformed tool calls.

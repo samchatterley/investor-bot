@@ -77,6 +77,7 @@ from data.edgar_client import prefetch_edgar_data  # noqa: E402
 from data.insider_feed import prefetch_insider_activity  # noqa: E402
 from data.macro_data import get_macro_snapshot  # noqa: E402
 from data.market_data import prefetch_market_data  # noqa: E402
+from data.sector_data import build_sector_map  # noqa: E402
 from data.sentiment_client import get_fear_greed_composite  # noqa: E402
 from data.short_interest import prefetch_short_interest  # noqa: E402
 from notifications.emailer import send_weekly_review  # noqa: E402
@@ -109,6 +110,14 @@ def _prefetch():
         prefetch_market_data(list(config.STOCK_UNIVERSE))
     except Exception as e:
         logger.error(f"Prefetch failed (non-fatal): {e}", exc_info=True)
+    try:
+        # Populate the symbol→sector cache (audit F7). Without this the cache stays empty and
+        # get_sector falls back to a 53-symbol legacy map → "Unknown" for ~all of the universe,
+        # which silently no-ops the sector-momentum long gate. Incremental: only fetches symbols
+        # not already cached, so it's a one-time full build then cheap daily top-ups.
+        build_sector_map()
+    except Exception as e:
+        logger.error(f"Sector map prefetch failed (non-fatal): {e}", exc_info=True)
     try:
         prefetch_insider_activity()
     except Exception as e:
