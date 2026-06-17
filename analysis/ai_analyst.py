@@ -231,16 +231,27 @@ def build_prompt(
         data_quality = market_regime.get("data_quality", "")
         reasons = market_regime.get("reasons", [])
         quality_note = f" [{data_quality}]" if data_quality and data_quality != "full" else ""
+        # Honest dating (audit F2): intraday, the latest *complete* daily bar is the prior
+        # session, so the "1d move" is NOT today's. Label it by its as-of date and flag that
+        # today's intraday move isn't reflected — never present a stale move as "today".
+        if market_regime.get("data_is_stale"):
+            as_of = market_regime.get("data_as_of") or "prior session"
+            when = f"prior session ({as_of})"
+            stale_note = "  (today's intraday move not yet reflected)"
+        else:
+            when = "today"
+            stale_note = ""
         if market_regime.get("is_bearish"):
             reasons_str = f"  ({'; '.join(reasons[:2])})" if reasons else ""
             regime_block = (
-                f"⚠️  REGIME: {regime_name}{quality_note} — SPY {spy_1d:+.1f}% today."
+                f"⚠️  REGIME: {regime_name}{quality_note} — SPY {spy_1d:+.1f}% {when}.{stale_note}"
                 f"  NO new BUYs.{reasons_str}\n"
             )
         else:
             week_str = f", {spy_5d:+.1f}% this week" if spy_5d is not None else ""
             regime_block = (
-                f"MARKET REGIME: {regime_name}{quality_note} (SPY {spy_1d:+.1f}% today{week_str})\n"
+                f"MARKET REGIME: {regime_name}{quality_note} "
+                f"(SPY {spy_1d:+.1f}% {when}{week_str}){stale_note}\n"
             )
             if advice:
                 regime_block += f"→ {advice}\n"

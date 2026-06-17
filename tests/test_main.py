@@ -4497,6 +4497,34 @@ class TestFetchMarketContext(unittest.TestCase):
         self.assertEqual(mc.regime["regime"], "BULL_TREND")
         self.assertFalse(mc.macro["is_high_risk"])
 
+    def test_logs_warning_when_regime_data_stale(self):
+        # F2: a stale daily-bar regime must surface a freshness warning in the run log.
+        import logging
+
+        from main import _fetch_market_context
+
+        stale_regime = {"regime": "BULL_TREND", "data_is_stale": True, "data_as_of": "2026-06-15"}
+        mocks = self._patches(regime=stale_regime)
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            with self.assertLogs("main", level=logging.WARNING) as cm:
+                _fetch_market_context()
+        self.assertTrue(any("STALE" in m and "2026-06-15" in m for m in cm.output))
+
+    def test_no_stale_warning_when_data_current(self):
+        # Fresh regime (no data_is_stale flag) must not emit the staleness warning.
+        import logging
+
+        from main import _fetch_market_context
+
+        mocks = self._patches(regime={"regime": "BULL_TREND", "data_is_stale": False})
+        with contextlib.ExitStack() as stack:
+            for k, v in mocks.items():
+                stack.enter_context(patch(k, v))
+            with self.assertNoLogs("main", level=logging.WARNING):
+                _fetch_market_context()
+
     def test_all_callables_invoked(self):
         from main import _fetch_market_context
 
@@ -5006,6 +5034,66 @@ class TestExecuteSellPhaseAdverseVolume(unittest.TestCase):
         with patch("main.exit_optimiser.adverse_volume_triggered", return_value=False) as mock_av:
             self._run([pos], vol_hist={})
         mock_av.assert_called_once_with(0.0, 0.0, 0.0, 0.0)
+
+
+class TestExecuteSellPhaseChurnGuard(unittest.TestCase):
+    """F4: a discretionary SELL of a position opened today needs very-high conviction or a hard
+    catalyst — otherwise it is held, not round-tripped (the HPE buy-then-dump pattern)."""
+
+    def _run(self, *, age, confidence=..., snapshots=None, action="SELL"):
+        from main import _execute_sell_phase
+        from models import PositionSnapshot
+
+        pos = {"symbol": "AAPL", "unrealized_plpc": 1.0, "qty": 10, "market_value": 1500.0}
+        snap = PositionSnapshot(
+            open_positions=[pos],
+            held_symbols={"AAPL"},
+            position_ages={"AAPL": age},
+            stale=[],
+            open_shorts_db=set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+        decision = {"symbol": "AAPL", "action": action, "reasoning": "exit"}
+        if confidence is not ...:
+            decision["confidence"] = confidence
+        all_trades = []
+        with (
+            patch("main._fetch_adverse_vol_for_held", return_value={}),
+            patch("main.exit_optimiser.adverse_volume_triggered", return_value=False),
+        ):
+            _execute_sell_phase(
+                client=MagicMock(),
+                snap=snap,
+                decisions={"position_decisions": [decision]},
+                all_trades=all_trades,
+                executed_symbols=set(),
+                dry_run=True,
+                _live_shadow=False,
+                snapshots=snapshots or [],
+                regime_name="BULL_TREND",
+            )
+        return [t["symbol"] for t in all_trades]
+
+    def test_same_day_low_conf_sell_blocked(self):
+        self.assertNotIn("AAPL", self._run(age=0, confidence=7))
+
+    def test_same_day_high_conf_sell_executes(self):
+        self.assertIn("AAPL", self._run(age=0, confidence=9))
+
+    def test_same_day_hard_catalyst_overrides_low_conf(self):
+        snaps = [{"symbol": "AAPL", "guidance_negative": True}]
+        self.assertIn("AAPL", self._run(age=0, confidence=6, snapshots=snaps))
+
+    def test_same_day_missing_confidence_blocked(self):
+        self.assertNotIn("AAPL", self._run(age=0))  # no confidence key → treated as low
+
+    def test_older_position_sell_executes_regardless(self):
+        self.assertIn("AAPL", self._run(age=3, confidence=6))
+
+    def test_hold_decision_not_sold(self):
+        # A HOLD decision is skipped by the churn loop and not otherwise exited.
+        self.assertNotIn("AAPL", self._run(age=0, confidence=9, action="HOLD"))
 
 
 class TestExecuteSellPhaseRegimeChange(unittest.TestCase):

@@ -112,6 +112,9 @@ class RegimeFeatures:
     breadth_pct_above_sma50: float | None = None  # fraction 0–1; <0.5 = narrow leadership
     t10y2y: float | None = None  # FRED T10Y2Y (%); <0 = inverted yield curve
     vol_of_vol: float | None = None  # 10-day std of daily VIX changes; >3.5 = volatile regime
+    data_as_of: str | None = (
+        None  # ISO date of the latest SPY bar these features were computed from
+    )
 
 
 @dataclass(frozen=True)
@@ -167,6 +170,14 @@ class MarketRegimeSnapshot:
             "breadth_pct_above_sma50": self.features.breadth_pct_above_sma50,
             "t10y2y": self.features.t10y2y,
             "vol_of_vol": self.features.vol_of_vol,
+            # Freshness (audit F2): data_as_of is the latest SPY bar date; data_is_stale is True
+            # when that bar predates the current ET session, i.e. the "1d move" is the prior
+            # session's, not today's. Consumers must label it honestly rather than as "today".
+            "data_as_of": self.features.data_as_of,
+            "data_is_stale": (
+                self.features.data_as_of is not None
+                and self.features.data_as_of < cfg.today_et().isoformat()
+            ),
         }
 
 
@@ -290,6 +301,15 @@ def compute_regime_features(
         if not ts.empty:
             t10y2y = float(ts.iloc[-1])
 
+    # Date of the latest SPY bar these features describe. Intraday, the most recent *complete*
+    # daily bar is the prior session — so this is how callers tell "today" from "prior session"
+    # and avoid reporting a stale move as today's (audit F2).
+    data_as_of: str | None = None
+    try:
+        data_as_of = spy_close.index[-1].date().isoformat()
+    except (AttributeError, IndexError):  # pragma: no cover — non-datetime index / empty
+        data_as_of = None
+
     return RegimeFeatures(
         spy_ret_1d=spy_ret_1d,
         spy_ret_5d=spy_ret_5d,
@@ -306,6 +326,7 @@ def compute_regime_features(
         breadth_pct_above_sma50=breadth_pct_above_sma50,
         t10y2y=t10y2y,
         vol_of_vol=vol_of_vol,
+        data_as_of=data_as_of,
     )
 
 

@@ -4,6 +4,20 @@ Full version history. Most recent first.
 
 ---
 
+### 1.104 — June 2026 — data-integrity audit fixes (P&L baseline, market-data freshness, churn guard, run-file naming)
+
+A full integrity audit (`docs/INTEGRITY_AUDIT_2026-06-16.md`), prompted by a daily P&L logged as −$310 that was actually −$819 and a "SPY +1.7% today" narrative on a day SPY fell −0.6%, traced four defects. **None were signal-book failures** — all were instrument (data/accounting) defects, which is why the bot appeared to "underperform SPY" while largely sitting in cash or trading on stale data.
+
+- **F1 — daily P&L baseline (HIGH; reporting + risk).** `save_daily_baseline` fired only on `mode=open` (the 10:00 run, not the 09:31 true open) and overwrote unconditionally, so any later `mode=open` invocation — e.g. a `python main.py` restart — clobbered it with an intraday value. Both `daily_pnl` *and* the daily-loss circuit breaker (which shares the baseline) then measured from a drifting baseline; the breaker could fail to trip. The baseline is now set **idempotently at the first trading run** (the true market open) and never overwritten.
+- **F2 — market-data freshness (HIGH; decision quality).** The regime's "1d move" comes from the latest *complete* daily bar, which intraday is the prior session — but it was labelled "today", driving a NEUTRAL_CHOP→BULL_TREND flip on a down day and aggressive deployment into it. The regime now carries `data_as_of` + `data_is_stale`; the AI prompt labels a stale bar as "prior session (date)" and flags that today's move isn't yet reflected; every run logs a freshness warning.
+- **F4 — churn guard (MED).** A *discretionary* exit of a position opened the same day (e.g. HPE bought 10:03, dumped 12:03 at −$180) is now allowed only on very-high conviction (`SAME_DAY_SELL_MIN_CONFIDENCE = 9`) or a hard negative catalyst (guidance_negative / accounting_concern / regulatory_event); otherwise it is held. Stop-losses, trailing stops, stale-age, adverse-volume and regime exits are unaffected (separate paths, always fire).
+- **F3 — run-file naming (MED; observability).** Every run now writes `{date}-{mode}.json`; the open run previously wrote the bare `{date}.json`, which was easy to miss when auditing a day's logs (trades were never lost — just under a confusing name). `get_day_summary` still surfaces the open run's analysis.
+- **F5 — snapshot chaining (verified benign).** Per-run cash/buying-power can re-allocate between independent broker fetches as settlements clear; equity (`portfolio_value`) chains correctly run-to-run (each gap is market drift). No fix needed.
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.103 — June 2026 — retire dead FRED series (AAII-via-FRED, ISM PMI/NAPM)
 
 Live warnings surfaced two FRED series that no longer exist; both were silent data degradations.

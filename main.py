@@ -1357,6 +1357,12 @@ def _fetch_market_context(deps: TradingDeps | None = None) -> MarketContext:
 
     if vix:
         logger.info(f"VIX: {vix}  Regime: {regime.get('regime', 'UNKNOWN')}")
+    if regime.get("data_is_stale"):
+        logger.warning(
+            "Market data STALE: regime/SPY 1d move is from %s (prior session), not today — "
+            "today's intraday move is not yet reflected in the daily-bar regime (audit F2).",
+            regime.get("data_as_of"),
+        )
     if macro["is_high_risk"]:
         logger.warning(f"Macro risk: {macro['event']}")
         _audit_log.log_macro_skip(macro["event"])
@@ -1814,6 +1820,24 @@ def _run_ai_phase(
     return decisions
 
 
+_SAME_DAY_EXIT_CATALYST_FLAGS = ("guidance_negative", "accounting_concern", "regulatory_event")
+
+
+def _same_day_exit_allowed(decision: dict, snapshot: dict | None) -> bool:
+    """Churn guard (audit F4): is a *discretionary* exit of a position opened today justified?
+
+    Allowed only on very-high conviction (>= SAME_DAY_SELL_MIN_CONFIDENCE) or a hard new negative
+    catalyst on the position; otherwise the AI must HOLD rather than round-trip the same day. This
+    gates ONLY AI discretionary SELLs — stop-losses, trailing stops, stale-age, adverse-volume and
+    regime exits run on separate paths and always fire.
+    """
+    conf = decision.get("confidence")
+    if conf is not None and conf >= config.SAME_DAY_SELL_MIN_CONFIDENCE:
+        return True
+    snap = snapshot or {}
+    return any(bool(snap.get(flag)) for flag in _SAME_DAY_EXIT_CATALYST_FLAGS)
+
+
 def _execute_sell_phase(
     client,
     snap: PositionSnapshot,
@@ -1840,9 +1864,22 @@ def _execute_sell_phase(
     long_held = snap.held_symbols - snap.open_shorts_db
     vol_hist = _fetch_adverse_vol_for_held(long_held)
 
-    symbols_to_sell = {
-        d["symbol"] for d in decisions.get("position_decisions", []) if d["action"] == "SELL"
-    }
+    # AI discretionary SELLs, with the F4 churn guard: a position opened today (age 0) is only
+    # exited on very-high conviction or a hard catalyst — otherwise it is held, not round-tripped.
+    symbols_to_sell: set[str] = set()
+    for d in decisions.get("position_decisions", []):
+        if d["action"] != "SELL":
+            continue
+        sym = d["symbol"]
+        if snap.position_ages.get(sym, 1) == 0 and not _same_day_exit_allowed(
+            d, snap_by_symbol.get(sym)
+        ):
+            logger.info(
+                f"Churn guard (F4): holding {sym} — same-day discretionary SELL (age 0, "
+                f"conf={d.get('confidence')}) lacks very-high conviction or a hard catalyst."
+            )
+            continue
+        symbols_to_sell.add(sym)
     symbols_to_sell |= {
         sym for sym in snap.stale if sym in snap.held_symbols and sym not in snap.open_shorts_db
     }
@@ -2818,7 +2855,10 @@ def _finalise(
     _get_day_summary = deps.get_day_summary if deps is not None else get_day_summary
     _emailer = deps.emailer if deps is not None else emailer
     account_after = _trader.get_account_info(client)
-    save_date = today if mode == "open" else f"{today}-{mode}"
+    # Every run writes "{date}-{mode}.json" so files are consistently named and self-describing
+    # (audit F3). Previously the open run alone wrote the bare "{date}.json", which was easy to
+    # miss when auditing the day's logs.
+    save_date = f"{today}-{mode}"
     record = _portfolio_tracker.save_daily_run(
         date=save_date,
         account_before=account_before,
@@ -3049,8 +3089,12 @@ def _run_inner(
         mode, account_before["portfolio_value"], account_before["cash"], config.IS_PAPER
     )
 
-    if mode == "open":
-        deps.portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
+    # Anchor the day's P&L baseline (and the daily-loss circuit breaker) to the first
+    # trading run's equity — the true market open. save_daily_baseline is idempotent, so
+    # open_sells (the first run) sets it and later runs, including a mode=open restart,
+    # never clobber it. Previously this fired only on mode=open (the 10:00 run) and was
+    # overwritten by restarts, so daily_pnl and the loss gate measured from a wrong baseline.
+    deps.portfolio_tracker.save_daily_baseline(account_before["portfolio_value"])
 
     # Set the experiment-start equity once, on the first live open run.
     # Never overwritten — used to enforce MAX_EXPERIMENT_DRAWDOWN_USD for the lifetime of the run.

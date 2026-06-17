@@ -54,12 +54,14 @@ class TestDailyBaseline(unittest.TestCase):
             json.dump({"date": "2000-01-01", "portfolio_value": 99_000.0}, f)
         self.assertIsNone(load_daily_baseline())
 
-    def test_overwrite_updates_value(self):
+    def test_does_not_overwrite_within_same_day(self):
+        # Idempotent: the first run of the day sets the baseline; later runs (including a
+        # mode=open restart) must NOT clobber it, so the true market-open equity persists.
         from utils.portfolio_tracker import load_daily_baseline, save_daily_baseline
 
         save_daily_baseline(100_000.0)
-        save_daily_baseline(95_000.0)
-        self.assertAlmostEqual(load_daily_baseline(), 95_000.0)
+        save_daily_baseline(95_000.0)  # later run — must be a no-op
+        self.assertAlmostEqual(load_daily_baseline(), 100_000.0)
 
 
 # ── 2. Sell hallucination guard ───────────────────────────────────────────────

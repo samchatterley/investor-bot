@@ -1764,3 +1764,39 @@ class TestVolOfVolInToDict(unittest.TestCase):
         )
         d = snap.to_dict()
         self.assertIsNone(d["vol_of_vol"])
+
+
+class TestRegimeDataFreshness(unittest.TestCase):
+    """F2: the regime carries the latest SPY bar date so a stale move is never reported as today."""
+
+    def test_compute_sets_data_as_of_from_last_bar(self):
+        spy = _spy_df_bull()
+        feats = compute_regime_features(spy, None)
+        expected = spy["Close"].dropna().index[-1].date().isoformat()
+        self.assertEqual(feats.data_as_of, expected)
+
+    def test_to_dict_flags_stale_when_bar_predates_today(self):
+        f = RegimeFeatures(**{**_features_bull().__dict__, "data_as_of": "2000-01-01"})
+        snap = MarketRegimeSnapshot(regime=MarketRegime.BULL_TREND, reasons=("ok",), features=f)
+        d = snap.to_dict()
+        self.assertEqual(d["data_as_of"], "2000-01-01")
+        self.assertTrue(d["data_is_stale"])
+
+    def test_to_dict_not_stale_when_bar_is_today(self):
+        import config as cfg
+
+        today = cfg.today_et().isoformat()
+        f = RegimeFeatures(**{**_features_bull().__dict__, "data_as_of": today})
+        snap = MarketRegimeSnapshot(regime=MarketRegime.BULL_TREND, reasons=("ok",), features=f)
+        d = snap.to_dict()
+        self.assertEqual(d["data_as_of"], today)
+        self.assertFalse(d["data_is_stale"])
+
+    def test_to_dict_not_stale_when_data_as_of_none(self):
+        # Insufficient-data path leaves data_as_of None → never flagged stale.
+        snap = MarketRegimeSnapshot(
+            regime=MarketRegime.BULL_TREND, reasons=("ok",), features=_features_bull()
+        )
+        d = snap.to_dict()
+        self.assertIsNone(d["data_as_of"])
+        self.assertFalse(d["data_is_stale"])

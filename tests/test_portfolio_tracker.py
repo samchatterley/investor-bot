@@ -124,6 +124,20 @@ class TestGetDaySummary(PortfolioTrackerBase):
         summary = get_day_summary("2026-01-15")
         self.assertAlmostEqual(summary["daily_pnl"], 1_000.0)
 
+    def test_uses_open_run_summary_with_open_suffix(self):
+        # F3: the open run is now dated "{date}-open"; its market_summary (the full AI analysis)
+        # must still be the one surfaced for the email, not the close run's.
+        save_daily_run(
+            "2026-01-15-open", _account(100_000), _account(100_500), _ai("open analysis"), [], []
+        )
+        save_daily_run(
+            "2026-01-15-close", _account(100_500), _account(101_200), _ai("close note"), [], []
+        )
+        summary = get_day_summary("2026-01-15")
+        self.assertEqual(summary["market_summary"], "open analysis")
+        self.assertEqual(summary["account_before"]["portfolio_value"], 100_000)
+        self.assertEqual(summary["account_after"]["portfolio_value"], 101_200)
+
 
 class TestPrintSummary(PortfolioTrackerBase):
     def _record(self, pnl=500.0, trades=None, stops=None):
@@ -465,6 +479,33 @@ class TestSaveDailyBaselinePortfolio(PortfolioTrackerBase):
         # Non-ISO date triggers ValueError → falls back to today()
         result = _weekly_log_dir("not-a-date-at-all!!")
         self.assertTrue(os.path.isdir(result))
+
+    def test_idempotent_first_write_wins(self):
+        # F1: the first trading run of the day sets the baseline; a later mode=open restart
+        # must NOT overwrite it, so daily P&L stays anchored to the true market open.
+        import json as _json
+
+        from utils.portfolio_tracker import save_daily_baseline
+
+        baseline_path = os.path.join(self.tmpdir, "daily_baseline.json")
+        with patch("utils.portfolio_tracker._BASELINE_PATH", baseline_path):
+            save_daily_baseline(99_029.49)  # open_sells — true open
+            save_daily_baseline(98_520.03)  # restart in mode=open — must be ignored
+        with open(baseline_path) as f:
+            data = _json.load(f)
+        self.assertAlmostEqual(data["portfolio_value"], 99_029.49)
+
+    def test_daily_pnl_reconciles_to_true_open_across_runs(self):
+        # F1 end-to-end: open_sells anchors the baseline; the close run's daily_pnl equals
+        # close − true_open (matching the email), even though a later run tried to reset it.
+        from utils.portfolio_tracker import save_daily_baseline
+
+        save_daily_baseline(99_029.49)  # open_sells (true open)
+        save_daily_baseline(98_520.03)  # a later run attempts to clobber — ignored
+        save_daily_run("2026-01-15-close", _account(98_826.73), _account(98_209.76), _ai(), [], [])
+        records = load_history()
+        run = next(r for r in records if r["date"] == "2026-01-15-close")
+        self.assertAlmostEqual(run["daily_pnl"], 98_209.76 - 99_029.49)
 
 
 class TestLoadDailyBaseline(PortfolioTrackerBase):

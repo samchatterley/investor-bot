@@ -124,6 +124,11 @@ KELLY_MULTIPLIER = 0.5  # half-Kelly — kept for research telemetry only
 # AI decision threshold
 MIN_CONFIDENCE = 7  # Min confidence score (1-10) to open a position
 
+# Churn guard (audit F4): a *discretionary* exit of a position opened the SAME day is allowed only
+# on very-high conviction (>= this) or a hard new negative catalyst — otherwise the AI must HOLD.
+# Stop-losses, trailing stops, stale-age, adverse-volume and regime exits are unaffected.
+SAME_DAY_SELL_MIN_CONFIDENCE = 9
+
 # Position hold limit — auto-exit after this many trading days
 MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5" if _SAM else "3"))
 

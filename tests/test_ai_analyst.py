@@ -64,6 +64,41 @@ class TestBuildPrompt(unittest.TestCase):
         result = self._build(market_regime=regime)
         self.assertIn("BULL_TREND", result)
 
+    def test_fresh_regime_labels_move_as_today(self):
+        # F2: when data is current-session, the 1d move is correctly labelled "today".
+        regime = {"regime": "BULL_TREND", "spy_change_pct": 1.7, "is_bearish": False}
+        result = self._build(market_regime=regime)
+        self.assertIn("+1.7% today", result)
+        self.assertNotIn("prior session", result)
+
+    def test_stale_regime_labels_prior_session_not_today(self):
+        # F2: a stale daily bar must NOT be reported as "today" — this is the bug that made the
+        # bot claim "SPY +1.7% today" on a day SPY actually fell.
+        regime = {
+            "regime": "BULL_TREND",
+            "spy_change_pct": 1.7,
+            "is_bearish": False,
+            "data_is_stale": True,
+            "data_as_of": "2026-06-15",
+        }
+        result = self._build(market_regime=regime)
+        self.assertIn("prior session (2026-06-15)", result)
+        self.assertIn("not yet reflected", result)
+        self.assertNotIn("+1.7% today", result)
+
+    def test_stale_bearish_regime_labels_prior_session(self):
+        regime = {
+            "regime": "STRESS_RISK_OFF",
+            "spy_change_pct": -2.5,
+            "is_bearish": True,
+            "data_is_stale": True,
+            "data_as_of": "2026-06-15",
+        }
+        result = self._build(market_regime=regime)
+        self.assertIn("prior session (2026-06-15)", result)
+        self.assertNotIn("-2.5% today", result)
+        self.assertIn("NO new BUYs", result)
+
     def test_vix_block_appears(self):
         result = self._build(vix=22.5)
         self.assertIn("22.5", result)

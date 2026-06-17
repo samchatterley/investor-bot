@@ -258,7 +258,15 @@ _NON_RUN_FILES = {
 
 
 def save_daily_baseline(portfolio_value: float) -> None:
-    """Persist the open-of-day portfolio value so daily loss checks compare against a real baseline."""
+    """Persist the open-of-day portfolio value ONCE per trading day (idempotent).
+
+    The first trading run of the day (open_sells) sets it; later runs — including a
+    ``mode=open`` restart, which previously clobbered it with an intraday value — never
+    overwrite it. This keeps daily P&L *and* the daily-loss circuit breaker anchored to the
+    true market-open equity rather than a drifting mid-session value.
+    """
+    if load_daily_baseline() is not None:
+        return  # already recorded for today — never overwrite
     _ensure_log_dir()
     today = datetime.now(UTC).date().isoformat()
     with open(_BASELINE_PATH, "w") as f:
@@ -361,9 +369,14 @@ def get_day_summary(today: str) -> dict | None:
     position_decisions = [d for r in today_records for d in r.get("position_decisions", [])]
     decisions = [d for r in today_records for d in r.get("decisions", [])]
 
-    # Use the open run's market summary — it has the full AI analysis
+    # Use the open run's market summary — it has the full AI analysis. The open run is dated
+    # "{today}-open" (audit F3); a legacy bare "{today}" is still matched for old records.
     market_summary = next(
-        (r["market_summary"] for r in today_records if r["date"] == today),
+        (
+            r["market_summary"]
+            for r in today_records
+            if r.get("date") == today or r.get("date", "").endswith("-open")
+        ),
         today_records[-1].get("market_summary", ""),
     )
 
