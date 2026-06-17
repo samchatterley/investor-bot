@@ -149,6 +149,8 @@ def _fetch_sector_from_yfinance(symbol: str) -> str:
 # Cache build / refresh
 # ---------------------------------------------------------------------------
 
+_SECTOR_CACHE_SAVE_EVERY = 50  # persist the partial map every N symbols during a full build
+
 
 def build_sector_map(
     symbols: list[str] | None = None,
@@ -168,9 +170,13 @@ def build_sector_map(
 
     if force_refresh or _is_sector_cache_stale(cache, symbols):
         missing = [s for s in symbols if s not in cache] if not force_refresh else symbols
-        for sym in missing:
+        for i, sym in enumerate(missing, start=1):
             cache[sym] = _fetch_sector_from_yfinance(sym)
             time.sleep(0.05)
+            # Persist incrementally so a mid-build interruption (restart/crash) keeps progress;
+            # the next run then resumes from the remaining symbols instead of starting over.
+            if i % _SECTOR_CACHE_SAVE_EVERY == 0:
+                _save_sector_cache(cache)
         _save_sector_cache(cache)
 
     return cache

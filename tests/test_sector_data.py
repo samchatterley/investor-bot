@@ -399,6 +399,22 @@ class TestBuildSectorMap(unittest.TestCase):
         mock_save.assert_called_once()
         self.assertEqual(result, {"AAPL": "Technology", "MSFT": "Technology"})
 
+    def test_incremental_save_during_build(self):
+        # Hardening: the partial map is persisted every _SECTOR_CACHE_SAVE_EVERY symbols so a
+        # mid-build restart/crash keeps progress and the next run resumes the remainder.
+        from data.sector_data import build_sector_map
+
+        with (
+            patch("data.sector_data._load_sector_cache", return_value={}),
+            patch("data.sector_data._is_sector_cache_stale", return_value=True),
+            patch("data.sector_data._fetch_sector_from_yfinance", return_value="Technology"),
+            patch("data.sector_data._save_sector_cache") as mock_save,
+            patch("data.sector_data.time.sleep"),
+            patch("data.sector_data._SECTOR_CACHE_SAVE_EVERY", 2),
+        ):
+            build_sector_map(["A", "B", "C"])  # save-every=2 → save at i=2, plus the final save
+        self.assertEqual(mock_save.call_count, 2)
+
     def test_partial_cache_tops_up_missing(self):
         from data.sector_data import build_sector_map
 

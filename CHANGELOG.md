@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.106 — June 2026 — harden the sector-cache build (incremental save)
+
+Follow-up to 1.105: `build_sector_map()` fetched all ~907 symbols and saved the cache only at the very end, so a restart/crash mid-build (the first full build takes minutes over yfinance) lost all progress and started over next time. It now persists the partial map every 50 symbols (`_SECTOR_CACHE_SAVE_EVERY`), so an interrupted build resumes from the remaining symbols rather than restarting.
+
+Also fixed mis-targeted `get_sector` patches in `test_pairs.py`: they patched `data.sector_data.get_sector`, which never applied because `data.pairs` binds it via `from data.sector_data import get_sector`. The tests silently relied on the (previously empty) sector cache returning uniform sectors; once F7 populated the cache with real sectors (e.g. GOOGL is Communication Services, not Technology), symbols split across sectors and one test broke. They now patch `data.pairs.get_sector`.
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.105 — June 2026 — wire the symbol→sector cache (audit F7)
 
 Follow-up finding from the live logs (`pead [BULL_TREND | Unknown | 1d | conf=8]`): the symbol→sector cache was **never populated** in the live pipeline — `build_sector_map()` had no caller — so `get_sector()` fell back to a 53-symbol legacy map and returned "Unknown" for ~the entire 907-symbol universe. Same silent-graceful-degradation class as the 1.104 audit, exposed by the 500→907 universe expansion (1.102).

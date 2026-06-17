@@ -141,7 +141,7 @@ class TestRefreshPairsExcludesHighPvalue(unittest.TestCase):
         mock_yf_data = _make_yf_return(symbols, n=60)
 
         with (
-            patch("data.sector_data.get_sector", side_effect=lambda s: "Technology"),
+            patch("data.pairs.get_sector", side_effect=lambda s: "Technology"),
             patch("yfinance.download", return_value=mock_yf_data),
             patch(
                 "statsmodels.tsa.stattools.coint",
@@ -169,7 +169,7 @@ class TestRefreshPairsIncludesLowPvalue(unittest.TestCase):
         mock_yf_data.__getitem__ = lambda self, key: close_df
 
         with (
-            patch("data.sector_data.get_sector", side_effect=lambda s: "Technology"),
+            patch("data.pairs.get_sector", side_effect=lambda s: "Technology"),
             patch("yfinance.download", return_value=mock_yf_data),
             patch(
                 "statsmodels.tsa.stattools.coint",
@@ -202,7 +202,7 @@ class TestRefreshPairsYfinanceFailure(unittest.TestCase):
 
     def test_yfinance_exception_returns_empty(self) -> None:
         with (
-            patch("data.sector_data.get_sector", side_effect=lambda s: "Technology"),
+            patch("data.pairs.get_sector", side_effect=lambda s: "Technology"),
             patch("yfinance.download", side_effect=RuntimeError("network error")),
         ):
             from data.pairs import refresh_pairs
@@ -213,7 +213,7 @@ class TestRefreshPairsYfinanceFailure(unittest.TestCase):
 
     def test_yfinance_empty_data_returns_empty(self) -> None:
         with (
-            patch("data.sector_data.get_sector", side_effect=lambda s: "Technology"),
+            patch("data.pairs.get_sector", side_effect=lambda s: "Technology"),
             patch("yfinance.download", return_value=_make_yf_empty()),
         ):
             from data.pairs import refresh_pairs
@@ -229,7 +229,7 @@ class TestRefreshPairsUnknownSector(unittest.TestCase):
     def test_unknown_sector_symbols_skipped(self) -> None:
         # get_sector returns Unknown and SECTOR_MAP has no entry
         with (
-            patch("data.sector_data.get_sector", return_value="Unknown"),
+            patch("data.pairs.get_sector", return_value="Unknown"),
             patch("data.pairs.SECTOR_MAP", {}),
         ):
             from data.pairs import refresh_pairs
@@ -249,7 +249,7 @@ class TestRefreshPairsUnknownSector(unittest.TestCase):
         mock_yf_data.__getitem__ = lambda self, key: close_df
 
         with (
-            patch("data.sector_data.get_sector", return_value="Unknown"),
+            patch("data.pairs.get_sector", return_value="Unknown"),
             patch("data.pairs.SECTOR_MAP", {"AAPL": "Technology", "MSFT": "Technology"}),
             patch("yfinance.download", return_value=mock_yf_data),
             patch("statsmodels.tsa.stattools.coint", return_value=(0.0, 0.01, None)),
@@ -278,7 +278,7 @@ class TestRefreshPairsSingleSymbolPerSector(unittest.TestCase):
 
         with (
             patch(
-                "data.sector_data.get_sector",
+                "data.pairs.get_sector",
                 side_effect=lambda s: sector_mapping.get(s, "Unknown"),
             ),
             patch("yfinance.download", return_value=mock_yf_data),
@@ -303,7 +303,7 @@ class TestRefreshPairsSymbolMissingFromClose(unittest.TestCase):
         mock_yf_data.__getitem__ = lambda self, key: close_df
 
         with (
-            patch("data.sector_data.get_sector", return_value="Technology"),
+            patch("data.pairs.get_sector", return_value="Technology"),
             patch("yfinance.download", return_value=mock_yf_data),
             patch("data.pairs._save_cache"),
         ):
@@ -507,7 +507,7 @@ class TestRefreshPairsPairLevelException(unittest.TestCase):
             return (0.0, 0.01, None)
 
         with (
-            patch("data.sector_data.get_sector", return_value="Technology"),
+            patch("data.pairs.get_sector", return_value="Technology"),
             patch("yfinance.download", return_value=mock_yf_data),
             patch("statsmodels.tsa.stattools.coint", side_effect=coint_side_effect),
             patch("data.pairs._save_cache"),
@@ -533,7 +533,7 @@ class TestRefreshPairsTooFewRows(unittest.TestCase):
         mock_yf_data.__getitem__ = lambda self, key: close_df
 
         with (
-            patch("data.sector_data.get_sector", return_value="Technology"),
+            patch("data.pairs.get_sector", return_value="Technology"),
             patch("yfinance.download", return_value=mock_yf_data),
             patch("data.pairs._save_cache"),
         ):
