@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.109 — June 2026 — fix decisions.jsonl `executed` flag (always false)
+
+`log_decisions` records `executed = (symbol in executed_symbols)`, but it was called inside `_run_ai_phase` — the AI-analysis phase, which runs **before** the sell/buy execution phases that populate `executed_symbols`. So the set was always empty at log time and **every decision recorded `executed=false`**. Moved the call to `_run_inner`, after the sell/buy/short phases and `_reconcile_late_fills`, so the flag now reflects what actually filled. Removed the now-unused `_decision_log` local from the AI phase.
+
+Historical `decisions.jsonl` rows stay false (not retroactively fixable); `trades_executed` in the daily run JSONs remains the authoritative fill record.
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.108 — June 2026 — sector-momentum gate → advisory + logged (audit A3.1, step 1)
 
 Resolves the live side of the A3.1 parity gap. The sector-momentum long gate was a **live-only** filter absent from the validated backtest; F7 had activated it, so live diverged from the backtest baseline. It is now **advisory** (`SECTOR_MOMENTUM_GATE_ENFORCE = False`): the gate's verdict (pass/block, sector, 20d-momentum rank) is recorded on each candidate and logged, but it no longer changes what trades — so the live deterministic baseline again matches the (gate-less) validated backtest, keeping the AI experiment clean.

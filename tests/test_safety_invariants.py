@@ -304,8 +304,8 @@ class TestCheckPreTradeCannotBeBypassedInBuyPath(unittest.TestCase):
             patch("main.audit_log.log_run_end"),
             patch("main.audit_log.log_ai_decision"),
             patch("main.audit_log.log_event"),
-            patch("main.decision_log.set_run_id"),
-            patch("main.decision_log.log_decisions"),
+            patch("utils.decision_log.set_run_id"),
+            patch("utils.decision_log.log_decisions"),
             patch(
                 "main.run_startup_health_check",
                 return_value=HealthReport(

@@ -77,7 +77,7 @@ from risk import (
 from risk.regime_policy import get_regime_policy
 from risk.risk_config import RiskConfig
 from signals.evaluator import INTRADAY_SHORT_SIGNALS, INTRADAY_SIGNALS
-from utils import audit_log, decision_log, portfolio_tracker
+from utils import audit_log, portfolio_tracker
 from utils.db import init_db
 from utils.health import HealthStatus, run_startup_health_check
 from utils.portfolio_tracker import (
@@ -1684,7 +1684,6 @@ def _run_ai_phase(
     _validate_ai_response = deps.validate_ai_response if deps is not None else validate_ai_response
     _audit_log = deps.audit_log if deps is not None else audit_log
     _alerts = deps.alerts if deps is not None else alerts
-    _decision_log = deps.decision_log if deps is not None else decision_log
     _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
     if not db.ai_snapshots:
         logger.info("AI analysis skipped — no positions to evaluate.")
@@ -1750,7 +1749,6 @@ def _run_ai_phase(
             decisions["position_decisions"] = []
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
-    _decision_log.log_decisions(decisions, mode, executed_symbols)
     _audit_log.log_ai_decision(
         decisions.get("market_summary", ""),
         len(decisions.get("buy_candidates", [])),
@@ -3286,6 +3284,11 @@ def _run_inner(
     _reconcile_late_fills(
         client, today, mode, mc, decisions, executed_symbols, all_trades, dry_run, deps=deps
     )
+
+    # Log AI decisions AFTER execution so the `executed` flag reflects what actually filled.
+    # (Bug fix: this previously ran inside _run_ai_phase, before any order was placed, so
+    # executed_symbols was always empty and every decision logged executed=False.)
+    deps.decision_log.log_decisions(decisions, mode, executed_symbols)
 
     # ── Finalise ──────────────────────────────────────────────────────────────
     _finalise(

@@ -4720,7 +4720,6 @@ class TestRunAiPhaseEmptySnapshots(unittest.TestCase):
                 "main.ai_analyst.get_trading_decisions", return_value=_decisions()
             ) as mock_claude,
             patch("main.validate_ai_response", return_value=(True, [])),
-            patch("main.decision_log.log_decisions"),
             patch("main.audit_log.log_ai_decision"),
             patch("main.portfolio_tracker.get_track_record", return_value=[]),
         ):
