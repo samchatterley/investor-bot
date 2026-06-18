@@ -494,6 +494,36 @@ def _load_bulk_cache() -> dict[str, pd.DataFrame]:
     return {}
 
 
+_BULK_CACHE_KEEP_DAYS = 3  # retain this many days of market_data_*.pkl; older ones are auto-pruned
+
+
+def _prune_old_bulk_caches(keep_days: int = _BULK_CACHE_KEEP_DAYS) -> int:
+    """Delete market_data_*.pkl caches older than keep_days (by filename date); return count pruned.
+
+    These regenerable daily caches accumulate ~4-5 MB/day; without pruning logs/ grows unbounded
+    (audit: logs/ cleanup). The most recent keep_days are retained.
+    """
+    cutoff = (datetime.now(_ET).date() - timedelta(days=keep_days)).isoformat()
+    pruned = 0
+    try:
+        names = os.listdir(LOG_DIR)
+    except OSError:  # pragma: no cover — log dir missing
+        return 0
+    for name in names:
+        if not (name.startswith("market_data_") and name.endswith(".pkl")):
+            continue
+        datestr = name[len("market_data_") : -len(".pkl")]
+        if len(datestr) == 10 and datestr < cutoff:
+            try:
+                os.remove(os.path.join(LOG_DIR, name))
+                pruned += 1
+            except OSError:  # pragma: no cover — file vanished between listdir and remove
+                pass
+    if pruned:
+        logger.info(f"Pruned {pruned} market_data cache(s) older than {keep_days}d")
+    return pruned
+
+
 def _save_bulk_cache(data: dict[str, pd.DataFrame]) -> None:
     path = _bulk_cache_path()
     try:
@@ -501,6 +531,7 @@ def _save_bulk_cache(data: dict[str, pd.DataFrame]) -> None:
         with open(path, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
         logger.info(f"Bulk cache saved: {len(data)} symbols → {os.path.basename(path)}")
+        _prune_old_bulk_caches()
     except Exception as e:
         logger.warning(f"Bulk cache write error: {e}")
 

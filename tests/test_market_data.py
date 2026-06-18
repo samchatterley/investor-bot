@@ -864,6 +864,44 @@ class TestGetSpy20dReturn(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestPruneOldBulkCaches(unittest.TestCase):
+    """Auto-prune of old market_data_*.pkl caches (logs/ cleanup — prevents unbounded growth)."""
+
+    def test_prunes_old_keeps_recent_and_nondate(self):
+        from datetime import timedelta
+
+        import data.market_data as md
+
+        with tempfile.TemporaryDirectory() as d:
+            today = datetime.now(md._ET).date()
+            old = (today - timedelta(days=10)).isoformat()
+            recent = (today - timedelta(days=1)).isoformat()
+            for name in (
+                f"market_data_{old}.pkl",
+                f"market_data_{recent}.pkl",
+                "market_data_notadate.pkl",  # non-date name → skipped (len != 10)
+                "other_file.txt",  # non-market_data → skipped
+            ):
+                open(os.path.join(d, name), "w").close()
+            with patch("data.market_data.LOG_DIR", d):
+                pruned = md._prune_old_bulk_caches(keep_days=3)
+            remaining = set(os.listdir(d))
+        self.assertEqual(pruned, 1)
+        self.assertNotIn(f"market_data_{old}.pkl", remaining)
+        self.assertIn(f"market_data_{recent}.pkl", remaining)
+        self.assertIn("market_data_notadate.pkl", remaining)
+        self.assertIn("other_file.txt", remaining)
+
+    def test_no_old_caches_returns_zero(self):
+        import data.market_data as md
+
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "market_data_2099-01-01.pkl"), "w").close()  # future → kept
+            with patch("data.market_data.LOG_DIR", d):
+                pruned = md._prune_old_bulk_caches(keep_days=3)
+        self.assertEqual(pruned, 0)
+
+
 class TestBulkDownload(unittest.TestCase):
     """_bulk_download: single API call returns per-symbol DataFrames."""
 

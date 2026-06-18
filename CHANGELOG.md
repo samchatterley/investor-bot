@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.110 — June 2026 — logs/ cleanup: auto-prune daily market-data caches
+
+`logs/` had grown to ~106 MB, dominated by daily `market_data_*.pkl` bulk caches (~4-5 MB/day) that accumulated with no pruning. Manually removed 14 stale caches (06-02..06-15), reclaiming ~36 MB. Added `_prune_old_bulk_caches`: after each bulk-cache save, `market_data_*.pkl` older than `_BULK_CACHE_KEEP_DAYS` (3) are auto-deleted, so the caches no longer grow unbounded.
+
+Foldering the remaining loose cache/state files into subfolders is a separate, larger refactor (path constants across ~15 modules + a coordinated migration of live state + a restart) — proposed, not done here.
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.109 — June 2026 — fix decisions.jsonl `executed` flag (always false)
 
 `log_decisions` records `executed = (symbol in executed_symbols)`, but it was called inside `_run_ai_phase` — the AI-analysis phase, which runs **before** the sell/buy execution phases that populate `executed_symbols`. So the set was always empty at log time and **every decision recorded `executed=false`**. Moved the call to `_run_inner`, after the sell/buy/short phases and `_reconcile_late_fills`, so the flag now reflects what actually filled. Removed the now-unused `_decision_log` local from the AI phase.
