@@ -4,6 +4,17 @@ Full version history. Most recent first.
 
 ---
 
+### 1.113 — June 2026 — cleanup: silence sector-momentum divide warning + bump tornado (Dependabot #9)
+
+Two freeze-neutral, behaviour-identical cleanups:
+
+- **`data/sector_data.py` — spurious numpy warning.** `rank_sectors_by_momentum` computes `series.iloc[-1] / series.iloc[-lookback] - 1` and relies on the downstream `pd.isna(ret)` check to skip an all-zero (0/0 → NaN) ETF series; the division leaked `RuntimeWarning: invalid value encountered in scalar divide` on that intentional edge case. Wrapped in `np.errstate(invalid="ignore", divide="ignore")` — the NaN is still produced and the sector still skipped, just without the spurious warning. Coverage unchanged.
+- **`tornado` 6.5.6 → 6.5.7 (Dependabot #9, medium).** CurlAsyncHTTPClient leaks per-request credentials on handle reuse. tornado is a directly-pinned dependency with no dependents, so the patch bump is conflict-free (the bot doesn't use the curl client, but patched is patched). Upgraded in the live env too.
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.112 — June 2026 — experiment freeze protocol (Point of No Return) + freeze the prompt (PNR P1)
 
 Establishes the **Point of No Return (PNR)** — the operationalisation of the freeze `docs/EXPERIMENT.md` already requires before any primary data is collected — and takes its first prerequisite.

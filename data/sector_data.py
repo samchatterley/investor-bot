@@ -3,6 +3,7 @@ import logging
 import os
 import time
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -248,7 +249,8 @@ def rank_sectors_by_momentum(
                 if len(series) <= lookback:
                     valid = False
                     break
-                ret = series.iloc[-1] / series.iloc[-lookback] - 1
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    ret = series.iloc[-1] / series.iloc[-lookback] - 1
                 if pd.isna(ret):
                     valid = False
                     break
