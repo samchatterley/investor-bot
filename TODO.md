@@ -1,14 +1,14 @@
 # Pending Work
 
 ### In Progress
-- [ ] HEAVY: point-in-time feature/outcome dataset from the backtest engine (foundation for fitted v2, the ablation, and real expectancy) — needs scoping + decisions
+- [ ] Define the PNR / experiment freeze protocol: freeze manifest (pinned versions/hashes), frozen-vs-mutable classification, governance rule (change to frozen artifact → new experiment_version + new eval period), shakedown-data disposition. Codify as doc + (optional) CI guard.
 
 ### Pending
-- [ ] Fitted evidence_score_v2 (regularised model on the point-in-time dataset; fit/validation/holdout) — the standable benchmark
-- [ ] Historical Arm1-vs-Arm2 ablation harness on the point-in-time dataset
-- [ ] Phase 0 Gate A run (user: stratified fixtures + API; audit veto stability)
-- [ ] Phase 0 Gate B + research-snapshot logging + clustered-SE + negative/positive controls
-- [ ] context_packet_v1 assembler + narrow context_packet_historical_v0 (consumes the ledger)
-- [ ] First interim report
-- [ ] Optional: purge em dashes/symbols from EXPERIMENT.md + other docs
+- [ ] PNR prereq — freeze the prompt: set ADAPTIVE_PROMPT_ENABLED=False (§15.9) so Arm 3 is stationary; the self-learning loop becomes a separate pre-registered ablation. Deploys after close.
+- [ ] PNR prereq — Gate A (noise audit): run experiment/noise_audit.py on stratified real candidates (5 repeats); decide Arm 3 granularity (coarse+veto vs {-2..+2}); freeze §7 contract or pivot per §9.
+- [ ] PNR prereq — Gate B (power) = A7.1: run scripts/phase0_power_analysis.py; decide live track = primary statistical test vs trend+qualitative layer; record decision.
+- [ ] PNR prereq — A3.1 parity: define + freeze the eligible-candidate-set filters (add live-only sector gate/cap/churn to backtest + re-validate, OR remove from live) so live eligible set == pre-registered baseline.
+- [ ] PNR prereq — controls + ledger: confirm §15.3 negative/positive controls wired (positives detectable, negatives null), and the §13 as-of context ledger enforces provider_seen_at ≤ decision_time − buffer.
+- [ ] PNR prereq — version pinning + freeze manifest: add EXPERIMENT_VERSION + hashes of universe / evidence_score_v1 weights / context_packet_v1 / prompt+model+temperature / material-context detectors; record disposition of pre-PNR shakedown observations.
+- [ ] Post-PNR-safe ops (deferred, freeze-neutral): logs/cache foldering (option a remainder), cache pruning, run-file naming — confirmed not to touch decisions or logged variables.
 

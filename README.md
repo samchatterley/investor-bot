@@ -6,7 +6,9 @@
 > analysis plan are frozen in [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md). Results, Discussion, and
 > Conclusion are pending; this document states what will be measured and how, not what was found.
 > Pre-committing the analysis before seeing the data is deliberate, because it is the property that
-> makes a positive result credible. See [References](#references) on pre-registration.
+> makes a positive result credible. See [References](#references) on pre-registration. The freeze that
+> gates the start of primary collection — the Point of No Return — and what may change afterward are
+> specified in [`docs/POINT_OF_NO_RETURN.md`](docs/POINT_OF_NO_RETURN.md).
 
 ---
 

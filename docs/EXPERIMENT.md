@@ -131,6 +131,14 @@ short:  forward_R = (entry_price - exit_price - costs) / risk_unit
 Forward R is computed for **every** eligible candidate (traded or not) — this is the measurement
 overlay, not the traded book. Capital P&L of the £150 book is **never** the thesis metric.
 
+**Corporate-action / halt handling (v1.3 pre-data).** If a name stops trading inside the H-window
+(acquisition close, delisting, or an unresolved halt through the exit bar), `exit_price` is the last
+clean split/dividend-adjusted close before the event (cash/stock deal in progress) or the announced
+cash terms (closed cash acquisition). A name with no admissible exit print (e.g. a gap-to-zero with no
+clean close) is excluded from the primary metric and tagged `delisted_no_exit`. This avoids both
+silently dropping affected candidates and fabricating an exit. The rule is frozen at t0
+(`docs/POINT_OF_NO_RETURN.md` item 13).
+
 **Secondary metrics (exploratory):** matched-decision ΔR vs Champion's pick; parallel shadow equity
 curves (Arm 1 / Arm 2 / Arm 3); win-rate uplift; avg winner/loser; MAE; Sharpe/Sortino; veto
 performance; confidence calibration (Brier, reliability curve); per-signal and per-regime uplift;

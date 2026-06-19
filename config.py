@@ -20,7 +20,7 @@ BACKTEST_DEFAULT_START: str = "2015-01-01"
 # False) during the core context-measurement window so the contextual arm is stationary; the loop's
 # own value is then measured as a separate, pre-registered ablation (lessons on vs off). Each decision
 # logs which mode was in effect (experiment/collection.py). See docs/EXPERIMENT.md.
-ADAPTIVE_PROMPT_ENABLED: bool = True
+ADAPTIVE_PROMPT_ENABLED: bool = False  # frozen for the experiment — PNR prereq P1 (EXPERIMENT.md §15.9, docs/POINT_OF_NO_RETURN.md)
 
 load_dotenv()
 

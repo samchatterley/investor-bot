@@ -1903,24 +1903,30 @@ class TestSectorCorrelationInjection(unittest.TestCase):
         self.assertNotIn("sector_correlation_20d", result[0])
 
     def test_exception_in_correlation_block_swallowed(self):
+        """A failure inside the live sector-correlation injection is swallowed (market_data.py
+        860-861): the warning is logged and snapshots still return without the field.
+
+        Uses the same loop-enter setup as the successful-injection test so the block is actually
+        entered (live_bulk is not None); the prior hardcoded-index `with patches[0..8]` form skipped
+        the side-effect patch, so the except path never ran — a false-confidence test.
+        """
         from data.market_data import get_market_snapshots
 
         patches = self._std_patches(self._base_snap())
         patches += [
-            patch("data.sector_data.get_sector_etf", side_effect=RuntimeError("sector down")),
+            patch("data.sector_data.get_sector_etf", return_value="XLK"),
+            patch(
+                "data.sector_correlation.compute_stock_sector_corr",
+                side_effect=RuntimeError("sector corr down"),
+            ),
         ]
-        with (
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
-        ):
+        for p in patches:
+            p.__enter__()
+        try:
             result = get_market_snapshots(["AAPL"])
+        finally:
+            for p in reversed(patches):
+                p.__exit__(None, None, None)
 
         self.assertEqual(len(result), 1)
         self.assertNotIn("sector_correlation_20d", result[0])

@@ -4,6 +4,20 @@ Full version history. Most recent first.
 
 ---
 
+### 1.112 — June 2026 — experiment freeze protocol (Point of No Return) + freeze the prompt (PNR P1)
+
+Establishes the **Point of No Return (PNR)** — the operationalisation of the freeze `docs/EXPERIMENT.md` already requires before any primary data is collected — and takes its first prerequisite.
+
+- **`docs/POINT_OF_NO_RETURN.md` (new).** Defines `t0` (the freeze-commit boundary), the **freeze manifest** (every frozen artifact pinned — *value hash* for data artifacts, *golden-fixture hash* for code-behaviour artifacts, so the CI guard neither false-positives on a cosmetic edit nor misses dependency-driven drift), the **frozen / safe-after / "the trap"** classification (which future requests are safe — feed repairs, fail-open→fail-safe changes, and prompt tweaks all *feel* like fixes but are frozen), the **P1–P12 checklist** (full-gauntlet: Gate A/B, A3.1 parity, fitted `evidence_score_v2`, controls+ledger, version pinning, A10.1 cost-model realism, A8.1 ET-anchoring), the **crossing ritual** (with a dry-run), and **governance** — discretionary changes bump `EXPERIMENT_VERSION` + reset the eval period, while *exogenous* changes (universe attrition, model deprecation, feed death) are handled by kind, with a bridging characterisation on a forced model swap.
+- **P1 — prompt frozen.** `ADAPTIVE_PROMPT_ENABLED` flipped `True → False` (EXPERIMENT.md §15.9): the outcome-derived blocks (weekly-review lessons + performance feedback) no longer mutate the AI prompt, so the contextual arm (Arm 3) is **stationary** and per-decision IC/veto can be pooled across weeks. The self-learning loop's own value becomes a separate, pre-registered ablation. Both `build_prompt` branches were already independently covered (`test_include_adaptive_false_omits_lessons_and_feedback`), so coverage is unaffected.
+- **EXPERIMENT.md §4 — delisting/halt rule.** Forward-R now specifies `exit_price` handling for a name that stops trading inside the H-window (last clean close / announced cash terms; `delisted_no_exit` excluded), frozen at t0 (manifest item 13).
+
+Pre-data: the system remains in shakedown and pre-PNR observations stay quarantined as pilot.
+
+Also closes a **pre-existing coverage gap** surfaced while validating this change: the live sector-correlation injection's `except` path (`get_market_snapshots`, `data/market_data.py`) was never exercised — its test used the fragile hardcoded-index `with patches[0..N]` form and silently skipped the side-effect patch (the "hardcoded-index fragility" already flagged in that test module), so the block wasn't even entered. Rewritten to the loop-enter pattern with `compute_stock_sector_corr` raising. 100% coverage restored; mypy gate clean.
+
+---
+
 ### 1.111 — June 2026 — logs/ foldering: daily market-data caches → logs/market_data/
 
 Daily `market_data_*.pkl` bulk caches (the bulk of the logs/ clutter) now live under `logs/market_data/` (`config.MARKET_DATA_DIR`) instead of the logs/ root. `migrate_bulk_caches_to_subdir()` runs at scheduler startup to move any legacy root-level pkls into the subfolder (no re-download); the auto-prune (1.110) now operates within that subfolder.
