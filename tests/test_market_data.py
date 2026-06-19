@@ -883,7 +883,7 @@ class TestPruneOldBulkCaches(unittest.TestCase):
                 "other_file.txt",  # non-market_data → skipped
             ):
                 open(os.path.join(d, name), "w").close()
-            with patch("data.market_data.LOG_DIR", d):
+            with patch("data.market_data.MARKET_DATA_DIR", d):
                 pruned = md._prune_old_bulk_caches(keep_days=3)
             remaining = set(os.listdir(d))
         self.assertEqual(pruned, 1)
@@ -897,9 +897,46 @@ class TestPruneOldBulkCaches(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "market_data_2099-01-01.pkl"), "w").close()  # future → kept
-            with patch("data.market_data.LOG_DIR", d):
+            with patch("data.market_data.MARKET_DATA_DIR", d):
                 pruned = md._prune_old_bulk_caches(keep_days=3)
         self.assertEqual(pruned, 0)
+
+
+class TestMigrateBulkCaches(unittest.TestCase):
+    """One-time migration of legacy root-level market_data_*.pkl into logs/market_data/."""
+
+    def test_moves_root_pkls_skips_nonpkl_and_existing(self):
+        import data.market_data as md
+
+        with tempfile.TemporaryDirectory() as root:
+            sub = os.path.join(root, "market_data")
+            os.makedirs(sub)
+            open(os.path.join(root, "market_data_2026-06-18.pkl"), "w").close()  # moves
+            open(os.path.join(root, "notes.txt"), "w").close()  # non-pkl → skip
+            open(os.path.join(root, "market_data_2026-06-17.pkl"), "w").close()
+            open(os.path.join(sub, "market_data_2026-06-17.pkl"), "w").close()  # dest exists → skip
+            with (
+                patch("config.LOG_DIR", root),
+                patch("data.market_data.MARKET_DATA_DIR", sub),
+            ):
+                moved = md.migrate_bulk_caches_to_subdir()
+            root_files = set(os.listdir(root))
+            sub_files = set(os.listdir(sub))
+        self.assertEqual(moved, 1)
+        self.assertNotIn("market_data_2026-06-18.pkl", root_files)
+        self.assertIn("market_data_2026-06-18.pkl", sub_files)
+        self.assertIn("notes.txt", root_files)
+        self.assertIn("market_data_2026-06-17.pkl", root_files)  # dest existed → left at root
+
+    def test_no_pkls_returns_zero(self):
+        import data.market_data as md
+
+        with tempfile.TemporaryDirectory() as root:
+            sub = os.path.join(root, "market_data")
+            os.makedirs(sub)
+            with patch("config.LOG_DIR", root), patch("data.market_data.MARKET_DATA_DIR", sub):
+                moved = md.migrate_bulk_caches_to_subdir()
+        self.assertEqual(moved, 0)
 
 
 class TestBulkDownload(unittest.TestCase):
@@ -1390,7 +1427,7 @@ class TestSaveBulkCache(unittest.TestCase):
             tmp_path = os.path.join(tmpdir, "cache.pkl")
             with (
                 patch("data.market_data._bulk_cache_path", return_value=tmp_path),
-                patch("data.market_data.LOG_DIR", tmpdir),
+                patch("data.market_data.MARKET_DATA_DIR", tmpdir),
             ):
                 _save_bulk_cache(data)
             self.assertTrue(os.path.exists(tmp_path))

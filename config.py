@@ -1201,6 +1201,11 @@ EMAIL_CC = os.getenv("EMAIL_CC", "")
 
 # Log file path
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+# Foldering (audit: logs/ cleanup): daily market-data snapshots live under logs/market_data/.
+# Critical live state (DB, position metadata, baselines, regime state), append logs, and run
+# records stay at the logs/ root. (Regenerable API caches → logs/cache/ is a planned follow-up.)
+MARKET_DATA_DIR = os.path.join(LOG_DIR, "market_data")
+os.makedirs(MARKET_DATA_DIR, exist_ok=True)
 
 # Pre-trade controls (MiFID II Article 17)
 # Fat-finger guard: reject any single order above this USD value

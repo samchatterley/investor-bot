@@ -14,7 +14,7 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, ADXIndicator, EMAIndicator
 from ta.volatility import BollingerBands
 
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, LOG_DIR
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, MARKET_DATA_DIR
 from data.fundamentals import get_fundamentals
 from utils.symbols import to_yf_symbol
 
@@ -476,7 +476,7 @@ def _spy_return_from_preloaded(preloaded: dict, as_of: str, lookback: int) -> fl
 
 def _bulk_cache_path() -> str:
     today = datetime.now(_ET).date().isoformat()
-    return os.path.join(LOG_DIR, f"market_data_{today}.pkl")
+    return os.path.join(MARKET_DATA_DIR, f"market_data_{today}.pkl")
 
 
 def _load_bulk_cache() -> dict[str, pd.DataFrame]:
@@ -506,7 +506,7 @@ def _prune_old_bulk_caches(keep_days: int = _BULK_CACHE_KEEP_DAYS) -> int:
     cutoff = (datetime.now(_ET).date() - timedelta(days=keep_days)).isoformat()
     pruned = 0
     try:
-        names = os.listdir(LOG_DIR)
+        names = os.listdir(MARKET_DATA_DIR)
     except OSError:  # pragma: no cover — log dir missing
         return 0
     for name in names:
@@ -515,7 +515,7 @@ def _prune_old_bulk_caches(keep_days: int = _BULK_CACHE_KEEP_DAYS) -> int:
         datestr = name[len("market_data_") : -len(".pkl")]
         if len(datestr) == 10 and datestr < cutoff:
             try:
-                os.remove(os.path.join(LOG_DIR, name))
+                os.remove(os.path.join(MARKET_DATA_DIR, name))
                 pruned += 1
             except OSError:  # pragma: no cover — file vanished between listdir and remove
                 pass
@@ -527,13 +527,42 @@ def _prune_old_bulk_caches(keep_days: int = _BULK_CACHE_KEEP_DAYS) -> int:
 def _save_bulk_cache(data: dict[str, pd.DataFrame]) -> None:
     path = _bulk_cache_path()
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
+        os.makedirs(MARKET_DATA_DIR, exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
         logger.info(f"Bulk cache saved: {len(data)} symbols → {os.path.basename(path)}")
         _prune_old_bulk_caches()
     except Exception as e:
         logger.warning(f"Bulk cache write error: {e}")
+
+
+def migrate_bulk_caches_to_subdir() -> int:
+    """One-time: move legacy logs/market_data_*.pkl (root) into logs/market_data/; return count moved.
+
+    Lets an existing install adopt the new foldering on restart without re-downloading today's cache.
+    """
+    from config import LOG_DIR
+
+    moved = 0
+    try:
+        names = os.listdir(LOG_DIR)
+    except OSError:  # pragma: no cover — log dir missing
+        return 0
+    for name in names:
+        if not (name.startswith("market_data_") and name.endswith(".pkl")):
+            continue
+        src = os.path.join(LOG_DIR, name)
+        dst = os.path.join(MARKET_DATA_DIR, name)
+        if os.path.isfile(src) and not os.path.exists(dst):
+            try:
+                os.makedirs(MARKET_DATA_DIR, exist_ok=True)
+                os.replace(src, dst)
+                moved += 1
+            except OSError:  # pragma: no cover — file vanished / cross-device move
+                pass
+    if moved:
+        logger.info(f"Migrated {moved} legacy market_data cache(s) into {MARKET_DATA_DIR}")
+    return moved
 
 
 def _download_symbols(symbols: list[str], fetch_days: int) -> dict[str, pd.DataFrame]:

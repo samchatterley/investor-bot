@@ -76,7 +76,10 @@ from data.earnings_surprise import prefetch_earnings_data  # noqa: E402
 from data.edgar_client import prefetch_edgar_data  # noqa: E402
 from data.insider_feed import prefetch_insider_activity  # noqa: E402
 from data.macro_data import get_macro_snapshot  # noqa: E402
-from data.market_data import prefetch_market_data  # noqa: E402
+from data.market_data import (  # noqa: E402
+    migrate_bulk_caches_to_subdir,
+    prefetch_market_data,
+)
 from data.sector_data import build_sector_map  # noqa: E402
 from data.sentiment_client import get_fear_greed_composite  # noqa: E402
 from data.short_interest import prefetch_short_interest  # noqa: E402
@@ -224,6 +227,7 @@ if __name__ == "__main__":  # pragma: no cover
     _check_singleton()
     atexit.register(_remove_pid_file)
     signal.signal(signal.SIGTERM, _sigterm_handler)
+    migrate_bulk_caches_to_subdir()  # adopt logs/market_data/ foldering for legacy installs
     _startup_prefetch()
 
     # Append to log file so history survives launchd restarts

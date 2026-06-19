@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.111 — June 2026 — logs/ foldering: daily market-data caches → logs/market_data/
+
+Daily `market_data_*.pkl` bulk caches (the bulk of the logs/ clutter) now live under `logs/market_data/` (`config.MARKET_DATA_DIR`) instead of the logs/ root. `migrate_bulk_caches_to_subdir()` runs at scheduler startup to move any legacy root-level pkls into the subfolder (no re-download); the auto-prune (1.110) now operates within that subfolder.
+
+Critical live state (DB, position metadata, baselines, regime state), append logs, and run records remain at the logs/ root. Foldering the ~20 regenerable API caches into `logs/cache/` is a planned follow-up — each owns its own path constant and a few modules mix a cache file with a state file (e.g. `market_regime` has both `spy_vix_cache.pkl` and `regime_state.json`), so it needs a careful per-module pass rather than a blanket move.
+
+100% coverage held; mypy gate clean.
+
+---
+
 ### 1.110 — June 2026 — logs/ cleanup: auto-prune daily market-data caches
 
 `logs/` had grown to ~106 MB, dominated by daily `market_data_*.pkl` bulk caches (~4-5 MB/day) that accumulated with no pruning. Manually removed 14 stale caches (06-02..06-15), reclaiming ~36 MB. Added `_prune_old_bulk_caches`: after each bulk-cache save, `market_data_*.pkl` older than `_BULK_CACHE_KEEP_DAYS` (3) are auto-deleted, so the caches no longer grow unbounded.
