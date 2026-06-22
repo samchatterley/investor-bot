@@ -12,8 +12,8 @@ from config import FINNHUB_API_KEY, LOG_DIR
 logger = logging.getLogger(__name__)
 
 _BASE = "https://finnhub.io/api/v1"
-_FUND_CACHE = os.path.join(LOG_DIR, "fmp_fundamentals_cache.json")
-_ANALYST_CACHE = os.path.join(LOG_DIR, "fmp_analyst_cache.json")
+_FUND_CACHE = os.path.join(LOG_DIR, "caching", "fmp_fundamentals_cache.json")
+_ANALYST_CACHE = os.path.join(LOG_DIR, "caching", "fmp_analyst_cache.json")
 _CACHE_TTL_HOURS = 24
 
 

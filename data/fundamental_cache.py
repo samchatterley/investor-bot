@@ -23,7 +23,7 @@ from config import LOG_DIR, STOCK_UNIVERSE, today_et
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "fundamental_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "fundamental_cache.json")
 _CACHE_TTL_DAYS = 7
 
 

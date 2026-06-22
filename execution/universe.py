@@ -33,8 +33,8 @@ from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, LOG_DIR, MIN_VOLUME, STOCK
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "universe_cache.json")
-_SP500_CACHE_PATH = os.path.join(LOG_DIR, "sp500_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "universe_cache.json")
+_SP500_CACHE_PATH = os.path.join(LOG_DIR, "caching", "sp500_cache.json")
 _CACHE_TTL_HOURS = 24
 _SP500_CACHE_TTL_DAYS = 7
 _MIN_PRICE = 5.0

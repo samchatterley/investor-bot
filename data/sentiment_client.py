@@ -38,7 +38,7 @@ from config import LOG_DIR, today_et
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "sentiment_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "sentiment_cache.json")
 
 try:
     from pytrends.request import TrendReq as _TrendReq

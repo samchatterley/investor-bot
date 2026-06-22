@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Sector cache paths / TTL
 # ---------------------------------------------------------------------------
 
-_SECTOR_CACHE_PATH = os.path.join(LOG_DIR, "sector_map_cache.json")
+_SECTOR_CACHE_PATH = os.path.join(LOG_DIR, "caching", "sector_map_cache.json")
 _SECTOR_CACHE_TTL_DAYS = 7
 
 # ---------------------------------------------------------------------------

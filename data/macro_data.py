@@ -33,7 +33,7 @@ from config import LOG_DIR, today_et
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
-_CACHE_PATH = os.path.join(LOG_DIR, "macro_data_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "macro_data_cache.json")
 _TICKERS: list[str] = ["HYG", "LQD", "IEF", "TLT", "CPER", "GLD", "UUP", "SPY"]
 _LOOKBACK_DAYS = 75  # calendar days → ~50 trading days (enough for 20d trend + buffer)
 

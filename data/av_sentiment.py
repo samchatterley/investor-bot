@@ -34,7 +34,7 @@ _BATCH_SIZE = 10  # symbols per request
 _REQ_DELAY = 13.0  # 5 req/min free → 12 s between requests; 13 for safety
 _MIN_RELEVANCE = 0.3  # ignore tangential mentions below this score
 
-_CACHE_PATH = os.path.join(LOG_DIR, "av_sentiment_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "av_sentiment_cache.json")
 
 
 # ── cache I/O ─────────────────────────────────────────────────────────────────

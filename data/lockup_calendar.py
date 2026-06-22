@@ -29,7 +29,7 @@ from config import LOG_DIR, STOCK_UNIVERSE, today_et
 
 logger = logging.getLogger(__name__)
 
-_IPO_CACHE_PATH = os.path.join(LOG_DIR, "ipo_dates.json")
+_IPO_CACHE_PATH = os.path.join(LOG_DIR, "caching", "ipo_dates.json")
 _LOCKUP_DAYS = 180
 _ALERT_WINDOW_EARLY = 10  # start alerting 10 days before lockup
 _ALERT_WINDOW_LATE = 5  # stop alerting 5 days before (earliest visible pressure)

@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.114 — June 2026 — logs/ cleanup: regenerable API caches → logs/caching/ (option a)
+
+The ~20 regenerable API caches now live under `logs/caching/` (`config.CACHE_DIR`) instead of the logs/ root — completing the cache half of the deferred "option (a)" foldering, after the operator manually moved the files into the subfolder. Each cache module's path constant was repointed from `os.path.join(LOG_DIR, "x_cache.json")` to `os.path.join(LOG_DIR, "caching", "x_cache.json")` (23 constants across `data/*` + `execution/universe.py` + `market_regime`'s `spy_vix_cache.pkl`); `config.CACHE_DIR` is created at import so the directory always exists.
+
+Critical live state (DB, baselines, regime state, records, run logs) stays at the logs/ root — the live-state fold is a separate, deliberate pass (a path bug there is F1-class, so it's not bundled with this low-risk regenerable move).
+
+**Freeze-neutral** (cache paths touch no decision or logged experimental variable). 100% coverage held — the path constants are import-time and the cache tests patch `_CACHE_PATH`, so they're unaffected; ruff/mypy clean. Effect: on the next scheduler restart, the prefetch reads the already-moved caches in place instead of cold-rebuilding them at root.
+
+---
+
 ### 1.113 — June 2026 — cleanup: silence sector-momentum divide warning + bump tornado (Dependabot #9)
 
 Two freeze-neutral, behaviour-identical cleanups:

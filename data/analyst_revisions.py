@@ -27,7 +27,7 @@ from config import ETF_SYMBOLS, LOG_DIR, STOCK_UNIVERSE, today_et
 logger = logging.getLogger(__name__)
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "analyst_revisions_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "analyst_revisions_cache.json")
 _REQ_DELAY = 0.05
 
 

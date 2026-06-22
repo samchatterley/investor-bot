@@ -20,7 +20,7 @@ from config import LOG_DIR, today_et
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = Path(LOG_DIR) / "fred_cache.json"
+_CACHE_PATH = Path(LOG_DIR) / "caching" / "fred_cache.json"
 
 
 # ---------------------------------------------------------------------------

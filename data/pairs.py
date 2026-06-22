@@ -24,7 +24,7 @@ from data.sector_data import SECTOR_MAP, get_sector
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "pairs_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "pairs_cache.json")
 
 
 # ---------------------------------------------------------------------------

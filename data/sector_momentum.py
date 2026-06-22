@@ -21,7 +21,7 @@ from config import LOG_DIR
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "sector_momentum_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "sector_momentum_cache.json")
 _CACHE_TTL_SECONDS = 86_400  # 24 hours — refresh once per trading day
 
 # SPDR ETF ticker → GICS sector label (must match sector_data.get_sector output)

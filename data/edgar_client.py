@@ -44,7 +44,7 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _EFTS_URL = "https://efts.sec.gov/LATEST/search-index?q=%22{symbol}%22&dateRange=custom&startdt={start}&enddt={end}&forms={form}"
 _FILING_BASE = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/"
 
-_CACHE_PATH = os.path.join(LOG_DIR, "edgar_client_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "edgar_client_cache.json")
 _DEFAULT_LOOKBACK_DAYS = 30
 
 

@@ -32,7 +32,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 _MIN_SHORT_RATIO_DAYS = 5.0  # days-to-cover threshold for "high short interest"
 _REQ_DELAY = 0.05
-_CACHE_PATH = os.path.join(LOG_DIR, "short_interest_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "short_interest_cache.json")
 
 
 # ── cache I/O ─────────────────────────────────────────────────────────────────

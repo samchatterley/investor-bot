@@ -35,7 +35,7 @@ from config import LOG_DIR, today_et
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "options_data_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "options_data_cache.json")
 _MIN_OPTION_VOLUME = 10
 _MIN_OPEN_INTEREST = 50
 _RISK_FREE_RATE = 0.05  # approximate; updated annually

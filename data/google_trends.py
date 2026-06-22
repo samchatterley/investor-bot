@@ -19,7 +19,7 @@ from config import LOG_DIR, today_et
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(LOG_DIR, "google_trends_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "google_trends_cache.json")
 _REQ_DELAY = 1.0  # pytrends rate-limit is strict — 1s between requests
 _SPIKE_THRESHOLD = 1.5  # current week / 12w avg must exceed this
 _MIN_BASELINE = 10  # skip symbols with near-zero baseline interest

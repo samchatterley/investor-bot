@@ -46,7 +46,7 @@ import config as cfg
 
 logger = logging.getLogger(__name__)
 
-_CACHE_PATH = os.path.join(cfg.LOG_DIR, "spy_vix_cache.pkl")
+_CACHE_PATH = os.path.join(cfg.LOG_DIR, "caching", "spy_vix_cache.pkl")
 _STATE_PATH = os.path.join(cfg.LOG_DIR, "regime_state.json")
 
 _MIN_BARS_FULL = 200

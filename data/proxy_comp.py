@@ -40,7 +40,7 @@ _USER_AGENT = f"InvestorBot {EMAIL_FROM or 'contact@example.com'}"
 _HEADERS = {"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 _REQ_DELAY = 0.15  # stay within SEC's 10 req/s limit
 _CACHE_TTL_DAYS = 90  # proxy statements are annual; refresh quarterly
-_CACHE_PATH = os.path.join(LOG_DIR, "proxy_comp_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "proxy_comp_cache.json")
 
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{doc}"

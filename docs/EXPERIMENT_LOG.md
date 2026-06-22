@@ -8,3 +8,11 @@
 > review, newest last.
 
 <!-- entries appended below -->
+
+## 2026-06-21
+
+- Monitoring only, not a hypothesis test. Formal tests fire at the pre-registered N_eff milestones.
+- Phase: Phase 0 (pre-data).
+- Noise audit (Gate A): not run.
+- Power analysis (Gate B): projected underpowered for the live track; scoped as a trend and qualitative layer.
+- Effective sample accumulated: N_eff = 0 (next formal test at N_eff >= 200).

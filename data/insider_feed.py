@@ -41,7 +41,7 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 _FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession}/{doc}"
 _REQ_DELAY = 0.15  # 10 req/s SEC limit → use 6-7/s to stay safe
 _MAX_WORKERS = 10  # concurrent symbols; rate limiter keeps global req/s in check
-_CACHE_PATH = os.path.join(LOG_DIR, "insider_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "insider_cache.json")
 
 # Global rate limiter: enforces _REQ_DELAY between all EDGAR requests across threads.
 _rate_lock = threading.Lock()

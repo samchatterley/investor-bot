@@ -26,7 +26,7 @@ from config import LOG_DIR, STOCK_UNIVERSE, today_et
 logger = logging.getLogger(__name__)
 
 _ET = ZoneInfo("America/New_York")
-_CACHE_PATH = os.path.join(LOG_DIR, "breadth_cache.json")
+_CACHE_PATH = os.path.join(LOG_DIR, "caching", "breadth_cache.json")
 
 
 @dataclass(frozen=True)
