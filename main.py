@@ -468,6 +468,20 @@ def _fetch_atr_for_held(held_symbols: set, deps: TradingDeps | None = None) -> d
 _RS_DECAY_SIGNALS = frozenset({"rs_leader", "momentum", "momentum_12_1"})
 _DEFENSIVE_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "BEAR_MARKET"})
 
+# Human-readable detail per mechanical exit trigger (ADR-006 / 1.116). The trigger string itself
+# is the structured exit_reason recorded on the trade; this is the log/all_trades description so a
+# mechanical exit is never narrated with the AI's (often HOLD) reasoning.
+_SELL_TRIGGER_DETAIL: dict[str, str] = {
+    "ai_sell": "AI discretionary sell",
+    "hard_stop": "rule-based hard stop breached",
+    "time_decay": "time-decay stop breached",
+    "rs_decay": "relative-strength decay exit",
+    "stale_exit": "maximum hold period reached",
+    "adverse_volume": "adverse-volume distribution exit",
+    "regime_exit": "regime-change exit (defensive downgrade)",
+    "dust_sweep": "dust residual auto-close",
+}
+
 
 def _fetch_adverse_vol_for_held(held_symbols: set) -> dict:
     """Return per-symbol vol_ratio and daily return for today and yesterday.
@@ -513,11 +527,13 @@ def _check_rule_based_stops(
     *,
     deps: TradingDeps | None = None,
 ) -> set:
-    """Return symbols that breach the hard stop, time-decay stop, or RS decay threshold."""
+    """Return {symbol: trigger} for positions breaching the hard stop, time-decay stop, or RS
+    decay threshold. The trigger string (hard_stop / time_decay / rs_decay) is the true exit
+    cause, recorded so a mechanical exit is never mis-attributed to the AI (ADR-006 / 1.116)."""
     _trader = deps.trader if deps is not None else trader
     _exit_optimiser = deps.exit_optimiser if deps is not None else exit_optimiser
     rc = RiskConfig.from_config()
-    symbols_to_exit: set = set()
+    exits: dict[str, str] = {}
     for pos in positions:
         symbol = pos["symbol"]
         meta = _trader.get_position_meta(symbol)
@@ -536,14 +552,14 @@ def _check_rule_based_stops(
             logger.info(
                 f"Rule-based hard stop hit: {symbol} {plpc:.2f}% <= {levels['stop_pct']:.2f}%"
             )
-            symbols_to_exit.add(symbol)
+            exits[symbol] = "hard_stop"
         elif levels["apply_timedecay"] and plpc <= levels["timedecay_stop_pct"]:
             logger.info(
                 f"Time-decay stop hit: {symbol} {plpc:.2f}% <= {levels['timedecay_stop_pct']:.2f}% "
                 f"(day {days_held}/{max_hold})"
             )
-            symbols_to_exit.add(symbol)
-        elif signal in _RS_DECAY_SIGNALS and snapshots_by_symbol and symbol not in symbols_to_exit:
+            exits[symbol] = "time_decay"
+        elif signal in _RS_DECAY_SIGNALS and snapshots_by_symbol and symbol not in exits:
             entry_rs = meta.get("rs_rank_pct")
             current_snap = snapshots_by_symbol.get(symbol)
             current_rs = current_snap.get("rs_rank_pct") if current_snap else None
@@ -556,8 +572,8 @@ def _check_rule_based_stops(
                     f"RS decay exit: {symbol} rs_rank {entry_rs:.1f}% → {current_rs:.1f}% "
                     f"(>25pt drop) [{signal}]"
                 )
-                symbols_to_exit.add(symbol)
-    return symbols_to_exit
+                exits[symbol] = "rs_decay"
+    return exits
 
 
 def _handle_partial_exits(
@@ -1887,7 +1903,10 @@ def _execute_sell_phase(
 
     # AI discretionary SELLs, with the F4 churn guard: a position opened today (age 0) is only
     # exited on very-high conviction or a hard catalyst — otherwise it is held, not round-tripped.
-    symbols_to_sell: set[str] = set()
+    # sell_reasons maps each symbol to its true exit trigger so the log, exit_reason, all_trades,
+    # and the DB trade record the real cause — never mis-attributing a mechanical exit to the AI
+    # (ADR-006 / 1.116). First trigger to claim a symbol wins; the AI's SELL ranks first.
+    sell_reasons: dict[str, str] = {}
     for d in decisions.get("position_decisions", []):
         if d["action"] != "SELL":
             continue
@@ -1900,23 +1919,24 @@ def _execute_sell_phase(
                 f"conf={d.get('confidence')}) lacks very-high conviction or a hard catalyst."
             )
             continue
-        symbols_to_sell.add(sym)
-    symbols_to_sell |= {
-        sym for sym in snap.stale if sym in snap.held_symbols and sym not in snap.open_shorts_db
-    }
-    symbols_to_sell |= _check_rule_based_stops(
+        sell_reasons[sym] = "ai_sell"
+    for sym in snap.stale:
+        if sym in snap.held_symbols and sym not in snap.open_shorts_db:
+            sell_reasons.setdefault(sym, "stale_exit")
+    for _sym, _trigger in _check_rule_based_stops(
         snap.open_positions,
         snap.position_ages,
         snap.atr_by_symbol,
         snapshots_by_symbol=snap_by_symbol,
         deps=deps,
-    )
+    ).items():
+        sell_reasons.setdefault(_sym, _trigger)
 
     # Dust sweep (audit A4.1): auto-close negligible fractional residuals (long positions only) so
     # they don't linger until the AI happens to notice — e.g. a 7.89e-07-share rounding leftover.
     for _pos in snap.open_positions:
         _sym = _pos["symbol"]
-        if _sym in snap.open_shorts_db or _sym in symbols_to_sell:
+        if _sym in snap.open_shorts_db or _sym in sell_reasons:
             continue
         _mv = _pos.get("market_value")
         # Only sweep a present, positive-but-tiny value. A missing or exactly-zero market_value
@@ -1926,11 +1946,11 @@ def _execute_sell_phase(
                 f"Dust sweep: {_sym} market value ${_mv:.4f} "
                 f"< ${config.DUST_THRESHOLD_USD:.2f} — auto-closing residual."
             )
-            symbols_to_sell.add(_sym)
+            sell_reasons[_sym] = "dust_sweep"
 
     for pos in snap.open_positions:
         symbol = pos["symbol"]
-        if symbol in snap.open_shorts_db or symbol in symbols_to_sell:
+        if symbol in snap.open_shorts_db or symbol in sell_reasons:
             continue
         vh = vol_hist.get(symbol, {})
         if _exit_optimiser.adverse_volume_triggered(
@@ -1944,20 +1964,20 @@ def _execute_sell_phase(
                 f"vol×{vh['vol_ratio_today']:.1f}/{vh['vol_ratio_yday']:.1f} "
                 f"ret {vh['ret_today']:.1f}%/{vh['ret_yday']:.1f}%"
             )
-            symbols_to_sell.add(symbol)
+            sell_reasons[symbol] = "adverse_volume"
 
     # Regime-change exit — close new longs immediately on DEFENSIVE/BEAR downgrade
     if regime_name in _DEFENSIVE_REGIMES:
         for pos in snap.open_positions:
             symbol = pos["symbol"]
-            if symbol in snap.open_shorts_db or symbol in symbols_to_sell:
+            if symbol in snap.open_shorts_db or symbol in sell_reasons:
                 continue
             days_held = snap.position_ages.get(symbol, 1)
             if days_held < 2:
                 logger.info(
                     f"Regime-change exit: {symbol} — {regime_name} with {days_held} day(s) held"
                 )
-                symbols_to_sell.add(symbol)
+                sell_reasons[symbol] = "regime_exit"
             elif days_held >= 3:
                 logger.info(
                     f"Regime-change stop advisory: {symbol} — {regime_name}, "
@@ -1965,21 +1985,20 @@ def _execute_sell_phase(
                 )
 
     # Exclude any short positions from the sell set (handled separately below)
-    symbols_to_sell -= snap.open_shorts_db
+    for _short in snap.open_shorts_db:
+        sell_reasons.pop(_short, None)
 
     symbols_to_cover = {sym for sym in snap.stale if sym in snap.open_shorts_db}
 
-    for symbol in symbols_to_sell:
+    for symbol, trigger in sell_reasons.items():
         decision = next(
             (d for d in decisions.get("position_decisions", []) if d["symbol"] == symbol), None
         )
-        if decision:
+        if trigger == "ai_sell" and decision:
             reason = decision["reasoning"]
         else:
-            signal = _trader.get_position_meta(symbol).get("signal", "unknown")
-            limit = config.SIGNAL_MAX_HOLD_DAYS.get(signal, config.MAX_HOLD_DAYS)
-            reason = f"Time-based exit (≥{limit} days for {signal} signal)"
-        logger.info(f"  SELL {symbol} — {reason}")
+            reason = _SELL_TRIGGER_DETAIL[trigger]
+        logger.info(f"  SELL {symbol} [{trigger}] — {reason}")
         if not dry_run:
             pos = next((p for p in snap.open_positions if p["symbol"] == symbol), None)
             result = _trader.close_position(client, symbol)
@@ -1996,7 +2015,7 @@ def _execute_sell_phase(
                         symbol=symbol,
                         entry_date=meta.get("entry_date"),
                         entry_price=meta.get("entry_price"),
-                        exit_reason="ai_sell" if decision else "time_exit",
+                        exit_reason=trigger,
                     )
                     _audit_log.log_position_closed(symbol, reason[:50], pos["unrealized_plpc"])
                 _trader.record_sell(symbol)
@@ -2006,9 +2025,9 @@ def _execute_sell_phase(
                         "symbol": symbol,
                         "action": "SELL",
                         "detail": reason,
-                        "decision_type": "sell" if decision else "rule_based",
+                        "decision_type": "sell" if trigger == "ai_sell" else "rule_based",
                         "confidence": decision.get("confidence") if decision else None,
-                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                        "reasoning": reason,
                     }
                 )
             else:
@@ -2023,9 +2042,9 @@ def _execute_sell_phase(
                         "symbol": symbol,
                         "action": "WOULD_SELL",
                         "detail": reason,
-                        "decision_type": "sell" if decision else "rule_based",
+                        "decision_type": "sell" if trigger == "ai_sell" else "rule_based",
                         "confidence": decision.get("confidence") if decision else None,
-                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                        "reasoning": reason,
                     }
                 )
             else:
@@ -2034,9 +2053,9 @@ def _execute_sell_phase(
                         "symbol": symbol,
                         "action": "SELL",
                         "detail": "dry run",
-                        "decision_type": "sell" if decision else "rule_based",
+                        "decision_type": "sell" if trigger == "ai_sell" else "rule_based",
                         "confidence": decision.get("confidence") if decision else None,
-                        "reasoning": decision.get("reasoning", "") if decision else reason,
+                        "reasoning": reason,
                     }
                 )
             executed_symbols.add(symbol)

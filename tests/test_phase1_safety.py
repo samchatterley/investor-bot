@@ -499,7 +499,7 @@ class TestMaxOrdersPerRun(unittest.TestCase):
         stack = contextlib.ExitStack()
         stack.enter_context(patch("main._fetch_atr_for_held", return_value={}))
         stack.enter_context(patch("main._handle_partial_exits", return_value=[]))
-        stack.enter_context(patch("main._check_rule_based_stops", return_value=set()))
+        stack.enter_context(patch("main._check_rule_based_stops", return_value={}))
         stack.enter_context(patch("main._fetch_adverse_vol_for_held", return_value={}))
         stack.enter_context(patch("main.config.MAX_ORDERS_PER_RUN", new=max_orders))
 

@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.116 — June 2026 — correct sell-side exit attribution (the ai_sell mislabel)
+
+The sell phase recorded every exit's cause as `exit_reason="ai_sell" if a position decision existed else "time_exit"` — so a position the AI said HOLD on, but which a *mechanical* rule (hard stop / regime-change / stale / adverse-volume / dust) actually closed, was logged as `SELL — {the AI's HOLD reasoning}`, stored as `exit_reason="ai_sell"`, and tagged `decision_type="sell"`. The live record thus **attributed mechanical exits to the AI** — which reads as a contradiction in the logs (the MRVL case: "SELL … hold") and would corrupt the experiment's sell-side veto analysis (you couldn't separate AI exit-skill from stop-skill).
+
+**Fix.** `_execute_sell_phase` now threads a `{symbol: trigger}` map (`sell_reasons`) instead of a bare set; each exit path stamps its true trigger (`ai_sell` / `hard_stop` / `time_decay` / `rs_decay` / `stale_exit` / `adverse_volume` / `regime_exit` / `dust_sweep`), first-claim-wins with the AI's SELL ranked first. `_check_rule_based_stops` now returns `{symbol: trigger}` (single caller). The log (`SELL {sym} [{trigger}] — …`), the DB trade's `exit_reason`, and `all_trades`' `decision_type`/`reasoning` are all derived from the trigger — so a mechanical exit is never narrated with the AI's (often HOLD) reasoning. The regime-change exit and the AI's discretionary authority are unchanged; only the *attribution* is corrected.
+
+Freeze-relevant: the corrected `exit_reason` is the field the experiment joins (observation ↔ trade) to separate AI-driven from mechanical exits — a sell-side data-integrity prerequisite for the PNR. New regression test pins the MRVL scenario (HOLD + stale → `rule_based` / trigger detail, not the HOLD reasoning); 100% coverage held, ruff clean.
+
+---
+
 ### 1.115 — June 2026 — stop the DEFENSIVE_DOWNTREND long-churn (ADR-006 part A)
 
 A multi-day live audit traced a steady paper bleed (~100k → ~97k over 06-18..06-24, **27% win rate, −0.89%/trade**) to **regime-exit churn**: the bot kept opening `pead` catalyst longs while in the `DEFENSIVE_DOWNTREND` regime, and the regime-change exit (`_DEFENSIVE_REGIMES` — force-closes any long held <2 days) liquidated them the next run, sometimes the same day, *against the AI's explicit HOLD*. Entry and exit held opposite views of the same regime: `DEFENSIVE_DOWNTREND` was `block_new_buys=False, max_orders_per_run=2` (entry permitted) yet sat in `_DEFENSIVE_REGIMES` (exit dumped). The `ai_sell` exit-reason mislabel hid that these were regime exits, not AI sells.

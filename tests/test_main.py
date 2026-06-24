@@ -1022,7 +1022,7 @@ class RunInnerBase(unittest.TestCase):
         stack.enter_context(
             patch(
                 "main._check_rule_based_stops",
-                return_value=overrides.get("_check_rule_based_stops", set()),
+                return_value=overrides.get("_check_rule_based_stops", {}),
             )
         )
         stack.enter_context(
@@ -3473,6 +3473,50 @@ class TestEnrichedTradeFields(RunInnerBase):
         for t in tsla_trades:
             self.assertEqual(t.get("decision_type"), "rule_based")
 
+    def test_mechanical_exit_with_ai_hold_attributes_to_trigger(self):
+        """ADR-006 / 1.116: a position the AI said HOLD on, but which a mechanical rule exits
+        (here: stale), must attribute to the trigger — decision_type=rule_based and the trigger
+        detail, never 'sell'/the HOLD reasoning. Guards the ai_sell mislabel (the MRVL case)."""
+        positions = [
+            {
+                "symbol": "TSLA",
+                "unrealized_pl": 0.0,
+                "unrealized_plpc": 0.0,
+                "qty": 5.0,
+                "market_value": 1000.0,
+                "current_price": 200.0,
+            }
+        ]
+        # The AI explicitly wants to HOLD TSLA, but it is stale → mechanically exited.
+        decisions = _decisions(
+            sells=[
+                {
+                    "symbol": "TSLA",
+                    "action": "HOLD",
+                    "confidence": 8,
+                    "reasoning": "AI wants to hold",
+                }
+            ]
+        )
+        save_mock = MagicMock(return_value=_saved_record())
+        deps = self._make_deps(
+            trader__get_open_positions=positions,
+            trader__get_position_ages={"TSLA": 999},  # very stale
+            ai_analyst__get_trading_decisions=decisions,
+            portfolio_tracker__save_daily_run=save_mock,
+        )
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=deps)
+        call_kwargs = save_mock.call_args[1] if save_mock.call_args else {}
+        trades = call_kwargs.get("trades_executed", [])
+        tsla = [t for t in trades if t.get("symbol") == "TSLA"]
+        self.assertTrue(tsla, "expected a TSLA mechanical-exit trade")
+        for t in tsla:
+            self.assertEqual(t.get("decision_type"), "rule_based")
+            self.assertEqual(t.get("reasoning"), "maximum hold period reached")
+
 
 class TestCheckRuleBasedStops(unittest.TestCase):
     """Lines 421-444: _check_rule_based_stops — hard stop, time-decay stop, and neither."""
@@ -3507,6 +3551,7 @@ class TestCheckRuleBasedStops(unittest.TestCase):
         }
         result = self._run("AAPL", -8.0, levels)
         self.assertIn("AAPL", result)
+        self.assertEqual(result["AAPL"], "hard_stop")
 
     def test_timedecay_stop_triggered(self):
         # plpc = -0.5% <= timedecay_stop_pct = 0.0% with apply_timedecay=True → symbol added
@@ -3517,6 +3562,7 @@ class TestCheckRuleBasedStops(unittest.TestCase):
         }
         result = self._run("AAPL", -0.5, levels)
         self.assertIn("AAPL", result)
+        self.assertEqual(result["AAPL"], "time_decay")
 
     def test_neither_stop_triggered(self):
         # plpc = +5% — above both stop levels → symbol NOT added
@@ -3620,7 +3666,7 @@ class TestRunInnerMissingBranches(RunInnerBase):
             trader__close_position=close_mock,
             trader__record_sell=record_sell_mock,
         )
-        with self._inner_patches(_check_rule_based_stops={"AAPL"}):
+        with self._inner_patches(_check_rule_based_stops={"AAPL": "hard_stop"}):
             from main import _run_inner
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
