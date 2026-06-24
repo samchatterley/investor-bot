@@ -50,6 +50,18 @@ def test_get_regime_policy_falls_back_on_missing_entry():
     assert policy.block_new_buys is True  # UNKNOWN fallback
 
 
+def test_defensive_downtrend_blocks_new_buys():
+    """ADR-006: DEFENSIVE_DOWNTREND must block new long entries (block_new_buys=True,
+    max_orders_per_run=0) so entry agrees with the regime-change exit, which force-closes
+    longs held <2 days in this regime. Without this the bot churns longs it opens and
+    re-closes next run (the 06-18..06-24 bleed: 27% WR, -0.89%/trade)."""
+    from risk.regime_policy import get_regime_policy
+
+    policy = get_regime_policy("DEFENSIVE_DOWNTREND")
+    assert policy.block_new_buys is True
+    assert policy.max_orders_per_run == 0
+
+
 # ── 2. Signal registry consistency ───────────────────────────────────────────
 
 

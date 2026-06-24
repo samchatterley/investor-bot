@@ -36,9 +36,14 @@ REGIME_POLICY: dict[MarketRegime, RegimeRiskPolicy] = {
         min_confidence_bump=2,
         position_size_multiplier=0.40,
     ),
+    # ADR-006: entry must agree with the regime-change exit, which force-closes any long
+    # held <2 days in this regime. Opening longs here only churns them out next run (the
+    # 06-18..06-24 bleed: 27% WR, -0.89%/trade). Block new entries — the bot holds cash
+    # until the short side (ADR-006 part B) provides a downside tool. max_orders_per_run=0
+    # is a second, independent guard behind block_new_buys.
     MarketRegime.DEFENSIVE_DOWNTREND: RegimeRiskPolicy(
-        block_new_buys=False,
-        max_orders_per_run=2,
+        block_new_buys=True,
+        max_orders_per_run=0,
         min_confidence_bump=0,
         position_size_multiplier=0.75,
     ),

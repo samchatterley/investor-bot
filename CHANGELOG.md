@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.115 — June 2026 — stop the DEFENSIVE_DOWNTREND long-churn (ADR-006 part A)
+
+A multi-day live audit traced a steady paper bleed (~100k → ~97k over 06-18..06-24, **27% win rate, −0.89%/trade**) to **regime-exit churn**: the bot kept opening `pead` catalyst longs while in the `DEFENSIVE_DOWNTREND` regime, and the regime-change exit (`_DEFENSIVE_REGIMES` — force-closes any long held <2 days) liquidated them the next run, sometimes the same day, *against the AI's explicit HOLD*. Entry and exit held opposite views of the same regime: `DEFENSIVE_DOWNTREND` was `block_new_buys=False, max_orders_per_run=2` (entry permitted) yet sat in `_DEFENSIVE_REGIMES` (exit dumped). The `ai_sell` exit-reason mislabel hid that these were regime exits, not AI sells.
+
+**Fix (entry-side only).** `DEFENSIVE_DOWNTREND`'s regime policy is now `block_new_buys=True, max_orders_per_run=0` — identical to the existing `STRESS_RISK_OFF`/`UNKNOWN` no-buy regimes, which block entries via the `max_orders_per_run=0` → `effective_max_orders` cap (an already-tested path, so **no new branch in `main.py`**). Entry now agrees with the exit: a regime bearish enough to dump fresh longs no longer opens them. The regime-change exit is unchanged — it still protects positions caught by a regime *flip*. Effect: in `DEFENSIVE_DOWNTREND` the bot now holds cash instead of churning longs.
+
+This changes the **live trading harness**, not the experiment's candidate observations (the overlay still records every surfaced candidate; only live execution is gated). The broader short-side redesign — regime-first short gate, AI-driven shorts, index-hedge repair — is scoped in **`docs/adr/ADR-006`** as forward work; this is part A. A regression test in `test_wiring.py` locks the policy; 100% coverage held, ruff clean.
+
+---
+
 ### 1.114 — June 2026 — logs/ cleanup: regenerable API caches → logs/caching/ (option a)
 
 The ~20 regenerable API caches now live under `logs/caching/` (`config.CACHE_DIR`) instead of the logs/ root — completing the cache half of the deferred "option (a)" foldering, after the operator manually moved the files into the subfolder. Each cache module's path constant was repointed from `os.path.join(LOG_DIR, "x_cache.json")` to `os.path.join(LOG_DIR, "caching", "x_cache.json")` (23 constants across `data/*` + `execution/universe.py` + `market_regime`'s `spy_vix_cache.pkl`); `config.CACHE_DIR` is created at import so the directory always exists.
