@@ -687,12 +687,18 @@ def _execute_shorts(
 
     regime_name = regime.get("regime", "UNKNOWN")
 
-    # VIX term structure gate: only enter shorts when near-term fear (VIX9D) exceeds
-    # medium-term fear (VIX) — inverted term structure signals higher short edge.
-    # Default True (allow) when data unavailable to avoid accidentally blocking all shorts.
+    # Short gate (ADR-006 part B): a confirmed bear regime is itself the short signal, so the
+    # standalone-short regimes admit shorts directly — VIX-term-structure inversion is no longer a
+    # hard precondition there (requiring it made shorts almost never fire in ordinary downtrends).
+    # Outside those regimes shorts are stress hedges and still require inversion (near-term fear >
+    # medium-term). Default inverted=True when data is unavailable so a missing VIX feed can't
+    # silently block all shorts.
     vix_term_inverted: bool = regime.get("vix_term_inverted", True)
-    if not vix_term_inverted:
-        logger.info("VIX term structure not inverted (VIX9D/VIX ≤ 1.05) — skipping short entries")
+    if regime_name not in _STANDALONE_SHORT_REGIMES and not vix_term_inverted:
+        logger.info(
+            "Non-bear regime and VIX term structure not inverted (VIX9D/VIX ≤ 1.05) — "
+            "skipping short entries"
+        )
         return
 
     held_symbols = {p["symbol"] for p in open_positions}

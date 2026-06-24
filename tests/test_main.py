@@ -3990,11 +3990,32 @@ class TestExecuteShorts(unittest.TestCase):
         mocks["main.trader.place_short_order"].assert_not_called()
         self.assertEqual(all_trades, [])
 
-    def test_vix_not_inverted_blocks_shorts(self):
-        # vix_term_inverted=False → returns before scan_short_candidates
+    def test_vix_not_inverted_blocks_shorts_in_non_bear_regime(self):
+        # ADR-006 B1: outside the standalone-short (bear) regimes, shorts still require VIX
+        # term-structure inversion — NEUTRAL_CHOP + not inverted → returns before the scan.
         from main import _execute_shorts
 
         with patch("main.stock_scanner.scan_short_candidates") as mock_scan:
+            _execute_shorts(
+                client=MagicMock(),
+                snapshots=[self._snap()],
+                regime={"regime": "NEUTRAL_CHOP", "vix_term_inverted": False},
+                open_positions=[],
+                account_now=self._account_now(),
+                all_trades=[],
+                executed_symbols=set(),
+                dry_run=True,
+                _live_shadow=False,
+            )
+            mock_scan.assert_not_called()
+
+    def test_bear_regime_shorts_without_vix_inversion(self):
+        # ADR-006 B1: a confirmed bear regime is itself the short signal — STRESS_RISK_OFF with
+        # VIX not inverted must NOT be blocked; the scan proceeds (the unblock that lets the bot
+        # short in ordinary downtrends rather than needing a vol panic).
+        from main import _execute_shorts
+
+        with patch("main.stock_scanner.scan_short_candidates", return_value=[]) as mock_scan:
             _execute_shorts(
                 client=MagicMock(),
                 snapshots=[self._snap()],
@@ -4006,7 +4027,7 @@ class TestExecuteShorts(unittest.TestCase):
                 dry_run=True,
                 _live_shadow=False,
             )
-            mock_scan.assert_not_called()
+            mock_scan.assert_called_once()
 
 
 class TestRunInnerCoverShorts(RunInnerBase):

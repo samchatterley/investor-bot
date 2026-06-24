@@ -4,6 +4,16 @@ Full version history. Most recent first.
 
 ---
 
+### 1.117 — June 2026 — regime-first short gate (ADR-006 part B / B1)
+
+`_execute_shorts` returned early unless the VIX term structure was inverted (`VIX9D/VIX > 1.05`) — a vol-panic precondition that almost never coincides with an ordinary grind-down, so the bot took **zero** shorts through the 06-18..06-24 `DEFENSIVE_DOWNTREND` even though the regime detector correctly flagged it. The VIX gate also overrode the system's own design, which already grants a *standalone* short book in bear regimes.
+
+**Fix.** The gate is now regime-first: in the standalone-short regimes (`DEFENSIVE_DOWNTREND` / `HIGH_VOL_DOWNTREND` / `STRESS_RISK_OFF` / `CREDIT_STRESS`) a confirmed bear regime is itself the short signal, so shorts are admitted directly — VIX inversion is no longer a hard precondition there. Outside those regimes shorts remain stress hedges and still require inversion. The bot can now short in ordinary downtrends instead of waiting for a vol panic; the downstream sector/correlation/borrow/squeeze gates and the standalone-vs-hedge caps are unchanged.
+
+**B1 of the short-side redesign (ADR-006).** Still ahead: B2 (route shorts through the AI for context parity — the load-bearing build), B3 (the index hedge is a config toggle `INDEX_HEDGE_ENABLED`, not a code bug), B4 (backtest the disabled trend-short book before any re-enable). **Note:** B1 means the bot now takes *mechanical* (not yet AI-judged) shorts in bear regimes until B2 lands. Two regression tests pin the gate. Also bundled: a conftest autouse fixture pins `INDEX_HEDGE_ENABLED` off in the test environment (config calls `load_dotenv()` at import) so enabling the index hedge in a deployment `.env` can't leak the live order path into unmocked decision-loop tests — hedge tests opt in explicitly. Full suite green, 100% coverage, ruff clean.
+
+---
+
 ### 1.116 — June 2026 — correct sell-side exit attribution (the ai_sell mislabel)
 
 The sell phase recorded every exit's cause as `exit_reason="ai_sell" if a position decision existed else "time_exit"` — so a position the AI said HOLD on, but which a *mechanical* rule (hard stop / regime-change / stale / adverse-volume / dust) actually closed, was logged as `SELL — {the AI's HOLD reasoning}`, stored as `exit_reason="ai_sell"`, and tagged `decision_type="sell"`. The live record thus **attributed mechanical exits to the AI** — which reads as a contradiction in the logs (the MRVL case: "SELL … hold") and would corrupt the experiment's sell-side veto analysis (you couldn't separate AI exit-skill from stop-skill).

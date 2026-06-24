@@ -21,6 +21,18 @@ def _isolate_experiment_observations(tmp_path, monkeypatch):
     monkeypatch.setattr(_collection, "OBSERVATIONS_PATH", str(tmp_path / "experiment_obs.jsonl"))
 
 
+@pytest.fixture(autouse=True)
+def _pin_index_hedge_disabled(monkeypatch):
+    """Keep tests deterministic regardless of the operator's .env. config.load_dotenv() runs at
+    import, so an enabled deployment toggle (INDEX_HEDGE_ENABLED=true) would otherwise fire the live
+    index-hedge order path into unmocked decision-loop tests. Pin it off here; hedge-specific tests
+    opt in by patching config.INDEX_HEDGE_ENABLED=True in their own context.
+    """
+    import config
+
+    monkeypatch.setattr(config, "INDEX_HEDGE_ENABLED", False)
+
+
 def _default_run_config(**overrides) -> RunConfig:
     defaults: dict = {
         "bear_market_spy_threshold": 0.8,
