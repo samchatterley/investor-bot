@@ -29,7 +29,7 @@ jsonschema-specifications==2025.9.1
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
-msgpack==1.1.2
+msgpack==1.2.1
 multitasking==0.0.13
 narwhals==2.20.0
 numpy==2.4.4
