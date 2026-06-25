@@ -352,5 +352,97 @@ class TestGetAnalystRevisions(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+class TestParseEpsRevisions(unittest.TestCase):
+    """_parse_eps_revisions — downward current-quarter EPS estimate momentum."""
+
+    def _ticker(self, up, down, period="0q"):
+        df = pd.DataFrame({"upLast30days": [up], "downLast30days": [down]}, index=[period])
+        tk = MagicMock()
+        tk.eps_revisions = df
+        return tk
+
+    def test_fires_when_downs_cluster_and_exceed_ups(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        self.assertTrue(_parse_eps_revisions(self._ticker(up=1, down=4)))
+
+    def test_no_fire_below_min_downs(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        self.assertFalse(_parse_eps_revisions(self._ticker(up=0, down=2)))
+
+    def test_no_fire_when_downs_not_exceed_ups(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        self.assertFalse(_parse_eps_revisions(self._ticker(up=5, down=3)))
+
+    def test_no_fire_when_no_current_quarter_row(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        self.assertFalse(_parse_eps_revisions(self._ticker(up=0, down=5, period="+1q")))
+
+    def test_no_fire_when_table_none(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        tk = MagicMock()
+        tk.eps_revisions = None
+        self.assertFalse(_parse_eps_revisions(tk))
+
+    def test_no_fire_when_access_raises(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        class _Raising:
+            @property
+            def eps_revisions(self):
+                raise RuntimeError("boom")
+
+        self.assertFalse(_parse_eps_revisions(_Raising()))
+
+    def test_no_fire_when_row_values_unparseable(self):
+        from data.analyst_revisions import _parse_eps_revisions
+
+        df = pd.DataFrame({"upLast30days": ["x"], "downLast30days": ["y"]}, index=["0q"])
+        tk = MagicMock()
+        tk.eps_revisions = df
+        self.assertFalse(_parse_eps_revisions(tk))
+
+
+class TestLiveFetchEpsPath(unittest.TestCase):
+    """_live_fetch_revisions surfaces eps_estimate_cut even with no ratings table."""
+
+    def _eps_df(self, up, down):
+        return pd.DataFrame({"upLast30days": [up], "downLast30days": [down]}, index=["0q"])
+
+    def test_eps_only_when_no_recommendations(self):
+        mock_ticker = MagicMock()
+        mock_ticker.recommendations_summary = None
+        mock_ticker.eps_revisions = self._eps_df(up=0, down=4)
+        with (
+            patch("data.analyst_revisions.ETF_SYMBOLS", set()),
+            patch("data.analyst_revisions.yf.Ticker", return_value=mock_ticker),
+            patch("data.analyst_revisions.time.sleep"),
+        ):
+            from data.analyst_revisions import _live_fetch_revisions
+
+            result = _live_fetch_revisions(["AAPL"])
+        self.assertIsNotNone(result["AAPL"])
+        self.assertTrue(result["AAPL"]["eps_estimate_cut"])
+        self.assertFalse(result["AAPL"]["analyst_downgrade"])
+
+    def test_none_when_neither_ratings_nor_eps(self):
+        mock_ticker = MagicMock()
+        mock_ticker.recommendations_summary = None
+        mock_ticker.eps_revisions = self._eps_df(up=2, down=1)  # no cut
+        with (
+            patch("data.analyst_revisions.ETF_SYMBOLS", set()),
+            patch("data.analyst_revisions.yf.Ticker", return_value=mock_ticker),
+            patch("data.analyst_revisions.time.sleep"),
+        ):
+            from data.analyst_revisions import _live_fetch_revisions
+
+            result = _live_fetch_revisions(["AAPL"])
+        self.assertIsNone(result["AAPL"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

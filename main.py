@@ -29,6 +29,7 @@ from analysis import ai_analyst, performance
 from analysis.weekly_review import get_latest_review
 from core.deps import TradingDeps
 from data import (
+    analyst_revisions,
     av_sentiment,
     earnings_surprise,
     edgar_client,
@@ -1464,6 +1465,7 @@ def _build_data_bundle(
     _earnings_surprise = deps.earnings_surprise if deps is not None else earnings_surprise
     _short_interest = deps.short_interest if deps is not None else short_interest
     _edgar_client = deps.edgar_client if deps is not None else edgar_client
+    _analyst_revisions = deps.analyst_revisions if deps is not None else analyst_revisions
     _options_scanner = deps.options_scanner if deps is not None else options_scanner
     _options_data = deps.options_data if deps is not None else options_data_module
     _news_fetcher = deps.news_fetcher if deps is not None else news_fetcher
@@ -1716,6 +1718,7 @@ def _build_data_bundle(
     _short_syms = [s["symbol"] for s in short_snapshots]
     _short_edgar = _edgar_client.get_edgar_signals_batch(_short_syms)
     _short_insider = _insider_feed.get_insider_activity(_short_syms)
+    _short_revisions = _analyst_revisions.get_analyst_revisions(_short_syms)
     for s in short_snapshots:
         _e = _short_edgar.get(s["symbol"], {})
         s["accounting_concern"] = bool((_e.get("accounting_concern") or {}).get("detected", False))
@@ -1726,6 +1729,11 @@ def _build_data_bundle(
         s["insider_sell_cluster"] = bool(
             _short_insider.get(s["symbol"], {}).get("insider_sell_cluster", False)
         )
+        # Analyst revisions feed analyst_downgrade_signal (rating shift) and the new
+        # eps_revision_down_short (downward EPS-estimate momentum) — both previously dead-wired live.
+        _r = _short_revisions.get(s["symbol"], {})
+        s["analyst_downgrade"] = bool(_r.get("analyst_downgrade", False))
+        s["eps_estimate_cut"] = bool(_r.get("eps_estimate_cut", False))
         # index_deletion is news-derived; coverage is limited to short names that also have headlines
         # in the long-side news set (a dedicated short-universe news fetch is the follow-up).
         s["index_deletion"] = bool(classify_index_deletion(news.get(s["symbol"], [])))

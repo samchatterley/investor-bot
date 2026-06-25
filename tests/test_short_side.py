@@ -2684,6 +2684,11 @@ class TestCatalystShortSignals(unittest.TestCase):
 
         self.assertIn("index_deletion_short", evaluate_short_signals({"index_deletion": True}))
 
+    def test_eps_revision_down_short_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertIn("eps_revision_down_short", evaluate_short_signals({"eps_estimate_cut": True}))
+
     def test_no_flags_no_catalyst_signals(self):
         from signals.evaluator import evaluate_short_signals
 
@@ -2693,9 +2698,19 @@ class TestCatalystShortSignals(unittest.TestCase):
         from signals.evaluator import evaluate_short_signals
 
         sigs = evaluate_short_signals(
-            {"accounting_concern": True, "insider_sell_cluster": True, "index_deletion": True},
+            {
+                "accounting_concern": True,
+                "insider_sell_cluster": True,
+                "index_deletion": True,
+                "eps_estimate_cut": True,
+            },
             blocked=frozenset(
-                {"accounting_concern_short", "insider_selling_short", "index_deletion_short"}
+                {
+                    "accounting_concern_short",
+                    "insider_selling_short",
+                    "index_deletion_short",
+                    "eps_revision_down_short",
+                }
             ),
         )
         self.assertEqual(sigs, [])

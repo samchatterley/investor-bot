@@ -4,6 +4,34 @@ Full version history. Most recent first.
 
 ---
 
+### 1.120 — June 2026 — EPS estimate-revision short + wire the analyst-revision feed
+
+Adds `eps_revision_down_short` — a cluster of ≥3 downward current-quarter EPS estimate revisions (last
+30 days) that outnumber raises. The estimate-revision anomaly is one of the most replicated in the
+literature (analyst cuts precede negative price drift), and unlike the index-deletion idea it is cheap:
+the data is cacheable/prefetched, not scraped per-run.
+
+- **`data/analyst_revisions.py`** now also reads yfinance `eps_revisions` (`_parse_eps_revisions`) →
+  `eps_estimate_cut` flag, alongside the existing rating-shift detection.
+- **Critical plumbing fix:** `analyst_revisions` was **never wired into the live pipeline** — so
+  `analyst_downgrade_signal` (short) and `analyst_upgrade_signal` (long) never fired. Now
+  `prefetch_analyst_revisions()` runs in the 07:00 scheduler prefetch (warmed daily, cheap reads), and
+  `_build_data_bundle` enriches short snapshots with it — lighting up `eps_revision_down_short` **and**
+  the previously dead-wired `analyst_downgrade_signal`. (`analyst_upgrade_signal` on the long side is
+  still unwired — separate follow-up.)
+- **`signals/evaluator.py`** — `eps_revision_down_short` (priority 27) firing on `eps_estimate_cut`.
+- **`execution/stock_scanner.py`** — added to the RS-agnostic catalyst path (with `analyst_downgrade_signal`).
+- **`core/deps.py`** — `analyst_revisions` added to `TradingDeps`.
+- **`analysis/ai_analyst.py`** — `eps_revision_down_short` in `SYSTEM_PROMPT`.
+
+Active + AI-citeable; gated by the B2 AI-veto; not backtestable (forward-evidence). 13 active short
+signals now. Tests across all touched modules; 100% line+branch coverage; ruff + mypy clean.
+
+We deliberately did **not** build a dedicated short-universe news fetch for `index_deletion_short`:
+rare event, decayed/front-run edge, expensive uncached fetches. See `docs/short_disabled_backtest_findings.md`.
+
+---
+
 ### 1.119 — June 2026 — three catalyst short signals (ADR-006 Tier-1)
 
 The short-signal research (see `docs/short_disabled_backtest_findings.md`) found that price/technical

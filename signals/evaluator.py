@@ -493,6 +493,7 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     "accounting_concern_short": 24,  # restatement / non-reliance / auditor-change 8-K
     "insider_selling_short": 25,  # cluster of open-market insider sales (Form 4 code 'S')
     "index_deletion_short": 26,  # removed from a major index — forced index-fund selling
+    "eps_revision_down_short": 27,  # ≥3 downward current-quarter EPS revisions (estimate-cut momentum)
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -844,6 +845,11 @@ def evaluate_short_signals(
 
     if "index_deletion_short" not in blocked and snapshot.get("index_deletion", False):
         matched.append("index_deletion_short")
+
+    # eps_revision_down_short: a cluster of downward current-quarter EPS estimate revisions
+    # (data/analyst_revisions.py) — the estimate-revision anomaly: cuts precede negative drift.
+    if "eps_revision_down_short" not in blocked and snapshot.get("eps_estimate_cut", False):
+        matched.append("eps_revision_down_short")
 
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched

@@ -151,6 +151,7 @@ class TradingDeps:
     # ── Data ──────────────────────────────────────────────────────────────────
     short_interest: Any
     edgar_client: Any
+    analyst_revisions: Any
 
     # ── Config snapshot ───────────────────────────────────────────────────────
     run_config: RunConfig
@@ -161,6 +162,7 @@ class TradingDeps:
         from analysis import ai_analyst, performance
         from analysis.weekly_review import get_latest_review
         from data import (
+            analyst_revisions,
             av_sentiment,
             earnings_surprise,
             edgar_client,
@@ -242,5 +244,6 @@ class TradingDeps:
             scan_short_universe=scan_short_universe,
             short_interest=short_interest,
             edgar_client=edgar_client,
+            analyst_revisions=analyst_revisions,
             run_config=RunConfig.from_config(),
         )

@@ -71,6 +71,7 @@ config.validate()
 import main as bot  # noqa: E402
 from analysis.performance import get_attribution  # noqa: E402
 from analysis.weekly_review import run_weekly_review  # noqa: E402
+from data.analyst_revisions import prefetch_analyst_revisions  # noqa: E402
 from data.av_sentiment import prefetch_av_sentiment  # noqa: E402
 from data.earnings_surprise import prefetch_earnings_data  # noqa: E402
 from data.edgar_client import prefetch_edgar_data  # noqa: E402
@@ -141,6 +142,12 @@ def _prefetch():
         prefetch_edgar_data()
     except Exception as e:
         logger.error(f"EDGAR prefetch failed (non-fatal): {e}", exc_info=True)
+    try:
+        # Warm analyst rating-shift + EPS-revision data (feeds analyst_downgrade_signal and
+        # eps_revision_down_short on the short side). Cached daily; cheap reads during the session.
+        prefetch_analyst_revisions()
+    except Exception as e:
+        logger.error(f"Analyst revisions prefetch failed (non-fatal): {e}", exc_info=True)
     try:
         get_macro_snapshot()
     except Exception as e:

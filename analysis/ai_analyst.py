@@ -101,6 +101,8 @@ bearish setups:
   distribution (note: noisier than insider buying; weigh against scheduled-sale risk)
 - index_deletion_short: the name is being removed from a major index — forced index-fund selling
   into the effective date
+- eps_revision_down_short: a cluster of downward current-quarter EPS estimate revisions (sell-side
+  cutting numbers) — the estimate-revision anomaly; cuts tend to precede negative price drift
 For every short, populate do_nothing_case with the strongest squeeze/borrow/cover risk; if you
 cannot clearly refute it, omit the short. Never short a name already held long.
 

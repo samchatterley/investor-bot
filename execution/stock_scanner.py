@@ -380,6 +380,8 @@ def scan_short_candidates(
             "accounting_concern_short",
             "insider_selling_short",
             "index_deletion_short",
+            "eps_revision_down_short",
+            "analyst_downgrade_signal",
             "guidance_downgrade",
             "secondary_offering_short",
         }

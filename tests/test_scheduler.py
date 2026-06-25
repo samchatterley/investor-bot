@@ -568,6 +568,7 @@ class TestPrefetchNewModules(unittest.TestCase):
             "prefetch_earnings_data",
             "prefetch_short_interest",
             "prefetch_av_sentiment",
+            "prefetch_analyst_revisions",
         ):
             setattr(mod, attr, MagicMock())
         mod.config.STOCK_UNIVERSE = ["AAPL"]
@@ -587,6 +588,7 @@ class TestPrefetchNewModules(unittest.TestCase):
             "prefetch_earnings_data",
             "prefetch_short_interest",
             "prefetch_av_sentiment",
+            "prefetch_analyst_revisions",
         ):
             setattr(mod, attr, MagicMock())
         mod.config.STOCK_UNIVERSE = ["AAPL"]
@@ -606,6 +608,7 @@ class TestPrefetchNewModules(unittest.TestCase):
             "prefetch_earnings_data",
             "prefetch_short_interest",
             "prefetch_av_sentiment",
+            "prefetch_analyst_revisions",
         ):
             setattr(mod, attr, MagicMock())
         mod.config.STOCK_UNIVERSE = ["AAPL"]
@@ -623,6 +626,7 @@ class TestPrefetchNewModules(unittest.TestCase):
             "prefetch_earnings_data",
             "prefetch_short_interest",
             "prefetch_av_sentiment",
+            "prefetch_analyst_revisions",
             "prefetch_edgar_data",
             "get_macro_snapshot",
             "get_fear_greed_composite",
@@ -631,6 +635,26 @@ class TestPrefetchNewModules(unittest.TestCase):
         mod.config.STOCK_UNIVERSE = ["AAPL"]
         mod._prefetch()
         mod.build_sector_map.assert_called_once()
+
+    def test_analyst_revisions_prefetch_called(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "no_such_file"
+        for attr in (
+            "prefetch_market_data",
+            "build_sector_map",
+            "prefetch_insider_activity",
+            "prefetch_earnings_data",
+            "prefetch_short_interest",
+            "prefetch_av_sentiment",
+            "prefetch_analyst_revisions",
+            "prefetch_edgar_data",
+            "get_macro_snapshot",
+            "get_fear_greed_composite",
+        ):
+            setattr(mod, attr, MagicMock())
+        mod.config.STOCK_UNIVERSE = ["AAPL"]
+        mod._prefetch()
+        mod.prefetch_analyst_revisions.assert_called_once()
 
 
 class TestPrefetchExceptionPaths(unittest.TestCase):
@@ -647,6 +671,7 @@ class TestPrefetchExceptionPaths(unittest.TestCase):
             "prefetch_earnings_data",
             "prefetch_short_interest",
             "prefetch_av_sentiment",
+            "prefetch_analyst_revisions",
             "prefetch_edgar_data",
             "get_macro_snapshot",
             "get_fear_greed_composite",
@@ -701,6 +726,12 @@ class TestPrefetchExceptionPaths(unittest.TestCase):
     def test_edgar_exception_non_fatal(self):
         mod = self._stub_mod()
         mod.prefetch_edgar_data.side_effect = RuntimeError("edgar boom")
+        mod._prefetch()
+        mod.get_macro_snapshot.assert_called_once()
+
+    def test_analyst_revisions_exception_non_fatal(self):
+        mod = self._stub_mod()
+        mod.prefetch_analyst_revisions.side_effect = RuntimeError("revisions boom")
         mod._prefetch()
         mod.get_macro_snapshot.assert_called_once()
 
