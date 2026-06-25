@@ -154,6 +154,12 @@ def main() -> None:
         action="store_true",
         help="skip the (throttled) earnings prefetch; earnings_miss/faded_earnings_gap_up take 0 trades",
     )
+    ap.add_argument(
+        "--signals",
+        default="",
+        help="comma list of signals to isolate instead of the disabled set (e.g. active shorts). "
+        "Works for active or disabled names — disabled ones are un-disabled for the run.",
+    )
     args = ap.parse_args()
 
     universe = list(_UNIVERSE)
@@ -164,9 +170,16 @@ def main() -> None:
             head.append("SPY")
         universe = head
 
-    disabled = sorted(
-        _ev.SHORT_GLOBALLY_DISABLED, key=lambda s: _ev.SHORT_SIGNAL_PRIORITY.get(s, 99)
-    )
+    if args.signals:
+        targets = [s.strip() for s in args.signals.split(",") if s.strip()]
+        unknown = [s for s in targets if s not in _ev.SHORT_SIGNAL_PRIORITY]
+        if unknown:
+            raise SystemExit(f"Unknown short signal(s): {unknown}")
+        disabled = sorted(targets, key=lambda s: _ev.SHORT_SIGNAL_PRIORITY.get(s, 99))
+    else:
+        disabled = sorted(
+            _ev.SHORT_GLOBALLY_DISABLED, key=lambda s: _ev.SHORT_SIGNAL_PRIORITY.get(s, 99)
+        )
     print("=" * 78)
     print(f"  ADR-006 B4 — disabled-short isolation backtest  {args.start} → {args.end}")
     print(

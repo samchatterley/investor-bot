@@ -56,3 +56,60 @@ python scripts/short_disabled_backtest.py --start 2015-01-01 --end 2023-12-31 --
 
 Any future re-enable must still clear the full **CLAUDE.md disable/enable checklist** plus a
 borrow-cost-realistic, out-of-sample / walk-forward check — not this in-sample screen alone.
+
+---
+
+# Do the *active* short signals work? (follow-up)
+
+The 9 active short signals are **all catalyst / fundamental / event-driven — there are no working
+pure-price shorts** (the price book is the disabled set above). Backtestability splits three ways:
+
+| Group | Signals | Backtestable here? |
+|---|---|---|
+| Earnings | `earnings_gap_down`, `post_earnings_gapdown_failed_bounce` | needs earnings history |
+| Fundamental | `piotroski_distress_short`, `accruals_quality_short` | only via the combined sim (no per-signal isolation hook) |
+| Event / live-only | `guidance_downgrade`, `secondary_offering_short`, `lockup_expiry_short`, `analyst_downgrade_signal`, `high_short_interest` | **no** — no historical point-in-time event feed; forward paper-trading only |
+
+Isolation run of the two earnings shorts (300 symbols, 2015-2023, earnings ON):
+
+| Signal | Trades | WR% | Avg% | Sharpe | Note |
+|---|---:|---:|---:|---:|---|
+| earnings_gap_down | 55 | 40.0 | −1.01 | −0.17 | negative (consistent with being live-blocked / superseded) |
+| post_earnings_gapdown_failed_bounce | 0 | — | — | — | **not reconstructable in backtest** (failed-bounce is computed live in `scan_short_universe`); forward paper-evidence only |
+
+So **no backtestable short signal — active or disabled — shows positive expectancy.** Any short edge
+lives entirely in the catalyst signals that can only be forward-tested. This is consistent with
+`post_earnings_gapdown_failed_bounce` (catalyst + a timing filter) being the one the codebase flags as
+having a documented short-horizon edge.
+
+# Coverage gaps — short thesis groups with no signal
+
+The technical/price short space is saturated (and dead). The genuinely **uncovered** groups, ranked by
+how cheap they are to prototype on existing data feeds:
+
+**Tier 1 — data plumbing already exists:**
+- **Insider *selling* clusters** — `data/insider_feed.py` parses Form 4 but only code 'P' (purchases);
+  it ignores disposals. Direct mirror of the long `insider_cluster`. (Needs 10b5-1 filtering — insider
+  sells are noisier than buys.)
+- **Index/ETF *deletion* forced-selling** — `data/index_membership.py` detects removals; nothing trades them.
+- **Accounting / going-concern / auditor-change 8-Ks** — `accounting_concern` is detected from EDGAR but
+  only gates longs; no short entry on restatements / non-reliance / auditor resignations.
+- **Negative EPS estimate-revision momentum** — we have rating-distribution downgrades, not estimate-cut velocity.
+
+**Tier 2 — needs new/harder data:** activist-short / fraud reports (Hindenburg etc.); single-name
+credit-stress events (rating downgrades, dividend cuts, refi walls); crowded-*long* positioning unwind
+(mirror of a squeeze); deal-break / M&A-failure shorts.
+
+**Tier 3 — structural/thematic:** de-SPAC / post-IPO decay; sector/pairs *short* leg (we only long the
+RS laggard); tax-loss / window-dressing pressure on losers (Dec); alt-data deterioration (Google-Trends
+decline); valuation / growth-deceleration ("expensive decelerator").
+
+Deliberate non-gap: shorting `high_short_interest` names as *entries* (vs the current risk-gate use) is
+avoided on purpose — that is squeeze bait.
+
+# Bottom line
+
+Shorts work as **catalyst plays, not price patterns**. The dead technical book should stay disabled; the
+next short to build is a **Tier-1 catalyst** one (insider-selling cluster is the cleanest — reuses the
+Form 4 pipeline and mirrors a long signal we already trust), evaluated forward (paper) since the highest-
+edge catalyst shorts are not backtestable from historical OHLCV.
