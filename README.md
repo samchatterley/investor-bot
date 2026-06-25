@@ -298,11 +298,14 @@ decide whether to act. Claude can never place, modify, or cancel orders; read or
 balances or positions; or modify its own parameters. Every output is schema-validated and risk-gated
 first.
 
-- **Decision pipeline:** market context, then Claude (a structured tool call), then two-layer
+- **Decision pipeline:** market context, then Claude (a single structured tool call that ranks both
+  long *and* short candidates — shorts are rule-gated in the bear regimes and routed through the AI for
+  the same veto/ranking as longs), then two-layer
   validation (API schema, plus a domain whitelist, confidence, conflict, and injection scan), then the
   risk gate (risk-budget sizing at 0.6% of equity risked per trade, capped at 15% of portfolio per
   position; position and sector limits, fat-finger and daily-notional guards, bear
-  filter, VIX-tiered stops, earnings guard, same-day churn guard, circuit breaker, daily-loss limit), then execution
+  filter, VIX-tiered stops, earnings guard, same-day churn guard, circuit breaker, daily-loss limit; shorts
+  add sector-momentum, correlation, borrow-cost, and squeeze gates plus standalone-vs-hedge caps), then execution
   (fractional market orders plus a trailing stop), then an append-only SQLite audit.
 - **Module map:** `data/` (market, news, options, sentiment, macro); `signals/` (the canonical
   evaluator); `analysis/` (ai_analyst, weekly_review, performance); `risk/` (sizing, calendars,
@@ -329,7 +332,7 @@ designed to supersede.
 
 ### Appendix C: Engineering rigour
 
-- **Tests:** 4,822 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
+- **Tests:** 4,846 tests, 100% line and branch coverage, enforced on CI; the mypy gate is clean across
   the typed modules.
 - **LLM eval fixtures** ([`evals/`](evals/)): prompt-injection headlines, hallucinated tickers,
   bear-market no-buy, conflicting signals, earnings-risk, malformed tool calls.

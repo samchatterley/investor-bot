@@ -15,7 +15,7 @@ from config import (
     MAX_POSITIONS,
     MIN_CONFIDENCE,
 )
-from signals.registry import AI_CITEABLE_SIGNALS
+from signals.registry import AI_CITEABLE_SHORT_SIGNALS, AI_CITEABLE_SIGNALS
 from utils.validators import validate_ai_response
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,24 @@ INTRADAY (midday run only; force-covered at close)
 - vwap_reclaim: price above VWAP intraday + >1% gain from open + not overextended
 - orb_breakout: price broke above the first-30-minute high with above-average volume
 - intraday_momentum: >2% gain from open + above VWAP + intraday RSI <75 + daily trend confirms
+
+SHORT SIDE (bear regimes only — short candidates are offered to you ONLY in confirmed
+stress/downtrend regimes; in any other regime you will be given no short candidates and must
+return none). Shorts are higher-risk than longs: borrow can be recalled, squeezes are violent,
+and the edge is thinner — demand stronger evidence and prefer to pass. You focus on these
+bearish setups:
+- earnings_gap_down: post-earnings gap-down continuation (negative PEAD) confirmed on heavy volume
+- post_earnings_gapdown_failed_bounce: negative-PEAD continuation entered AFTER the reflexive
+  bounce fails — the one short with a documented short-horizon timing edge
+- high_short_interest: crowded short with low lendable supply — squeeze risk, size down or pass
+- guidance_downgrade: negative 8-K guidance — management lowering outlook
+- secondary_offering_short: 424B4/S-3 secondary offering — dilution / supply shock
+- analyst_downgrade_signal: consensus Buy→Hold/Sell downgrade shift
+- lockup_expiry_short: IPO lock-up expiry within 5-10 days — insider share supply incoming
+- piotroski_distress_short: Piotroski F-score ≤ 2 — multi-factor quality failure
+- accruals_quality_short: accruals ratio > 0.15 with an extended price — earnings-quality risk
+For every short, populate do_nothing_case with the strongest squeeze/borrow/cover risk; if you
+cannot clearly refute it, omit the short. Never short a name already held long.
 
 You are disciplined: you only recommend trades with high conviction. You do NOT chase
 already-extended moves. You protect capital — recommending SELL on positions showing
@@ -178,6 +196,46 @@ _DECISION_TOOL = {
                     ],
                 },
             },
+            "short_candidates": {
+                "type": "array",
+                "description": "Ranked list of short candidates, highest conviction first. Populate ONLY from the SHORT CANDIDATES block in the prompt; leave empty if none are offered. Must NOT contain any symbol already held long or present in buy_candidates.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "confidence": {"type": "integer", "minimum": 1, "maximum": 10},
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Precise technical rationale with indicator values",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "One plain-English sentence for non-technical readers",
+                        },
+                        "key_signal": {
+                            "type": "string",
+                            "enum": sorted(AI_CITEABLE_SHORT_SIGNALS),
+                        },
+                        "do_nothing_case": {
+                            "type": "string",
+                            "description": "Strongest reason not to take this short (squeeze / borrow / cover risk)",
+                        },
+                        "invalidation_trigger": {
+                            "type": "string",
+                            "description": "Specific condition that would invalidate this short",
+                        },
+                    },
+                    "required": [
+                        "symbol",
+                        "confidence",
+                        "reasoning",
+                        "summary",
+                        "key_signal",
+                        "do_nothing_case",
+                        "invalidation_trigger",
+                    ],
+                },
+            },
         },
         "required": ["date", "market_summary", "position_decisions", "buy_candidates"],
     },
@@ -218,6 +276,7 @@ def build_prompt(
     leading_sectors: list[str] | None = None,
     options_signals: dict | None = None,
     lessons: Sequence[str | dict] | None = None,
+    short_candidates: list[dict] | None = None,
     include_adaptive: bool = True,
 ) -> str:
 
@@ -393,6 +452,34 @@ STALE POSITIONS (held ≥ {MAX_HOLD_DAYS} trading days — consider exiting to f
 
     snapshots_json = json.dumps(snapshots, indent=2)
 
+    # SHORT CANDIDATES — only present in bear regimes (the scanner returns none otherwise). Surfaces
+    # the rule-gated short setups so the AI can veto/rank them exactly as it does buy candidates; an
+    # empty list means "no shorts on offer this run" and the AI must return no short_candidates.
+    short_block = ""
+    if short_candidates:
+        short_rows = [
+            {
+                "symbol": c.get("symbol"),
+                "key_signal": c.get("key_signal"),
+                "matched_signals": c.get("matched_signals", []),
+                "confidence": c.get("confidence"),
+                "rs_rank_pct": c.get("rs_rank_pct"),
+                "current_price": c.get("current_price"),
+                "price_vs_ema21_pct": c.get("price_vs_ema21_pct"),
+                "rsi_14": c.get("rsi_14"),
+                "vol_ratio": c.get("vol_ratio"),
+                "short_ratio": c.get("short_ratio"),
+                "high_short_interest": c.get("high_short_interest"),
+            }
+            for c in short_candidates
+        ]
+        short_block = (
+            "SHORT CANDIDATES (rule-gated bearish setups — rank/veto these; shorts are hedges or "
+            "standalone bear-regime positions, higher risk than longs):\n"
+            + json.dumps(short_rows, indent=2)
+            + "\n"
+        )
+
     return f"""Analyse today's market data and make trading decisions.
 
 {regime_block}{macro_block}{vix_block}{earnings_block}{sector_block}{sentiment_block}{winrate_block}{lessons_block}
@@ -410,7 +497,7 @@ PORTFOLIO STATUS:
 TODAY'S MARKET SNAPSHOTS (technical indicators):
 {snapshots_json}
 
-INDICATOR GUIDE:
+{short_block}INDICATOR GUIDE:
 Daily indicators (based on close prices):
 - rsi_14: <30 oversold (reversal up), >70 overbought (caution)
 - macd_diff: positive = bullish momentum; macd_crossed_up = fresh buy signal
@@ -461,6 +548,7 @@ TASK:
 3. Only recommend BUY if confidence >= {MIN_CONFIDENCE}/10
 4. Treat unusual options call activity as a supporting signal, not a standalone reason to buy
 5. For every BUY candidate, populate do_nothing_case honestly — if you cannot clearly refute it, omit the candidate
+6. If a SHORT CANDIDATES block is present above, rank/veto those shorts into short_candidates (highest conviction first); only short a name from that list, never a held long, and apply the same do_nothing_case discipline. If no SHORT CANDIDATES block is present, return no short_candidates.
 
 NOTE: Do NOT include a cash_fraction field — position sizing is handled automatically.
 Focus on signal quality and confidence accuracy.
@@ -537,6 +625,7 @@ def get_trading_decisions(
     leading_sectors: list[str] | None = None,
     options_signals: dict | None = None,
     lessons: Sequence[str | dict] | None = None,
+    short_candidates: list[dict] | None = None,
     run_id: str | None = None,
 ) -> dict | None:
     prompt = build_prompt(
@@ -557,6 +646,7 @@ def get_trading_decisions(
         leading_sectors=leading_sectors,
         options_signals=options_signals,
         lessons=lessons,
+        short_candidates=short_candidates,
         include_adaptive=ADAPTIVE_PROMPT_ENABLED,
     )
 
@@ -594,7 +684,10 @@ def get_trading_decisions(
         # validation are kept separate so neither can mask failures in the other.
         # known_symbols is derived from the snapshots passed to this call.
         known_symbols = {s["symbol"] for s in snapshots} | {p["symbol"] for p in current_positions}
-        is_valid, errors = validate_ai_response(decisions, known_symbols)
+        known_short_symbols = {c["symbol"] for c in (short_candidates or [])}
+        is_valid, errors = validate_ai_response(
+            decisions, known_symbols, known_short_symbols=known_short_symbols
+        )
         if not is_valid:
             logger.warning(f"AI response failed domain validation: {errors}")
             # Return decisions anyway — main.py is the authoritative gate and will

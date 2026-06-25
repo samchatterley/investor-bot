@@ -4,6 +4,22 @@ Full version history. Most recent first.
 
 ---
 
+### 1.118 — June 2026 — route shorts through the AI (ADR-006 part B / B2)
+
+Shorts were taken **mechanically** after B1: the rule scanner picked them and `_execute_shorts` placed them with no AI judgement, while every long passed through Claude for ranking, veto, and context-weighting. The two sides were asymmetric — the AI could not down-weight a crowded or thesis-stale short, and the experiment had no short-side decision record to measure.
+
+**Fix — full long/short parity.** Short candidates are now rule-gated *before* the AI call (`_build_data_bundle` → `db.short_candidates`, regime-gated so it is empty outside the bear regimes) and routed through the same structured tool call as buys:
+
+- **`signals/registry.py`** — `ACTIVE_SHORT_SIGNALS` / `AI_CITEABLE_SHORT_SIGNALS`, derived from `SHORT_SIGNAL_PRIORITY − SHORT_GLOBALLY_DISABLED` (one source of truth, mirrors the long sets).
+- **`models.py`** — `ShortCandidate` (clone of `BuyCandidate`, `key_signal` validated against the short universe); `DecisionSet.short_candidates` + no-duplicate-short and no-buy/short-conflict validators; `DataBundle.short_candidates`.
+- **`analysis/ai_analyst.py`** — `short_candidates` in the tool schema (enum = active short signals), a SHORT-SIDE briefing in `SYSTEM_PROMPT`, and a rendered SHORT CANDIDATES block in `build_prompt` (present only when shorts are on offer).
+- **`utils/validators.py`** — Phase-2 short context checks (known short universe; not held long).
+- **`main.py`** — the AI now runs whenever there are longs **or** shorts to decide; domain-validation errors block only the offending side (buys, shorts, or both) while preserving independent sells; `_execute_shorts` consumes the AI-approved `decisions["short_candidates"]`, merges each back onto its scanned dict, and applies the **unchanged** sector/correlation/borrow/squeeze gates and standalone-vs-hedge caps. The AI's confidence now drives short sizing.
+
+This is the load-bearing build of the short-side redesign: the bot now takes **AI-judged** shorts, and short decisions are recorded for the experiment's veto analysis. Still ahead: **B4** (backtest the disabled trend-short book before any re-enable). New unit + wiring tests across all six files; 100% line/branch coverage held, ruff + mypy clean.
+
+---
+
 ### 1.117 — June 2026 — regime-first short gate (ADR-006 part B / B1)
 
 `_execute_shorts` returned early unless the VIX term structure was inverted (`VIX9D/VIX > 1.05`) — a vol-panic precondition that almost never coincides with an ordinary grind-down, so the bot took **zero** shorts through the 06-18..06-24 `DEFENSIVE_DOWNTREND` even though the regime detector correctly flagged it. The VIX gate also overrode the system's own design, which already grants a *standalone* short book in bear regimes.

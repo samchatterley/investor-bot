@@ -656,7 +656,8 @@ _STANDALONE_SHORT_REGIMES: frozenset[str] = frozenset(
 
 def _execute_shorts(
     client,
-    snapshots: list[dict],
+    decisions: dict,
+    scanned_short_candidates: list[dict],
     regime: dict,
     open_positions: list[dict],
     account_now: dict,
@@ -667,7 +668,12 @@ def _execute_shorts(
     today: str = "",
     deps: TradingDeps | None = None,
 ) -> None:
-    """Scan for and execute short positions (bottom-quartile RS, rule-gated).
+    """Execute the AI-vetted short positions (ADR-006 B2 — shorts now route through the AI).
+
+    Candidates are rule-gated pre-AI (``scan_short_candidates`` → ``db.short_candidates``) and
+    ranked/vetoed by the AI into ``decisions["short_candidates"]``. This consumes that approved
+    set then applies the SAME risk gates as before (sector momentum, correlation, borrow cost,
+    squeeze) and caps.
 
     - Max MAX_SHORT_POSITIONS concurrent shorts.
     - Bear regimes (DEFENSIVE_DOWNTREND / HIGH_VOL_DOWNTREND / STRESS_RISK_OFF / CREDIT_STRESS):
@@ -676,7 +682,6 @@ def _execute_shorts(
     - Each position sized at SHORT_SIZE_SCALE × standard position size (whole shares only).
     """
     _trader = deps.trader if deps is not None else trader
-    _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
     _sector_data = deps.sector_data if deps is not None else sector_data
     _sector_momentum = deps.sector_momentum if deps is not None else sector_momentum
     _correlation = deps.correlation if deps is not None else correlation
@@ -702,7 +707,31 @@ def _execute_shorts(
         return
 
     held_symbols = {p["symbol"] for p in open_positions}
-    short_candidates = _stock_scanner.scan_short_candidates(snapshots, regime_name, held_symbols)
+    # Consume the AI-vetted shorts (ADR-006 B2): only symbols the AI approved are executed, and the
+    # AI's confidence/key_signal drive sizing. Each approved symbol is merged back onto its full
+    # scanned candidate dict (current_price, rs_rank_pct, matched_signals) so the risk gates and
+    # sizing below are unchanged from the pre-AI mechanical path.
+    _scanned_by_symbol = {c["symbol"]: c for c in scanned_short_candidates}
+    short_candidates: list[dict] = []
+    for _ai_short in decisions.get("short_candidates", []):
+        _sym = _ai_short.get("symbol")
+        _base = _scanned_by_symbol.get(_sym)
+        if _base is None:
+            # AI cited a symbol that was not offered as a short candidate — validation should have
+            # caught this; drop it defensively rather than trade an un-vetted name.
+            logger.warning(f"  Short skip {_sym}: not in scanned short candidates — dropping")
+            continue
+        if _sym in held_symbols:
+            # Position opened earlier this run (e.g. a buy) — never short a held long.
+            continue
+        short_candidates.append(
+            {
+                **_base,
+                "confidence": _ai_short.get("confidence", _base.get("confidence", 0)),
+                "key_signal": _ai_short.get("key_signal") or _base.get("key_signal", "rs_short"),
+                "ai_reasoning": _ai_short.get("reasoning", ""),
+            }
+        )
     if not short_candidates:
         return
 
@@ -1679,6 +1708,15 @@ def _build_data_bundle(
             s.update(si_short[s["symbol"]])
     logger.info(f"Short universe: {len(short_snapshots)} snapshots enriched")
 
+    # Rule-gate the short universe into candidates BEFORE the AI call (ADR-006 B2) so they can be
+    # routed through the AI for veto/ranking, mirroring filtered_candidates on the buy side. The
+    # scanner is itself regime-gated (returns [] outside SHORT_ALLOWED_REGIMES), so this is empty
+    # in non-bear regimes and the AI is offered no shorts there.
+    short_candidates = _stock_scanner.scan_short_candidates(
+        short_snapshots, mc.regime.get("regime", "UNKNOWN"), snap.held_symbols
+    )
+    logger.info(f"Short candidates (rule-gated): {len(short_candidates)}")
+
     return DataBundle(
         snapshots=snapshots,
         ai_snapshots=ai_snapshots,
@@ -1687,6 +1725,7 @@ def _build_data_bundle(
         news=news,
         sentiment=sent,
         short_snapshots=short_snapshots,
+        short_candidates=short_candidates,
     )
 
 
@@ -1707,9 +1746,18 @@ def _run_ai_phase(
     _audit_log = deps.audit_log if deps is not None else audit_log
     _alerts = deps.alerts if deps is not None else alerts
     _stock_scanner = deps.stock_scanner if deps is not None else stock_scanner
-    if not db.ai_snapshots:
-        logger.info("AI analysis skipped — no positions to evaluate.")
-        return {"buy_candidates": [], "position_decisions": [], "market_summary": "", "date": ""}
+    # Run the AI whenever there is anything to decide on either side. Shorts now route through the
+    # AI (ADR-006 B2), so an empty long set must NOT skip the call when short candidates exist —
+    # otherwise standalone bear-regime shorts (the ADR-006 target case) would never be evaluated.
+    if not db.ai_snapshots and not db.short_candidates:
+        logger.info("AI analysis skipped — no positions or short candidates to evaluate.")
+        return {
+            "buy_candidates": [],
+            "short_candidates": [],
+            "position_decisions": [],
+            "market_summary": "",
+            "date": "",
+        }
 
     track_record = _portfolio_tracker.get_track_record(10)
     logger.info("Running AI analysis...")
@@ -1731,6 +1779,7 @@ def _run_ai_phase(
         leading_sectors=mc.leading_sectors,
         options_signals=db.options_sigs,
         lessons=mc.lessons,
+        short_candidates=db.short_candidates,
         run_id=run_id,
     )
 
@@ -1740,23 +1789,33 @@ def _run_ai_phase(
 
     # ── Validate AI response before acting ───────────────────────────────────
     ai_known_symbols = {s["symbol"] for s in db.ai_snapshots}
+    known_short_symbols = {c["symbol"] for c in db.short_candidates}
     is_valid, validation_errors = _validate_ai_response(
-        decisions, ai_known_symbols, held_symbols=snap.held_symbols
+        decisions,
+        ai_known_symbols,
+        held_symbols=snap.held_symbols,
+        known_short_symbols=known_short_symbols,
     )
     if not is_valid:
         _audit_log.log_validation_failure(validation_errors)
-        buy_domain_only = validation_errors and all(
-            e.startswith("BUY candidate '") or e.startswith("buy_candidates")
-            for e in validation_errors
+        # Domain errors (out-of-universe, already-held) only taint the side they belong to;
+        # buy, short, and sell decisions are independent paths. A structural/schema error means
+        # the whole response is untrustworthy and every Claude-driven side is blocked.
+        _buy_prefixes = ("BUY candidate '", "buy_candidates")
+        _short_prefixes = ("SHORT candidate '", "short_candidates")
+        domain_only = validation_errors and all(
+            e.startswith(_buy_prefixes + _short_prefixes) for e in validation_errors
         )
-        if buy_domain_only:
-            # BUY domain errors (out-of-universe, already-held) only taint buy decisions.
-            # Sell decisions are independent and must still execute.
+        if domain_only:
+            if any(e.startswith(_buy_prefixes) for e in validation_errors):
+                decisions["buy_candidates"] = []
+            if any(e.startswith(_short_prefixes) for e in validation_errors):
+                decisions["short_candidates"] = []
             logger.warning(
-                f"AI response has {len(validation_errors)} BUY domain error(s) — "
-                f"blocking buys only, preserving sell decisions: {validation_errors}"
+                f"AI response has {len(validation_errors)} domain error(s) — "
+                f"blocking only the offending side(s), preserving sell decisions: "
+                f"{validation_errors}"
             )
-            decisions["buy_candidates"] = []
         else:
             # Structural/schema errors: the whole response is untrustworthy.
             logger.error(
@@ -1768,6 +1827,7 @@ def _run_ai_phase(
                 f"AI response invalid ({len(validation_errors)} errors) — no Claude orders this run",
             )
             decisions["buy_candidates"] = []
+            decisions["short_candidates"] = []
             decisions["position_decisions"] = []
 
     logger.info(f"Market: {decisions.get('market_summary', '')}")
@@ -3278,10 +3338,11 @@ def _run_inner(
         deps=deps,
     )
 
-    # ── Execute shorts ────────────────────────────────────────────────────────
+    # ── Execute shorts (AI-vetted; ADR-006 B2) ───────────────────────────────────
     _execute_shorts(
         client=client,
-        snapshots=db.short_snapshots,
+        decisions=decisions,
+        scanned_short_candidates=db.short_candidates,
         regime=mc.regime,
         open_positions=open_positions,
         account_now=account_now,

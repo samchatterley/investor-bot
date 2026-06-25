@@ -2436,22 +2436,10 @@ class TestShortPreTrade(unittest.TestCase):
             def record_short(self, *a, **kw):
                 pass
 
-        class FakeScanner:
-            def scan_short_candidates(self, snapshots, regime, held):
-                return [
-                    {
-                        "symbol": "XYZ",
-                        "current_price": 50.0,
-                        "matched_signals": ["earnings_gap_down"],
-                        "key_signal": "earnings_gap_down",
-                        "confidence": 8,
-                        "rs_rank_pct": 10.0,
-                    }
-                ]
-
+        # ADR-006 B2: _execute_shorts no longer scans — it consumes the AI-vetted decisions and the
+        # scanned candidates passed in — so deps.stock_scanner is unused on this path.
         deps = TradingDeps.__new__(TradingDeps)
         deps.trader = FakeTrader()
-        deps.stock_scanner = FakeScanner()
         deps.sector_data = type("SD", (), {"get_sector": staticmethod(lambda s: "Technology")})()
         deps.sector_momentum = type(
             "SM",
@@ -2481,6 +2469,34 @@ class TestShortPreTrade(unittest.TestCase):
         deps.alerts = type("A", (), {"alert_error": lambda self, *a, **kw: None})()
         return deps
 
+    @staticmethod
+    def _xyz_scanned():
+        """The rule-gated short candidate (full dict) the scanner produces pre-AI."""
+        return [
+            {
+                "symbol": "XYZ",
+                "current_price": 50.0,
+                "matched_signals": ["earnings_gap_down"],
+                "key_signal": "earnings_gap_down",
+                "confidence": 8,
+                "rs_rank_pct": 10.0,
+            }
+        ]
+
+    @staticmethod
+    def _xyz_decisions():
+        """The AI's approved short_candidates (ADR-006 B2) citing the scanned XYZ candidate."""
+        return {
+            "short_candidates": [
+                {
+                    "symbol": "XYZ",
+                    "confidence": 8,
+                    "key_signal": "earnings_gap_down",
+                    "reasoning": "negative PEAD continuation on heavy volume",
+                }
+            ]
+        }
+
     def test_short_order_skipped_when_hard_to_borrow(self):
         """A hard-to-borrow name (high short interest → borrow rate ≥ HTB threshold) is skipped
         by the borrow-cost gate before sizing."""
@@ -2502,7 +2518,8 @@ class TestShortPreTrade(unittest.TestCase):
 
         _execute_shorts(
             client=None,
-            snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+            decisions=self._xyz_decisions(),
+            scanned_short_candidates=self._xyz_scanned(),
             regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
             open_positions=[],
             account_now={"portfolio_value": 10_000.0},
@@ -2537,7 +2554,8 @@ class TestShortPreTrade(unittest.TestCase):
         ):
             _execute_shorts(
                 client=None,
-                snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+                decisions=self._xyz_decisions(),
+                scanned_short_candidates=self._xyz_scanned(),
                 regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
                 open_positions=[],
                 account_now={"portfolio_value": 10_000.0},
@@ -2582,7 +2600,8 @@ class TestShortPreTrade(unittest.TestCase):
         ):
             _execute_shorts(
                 client=None,
-                snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+                decisions=self._xyz_decisions(),
+                scanned_short_candidates=self._xyz_scanned(),
                 regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
                 open_positions=[],
                 account_now={"portfolio_value": 10_000.0},
@@ -2627,7 +2646,8 @@ class TestShortPreTrade(unittest.TestCase):
         ):
             _execute_shorts(
                 client=None,
-                snapshots=[{"symbol": "XYZ", "current_price": 50.0}],
+                decisions=self._xyz_decisions(),
+                scanned_short_candidates=self._xyz_scanned(),
                 regime={"regime": "DEFENSIVE_DOWNTREND", "vix_term_inverted": True},
                 open_positions=[],
                 account_now={"portfolio_value": 10_000.0},

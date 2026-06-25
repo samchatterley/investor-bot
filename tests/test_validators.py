@@ -2,7 +2,14 @@ import unittest
 
 from pydantic import ValidationError
 
-from models import VALID_BUY_SIGNALS, BuyCandidate, DecisionSet, PositionDecision
+from models import (
+    VALID_BUY_SIGNALS,
+    VALID_SHORT_SIGNALS,
+    BuyCandidate,
+    DecisionSet,
+    PositionDecision,
+    ShortCandidate,
+)
 from utils.validators import check_pre_trade, sanitize_headlines, validate_ai_response
 
 _KNOWN = {"AAPL", "MSFT", "NVDA", "SPY"}
@@ -26,6 +33,19 @@ def _valid_buy(symbol="AAPL", confidence=8, reasoning=_GOOD_REASONING, signal="m
 
 def _valid_sell(symbol="MSFT", action="SELL", reasoning="Exit on valuation."):
     return {"symbol": symbol, "action": action, "reasoning": reasoning}
+
+
+def _valid_short(
+    symbol="WEAK", confidence=7, reasoning=_GOOD_REASONING, signal="earnings_gap_down"
+):
+    return {
+        "symbol": symbol,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "key_signal": signal,
+        "do_nothing_case": "Crowded short — squeeze risk if it covers into strength.",
+        "invalidation_trigger": "Reclaims the gap and closes above VWAP on volume.",
+    }
 
 
 def _valid_decisions(buys=None, sells=None, summary=_GOOD_SUMMARY):
@@ -667,3 +687,125 @@ class TestCheckPreTrade(unittest.TestCase):
         approved, reason = check_pre_trade("AAPL", 60_000, 140_000, 50_000, 150_000)
         self.assertFalse(approved)
         self.assertIn("single-order cap", reason)
+
+
+# ── Short-side mirror (ADR-006 B2) ────────────────────────────────────────────
+
+
+class TestShortCandidateModel(unittest.TestCase):
+    """ShortCandidate mirrors BuyCandidate but validates against the short signal universe."""
+
+    def test_valid_short_parses(self):
+        c = ShortCandidate.model_validate(_valid_short())
+        self.assertEqual(c.symbol, "WEAK")
+        self.assertEqual(c.key_signal, "earnings_gap_down")
+
+    def test_unknown_short_signal_raises(self):
+        with self.assertRaises(ValidationError) as ctx:
+            ShortCandidate.model_validate(_valid_short(signal="momentum"))  # a long signal
+        self.assertIn("Unknown short signal", str(ctx.exception))
+
+    def test_disabled_short_signal_rejected(self):
+        # death_cross is in SHORT_GLOBALLY_DISABLED → not citable
+        self.assertNotIn("death_cross", VALID_SHORT_SIGNALS)
+        with self.assertRaises(ValidationError):
+            ShortCandidate.model_validate(_valid_short(signal="death_cross"))
+
+    def test_none_key_signal_allowed(self):
+        data = _valid_short()
+        data["key_signal"] = None
+        c = ShortCandidate.model_validate(data)
+        self.assertIsNone(c.key_signal)
+
+    def test_unknown_catchall_is_citable(self):
+        c = ShortCandidate.model_validate(_valid_short(signal="unknown"))
+        self.assertEqual(c.key_signal, "unknown")
+
+
+class TestShortDecisionSetValidation(unittest.TestCase):
+    """DecisionSet short-side model validators."""
+
+    def test_short_candidates_default_empty(self):
+        ds = DecisionSet.model_validate(_valid_decisions())
+        self.assertEqual(ds.short_candidates, [])
+
+    def test_valid_short_candidates_parse(self):
+        data = _valid_decisions()
+        data["short_candidates"] = [_valid_short()]
+        ds = DecisionSet.model_validate(data)
+        self.assertEqual(ds.short_candidates[0].symbol, "WEAK")
+
+    def test_duplicate_short_symbols_raises(self):
+        data = _valid_decisions()
+        data["short_candidates"] = [_valid_short(), _valid_short()]
+        with self.assertRaises(ValidationError) as ctx:
+            DecisionSet.model_validate(data)
+        self.assertIn("Duplicate short candidates", str(ctx.exception))
+
+    def test_buy_short_conflict_raises(self):
+        # Same symbol in both BUY and SHORT is contradictory.
+        data = _valid_decisions(buys=[_valid_buy(symbol="AAPL")])
+        data["short_candidates"] = [_valid_short(symbol="AAPL")]
+        with self.assertRaises(ValidationError) as ctx:
+            DecisionSet.model_validate(data)
+        self.assertIn("both BUY and SHORT", str(ctx.exception))
+
+
+class TestValidateShortPhase2(unittest.TestCase):
+    """validate_ai_response Phase-2 context checks for short candidates."""
+
+    def _decisions_with_short(self, short):
+        data = _valid_decisions(buys=[], sells=[])
+        data["short_candidates"] = [short]
+        return data
+
+    def test_valid_short_in_known_universe_passes(self):
+        ok, errors = validate_ai_response(
+            self._decisions_with_short(_valid_short(symbol="WEAK")),
+            _KNOWN,
+            held_symbols=set(),
+            known_short_symbols={"WEAK"},
+        )
+        self.assertTrue(ok, errors)
+
+    def test_short_not_in_known_universe_rejected(self):
+        ok, errors = validate_ai_response(
+            self._decisions_with_short(_valid_short(symbol="GHOST")),
+            _KNOWN,
+            held_symbols=set(),
+            known_short_symbols={"WEAK"},
+        )
+        self.assertFalse(ok)
+        self.assertTrue(
+            any("SHORT candidate 'GHOST' not in scanned short universe" in e for e in errors)
+        )
+
+    def test_short_already_held_long_rejected(self):
+        ok, errors = validate_ai_response(
+            self._decisions_with_short(_valid_short(symbol="AAPL")),
+            _KNOWN,
+            held_symbols={"AAPL"},
+            known_short_symbols={"AAPL"},
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("already held long" in e for e in errors))
+
+    def test_short_membership_skipped_when_known_short_symbols_none(self):
+        # When the caller does not supply the offered set, the membership check is skipped
+        # (held-long check still applies). Mirrors how the in-analyst call can omit context.
+        ok, errors = validate_ai_response(
+            self._decisions_with_short(_valid_short(symbol="WEAK")),
+            _KNOWN,
+            held_symbols=set(),
+            known_short_symbols=None,
+        )
+        self.assertTrue(ok, errors)
+
+    def test_non_dict_short_candidate_skipped(self):
+        data = _valid_decisions(buys=[], sells=[])
+        data["short_candidates"] = ["not-a-dict"]
+        # Pydantic Phase-1 will flag the structural error, but Phase-2 must not crash on it.
+        ok, errors = validate_ai_response(data, _KNOWN, known_short_symbols={"WEAK"})
+        self.assertFalse(ok)
+        # No Phase-2 'not in scanned short universe' error for the non-dict entry.
+        self.assertFalse(any("not in scanned short universe" in e for e in errors))

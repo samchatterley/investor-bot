@@ -39,6 +39,7 @@ def validate_ai_response(
     decisions: dict,
     known_symbols: set[str],
     held_symbols: set[str] | None = None,
+    known_short_symbols: set[str] | None = None,
 ) -> tuple[bool, list[str]]:
     """
     Validate Claude's JSON response before executing any trade.
@@ -47,14 +48,16 @@ def validate_ai_response(
     Phase 1 — structural and domain validation via Pydantic:
       - Required fields present and correctly typed
       - Confidence is an integer 1–10 (float rejected)
-      - Reasoning meets minimum length (buy candidates: 20 chars)
-      - key_signal is from the known set
-      - No duplicate buy candidates
-      - No symbol appearing in both BUY and SELL
+      - Reasoning meets minimum length (buy/short candidates: 20 chars)
+      - key_signal is from the known set (buy and short universes)
+      - No duplicate buy/short candidates
+      - No symbol appearing in both BUY and SELL, or in both BUY and SHORT
 
     Phase 2 — runtime context checks:
       - Buy candidate symbol must be in the scanned universe
       - Buy candidate must not already be held
+      - Short candidate symbol must be in the scanned short universe (when provided)
+      - Short candidate must not already be held long
       - SELL decision must reference a currently-held symbol
     """
     errors: list[str] = []
@@ -79,6 +82,20 @@ def validate_ai_response(
             errors.append(f"BUY candidate '{sym}' not in scanned universe — rejecting")
         if held_symbols and sym in held_symbols:
             errors.append(f"BUY candidate '{sym}' already held — conflict with open position")
+
+    # Short candidates mirror the buy-side context checks: the symbol must have been
+    # offered to the AI as a short candidate (known_short_symbols), and must not already
+    # be held long (shorting a held long would just net out the existing position).
+    for c in decisions.get("short_candidates") or []:
+        if not isinstance(c, dict):
+            continue
+        sym = c.get("symbol", "")
+        if known_short_symbols is not None and sym not in known_short_symbols:
+            errors.append(f"SHORT candidate '{sym}' not in scanned short universe — rejecting")
+        if held_symbols and sym in held_symbols:
+            errors.append(
+                f"SHORT candidate '{sym}' already held long — conflict with open position"
+            )
 
     for d in decisions.get("position_decisions") or []:
         if not isinstance(d, dict):

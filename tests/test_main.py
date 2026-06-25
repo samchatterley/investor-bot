@@ -56,10 +56,11 @@ def _sentiment_snapshot():
     )
 
 
-def _decisions(buys=None, sells=None):
+def _decisions(buys=None, sells=None, shorts=None):
     return {
         "market_summary": "Test summary",
         "buy_candidates": buys or [],
+        "short_candidates": shorts or [],
         "position_decisions": sells or [],
     }
 
@@ -1343,6 +1344,46 @@ class TestRunInnerBuyFiltering(RunInnerBase):
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         sell_mock.assert_called_once()
+
+    def test_short_domain_error_clears_shorts_preserves_sells(self):
+        """ADR-006 B2: a SHORT domain error (out-of-universe short) blocks shorts only — Claude
+        sell decisions still execute and the short order is never placed."""
+        sell_mock = MagicMock(return_value=OrderResult(status=OrderStatus.FILLED, symbol="AAPL"))
+        short_mock = MagicMock()
+        decisions = _decisions(
+            sells=[{"symbol": "AAPL", "action": "SELL", "confidence": 7, "reasoning": "weak"}],
+            shorts=[
+                {
+                    "symbol": "GHOST",
+                    "confidence": 7,
+                    "reasoning": "Post-earnings gap-down continuation on heavy volume.",
+                    "key_signal": "earnings_gap_down",
+                    "do_nothing_case": "Could squeeze on covering.",
+                    "invalidation_trigger": "Reclaims the gap on volume.",
+                }
+            ],
+        )
+        deps = self._make_deps(
+            trader__get_open_positions=[{"symbol": "AAPL", "qty": 10, "unrealized_plpc": -0.02}],
+            ai_analyst__get_trading_decisions=decisions,
+            stock_scanner__scan_short_candidates=[{"symbol": "GHOST", "current_price": 30.0}],
+            trader__get_open_shorts=set(),
+            trader__get_long_notional=50_000.0,
+            trader__place_short_order=short_mock,
+            validate_ai_response=MagicMock(
+                return_value=(
+                    False,
+                    ["SHORT candidate 'GHOST' not in scanned short universe — rejecting"],
+                )
+            ),
+            trader__close_position=sell_mock,
+        )
+        with self._inner_patches():
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
+        sell_mock.assert_called_once()  # sell preserved
+        short_mock.assert_not_called()  # short blocked
 
     def test_bearish_regime_blocks_buys(self):
         buy_mock = MagicMock()
@@ -3748,6 +3789,21 @@ class TestExecuteShorts(unittest.TestCase):
         if candidates is None:
             candidates = [self._snap()]
 
+        # ADR-006 B2: _execute_shorts now consumes the AI-vetted short_candidates merged back onto
+        # the scanned dicts. Build an approved AI decision for every scanned candidate so these
+        # tests exercise the same downstream gates as before the AI was wired in.
+        decisions = {
+            "short_candidates": [
+                {
+                    "symbol": c["symbol"],
+                    "confidence": c.get("confidence", 8),
+                    "key_signal": c.get("key_signal", "earnings_gap_down"),
+                    "reasoning": "negative PEAD continuation on heavy volume",
+                }
+                for c in candidates
+            ]
+        }
+
         filled_order = OrderResult(
             status=OrderStatus.FILLED,
             symbol="WEAK",
@@ -3790,7 +3846,8 @@ class TestExecuteShorts(unittest.TestCase):
                     mocks[target] = stack.enter_context(patch(target, return_value=val))
             _execute_shorts(
                 client=MagicMock(),
-                snapshots=[self._snap()],
+                decisions=decisions,
+                scanned_short_candidates=candidates,
                 regime=regime if regime is not None else {"regime": "BULL_TREND"},
                 open_positions=[],
                 account_now=self._account_now(),
@@ -3800,6 +3857,63 @@ class TestExecuteShorts(unittest.TestCase):
                 _live_shadow=_live_shadow,
             )
         return all_trades, executed_symbols, mocks
+
+    def test_ai_short_not_in_scanned_is_dropped(self):
+        """ADR-006 B2: the AI citing a symbol that was not offered as a short candidate is dropped
+        defensively (validation should already prevent it) — no trade results."""
+        from main import _execute_shorts
+
+        all_trades: list = []
+        _execute_shorts(
+            client=MagicMock(),
+            decisions={
+                "short_candidates": [
+                    {
+                        "symbol": "GHOST",
+                        "confidence": 7,
+                        "key_signal": "earnings_gap_down",
+                        "reasoning": "not in the scanned set",
+                    }
+                ]
+            },
+            scanned_short_candidates=[self._snap("WEAK")],
+            regime={"regime": "STRESS_RISK_OFF", "vix_term_inverted": True},
+            open_positions=[],
+            account_now=self._account_now(),
+            all_trades=all_trades,
+            executed_symbols=set(),
+            dry_run=True,
+            _live_shadow=False,
+        )
+        self.assertEqual(all_trades, [])
+
+    def test_ai_short_already_held_long_skipped(self):
+        """A short the AI approved for a symbol opened long earlier this run is skipped at merge."""
+        from main import _execute_shorts
+
+        all_trades: list = []
+        _execute_shorts(
+            client=MagicMock(),
+            decisions={
+                "short_candidates": [
+                    {
+                        "symbol": "WEAK",
+                        "confidence": 7,
+                        "key_signal": "earnings_gap_down",
+                        "reasoning": "held long — must not short",
+                    }
+                ]
+            },
+            scanned_short_candidates=[self._snap("WEAK")],
+            regime={"regime": "STRESS_RISK_OFF", "vix_term_inverted": True},
+            open_positions=[{"symbol": "WEAK"}],
+            account_now=self._account_now(),
+            all_trades=all_trades,
+            executed_symbols=set(),
+            dry_run=True,
+            _live_shadow=False,
+        )
+        self.assertEqual(all_trades, [])
 
     def test_short_slots_full_returns_early(self):
         # All short slots occupied → no candidates iterated
@@ -3992,42 +4106,26 @@ class TestExecuteShorts(unittest.TestCase):
 
     def test_vix_not_inverted_blocks_shorts_in_non_bear_regime(self):
         # ADR-006 B1: outside the standalone-short (bear) regimes, shorts still require VIX
-        # term-structure inversion — NEUTRAL_CHOP + not inverted → returns before the scan.
-        from main import _execute_shorts
-
-        with patch("main.stock_scanner.scan_short_candidates") as mock_scan:
-            _execute_shorts(
-                client=MagicMock(),
-                snapshots=[self._snap()],
-                regime={"regime": "NEUTRAL_CHOP", "vix_term_inverted": False},
-                open_positions=[],
-                account_now=self._account_now(),
-                all_trades=[],
-                executed_symbols=set(),
-                dry_run=True,
-                _live_shadow=False,
-            )
-            mock_scan.assert_not_called()
+        # term-structure inversion — NEUTRAL_CHOP + not inverted → returns at the regime gate
+        # before any AI-vetted candidate is processed.
+        all_trades, _, mocks = self._run(
+            regime={"regime": "NEUTRAL_CHOP", "vix_term_inverted": False},
+            dry_run=False,
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
 
     def test_bear_regime_shorts_without_vix_inversion(self):
         # ADR-006 B1: a confirmed bear regime is itself the short signal — STRESS_RISK_OFF with
-        # VIX not inverted must NOT be blocked; the scan proceeds (the unblock that lets the bot
-        # short in ordinary downtrends rather than needing a vol panic).
-        from main import _execute_shorts
-
-        with patch("main.stock_scanner.scan_short_candidates", return_value=[]) as mock_scan:
-            _execute_shorts(
-                client=MagicMock(),
-                snapshots=[self._snap()],
-                regime={"regime": "STRESS_RISK_OFF", "vix_term_inverted": False},
-                open_positions=[],
-                account_now=self._account_now(),
-                all_trades=[],
-                executed_symbols=set(),
-                dry_run=True,
-                _live_shadow=False,
-            )
-            mock_scan.assert_called_once()
+        # VIX not inverted must NOT be blocked; the AI-vetted shorts proceed (the unblock that lets
+        # the bot short in ordinary downtrends rather than needing a vol panic).
+        all_trades, executed, _ = self._run(
+            regime={"regime": "STRESS_RISK_OFF", "vix_term_inverted": False},
+            dry_run=True,
+        )
+        self.assertEqual(len(all_trades), 1)
+        self.assertEqual(all_trades[0]["action"], "SHORT")
+        self.assertIn("WEAK", executed)
 
 
 class TestRunInnerCoverShorts(RunInnerBase):
@@ -5951,7 +6049,17 @@ class TestRunInnerNewFeatureGates(RunInnerBase):
                 stack.enter_context(p)
             _execute_shorts(
                 client=MagicMock(),
-                snapshots=[candidate],
+                decisions={
+                    "short_candidates": [
+                        {
+                            "symbol": "WEAK",
+                            "confidence": 8,
+                            "key_signal": "earnings_gap_down",
+                            "reasoning": "negative PEAD continuation on heavy volume",
+                        }
+                    ]
+                },
+                scanned_short_candidates=[candidate],
                 regime={"regime": "BULL_TREND"},
                 open_positions=[],
                 account_now={"portfolio_value": 100_000.0, "cash": 50_000.0},
@@ -6305,8 +6413,21 @@ class TestOrderLedgerUnavailableInShorts(RunInnerBase):
         deps = self._make_deps(
             trader__get_open_shorts=short_mock,
             alerts__alert_error=alert_mock,
-            # non-empty so _execute_shorts reaches get_open_shorts instead of early-returning
+            # non-empty scanned set + matching AI-approved short so _execute_shorts reaches
+            # get_open_shorts instead of early-returning (ADR-006 B2 routes shorts through the AI).
             stock_scanner__scan_short_candidates=[{"symbol": "TSLA", "current_price": 200.0}],
+            ai_analyst__get_trading_decisions=_decisions(
+                shorts=[
+                    {
+                        "symbol": "TSLA",
+                        "confidence": 7,
+                        "reasoning": "Post-earnings gap-down continuation on heavy volume.",
+                        "key_signal": "earnings_gap_down",
+                        "do_nothing_case": "Could squeeze on heavy short covering.",
+                        "invalidation_trigger": "Reclaims the gap and closes above VWAP.",
+                    }
+                ]
+            ),
         )
         with self._inner_patches():
             from main import _run_inner

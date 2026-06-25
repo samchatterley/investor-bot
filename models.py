@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 if TYPE_CHECKING:  # pragma: no cover
     from utils.health import HealthStatus
 
-from signals.registry import AI_CITEABLE_SIGNALS
+from signals.registry import AI_CITEABLE_SHORT_SIGNALS, AI_CITEABLE_SIGNALS
 
 
 class BrokerStateUnavailable(Exception):
@@ -59,6 +59,9 @@ class OrderResult:
 # Add or remove signals in signals/evaluator.py (SIGNAL_PRIORITY / GLOBALLY_DISABLED).
 VALID_BUY_SIGNALS: frozenset[str] = AI_CITEABLE_SIGNALS
 
+# Short-side mirror (ADR-006 B2) — see SHORT_SIGNAL_PRIORITY / SHORT_GLOBALLY_DISABLED.
+VALID_SHORT_SIGNALS: frozenset[str] = AI_CITEABLE_SHORT_SIGNALS
+
 
 class BuyCandidate(BaseModel):
     symbol: str
@@ -78,6 +81,30 @@ class BuyCandidate(BaseModel):
         return v
 
 
+class ShortCandidate(BaseModel):
+    """AI-vetted short candidate — the short-side mirror of BuyCandidate (ADR-006 B2).
+
+    Same shape and contract as a buy candidate; key_signal is validated against the
+    short signal universe so the AI cannot cite a disabled/unknown short setup.
+    """
+
+    symbol: str
+    confidence: int = Field(ge=1, le=10)
+    reasoning: str = Field(min_length=20, max_length=2000)
+    key_signal: str | None = None
+    do_nothing_case: str = Field(min_length=10, max_length=500)
+    invalidation_trigger: str = Field(min_length=10, max_length=500)
+
+    model_config = {"extra": "ignore"}
+
+    @field_validator("key_signal")
+    @classmethod
+    def validate_signal(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_SHORT_SIGNALS:
+            raise ValueError(f"Unknown short signal '{v}'")
+        return v
+
+
 class PositionDecision(BaseModel):
     symbol: str
     action: Literal["HOLD", "SELL"]
@@ -91,6 +118,7 @@ class DecisionSet(BaseModel):
     market_summary: str = Field(min_length=10, max_length=300)
     position_decisions: list[PositionDecision]
     buy_candidates: list[BuyCandidate] = Field(default_factory=list)
+    short_candidates: list[ShortCandidate] = Field(default_factory=list)
 
     model_config = {"extra": "ignore"}
 
@@ -108,6 +136,19 @@ class DecisionSet(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def no_duplicate_short_symbols(self) -> DecisionSet:
+        symbols = [c.symbol for c in self.short_candidates]
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for s in symbols:
+            if s in seen:
+                duplicates.add(s)
+            seen.add(s)
+        if duplicates:
+            raise ValueError(f"Duplicate short candidates: {sorted(duplicates)}")
+        return self
+
+    @model_validator(mode="after")
     def no_buy_sell_conflict(self) -> DecisionSet:
         buy_symbols = {c.symbol for c in self.buy_candidates}
         sell_symbols = {d.symbol for d in self.position_decisions if d.action == "SELL"}
@@ -116,6 +157,15 @@ class DecisionSet(BaseModel):
             raise ValueError(
                 f"Symbol(s) in both BUY candidates and SELL decisions: {sorted(conflicts)}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def no_buy_short_conflict(self) -> DecisionSet:
+        buy_symbols = {c.symbol for c in self.buy_candidates}
+        short_symbols = {c.symbol for c in self.short_candidates}
+        conflicts = buy_symbols & short_symbols
+        if conflicts:
+            raise ValueError(f"Symbol(s) in both BUY and SHORT candidates: {sorted(conflicts)}")
         return self
 
 
@@ -200,3 +250,7 @@ class DataBundle:
     news: dict
     sentiment: dict
     short_snapshots: list  # expanded short universe with rs_rank_pct + rs_rank_pct_10d_ago
+    # Rule-gated short candidates (ADR-006 B2): scanned pre-AI so they can be routed through the
+    # AI for veto/ranking, exactly as filtered_candidates feeds the buy side. Empty outside the
+    # short-allowed bear regimes. Defaulted so older call sites/tests stay valid.
+    short_candidates: list = field(default_factory=list)

@@ -133,6 +133,47 @@ def test_ai_tool_enum_matches_registry():
     )
 
 
+# ── 2b. Short-side signal registry consistency (ADR-006 B2) ───────────────────
+
+
+def test_valid_short_signals_derived_from_registry():
+    """VALID_SHORT_SIGNALS must equal AI_CITEABLE_SHORT_SIGNALS (the registry derivation)."""
+    from models import VALID_SHORT_SIGNALS
+    from signals.registry import AI_CITEABLE_SHORT_SIGNALS
+
+    assert VALID_SHORT_SIGNALS == AI_CITEABLE_SHORT_SIGNALS, (
+        f"VALID_SHORT_SIGNALS != AI_CITEABLE_SHORT_SIGNALS.\n"
+        f"  In VALID_SHORT_SIGNALS only: {VALID_SHORT_SIGNALS - AI_CITEABLE_SHORT_SIGNALS}\n"
+        f"  In AI_CITEABLE_SHORT_SIGNALS only: {AI_CITEABLE_SHORT_SIGNALS - VALID_SHORT_SIGNALS}"
+    )
+
+
+def test_no_short_globally_disabled_signal_in_ai_citeable():
+    """Disabled short signals must not be citable — same contamination risk as the long side."""
+    from signals.evaluator import SHORT_GLOBALLY_DISABLED
+    from signals.registry import AI_CITEABLE_SHORT_SIGNALS
+
+    overlap = SHORT_GLOBALLY_DISABLED & AI_CITEABLE_SHORT_SIGNALS
+    assert not overlap, (
+        f"Globally-disabled short signals are in AI_CITEABLE_SHORT_SIGNALS: {overlap}."
+    )
+
+
+def test_ai_tool_short_enum_matches_registry():
+    """The AI tool short key_signal enum must exactly equal AI_CITEABLE_SHORT_SIGNALS."""
+    from analysis.ai_analyst import _DECISION_TOOL
+    from signals.registry import AI_CITEABLE_SHORT_SIGNALS
+
+    short_items = _DECISION_TOOL["input_schema"]["properties"]["short_candidates"]["items"]
+    tool_enum = set(short_items["properties"]["key_signal"]["enum"])
+
+    assert tool_enum == AI_CITEABLE_SHORT_SIGNALS, (
+        f"AI tool short key_signal enum != AI_CITEABLE_SHORT_SIGNALS.\n"
+        f"  In enum only: {tool_enum - AI_CITEABLE_SHORT_SIGNALS}\n"
+        f"  In registry only: {AI_CITEABLE_SHORT_SIGNALS - tool_enum}"
+    )
+
+
 # ── 3. Position-weight cap after full multiplier chain ────────────────────────
 
 
@@ -327,6 +368,30 @@ def test_system_prompt_mentions_all_active_long_signals():
         f"Active signals missing from SYSTEM_PROMPT: {missing}. "
         "Add descriptions for these signals so Claude can correctly weight them."
     )
+
+
+def test_system_prompt_mentions_all_active_short_signals():
+    """SYSTEM_PROMPT must mention every active short signal by name (ADR-006 B2 parity)."""
+    from analysis.ai_analyst import SYSTEM_PROMPT
+    from signals.registry import ACTIVE_SHORT_SIGNALS
+
+    missing = {sig for sig in ACTIVE_SHORT_SIGNALS if sig not in SYSTEM_PROMPT}
+    assert not missing, (
+        f"Active short signals missing from SYSTEM_PROMPT: {missing}. "
+        "Add descriptions so Claude can correctly weight the shorts it is offered."
+    )
+
+
+def test_system_prompt_contains_no_short_globally_disabled_signals():
+    """SYSTEM_PROMPT must not mention any globally-disabled short signal by name."""
+    from analysis.ai_analyst import SYSTEM_PROMPT
+    from signals.evaluator import SHORT_GLOBALLY_DISABLED
+
+    for sig in SHORT_GLOBALLY_DISABLED:
+        assert sig not in SYSTEM_PROMPT, (
+            f"Globally-disabled short signal '{sig}' appears in SYSTEM_PROMPT. "
+            "Remove it — disabled signals must not appear in the AI's world model."
+        )
 
 
 # ── 7. key_signal attribution: corrected value reaches record_buy ────────────

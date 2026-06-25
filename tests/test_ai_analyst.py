@@ -59,6 +59,31 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("STRESS_RISK_OFF", result)
         self.assertIn("NO new BUYs", result)
 
+    def test_short_candidates_block_appears(self):
+        # ADR-006 B2: a SHORT CANDIDATES block is rendered when short candidates are offered.
+        shorts = [
+            {
+                "symbol": "WEAK",
+                "key_signal": "earnings_gap_down",
+                "matched_signals": ["earnings_gap_down"],
+                "confidence": 7,
+                "rs_rank_pct": 8.0,
+                "current_price": 42.5,
+            }
+        ]
+        result = self._build(short_candidates=shorts)
+        self.assertIn("SHORT CANDIDATES (rule-gated bearish setups", result)
+        self.assertIn("WEAK", result)
+        self.assertIn("earnings_gap_down", result)
+
+    def test_no_short_block_when_no_short_candidates(self):
+        # No short candidates (the non-bear case) → no rendered SHORT CANDIDATES data block.
+        # (The task instructions still reference the block by name, so check the data header.)
+        result = self._build()
+        self.assertNotIn("SHORT CANDIDATES (rule-gated bearish setups", result)
+        result_empty = self._build(short_candidates=[])
+        self.assertNotIn("SHORT CANDIDATES (rule-gated bearish setups", result_empty)
+
     def test_regime_block_appears_when_not_bearish(self):
         regime = {"regime": "BULL_TREND", "spy_change_pct": 1.2, "is_bearish": False}
         result = self._build(market_regime=regime)
