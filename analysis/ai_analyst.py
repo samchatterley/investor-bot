@@ -95,6 +95,12 @@ bearish setups:
 - lockup_expiry_short: IPO lock-up expiry within 5-10 days — insider share supply incoming
 - piotroski_distress_short: Piotroski F-score ≤ 2 — multi-factor quality failure
 - accruals_quality_short: accruals ratio > 0.15 with an extended price — earnings-quality risk
+- accounting_concern_short: an 8-K restatement, non-reliance, or auditor change — a hard governance
+  red flag; among the strongest single-name short catalysts
+- insider_selling_short: a cluster of open-market insider sales (≥3 distinct insiders) — informed
+  distribution (note: noisier than insider buying; weigh against scheduled-sale risk)
+- index_deletion_short: the name is being removed from a major index — forced index-fund selling
+  into the effective date
 For every short, populate do_nothing_case with the strongest squeeze/borrow/cover risk; if you
 cannot clearly refute it, omit the short. Never short a name already held long.
 

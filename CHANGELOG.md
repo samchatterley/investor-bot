@@ -4,6 +4,35 @@ Full version history. Most recent first.
 
 ---
 
+### 1.119 — June 2026 — three catalyst short signals (ADR-006 Tier-1)
+
+The short-signal research (see `docs/short_disabled_backtest_findings.md`) found that price/technical
+shorts are dead but shorts work as **catalysts**. This adds the three uncovered catalyst-short groups
+whose data feeds already exist, and fixes a latent gap where catalyst flags never reached the short
+snapshots at all:
+
+- **`insider_selling_short`** — `data/insider_feed.py` now parses open-market *sales* (Form 4 code
+  'S'), not just purchases; fires on a cluster of ≥3 distinct insider sellers (higher bar than the
+  buy side — sells are noisier).
+- **`accounting_concern_short`** — fires on an 8-K restatement / non-reliance / auditor change
+  (the EDGAR `accounting_concern` flag, previously only used to *block longs*).
+- **`index_deletion_short`** — `data/index_membership.classify_index_deletion` detects a name being
+  *removed* from a major index (forced index-fund selling). News-derived; coverage limited to the
+  long-side news set for now.
+
+**Plumbing:** `_build_data_bundle` now enriches the short snapshots with the same EDGAR + Form-4 feeds
+the long side uses — which also lights up the previously **dead-wired** `guidance_downgrade` and
+`secondary_offering_short` (they read flags the short path never set). `scan_short_candidates` gains an
+RS-rank-agnostic catalyst path (a corporate catalyst doesn't need the name to already be a laggard).
+All three are active and AI-citeable; the B2 AI-veto gates every one before a live order. They are
+**not backtestable** (no historical point-in-time event feed) and ship on forward-evidence.
+
+Also hardened `run()`'s startup guards to `sys.exit(1)` **and** `return`, so a mocked `sys.exit` in
+tests can't fall through into the live trading flow (this was masking a network call in the guard
+tests). New unit + wiring + scanner tests; 100% line/branch coverage held; ruff + mypy clean.
+
+---
+
 ### 1.118 — June 2026 — route shorts through the AI (ADR-006 part B / B2)
 
 Shorts were taken **mechanically** after B1: the rule scanner picked them and `_execute_shorts` placed them with no AI judgement, while every long passed through Claude for ranking, veto, and context-weighting. The two sides were asymmetric — the AI could not down-weight a crowded or thesis-stale short, and the experiment had no short-side decision record to measure.

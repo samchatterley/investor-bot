@@ -194,14 +194,26 @@ class TestParseForm4(unittest.TestCase):
         self.assertNotIn("xslF345X06", url)
         self.assertEqual(len(txns), 1)
 
-    def test_excludes_sales(self):
+    def test_includes_sales_as_sell_kind(self):
+        # ADR-006 Tier-1: open-market sales (code 'S' / 'D') are now parsed, tagged kind="sell",
+        # to feed the short-side insider_sell_cluster. (Previously sales were excluded entirely.)
         with (
             patch("data.insider_feed.requests.get") as mock_get,
             patch("data.insider_feed.time.sleep"),
         ):
             mock_get.return_value = _mock_response(content=_FORM4_XML_SALE)
             txns = _parse_form4("320193", "000032019326000002", "form4.xml")
-        self.assertEqual(txns, [])
+        self.assertEqual(len(txns), 1)
+        self.assertEqual(txns[0]["kind"], "sell")
+
+    def test_purchase_tagged_buy_kind(self):
+        with (
+            patch("data.insider_feed.requests.get") as mock_get,
+            patch("data.insider_feed.time.sleep"),
+        ):
+            mock_get.return_value = _mock_response(content=_FORM4_XML_SINGLE)
+            txns = _parse_form4("320193", "000032019326000001", "form4.xml")
+        self.assertEqual(txns[0]["kind"], "buy")
 
     def test_excludes_option_exercises(self):
         with (
@@ -833,3 +845,34 @@ class TestFetchOneNewFields(unittest.TestCase):
         data = self._run(txns)
         self.assertIn("insider_strong_cluster", data)
         self.assertIn("insider_comp_ratio", data)
+
+    # ── insider-SELL cluster (ADR-006 Tier-1, short side) ───────────────────────
+    def _sell_txn(self, reporter, shares=1000.0, price=50.0, days_ago=2):
+        d = (date.today() - timedelta(days=days_ago)).isoformat()
+        return {"reporter": reporter, "kind": "sell", "shares": shares, "price": price, "date": d}
+
+    def test_sell_cluster_true_with_three_sellers_no_buys(self):
+        # Sell-only filing (no open-market buys) must still return a record so the short side
+        # can read insider_sell_cluster (covers the no-buys-but-sells branch).
+        txns = [self._sell_txn("A"), self._sell_txn("B"), self._sell_txn("C")]
+        data = self._run(txns)
+        self.assertTrue(data["insider_sell_cluster"])
+        self.assertEqual(data["insider_sell_unique_insiders"], 3)
+        self.assertEqual(data["insider_sell_transaction_count"], 3)
+        self.assertFalse(data["insider_cluster"])  # no buys
+
+    def test_sell_cluster_false_with_two_sellers(self):
+        txns = [self._sell_txn("A"), self._sell_txn("B")]
+        self.assertFalse(self._run(txns)["insider_sell_cluster"])
+
+    def test_buys_and_sells_both_reported(self):
+        # A name with both a buy and a 3-seller cluster reports both sides.
+        txns = [
+            self._recent_txn("Buyer", shares=5000.0, price=100.0),
+            self._sell_txn("A"),
+            self._sell_txn("B"),
+            self._sell_txn("C"),
+        ]
+        data = self._run(txns)
+        self.assertTrue(data["insider_sell_cluster"])
+        self.assertEqual(data["insider_unique_insiders"], 1)  # the single buyer

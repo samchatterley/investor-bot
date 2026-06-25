@@ -240,3 +240,17 @@ class TestLoadDecisions(DecisionLogBase):
 
             result = load_decisions()
         self.assertEqual(result, [])
+
+
+class TestSetRunId(unittest.TestCase):
+    """set_run_id stores the run id module-globally so all decisions share it."""
+
+    def test_set_run_id_assigns_global(self):
+        import utils.decision_log as dl
+
+        original = dl._run_id
+        try:
+            dl.set_run_id("run-xyz-123")
+            self.assertEqual(dl._run_id, "run-xyz-123")
+        finally:
+            dl._run_id = original

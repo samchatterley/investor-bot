@@ -372,6 +372,20 @@ def scan_short_candidates(
     # as a candidate or key_signal here; it remains active in the backtest engine (A3/S1).
     _live_blocked = frozenset({"earnings_gap_down"})
 
+    # Path E catalyst set (ADR-006 Tier-1): corporate-event shorts that fire on enriched EDGAR /
+    # insider / index flags, surfaced regardless of RS rank — a hard catalyst doesn't need the name
+    # to already be a technical laggard.
+    _catalyst_short_signals = frozenset(
+        {
+            "accounting_concern_short",
+            "insider_selling_short",
+            "index_deletion_short",
+            "guidance_downgrade",
+            "secondary_offering_short",
+        }
+    )
+    _catalyst_blocked = frozenset(SHORT_SIGNAL_PRIORITY.keys()) - _catalyst_short_signals
+
     candidates = []
     seen: set[str] = set()
 
@@ -386,6 +400,23 @@ def scan_short_candidates(
 
         rs_rank = s.get("rs_rank_pct")
         rs_rank_lag = s.get("rs_rank_pct_10d_ago")
+
+        # Path E: catalyst (corporate-event) shorts — RS-rank agnostic. Checked first: a restatement,
+        # insider-selling cluster, index deletion, guidance cut, or secondary offering is a stronger
+        # short thesis than any chart pattern, so it surfaces even when RS gates would skip the name.
+        if symbol not in seen:
+            cat_sigs = evaluate_short_signals(s, blocked=_catalyst_blocked | _live_blocked)
+            if cat_sigs:
+                confidence = int(len(cat_sigs) / len(SHORT_SIGNAL_PRIORITY) * 10)
+                candidates.append(
+                    {
+                        **s,
+                        "matched_signals": cat_sigs,
+                        "key_signal": cat_sigs[0],
+                        "confidence": confidence,
+                    }
+                )
+                seen.add(symbol)
 
         # Path D: event-driven — post-earnings gap-down whose bounce has failed, RS-rank agnostic.
         # Triggers on the failed-bounce continuation short (computed by scan_short_universe).

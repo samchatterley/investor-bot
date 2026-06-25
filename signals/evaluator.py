@@ -488,6 +488,11 @@ SHORT_SIGNAL_PRIORITY: dict[str, int] = {
     # naive earnings_gap_down. Live-only (computed in scan_short_universe from daily OHLCV);
     # accumulating paper-trading evidence — the one short with a documented short-horizon edge.
     "post_earnings_gapdown_failed_bounce": 23,
+    # ── Tier-1 catalyst shorts (ADR-006) — flag-driven, live-only (not backtestable), AI-vetoed.
+    # Ranked above the lower-priority technicals: a hard corporate catalyst beats a chart pattern.
+    "accounting_concern_short": 24,  # restatement / non-reliance / auditor-change 8-K
+    "insider_selling_short": 25,  # cluster of open-market insider sales (Form 4 code 'S')
+    "index_deletion_short": 26,  # removed from a major index — forced index-fund selling
 }
 
 DEFAULT_SHORT_SIGNAL_PARAMS: dict[str, float] = {
@@ -827,6 +832,18 @@ def evaluate_short_signals(
     # coverage degrading. Complement to analyst_upgrade_signal on the long side.
     if "analyst_downgrade_signal" not in blocked and snapshot.get("analyst_downgrade", False):
         matched.append("analyst_downgrade_signal")
+
+    # ── Tier-1 catalyst shorts (ADR-006) — hard corporate catalysts, flag-driven. Live-only:
+    # these flags are not present in the daily-bar backtest, so they never fire there. The AI veto
+    # (B2) gates every one before a live order; they are active and AI-citeable.
+    if "accounting_concern_short" not in blocked and snapshot.get("accounting_concern", False):
+        matched.append("accounting_concern_short")
+
+    if "insider_selling_short" not in blocked and snapshot.get("insider_sell_cluster", False):
+        matched.append("insider_selling_short")
+
+    if "index_deletion_short" not in blocked and snapshot.get("index_deletion", False):
+        matched.append("index_deletion_short")
 
     matched.sort(key=lambda s: SHORT_SIGNAL_PRIORITY.get(s, 99))
     return matched

@@ -683,6 +683,9 @@ class TestRunGuards(unittest.TestCase):
             f.write("HALTED")
         with (
             patch("main.config.validate"),
+            # Keys must be valid so the key guards don't exit first — we want to reach the halt check.
+            patch("main.config.ALPACA_API_KEY", "valid-key"),
+            patch("main.config.ANTHROPIC_API_KEY", "valid-key"),
             patch("main.config.HALT_FILE", self.halt_file),
             patch("main._lock_file", return_value=self.lock_file),
             patch("sys.exit") as mock_exit,
@@ -6871,6 +6874,19 @@ class TestExecuteIndexHedge(unittest.TestCase):
             trades = self._run(deps, "STRESS_RISK_OFF")
         self.assertEqual(deps._orders, [("SPY", 25)])  # order attempted
         self.assertEqual(trades, [])  # but not recorded
+
+
+class TestRunInnerDefaultDeps(RunInnerBase):
+    """_run_inner builds production deps when called with deps=None."""
+
+    def test_builds_production_deps_when_none(self):
+        deps = self._make_deps()
+        with self._inner_patches(), patch("main.TradingDeps.production", return_value=deps):
+            from main import _run_inner
+
+            _run_inner(dry_run=True, mode="open", today="2026-01-15", deps=None)
+        # Reaching the data phase proves the deps-is-None → TradingDeps.production() branch ran.
+        deps.market_data.get_market_snapshots.assert_called()
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -2,7 +2,7 @@
 
 import unittest
 
-from data.index_membership import classify_index_change
+from data.index_membership import classify_index_change, classify_index_deletion
 
 
 class TestClassifyIndexChange(unittest.TestCase):
@@ -60,6 +60,35 @@ class TestClassifyIndexChange(unittest.TestCase):
 
     def test_no_match_returns_none(self):
         self.assertIsNone(classify_index_change(["Xi beats earnings", "Omicron names new CFO"]))
+
+
+class TestClassifyIndexDeletion(unittest.TestCase):
+    """classify_index_deletion — removal-only (bearish) subset for index_deletion_short."""
+
+    def test_removed_fires(self):
+        r = classify_index_deletion(["Delta removed from the S&P 500 index"])
+        self.assertEqual(r, {"detected": True, "headline": "Delta removed from the S&P 500 index"})
+
+    def test_dropped_fires(self):
+        self.assertIsNotNone(classify_index_deletion(["Epsilon dropped from the Nasdaq 100"]))
+
+    def test_deletion_noun_fires(self):
+        self.assertIsNotNone(classify_index_deletion(["S&P 500 deletion hits Kappa shares"]))
+
+    def test_addition_does_not_fire(self):
+        # The bearish detector must ignore additions (the bullish direction).
+        self.assertIsNone(classify_index_deletion(["Acme to be added to the S&P 500"]))
+
+    def test_replacement_ambiguous_does_not_fire(self):
+        self.assertIsNone(
+            classify_index_deletion(["Zeta to replace Eta in the Dow Jones Industrial Average"])
+        )
+
+    def test_generic_mention_does_not_fire(self):
+        self.assertIsNone(classify_index_deletion(["S&P 500 falls 1% on inflation data"]))
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(classify_index_deletion([]))
 
 
 if __name__ == "__main__":  # pragma: no cover

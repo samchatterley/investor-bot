@@ -47,7 +47,7 @@ from data import (
     sentiment as sentiment_module,
 )
 from data.borrow_cost import estimate_borrow_rate, is_hard_to_borrow
-from data.index_membership import classify_index_change
+from data.index_membership import classify_index_change, classify_index_deletion
 from data.macro_data import get_combined_macro_flags, get_macro_snapshot
 from data.sentiment_client import get_sentiment_snapshot
 from execution import short_risk, stock_scanner, trader
@@ -1706,6 +1706,29 @@ def _build_data_bundle(
     for s in short_snapshots:
         if s["symbol"] in si_short:
             s.update(si_short[s["symbol"]])
+
+    # ── Catalyst enrichment for the short side (ADR-006 Tier-1) ──────────────────
+    # scan_short_universe only carries OHLCV/RS/short-interest, so the catalyst-driven short signals
+    # could never fire live. Enrich each short snapshot with the same EDGAR + insider feeds the long
+    # side uses. This lights up accounting_concern_short, insider_selling_short AND the previously
+    # dead-wired guidance_downgrade / secondary_offering_short (same EDGAR batch). EDGAR + insider
+    # caches are warmed by the 07:00 prefetch; misses fall back to a (slower) live fetch.
+    _short_syms = [s["symbol"] for s in short_snapshots]
+    _short_edgar = _edgar_client.get_edgar_signals_batch(_short_syms)
+    _short_insider = _insider_feed.get_insider_activity(_short_syms)
+    for s in short_snapshots:
+        _e = _short_edgar.get(s["symbol"], {})
+        s["accounting_concern"] = bool((_e.get("accounting_concern") or {}).get("detected", False))
+        s["guidance_negative"] = bool((_e.get("guidance") or {}).get("guidance_negative", False))
+        s["secondary_offering"] = bool(
+            (_e.get("secondary_offering") or {}).get("offering_detected", False)
+        )
+        s["insider_sell_cluster"] = bool(
+            _short_insider.get(s["symbol"], {}).get("insider_sell_cluster", False)
+        )
+        # index_deletion is news-derived; coverage is limited to short names that also have headlines
+        # in the long-side news set (a dedicated short-universe news fetch is the follow-up).
+        s["index_deletion"] = bool(classify_index_deletion(news.get(s["symbol"], [])))
     logger.info(f"Short universe: {len(short_snapshots)} snapshots enriched")
 
     # Rule-gate the short universe into candidates BEFORE the AI call (ADR-006 B2) so they can be
@@ -2750,6 +2773,7 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
             "Set it in .env or export it before running."
         )
         sys.exit(1)
+        return  # sys.exit raises in prod; explicit stop so a mocked exit can't fall through
 
     if config.SMALL_ACCOUNT_MODE:
         logger.info(
@@ -2764,18 +2788,22 @@ def run(dry_run: bool = False, mode: str = "open", _live_shadow: bool = False):
     except ValueError as e:
         logger.error(str(e))
         sys.exit(1)
+        return  # explicit stop so a mocked sys.exit can't fall through into trading
 
     if not config.ALPACA_API_KEY or config.ALPACA_API_KEY == "your_alpaca_api_key_here":
         logger.error("ALPACA_API_KEY not set.")
         sys.exit(1)
+        return
     if not config.ANTHROPIC_API_KEY or config.ANTHROPIC_API_KEY == "your_anthropic_api_key_here":
         logger.error("ANTHROPIC_API_KEY not set.")
         sys.exit(1)
+        return
 
     # Halt file check — bot refuses to run while HALT file exists
     if os.path.exists(config.HALT_FILE):
         logger.critical("Trading is HALTED. Delete halt file or run: python main.py --clear-halt")
         sys.exit(1)
+        return
 
     init_db()
 

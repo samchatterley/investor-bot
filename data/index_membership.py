@@ -47,3 +47,29 @@ def classify_index_change(headlines: list[str]) -> dict | None:
         if _INDEX_CHANGE.search(headline):
             return {"detected": True, "headline": headline}
     return None
+
+
+# Removal-only subset (the bearish direction) for the index_deletion_short signal. Index-fund
+# managers must sell a deleted name into the effective date, a known short window. Replacement
+# phrasing ("Y to replace X") is intentionally excluded — it is ambiguous which name the headline
+# is about. Only explicit removal verbs and the "deletion" noun count.
+_INDEX_DELETION = re.compile(
+    r"(?:"
+    r"(?:removed|dropped|deleted|ousted)\s+from\s+(?:the\s+)?"
+    + _INDEX
+    + r"|"
+    + _INDEX
+    + r"\s+deletion"
+    + r"|index\s+deletion"
+    r")",
+    re.I,
+)
+
+
+def classify_index_deletion(headlines: list[str]) -> dict | None:
+    """Return ``{"detected": True, "headline": <matched>}`` if a headline reports this name being
+    *removed* from a major index (the bearish direction), else None."""
+    for headline in headlines:
+        if _INDEX_DELETION.search(headline):
+            return {"detected": True, "headline": headline}
+    return None

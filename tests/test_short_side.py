@@ -2662,5 +2662,77 @@ class TestShortPreTrade(unittest.TestCase):
         self.assertEqual(len(all_trades), 1)
 
 
+class TestCatalystShortSignals(unittest.TestCase):
+    """ADR-006 Tier-1 catalyst short signals (flag-driven, RS-agnostic)."""
+
+    def test_accounting_concern_short_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertIn(
+            "accounting_concern_short", evaluate_short_signals({"accounting_concern": True})
+        )
+
+    def test_insider_selling_short_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertIn(
+            "insider_selling_short", evaluate_short_signals({"insider_sell_cluster": True})
+        )
+
+    def test_index_deletion_short_fires(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertIn("index_deletion_short", evaluate_short_signals({"index_deletion": True}))
+
+    def test_no_flags_no_catalyst_signals(self):
+        from signals.evaluator import evaluate_short_signals
+
+        self.assertEqual(evaluate_short_signals({}), [])
+
+    def test_all_catalysts_blocked(self):
+        from signals.evaluator import evaluate_short_signals
+
+        sigs = evaluate_short_signals(
+            {"accounting_concern": True, "insider_sell_cluster": True, "index_deletion": True},
+            blocked=frozenset(
+                {"accounting_concern_short", "insider_selling_short", "index_deletion_short"}
+            ),
+        )
+        self.assertEqual(sigs, [])
+
+    def test_scan_surfaces_catalyst_candidate_rs_agnostic(self):
+        # A mid-RS name (Paths A/B/C/D skip) with an accounting-concern flag surfaces via Path E.
+        from execution.stock_scanner import scan_short_candidates
+
+        snaps = [
+            _snap(
+                symbol="FRAUD",
+                rs_rank_pct=50.0,
+                earnings_miss_candidate=False,
+                high_short_interest=False,
+                accounting_concern=True,
+            )
+        ]
+        result = scan_short_candidates(snaps, "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["key_signal"], "accounting_concern_short")
+        self.assertIn("accounting_concern_short", result[0]["matched_signals"])
+
+    def test_catalyst_path_skips_already_seen_symbol(self):
+        # Duplicate symbol: the first surfaces via the catalyst path and is added to `seen`; the
+        # second hits the `symbol not in seen` guard and is skipped — no duplicate candidate.
+        from execution.stock_scanner import scan_short_candidates
+
+        dup = {
+            "symbol": "DUP",
+            "rs_rank_pct": 50.0,
+            "earnings_miss_candidate": False,
+            "high_short_interest": False,
+            "accounting_concern": True,
+        }
+        result = scan_short_candidates([_snap(**dup), _snap(**dup)], "STRESS_RISK_OFF", set())
+        self.assertEqual(len(result), 1)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -126,6 +126,18 @@ Active short signals (regime-gated: STRESS_RISK_OFF, HIGH_VOL_DOWNTREND, DEFENSI
 | `accruals_quality_short` | Accruals ratio > 0.15 + ret_5d > 5% (extended price) |
 | `lockup_expiry_short` | IPO lockup expires in 5–10 calendar days |
 | `analyst_downgrade_signal` | Consensus shift from Buy toward Hold/Sell |
+| `accounting_concern_short` | An 8-K restatement, non-reliance, or auditor change (EDGAR) — a hard governance red flag. RS-rank agnostic (catalyst path) |
+| `insider_selling_short` | Cluster of ≥3 distinct insiders selling open-market (Form 4 code 'S') — informed distribution. RS-rank agnostic |
+| `index_deletion_short` | Name removed from a major index (news-detected) — forced index-fund selling into the effective date. RS-rank agnostic |
+| `guidance_downgrade` | Negative 8-K guidance — management lowering outlook. RS-rank agnostic |
+| `secondary_offering_short` | 424B4/S-3 secondary prospectus — dilution / supply shock. RS-rank agnostic |
+
+The catalyst shorts (`accounting_concern_short`, `insider_selling_short`, `index_deletion_short`,
+`guidance_downgrade`, `secondary_offering_short`) are flag-driven corporate events surfaced regardless
+of RS rank (ADR-006 Tier-1): the short snapshots are now enriched with the same EDGAR + Form-4 feeds
+the long side uses. They are not backtestable (no historical point-in-time event feed) and ship
+live on forward-evidence, gated by the AI veto (B2). `index_deletion_short` coverage is currently
+limited to names with headlines in the long-side news set.
 
 ### Borrow cost & hard-to-borrow gate
 

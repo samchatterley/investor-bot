@@ -1,9 +1,10 @@
-"""SEC EDGAR Form 4 fetcher — open-market insider purchase cluster detection.
+"""SEC EDGAR Form 4 fetcher — open-market insider purchase AND sale cluster detection.
 
 Queries the SEC's public submissions API (no auth required) to identify stocks
-where multiple corporate insiders made open-market purchases within the lookback
-window.  Only transaction code 'P' (open-market purchase) with AcquiredDisposed
-code 'A' is counted — option exercises, RSU vesting, and gifts are excluded.
+where multiple corporate insiders traded open-market within the lookback window.
+Purchases (code 'P' / AcquiredDisposed 'A') drive the long-side ``insider_cluster``;
+open-market sales (code 'S' / 'D') drive the short-side ``insider_sell_cluster``.
+Option exercises, RSU vesting, gifts, and tax-withholding are excluded both ways.
 
 Cluster definition: ≥2 distinct insiders purchasing within `lookback_days`.
 Single large purchase: 1 insider buying shares worth > `large_buy_usd`.
@@ -150,7 +151,13 @@ def _parse_form4(cik: str, accession: str, doc: str) -> list[dict]:
     for txn in root.iter("nonDerivativeTransaction"):
         code = (txn.findtext(".//transactionCode") or "").strip()
         ad = (txn.findtext(".//transactionAcquiredDisposedCode/value") or "").strip()
-        if code != "P" or ad != "A":
+        # Open-market purchase (P/A) → "buy"; open-market sale (S/D) → "sell". Everything else
+        # (option exercises, RSU vesting, gifts, tax-withholding 'F') is excluded as non-discretionary.
+        if code == "P" and ad == "A":
+            kind = "buy"
+        elif code == "S" and ad == "D":
+            kind = "sell"
+        else:
             continue
         try:
             shares_text = txn.findtext(".//transactionShares/value") or "0"
@@ -159,6 +166,7 @@ def _parse_form4(cik: str, accession: str, doc: str) -> list[dict]:
             transactions.append(
                 {
                     "reporter": reporter,
+                    "kind": kind,
                     "shares": float(shares_text),
                     "price": float(price_text),
                     "date": date_text,
@@ -185,12 +193,42 @@ def _fetch_one(
         return sym, None
 
     filings = _recent_form4_filings(cik, lookback_days)
-    all_txns: list[dict] = []
+    parsed: list[dict] = []
     for filing in filings:
-        all_txns.extend(_parse_form4(cik, filing["accession"], filing["doc"]))
+        parsed.extend(_parse_form4(cik, filing["accession"], filing["doc"]))
+
+    if not parsed:
+        return sym, None
+
+    # Buys drive the long-side insider_cluster; sells drive the short-side insider_sell_cluster.
+    all_txns = [t for t in parsed if t.get("kind", "buy") == "buy"]
+    sell_txns = [t for t in parsed if t.get("kind") == "sell"]
+
+    # ── Insider-SELL cluster (short-side, ADR-006 Tier-1) ────────────────────────
+    # Sells are noisier than buys (diversification, 10b5-1 scheduled plans, tax), so the bar is
+    # higher: >=3 distinct sellers in the window. 10b5-1 status is not reliably in the Form 4 XML,
+    # so this is left to the AI veto + the higher cluster threshold rather than a hard filter.
+    sell_unique = len({t["reporter"] for t in sell_txns})
+    sell_shares = sum(t["shares"] for t in sell_txns)
+    insider_sell_cluster = sell_unique >= 3
 
     if not all_txns:
-        return sym, None
+        # No open-market buys. `parsed` is non-empty here (guarded above), and _parse_form4 only
+        # emits buys or sells, so there must be sells — record the sell-cluster state for the short
+        # side and skip the buy-only aggregation below.
+        return sym, {
+            "insider_cluster": False,
+            "insider_unique_insiders": 0,
+            "insider_transaction_count": 0,
+            "insider_total_shares": 0.0,
+            "insider_large_buy": False,
+            "insider_strong_cluster": False,
+            "insider_comp_ratio": 0.0,
+            "insider_sell_cluster": insider_sell_cluster,
+            "insider_sell_unique_insiders": sell_unique,
+            "insider_sell_transaction_count": len(sell_txns),
+            "insider_sell_total_shares": sell_shares,
+        }
 
     unique_insiders = len({t["reporter"] for t in all_txns})
     total_shares = sum(t["shares"] for t in all_txns)
@@ -223,6 +261,10 @@ def _fetch_one(
         "insider_large_buy": max_notional >= large_buy_usd,
         "insider_strong_cluster": strong_cluster,
         "insider_comp_ratio": comp_ratio,
+        "insider_sell_cluster": insider_sell_cluster,
+        "insider_sell_unique_insiders": sell_unique,
+        "insider_sell_transaction_count": len(sell_txns),
+        "insider_sell_total_shares": sell_shares,
     }
     logger.info(
         f"Insider {sym}: {unique_insiders} insiders, {len(all_txns)} txns, "
@@ -318,6 +360,10 @@ def get_insider_activity(
             "insider_large_buy":        bool,   # single buy > large_buy_usd
             "insider_strong_cluster":   bool,   # ≥3 distinct insiders in last 5 days
             "insider_comp_ratio":       float,  # max(notional / annual_comp) across txns
+            "insider_sell_cluster":     bool,   # ≥3 distinct insiders sold open-market (short-side)
+            "insider_sell_unique_insiders": int,
+            "insider_sell_transaction_count": int,
+            "insider_sell_total_shares":     float,
         }
 
     Symbols with no Form 4 activity in the window are omitted from the result.
