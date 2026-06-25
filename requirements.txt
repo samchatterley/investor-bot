@@ -31,7 +31,7 @@ MarkupSafe==3.0.3
 mdurl==0.1.2
 msgpack==1.2.1
 multitasking==0.0.13
-narwhals==2.20.0
+narwhals==2.22.1
 numpy==2.4.4
 packaging==26.2
 pandas==3.0.2
