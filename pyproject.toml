@@ -120,6 +120,8 @@ omit = [
     "*/scripts/universe_edge_check.py",
     "scripts/backfill_outcomes.py",
     "*/scripts/backfill_outcomes.py",
+    "scripts/short_disabled_backtest.py",
+    "*/scripts/short_disabled_backtest.py",
 ]
 
 [tool.coverage.report]
