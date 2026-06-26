@@ -51,3 +51,40 @@ CATALYST_SHORT_SIGNALS: frozenset[str] = frozenset(
         "secondary_offering_short",
     }
 )
+
+# ── Backtest vs live classification (experiment integrity) ────────────────────
+# Every ACTIVE short signal is classified as either *backtestable* (the engine has historical data to
+# evaluate it) or *live-only* (no historical point-in-time feed — catalyst / event / live-feed signals
+# that can only accrue forward paper-trading evidence). This makes the backtest↔live divergence
+# explicit in code: a live signal that is silently absent from the backtest baseline is an
+# experiment-integrity risk (the pre-registered baseline would not match what trades live). The two
+# sets must partition ACTIVE_SHORT_SIGNALS — enforced complete + disjoint in tests/test_wiring.py, so
+# adding an active short forces a conscious classification here.
+#
+# NOTE: the backtest engine's own `_ACTIVE_SHORT_SIGNALS` (ablation baseline) still includes the
+# live-only signals; they trade 0 in backtest (no data) so results are unaffected, but tightening it
+# to exclude LIVE_ONLY_SHORT_SIGNALS is a recommended follow-up (an experiment-baseline decision).
+LIVE_ONLY_SHORT_SIGNALS: frozenset[str] = frozenset(
+    {
+        "high_short_interest",  # live FINRA short interest; no point-in-time history
+        "guidance_downgrade",  # 8-K guidance event
+        "secondary_offering_short",  # 424B/S-3 filing event
+        "lockup_expiry_short",  # IPO lock-up calendar
+        "analyst_downgrade_signal",  # live analyst rating feed
+        "post_earnings_gapdown_failed_bounce",  # computed live in scan_short_universe (B4: 0 bt trades)
+        "accounting_concern_short",  # 8-K restatement/auditor event
+        "insider_selling_short",  # Form 4 (live feed)
+        "index_deletion_short",  # news-detected index removal
+        "eps_revision_down_short",  # live analyst EPS-revision feed
+    }
+)
+
+# Backtestable active shorts: the engine has earnings (earnings_gap_down) or quality-fundamentals
+# (piotroski / accruals) data to evaluate these historically.
+BACKTESTABLE_SHORT_SIGNALS: frozenset[str] = frozenset(
+    {
+        "earnings_gap_down",
+        "piotroski_distress_short",
+        "accruals_quality_short",
+    }
+)

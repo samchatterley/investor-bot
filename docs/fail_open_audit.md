@@ -25,10 +25,11 @@ short (kill the short book). The real defect is that the gate **cannot distingui
 API error silently strips borrow + squeeze protection from a short, and the only remaining guard is
 the AI veto.
 
-**Surgical fix (proposed, not yet applied — risk-posture decision):** have `fetch_squeeze_info`
-signal *error* distinctly from *no-data* (e.g. return a sentinel / re-raise on exception), and in
-`_execute_shorts` **skip the short on a fetch error** (fail-closed) while still permitting on genuine
-no-data (fail-open, as today). That closes the transient-error hole without disabling the book.
+**Surgical fix — APPLIED (1.122):** `fetch_squeeze_info` now returns a distinct `fetch_error: True`
+on an API exception (vs `fetch_error: False` for a successful fetch, including genuine no-data), and
+`_execute_shorts` **skips the short when `fetch_error` is set** (fail-closed) while still permitting
+on legitimate no-data (fail-open, as before). This closes the transient-error hole without disabling
+the short book.
 
 ## Note
 The correlation fail-open is a deliberate, documented choice; the earnings-guard fail-open is lower

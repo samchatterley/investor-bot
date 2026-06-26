@@ -27,25 +27,29 @@ DAYS_TO_COVER_MAX: float = 5.0  # block if days-to-cover > 5
 RET_5D_MAX: float = 15.0  # block if stock is up > 15% over 5 days (active squeeze proxy)
 
 
-def fetch_squeeze_info(symbol: str) -> dict[str, float | None]:
+def fetch_squeeze_info(symbol: str) -> dict[str, float | bool | None]:
     """Return squeeze-relevant fields from yfinance .info for *symbol*.
 
-    Keys returned: ``short_pct_float``, ``days_to_cover``.
-    Either value is ``None`` when the data field is absent or unavailable.
-
-    This call hits the yfinance API (FINRA bi-monthly report cadence).
-    On any exception the function returns ``None`` for all fields so that a
-    transient API failure does not silently block all short entries.
+    Keys returned: ``short_pct_float``, ``days_to_cover``, ``fetch_error``.
+    The two data values are ``None`` when the field is absent (genuinely no short-interest data —
+    common, and a legitimate reason to permit the short). ``fetch_error`` is ``True`` only when the
+    API call itself raised — distinct from no-data so the caller can fail CLOSED on a transient error
+    (which would otherwise silently strip borrow + squeeze protection) while still permitting on a
+    legitimate absence of short-interest data.
     """
     try:
         info = yf.Ticker(symbol).info
         return {
             "short_pct_float": info.get("shortPercentOfFloat"),
             "days_to_cover": info.get("shortRatio"),
+            "fetch_error": False,
         }
     except Exception:
-        logger.debug("fetch_squeeze_info(%s): yfinance fetch failed — treating as safe", symbol)
-        return {"short_pct_float": None, "days_to_cover": None}
+        logger.warning(
+            "fetch_squeeze_info(%s): yfinance fetch failed — short will be skipped (fail-closed)",
+            symbol,
+        )
+        return {"short_pct_float": None, "days_to_cover": None, "fetch_error": True}
 
 
 def is_squeeze_risk(

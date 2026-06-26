@@ -800,6 +800,12 @@ def _execute_shorts(
 
         # Squeeze risk gate — blocks crowded shorts and stocks in active squeezes
         _squeeze_info = _short_risk.fetch_squeeze_info(symbol)
+        # Fail CLOSED on a squeeze-info fetch ERROR (vs genuine no-data): a transient API failure
+        # would otherwise silently strip the borrow + squeeze protections below, since both treat
+        # missing short-interest as "safe". No-data still permits (common, intentional).
+        if _squeeze_info.get("fetch_error"):
+            logger.warning(f"  Short skip {symbol}: squeeze-info fetch error — failing closed")
+            continue
 
         # Borrow-cost gate — estimate the annualized borrow rate from short-interest data and
         # skip hard-to-borrow names (borrow can spike, the lender can recall, and the cost

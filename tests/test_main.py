@@ -3979,6 +3979,22 @@ class TestExecuteShorts(unittest.TestCase):
         )
         self.assertEqual(all_trades, [])
 
+    def test_squeeze_info_fetch_error_fails_closed(self):
+        # A squeeze-info FETCH ERROR (vs genuine no-data) must skip the short — failing closed so a
+        # transient API error can't silently strip the borrow + squeeze protections.
+        all_trades, _, mocks = self._run(
+            dry_run=False,
+            **{
+                "main.short_risk.fetch_squeeze_info": {
+                    "short_pct_float": None,
+                    "days_to_cover": None,
+                    "fetch_error": True,
+                }
+            },
+        )
+        mocks["main.trader.place_short_order"].assert_not_called()
+        self.assertEqual(all_trades, [])
+
     def test_squeeze_risk_blocks_short(self):
         # short_pct_float 0.25 trips the squeeze gate (>20%) but NOT the borrow/HTB gate
         # (→10% rate, below the 30% HTB threshold), so the candidate reaches the squeeze block.

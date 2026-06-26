@@ -1952,6 +1952,7 @@ class TestSqueezeRisk(unittest.TestCase):
             result = fetch_squeeze_info("CRWD")
         self.assertAlmostEqual(result["short_pct_float"], 0.12)
         self.assertAlmostEqual(result["days_to_cover"], 3.5)
+        self.assertFalse(result["fetch_error"])  # successful fetch → not an error
 
     def test_fetch_squeeze_info_returns_none_for_missing_keys(self):
         from unittest.mock import MagicMock, patch
@@ -1964,6 +1965,7 @@ class TestSqueezeRisk(unittest.TestCase):
             result = fetch_squeeze_info("CRWD")
         self.assertIsNone(result["short_pct_float"])
         self.assertIsNone(result["days_to_cover"])
+        self.assertFalse(result["fetch_error"])  # genuine no-data is NOT an error
 
     def test_fetch_squeeze_info_handles_exception(self):
         from unittest.mock import patch
@@ -1974,6 +1976,7 @@ class TestSqueezeRisk(unittest.TestCase):
             result = fetch_squeeze_info("CRWD")
         self.assertIsNone(result["short_pct_float"])
         self.assertIsNone(result["days_to_cover"])
+        self.assertTrue(result["fetch_error"])  # API exception → flagged so the caller fails closed
 
 
 class TestOverboughtDowntrendSignal(unittest.TestCase):

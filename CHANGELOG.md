@@ -4,6 +4,30 @@ Full version history. Most recent first.
 
 ---
 
+### 1.122 — June 2026 — borrow/squeeze fail-closed-on-error + backtest/live classification test
+
+Acts on the two open items from the 1.121 fail-open audit.
+
+- **Borrow/squeeze gate fails closed on a fetch ERROR (behavior change).** `fetch_squeeze_info` now
+  returns a distinct `fetch_error: True` on an API exception, vs `False` for a successful fetch
+  (including a genuine no-data result). `_execute_shorts` **skips the short on `fetch_error`** —
+  closing the hole where a transient short-interest API failure silently stripped both the borrow
+  (HTB) and squeeze protections (both treat missing SI as "safe"). Legitimate no-data still permits
+  (common, intentional). The AI veto is no longer the sole remaining guard on a data hiccup.
+- **Backtest↔live signal classification is now a hard test.** `signals/registry.py` declares
+  `LIVE_ONLY_SHORT_SIGNALS` (10 catalyst/event/live-feed signals with no historical point-in-time
+  data) and `BACKTESTABLE_SHORT_SIGNALS` (3: earnings_gap_down, piotroski/accruals via fundamentals).
+  `test_wiring` enforces they partition `ACTIVE_SHORT_SIGNALS` (complete + disjoint) and that every
+  catalyst short is live-only — so a new active short *must* be classified, and a live signal can
+  never silently be absent from the pre-registered backtest baseline (experiment-integrity guard).
+  Follow-up (experiment-baseline decision, not done): tighten the engine's `_ACTIVE_SHORT_SIGNALS`
+  ablation set to exclude `LIVE_ONLY_SHORT_SIGNALS` (those trade 0 in backtest, so results are
+  unaffected — only the ablation table gets cleaner).
+
+Tests across the touched modules; 100% line+branch coverage; ruff + mypy clean.
+
+---
+
 ### 1.121 — June 2026 — wiring invariants + wire analyst_upgrade_signal (dead-wiring hardening)
 
 After three "dead-wired" signals shipped this week (active, unit-tested, 100%-covered, but never

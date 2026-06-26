@@ -175,6 +175,45 @@ def test_valid_short_signals_derived_from_registry():
     )
 
 
+def test_short_signal_backtest_partition_is_complete_and_disjoint():
+    """Every active short signal must be classified backtestable XOR live-only (experiment integrity).
+
+    The backtest↔live divergence is real: most active shorts are catalyst/event/live-feed signals the
+    backtest has no historical data for. This forces that divergence to be declared — a new active
+    short that is neither backtestable nor live-only fails the build, so a live signal can never
+    silently be missing from the pre-registered backtest baseline.
+    """
+    from signals.registry import (
+        ACTIVE_SHORT_SIGNALS,
+        BACKTESTABLE_SHORT_SIGNALS,
+        LIVE_ONLY_SHORT_SIGNALS,
+    )
+
+    overlap = BACKTESTABLE_SHORT_SIGNALS & LIVE_ONLY_SHORT_SIGNALS
+    assert not overlap, (
+        f"short signals classified as BOTH backtestable and live-only: {sorted(overlap)}"
+    )
+    classified = BACKTESTABLE_SHORT_SIGNALS | LIVE_ONLY_SHORT_SIGNALS
+    unclassified = ACTIVE_SHORT_SIGNALS - classified
+    assert not unclassified, (
+        f"active short signals not classified backtestable/live-only: {sorted(unclassified)}. "
+        "Add each to BACKTESTABLE_SHORT_SIGNALS or LIVE_ONLY_SHORT_SIGNALS in signals/registry.py."
+    )
+    extra = classified - ACTIVE_SHORT_SIGNALS
+    assert not extra, f"classified short signals that are not active (stale): {sorted(extra)}"
+
+
+def test_catalyst_shorts_are_live_only():
+    """Catalyst (corporate-event) shorts have no historical point-in-time feed, so they can never be
+    claimed backtestable — they must all be in the live-only set."""
+    from signals.registry import CATALYST_SHORT_SIGNALS, LIVE_ONLY_SHORT_SIGNALS
+
+    misclassified = CATALYST_SHORT_SIGNALS - LIVE_ONLY_SHORT_SIGNALS
+    assert not misclassified, (
+        f"catalyst shorts wrongly classified backtestable: {sorted(misclassified)}"
+    )
+
+
 def test_catalyst_short_signals_are_active_and_known():
     """The scanner's catalyst set must be a subset of active short signals (no disabled/unknown).
 
