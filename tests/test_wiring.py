@@ -7,6 +7,33 @@ copies of a list that should always be in sync. They are intentionally cheap
 Each test documents exactly what invariant it checks and why it matters.
 """
 
+import pathlib
+import re
+
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+# ── 0. No-orphan data producers (dead-wiring guard) ───────────────────────────
+
+
+def test_all_data_prefetch_producers_wired_into_scheduler():
+    """Every ``prefetch_*`` defined in data/ must be referenced in the scheduler's prefetch job.
+
+    Dead-wiring guard: ``analyst_revisions`` shipped with a ``prefetch_analyst_revisions`` that was
+    never called in the live pipeline — only tests referenced it — so analyst_upgrade/downgrade
+    signals never fired. A prefetch producer that exists but is never invoked by run_scheduler is
+    the smell; this fails the build if a future feed is added but never wired in.
+    """
+    producers: set[str] = set()
+    for f in (_ROOT / "data").glob("*.py"):
+        producers |= set(re.findall(r"^def (prefetch_\w+)", f.read_text(), re.M))
+    scheduler_src = (_ROOT / "scripts" / "run_scheduler.py").read_text()
+    orphans = {p for p in producers if p not in scheduler_src}
+    assert not orphans, (
+        f"data/ prefetch producers never wired into scripts/run_scheduler.py: {sorted(orphans)}. "
+        "An unwired producer means its signals can never fire live (see the analyst_revisions bug)."
+    )
+
 
 # ── 1. Regime policy totality ─────────────────────────────────────────────────
 
@@ -146,6 +173,19 @@ def test_valid_short_signals_derived_from_registry():
         f"  In VALID_SHORT_SIGNALS only: {VALID_SHORT_SIGNALS - AI_CITEABLE_SHORT_SIGNALS}\n"
         f"  In AI_CITEABLE_SHORT_SIGNALS only: {AI_CITEABLE_SHORT_SIGNALS - VALID_SHORT_SIGNALS}"
     )
+
+
+def test_catalyst_short_signals_are_active_and_known():
+    """The scanner's catalyst set must be a subset of active short signals (no disabled/unknown).
+
+    `CATALYST_SHORT_SIGNALS` drives the RS-agnostic catalyst scan path; a name in it that is disabled
+    or misspelled would silently never surface. Pairs with the end-to-end seam test, which iterates
+    the same set to force enrichment + scan wiring for every catalyst short.
+    """
+    from signals.registry import ACTIVE_SHORT_SIGNALS, CATALYST_SHORT_SIGNALS
+
+    stray = CATALYST_SHORT_SIGNALS - ACTIVE_SHORT_SIGNALS
+    assert not stray, f"CATALYST_SHORT_SIGNALS contains non-active short signals: {sorted(stray)}"
 
 
 def test_no_short_globally_disabled_signal_in_ai_citeable():

@@ -1507,6 +1507,15 @@ def _build_data_bundle(
         if s["symbol"] in insider_data:
             s.update(insider_data[s["symbol"]])
 
+    # ── Analyst revisions (rating shifts + EPS-estimate momentum) ────────────
+    # Feeds analyst_upgrade_signal on the long side. The feed was historically never wired into the
+    # pipeline (only the short side got it in 1.120), so analyst_upgrade_signal never fired live.
+    logger.info("Fetching analyst revisions...")
+    revisions_data = _analyst_revisions.get_analyst_revisions([s["symbol"] for s in snapshots])
+    for s in snapshots:
+        if s["symbol"] in revisions_data:
+            s.update(revisions_data[s["symbol"]])
+
     # ── News sentiment (Alpha Vantage structured scores) ─────────────────────
     logger.info("Fetching AV news sentiment...")
     av_data = _av_sentiment.get_av_sentiment([s["symbol"] for s in snapshots])

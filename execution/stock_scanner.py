@@ -373,20 +373,11 @@ def scan_short_candidates(
     _live_blocked = frozenset({"earnings_gap_down"})
 
     # Path E catalyst set (ADR-006 Tier-1): corporate-event shorts that fire on enriched EDGAR /
-    # insider / index flags, surfaced regardless of RS rank — a hard catalyst doesn't need the name
-    # to already be a technical laggard.
-    _catalyst_short_signals = frozenset(
-        {
-            "accounting_concern_short",
-            "insider_selling_short",
-            "index_deletion_short",
-            "eps_revision_down_short",
-            "analyst_downgrade_signal",
-            "guidance_downgrade",
-            "secondary_offering_short",
-        }
-    )
-    _catalyst_blocked = frozenset(SHORT_SIGNAL_PRIORITY.keys()) - _catalyst_short_signals
+    # insider / index / analyst flags, surfaced regardless of RS rank — a hard catalyst doesn't need
+    # the name to already be a technical laggard. Sourced from the registry (single source of truth).
+    from signals.registry import CATALYST_SHORT_SIGNALS
+
+    _catalyst_blocked = frozenset(SHORT_SIGNAL_PRIORITY.keys()) - CATALYST_SHORT_SIGNALS
 
     candidates = []
     seen: set[str] = set()

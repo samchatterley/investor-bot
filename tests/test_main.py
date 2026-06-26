@@ -972,6 +972,7 @@ class RunInnerBase(unittest.TestCase):
             getattr(deps, _fname).return_value = _fval
         deps.emailer.send_summary.return_value = None
         deps.insider_feed.get_insider_activity.return_value = {}
+        deps.analyst_revisions.get_analyst_revisions.return_value = {}
         deps.av_sentiment.get_av_sentiment.return_value = {}
         deps.earnings_surprise.get_earnings_surprise.return_value = {}
         deps.earnings_surprise.get_earnings_miss.return_value = {}
@@ -5855,6 +5856,7 @@ class TestBuildDataBundleOptionsIV(unittest.TestCase):
             patch("main.earnings_surprise.get_earnings_miss", return_value={}),
             patch("main.short_interest.get_short_interest", return_value={}),
             patch("main.edgar_client.get_edgar_signals_batch", return_value={}),
+            patch("main.analyst_revisions.get_analyst_revisions", return_value={}),
             patch("main.market_data.get_spy_5d_return", return_value=1.5),
             patch("main.market_data.get_spy_10d_return", return_value=2.5),
             patch("main.stock_scanner.prefilter_candidates", return_value=[candidate]),
@@ -5942,6 +5944,7 @@ class TestBuildDataBundleOptionsIV(unittest.TestCase):
             patch("main.earnings_surprise.get_earnings_miss", return_value={}),
             patch("main.short_interest.get_short_interest", return_value={}),
             patch("main.edgar_client.get_edgar_signals_batch", return_value={}),
+            patch("main.analyst_revisions.get_analyst_revisions", return_value={}),
             patch("main.market_data.get_spy_5d_return", return_value=1.5),
             patch("main.market_data.get_spy_10d_return", return_value=2.5),
             patch("main.stock_scanner.prefilter_candidates", return_value=[candidate]),
@@ -6874,6 +6877,128 @@ class TestExecuteIndexHedge(unittest.TestCase):
             trades = self._run(deps, "STRESS_RISK_OFF")
         self.assertEqual(deps._orders, [("SPY", 25)])  # order attempted
         self.assertEqual(trades, [])  # but not recorded
+
+
+class TestCatalystEnrichmentSeam(unittest.TestCase):
+    """End-to-end producer→consumer seam: catalyst data feeds must reach the snapshots the signals
+    read, through the REAL _build_data_bundle (not mocked enrichment). This is the regression guard
+    for the dead-wiring class — a flag set for the wrong snapshot type, or a feed not enriched onto
+    the snapshot at all, makes the corresponding signal silently never fire. Coverage + unit tests
+    are blind to it; this fails loudly.
+    """
+
+    def _run_bundle(self):
+        from main import _build_data_bundle
+        from models import MarketContext, PositionSnapshot
+
+        snap = PositionSnapshot(
+            open_positions=[],
+            held_symbols=set(),
+            position_ages={},
+            stale=[],
+            open_shorts_db=set(),
+            earnings_risk={},
+            atr_by_symbol={},
+        )
+        mc = MarketContext(
+            vix=18.0,
+            regime={"regime": "STRESS_RISK_OFF"},  # short-allowed so scan_short_candidates runs
+            macro={"is_high_risk": False, "event": ""},
+            sector_perf={},
+            leading_sectors=[],
+            lessons=None,
+        )
+        long_cand = {"symbol": "AAPL", "current_price": 50.0, "matched_signals": ["momentum"]}
+        short_snap = {
+            "symbol": "WEAK",
+            "current_price": 30.0,
+            "rs_rank_pct": 50.0,  # mid-band: only the catalyst path can surface it
+            "rs_rank_pct_10d_ago": 50.0,
+            "avg_volume": 1_000_000,
+        }
+        # Catalyst feeds all return a positive for the relevant symbol.
+        edgar = {
+            "WEAK": {
+                "accounting_concern": {"detected": True},
+                "guidance": {"guidance_negative": True},
+                "secondary_offering": {"offering_detected": True},
+            }
+        }
+        insider = {"WEAK": {"insider_sell_cluster": True}}
+        revisions = {
+            "AAPL": {
+                "analyst_upgrade": True,
+                "analyst_downgrade": False,
+                "eps_estimate_cut": False,
+            },
+            "WEAK": {"analyst_downgrade": True, "eps_estimate_cut": True},
+        }
+        sanitized_news = {"WEAK": ["WEAK removed from the S&P 500 index"]}
+
+        patches = [
+            patch("main.stock_scanner.get_top_movers", return_value=[]),
+            patch("main.build_scan_universe", return_value=[]),
+            patch(
+                "main.market_data.get_market_snapshots",
+                return_value=[{"symbol": "AAPL", "current_price": 50.0}],
+            ),
+            patch("main.market_data.get_intraday_data", return_value={}),
+            patch("main.insider_feed.get_insider_activity", return_value=insider),
+            patch("main.analyst_revisions.get_analyst_revisions", return_value=revisions),
+            patch("main.av_sentiment.get_av_sentiment", return_value={}),
+            patch("main.earnings_surprise.get_earnings_surprise", return_value={}),
+            patch("main.earnings_surprise.get_earnings_miss", return_value={}),
+            patch("main.short_interest.get_short_interest", return_value={}),
+            patch("main.edgar_client.get_edgar_signals_batch", return_value=edgar),
+            patch("main.market_data.get_spy_5d_return", return_value=1.5),
+            patch("main.market_data.get_spy_10d_return", return_value=2.5),
+            patch("main.stock_scanner.prefilter_candidates", return_value=[long_cand]),
+            patch("main.audit_log.log_event", return_value=None),
+            patch("main.options_scanner.get_options_signals", return_value={}),
+            patch("main.options_data_module.get_options_batch", return_value={}),
+            patch("main.news_fetcher.fetch_news", return_value=sanitized_news),
+            patch("main.sanitize_headlines", return_value=sanitized_news),
+            patch("main.sentiment_module.get_sentiment", return_value={}),
+            patch("main.get_short_universe", return_value=["WEAK"]),
+            patch("main.scan_short_universe", return_value=[short_snap]),
+        ]
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            return _build_data_bundle(MagicMock(), snap, mc)
+
+    def test_short_catalyst_flags_reach_short_snapshots(self):
+        db = self._run_bundle()
+        ws = next(s for s in db.short_snapshots if s["symbol"] == "WEAK")
+        for key in (
+            "accounting_concern",
+            "insider_sell_cluster",
+            "guidance_negative",
+            "secondary_offering",
+            "analyst_downgrade",
+            "eps_estimate_cut",
+            "index_deletion",
+        ):
+            self.assertTrue(ws.get(key), f"short snapshot missing catalyst flag {key!r}")
+
+    def test_short_catalyst_signals_surface_through_scan(self):
+        # Iterates the registry's CATALYST_SHORT_SIGNALS so a newly-added catalyst short forces both
+        # its enrichment (the flag must be set in _run_bundle) and its scan wiring, or this fails.
+        from signals.registry import CATALYST_SHORT_SIGNALS
+
+        db = self._run_bundle()
+        weak = next((c for c in db.short_candidates if c["symbol"] == "WEAK"), None)
+        self.assertIsNotNone(
+            weak, "WEAK did not surface as a short candidate via the catalyst path"
+        )
+        matched = set(weak["matched_signals"])
+        for sig in CATALYST_SHORT_SIGNALS:
+            self.assertIn(sig, matched, f"catalyst short signal {sig!r} did not fire end-to-end")
+
+    def test_analyst_upgrade_reaches_long_snapshots(self):
+        db = self._run_bundle()
+        aapl = next(s for s in db.snapshots if s["symbol"] == "AAPL")
+        self.assertTrue(aapl.get("analyst_upgrade"), "long analyst_upgrade flag not enriched")
 
 
 class TestRunInnerDefaultDeps(RunInnerBase):

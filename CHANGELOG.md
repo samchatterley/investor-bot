@@ -4,6 +4,35 @@ Full version history. Most recent first.
 
 ---
 
+### 1.121 — June 2026 — wiring invariants + wire analyst_upgrade_signal (dead-wiring hardening)
+
+After three "dead-wired" signals shipped this week (active, unit-tested, 100%-covered, but never
+firing live because their data was never enriched onto the snapshot), this turns the lesson into
+guards instead of vigilance — and fixes the last known straggler.
+
+- **Wire `analyst_upgrade_signal` (long).** `_build_data_bundle` now enriches *long* snapshots with
+  `analyst_revisions` too (1.120 only did the short side), so the long `analyst_upgrade_signal` — which
+  had never fired in production — now does. (Behavior change, AI-vetoed.)
+- **Invariant: no-orphan producers** (`test_wiring`). Every `prefetch_*` in `data/` must be referenced
+  in the scheduler's prefetch job. Would have caught the `analyst_revisions` bug instantly (its
+  prefetch existed but was only ever called from tests).
+- **Invariant: catalyst-enrichment seam** (`test_main::TestCatalystEnrichmentSeam`). Runs the *real*
+  `_build_data_bundle` with all catalyst feeds returning positives and asserts every catalyst flag
+  reaches the right snapshot type *and* the signal fires end-to-end through the scanner. Catches the
+  "enriched for the wrong snapshot type" flavor (the EDGAR-long-only bug) that coverage is blind to.
+- **Single-source `CATALYST_SHORT_SIGNALS`** (`signals/registry.py`): the catalyst set was duplicated
+  in the scanner and the seam test; now both read one constant, and the seam test iterates it — so a
+  new catalyst short forces both its enrichment wiring and its scan wiring or the build fails.
+- **Fail-open audit** (`docs/fail_open_audit.md`): read-only review of risk/execution gate `except`
+  behaviour. Order-ledger/broker/quote gates fail-closed (correct); correlation fail-open is
+  documented/intentional; the borrow + squeeze gates fail open on missing short-interest data and
+  **conflate "no data" with "fetch error"** — the one actionable finding (fix proposed, not yet
+  applied — a risk-posture call).
+
+Tests across the touched modules; 100% line+branch coverage held; ruff + mypy clean.
+
+---
+
 ### 1.120 — June 2026 — EPS estimate-revision short + wire the analyst-revision feed
 
 Adds `eps_revision_down_short` — a cluster of ≥3 downward current-quarter EPS estimate revisions (last

@@ -35,3 +35,19 @@ ACTIVE_SHORT_SIGNALS: frozenset[str] = (
 
 # Short signals the AI may cite as key_signal, plus the "unknown" catch-all.
 AI_CITEABLE_SHORT_SIGNALS: frozenset[str] = ACTIVE_SHORT_SIGNALS | {"unknown"}
+
+# Catalyst (corporate-event) short signals — flag-driven, surfaced regardless of RS rank by the
+# scanner's catalyst path. Single source of truth so the scanner and the seam test cannot drift
+# from each other: adding a catalyst short means adding it here, which forces both wiring and the
+# end-to-end seam test to pick it up. Must be a subset of ACTIVE_SHORT_SIGNALS (enforced in tests).
+CATALYST_SHORT_SIGNALS: frozenset[str] = frozenset(
+    {
+        "accounting_concern_short",
+        "insider_selling_short",
+        "index_deletion_short",
+        "eps_revision_down_short",
+        "analyst_downgrade_signal",
+        "guidance_downgrade",
+        "secondary_offering_short",
+    }
+)
