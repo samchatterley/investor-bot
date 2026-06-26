@@ -20,7 +20,16 @@ from utils.validators import validate_ai_response
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# Bounded request timeout (seconds). Without it, a hung connection (e.g. a network blip mid-call)
+# blocks client.messages.create() indefinitely — and because the scheduler runs jobs sequentially,
+# one hung AI call freezes the ENTIRE scheduler (all future jobs stop). The normal call takes ~90s
+# even on the large prompt, so 240s is generous headroom; on timeout the SDK raises APITimeoutError
+# (an APIError), which get_trading_decisions catches → returns None → the run aborts cleanly.
+_AI_REQUEST_TIMEOUT_SECONDS = 240.0
+
+client = anthropic.Anthropic(
+    api_key=ANTHROPIC_API_KEY, timeout=_AI_REQUEST_TIMEOUT_SECONDS, max_retries=1
+)
 
 
 SYSTEM_PROMPT = """You are a short-term US equities decision-support analyst.

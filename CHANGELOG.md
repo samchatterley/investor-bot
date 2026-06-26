@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.124 — June 2026 — HOTFIX: bounded AI-call timeout (a hung call froze the whole scheduler)
+
+The close run (2026-06-26) hung on "Running AI analysis..." for ~1h: a network blip mid-call
+(an Alpaca "Connection aborted" was logged seconds before) left `client.messages.create()` waiting
+on a socket with no timeout. Because the scheduler runs jobs sequentially, that one hung call
+**froze the entire scheduler** (process at 0% CPU, sleeping) — so every later job, including the
+next morning's prefetch/open, would never fire.
+
+Fix: construct the Anthropic client with `timeout=240.0, max_retries=1`. Normal calls finish in
+~90s even on the large prompt, so 240s is generous headroom; on a hang the SDK now raises
+`APITimeoutError` (an `APIError`), which `get_trading_decisions` already catches → returns `None` →
+the run aborts cleanly and the scheduler frees up for the next job. Added a regression guard
+(`TestClientTimeout`) so the timeout can't be silently dropped.
+
+Separately flagged (not fixed here): the AI prompt is ~379k input tokens/call — bloated and worth
+trimming.
+
+---
+
 ### 1.123 — June 2026 — HOTFIX: squeeze gate crashed on the new fetch_error key
 
 1.122 added `fetch_error` to `fetch_squeeze_info`'s return dict, but `_execute_shorts` spreads that

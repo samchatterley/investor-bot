@@ -628,3 +628,15 @@ class TestGetTradingDecisionsUsageFalsyBranch(unittest.TestCase):
             )
         self.assertIsNotNone(result)
         mock_record.assert_not_called()
+
+
+class TestClientTimeout(unittest.TestCase):
+    """The Anthropic client must carry a bounded request timeout so a hung call can't freeze the
+    scheduler (incident 2026-06-26: a network blip mid-call hung messages.create() for ~1h with no
+    timeout, freezing all sequential scheduler jobs)."""
+
+    def test_client_has_bounded_timeout(self):
+        import analysis.ai_analyst as a
+
+        self.assertIsNotNone(a.client.timeout, "Anthropic client must have a request timeout set")
+        self.assertLessEqual(float(a.client.timeout), 600.0)
