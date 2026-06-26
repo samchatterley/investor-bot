@@ -822,8 +822,13 @@ def _execute_shorts(
             )
             continue
 
+        # Pass squeeze fields explicitly — _squeeze_info also carries the `fetch_error` flag
+        # (1.122), which is_squeeze_risk does not accept; spreading the whole dict would crash.
         _squeeze_blocked, _squeeze_reason = _short_risk.is_squeeze_risk(
-            symbol, candidate, **_squeeze_info
+            symbol,
+            candidate,
+            short_pct_float=_squeeze_info.get("short_pct_float"),
+            days_to_cover=_squeeze_info.get("days_to_cover"),
         )
         if _squeeze_blocked:
             logger.info(f"  Short skip {symbol}: squeeze risk — {_squeeze_reason}")

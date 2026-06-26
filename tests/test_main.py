@@ -3821,7 +3821,13 @@ class TestExecuteShorts(unittest.TestCase):
             "main.trader.get_long_notional": 50_000.0,
             "main.trader.get_short_notional": 0.0,
             "main.correlation.correlated_with_held": False,
-            "main.short_risk.fetch_squeeze_info": {"short_pct_float": None, "days_to_cover": None},
+            # Real shape includes fetch_error (1.122) — mocks must match so the squeeze-gate call
+            # path (which spreads/reads this dict) is exercised exactly as in production.
+            "main.short_risk.fetch_squeeze_info": {
+                "short_pct_float": None,
+                "days_to_cover": None,
+                "fetch_error": False,
+            },
             "main.position_sizer.risk_budget_size": 500.0,
             "main.trader.place_short_order": filled_order,
             "main.trader.record_short": None,
@@ -4004,11 +4010,29 @@ class TestExecuteShorts(unittest.TestCase):
                 "main.short_risk.fetch_squeeze_info": {
                     "short_pct_float": 0.25,
                     "days_to_cover": None,
+                    "fetch_error": False,
                 }
             },
         )
         mocks["main.trader.place_short_order"].assert_not_called()
         self.assertEqual(all_trades, [])
+
+    def test_squeeze_gate_handles_full_squeeze_info_dict(self):
+        # Regression (1.123): _squeeze_info now carries `fetch_error` (1.122); the squeeze gate must
+        # read only the SI fields and not choke on the extra key. A benign full dict (low SI, no
+        # error) must let the short proceed — previously `**_squeeze_info` crashed is_squeeze_risk.
+        all_trades, executed, _ = self._run(
+            dry_run=True,
+            **{
+                "main.short_risk.fetch_squeeze_info": {
+                    "short_pct_float": 0.05,
+                    "days_to_cover": 1.0,
+                    "fetch_error": False,
+                }
+            },
+        )
+        self.assertEqual(len(all_trades), 1)
+        self.assertEqual(all_trades[0]["action"], "SHORT")
 
     def test_no_price_candidate_skipped(self):
         snap = self._snap()

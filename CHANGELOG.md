@@ -4,6 +4,24 @@ Full version history. Most recent first.
 
 ---
 
+### 1.123 — June 2026 — HOTFIX: squeeze gate crashed on the new fetch_error key
+
+1.122 added `fetch_error` to `fetch_squeeze_info`'s return dict, but `_execute_shorts` spreads that
+dict into `is_squeeze_risk(symbol, candidate, **_squeeze_info)` — which doesn't accept `fetch_error`,
+so on the normal path (`fetch_error=False`) every short crashed with `TypeError`, aborting the whole
+trading run after the buy phase. Fix: pass the SI fields explicitly
+(`short_pct_float=..., days_to_cover=...`) instead of `**`-spreading the whole dict.
+
+Why it slipped 1.122's green suite: the test mocks for `fetch_squeeze_info` returned the *old* dict
+shape (no `fetch_error`), so the `**` spread never carried the bad kwarg in tests — classic
+mock-drift (the exact over-mocking failure the audit flagged). Fixed the mocks to the real shape
+(incl. `fetch_error`) so the squeeze-gate path is now exercised as in production, plus an explicit
+regression test (`test_squeeze_gate_handles_full_squeeze_info_dict`).
+
+Full suite green, 100% coverage; ruff + mypy clean.
+
+---
+
 ### 1.122 — June 2026 — borrow/squeeze fail-closed-on-error + backtest/live classification test
 
 Acts on the two open items from the 1.121 fail-open audit.
