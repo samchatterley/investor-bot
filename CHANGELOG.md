@@ -4,6 +4,27 @@ Full version history. Most recent first.
 
 ---
 
+### 1.125 — June 2026 — timeout audit: bound every Alpaca call (latent scheduler-freeze fix)
+
+Follow-up to 1.124's AI-call hang. Audited every external call reachable from a scheduled job for
+missing timeouts:
+
+- **raw `requests`** (EDGAR, Finnhub, AAII, Alpha Vantage, insider, proxy_comp): all already carry
+  explicit `timeout=10–30s` ✓
+- **yfinance**: bounded by library defaults — `download`/`history` 10s, `.info`/`.earnings_dates`
+  30s (verified in the installed `yfinance/data.py`) ✓
+- **alpaca-py 0.43.4**: 🔴 builds a plain `requests.Session` with **no timeout**, never sets one on
+  its requests, and its client `__init__` exposes no timeout option → **every broker/data call could
+  hang the scheduler indefinitely** (the same failure mode as 1.124, across 6 client-construction
+  sites).
+
+Fix: new `utils/alpaca_session.with_request_timeout()` patches an alpaca-py client's session so every
+request defaults to a `(10, 30)s` (connect, read) timeout; on a hang the session raises
+`requests.Timeout` → propagates to the run-level handler → clean abort, scheduler frees up. Applied
+at all 6 construction sites (trader, universe, quote_gate, intraday_fetcher, market_data, backtest
+engine). Guard test asserts the patch actually lands on the pinned alpaca-py (so it can't silently
+degrade to a no-op).
+
 ### 1.124 — June 2026 — HOTFIX: bounded AI-call timeout (a hung call froze the whole scheduler)
 
 The close run (2026-06-26) hung on "Running AI analysis..." for ~1h: a network blip mid-call

@@ -16,6 +16,7 @@ from ta.volatility import BollingerBands
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, MARKET_DATA_DIR
 from data.fundamentals import get_fundamentals
+from utils.alpaca_session import with_request_timeout
 from utils.symbols import to_yf_symbol
 
 logger = logging.getLogger(__name__)
@@ -897,7 +898,9 @@ def get_intraday_data(symbols: list[str]) -> dict[str, dict]:
     end_utc = now_et.astimezone(UTC)
 
     try:
-        data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        data_client = with_request_timeout(
+            StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        )
         req = StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame(1, TimeFrameUnit.Minute),

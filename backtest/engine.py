@@ -682,6 +682,7 @@ def _fetch_intraday_bars(
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
         import config as _cfg
+        from utils.alpaca_session import with_request_timeout
     except ImportError as exc:
         logger.error(f"Alpaca SDK unavailable — cannot fetch intraday bars: {exc}")
         return {}
@@ -690,9 +691,11 @@ def _fetch_intraday_bars(
         logger.error("ALPACA_API_KEY / ALPACA_SECRET_KEY not set — skipping intraday fetch")
         return {}
 
-    client = StockHistoricalDataClient(
-        api_key=_cfg.ALPACA_API_KEY,
-        secret_key=_cfg.ALPACA_SECRET_KEY,
+    client = with_request_timeout(
+        StockHistoricalDataClient(
+            api_key=_cfg.ALPACA_API_KEY,
+            secret_key=_cfg.ALPACA_SECRET_KEY,
+        )
     )
     start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=_ET)
     end_dt = (datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).replace(tzinfo=_ET)

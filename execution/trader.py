@@ -20,16 +20,19 @@ from config import (
     today_et,
 )
 from models import BrokerStateUnavailable, OrderLedgerUnavailable, OrderResult, OrderStatus
+from utils.alpaca_session import with_request_timeout
 from utils.retry import with_retry
 
 logger = logging.getLogger(__name__)
 
 
 def get_client() -> TradingClient:
-    return TradingClient(
-        api_key=ALPACA_API_KEY,
-        secret_key=ALPACA_SECRET_KEY,
-        paper=IS_PAPER,
+    return with_request_timeout(
+        TradingClient(
+            api_key=ALPACA_API_KEY,
+            secret_key=ALPACA_SECRET_KEY,
+            paper=IS_PAPER,
+        )
     )
 
 

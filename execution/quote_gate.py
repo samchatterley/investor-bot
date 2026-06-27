@@ -26,6 +26,7 @@ from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeReques
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 from models import BrokerStateUnavailable
+from utils.alpaca_session import with_request_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,9 @@ class QuoteGateResult:
 
 
 def _get_data_client() -> StockHistoricalDataClient:
-    return StockHistoricalDataClient(api_key=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY)
+    return with_request_timeout(
+        StockHistoricalDataClient(api_key=ALPACA_API_KEY, secret_key=ALPACA_SECRET_KEY)
+    )
 
 
 def check_quote_gate(

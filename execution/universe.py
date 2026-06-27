@@ -30,6 +30,7 @@ from alpaca.trading.enums import AssetClass, AssetExchange, AssetStatus
 from alpaca.trading.requests import GetAssetsRequest
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, LOG_DIR, MIN_VOLUME, STOCK_UNIVERSE
+from utils.alpaca_session import with_request_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ def _apply_snapshot_filter(symbols: list[str]) -> list[str]:
     One batch request per _SNAPSHOT_CHUNK_SIZE symbols.
     Fail-closed: a chunk that errors is dropped rather than admitted unscreened.
     """
-    data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+    data_client = with_request_timeout(StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY))
     passed: list[str] = []
 
     for i in range(0, len(symbols), _SNAPSHOT_CHUNK_SIZE):
