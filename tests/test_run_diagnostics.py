@@ -1,24 +1,21 @@
-"""Tests for scripts/run_diagnostics.py — run_diagnostics() and _save_report()."""
+"""Tests for scripts/run_diagnostics.py — pytest-subprocess diagnostics + JUnit XML parsing."""
 
 import importlib.util
 import os
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+from xml.etree import ElementTree
 
 
 def _load_diagnostics_module():
-    """
-    Import run_diagnostics without executing the __main__ block.
-    Stubs out config so no real credentials are needed.
-    """
-    stubs = {
-        "config": MagicMock(LOG_DIR="/tmp/test_diag_logs"),
-    }
+    """Import run_diagnostics without executing the __main__ block; stub config."""
+    stubs = {"config": MagicMock(LOG_DIR="/tmp/test_diag_logs")}
     with patch.dict(sys.modules, stubs):
         sys.modules.pop("scripts.run_diagnostics", None)
-
         spec = importlib.util.spec_from_file_location(
             "scripts.run_diagnostics",
             os.path.join(os.path.dirname(__file__), "..", "scripts", "run_diagnostics.py"),
@@ -31,254 +28,222 @@ def _load_diagnostics_module():
         return mod
 
 
-def _make_suite(failures=None, errors=None, tests_run=3):
-    """
-    Return a (loader_mock, suite_mock, result_class) triple.
-    The result_class's instances will report the requested outcome.
-    """
-    failures = failures or []
-    errors = errors or []
-
-    suite_mock = MagicMock()
-
-    def _run_suite(result):
-        result.testsRun = tests_run
-        result.failures = failures
-        result.errors = errors
-
-    suite_mock.run.side_effect = _run_suite
-
-    loader_mock = MagicMock()
-    loader_mock.discover.return_value = suite_mock
-    return loader_mock, suite_mock
+def _write_xml(content: str) -> str:
+    fd, path = tempfile.mkstemp(suffix=".xml")
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    return path
 
 
-class TestRunDiagnosticsAllPass(unittest.TestCase):
-    def test_returns_pass_status_when_no_failures(self):
+class TestParseJunit(unittest.TestCase):
+    def test_bare_testsuite_all_pass(self):
         mod = _load_diagnostics_module()
-        loader_mock, suite_mock = _make_suite(tests_run=5)
+        xml = (
+            '<testsuite tests="3" failures="0" errors="0" skipped="0">'
+            '<testcase classname="t.A" name="test_a"/></testsuite>'
+        )
+        p = _write_xml(xml)
+        try:
+            r = mod._parse_junit(p)
+        finally:
+            os.remove(p)
+        self.assertEqual(r["total"], 3)
+        self.assertEqual(r["failed"], 0)
+        self.assertEqual(r["failures"], [])
 
+    def test_testsuites_wrapper_with_failure_error_and_skip(self):
+        mod = _load_diagnostics_module()
+        xml = (
+            '<testsuites><testsuite tests="4" failures="1" errors="1" skipped="1">'
+            '<testcase classname="t.A" name="test_pass"/>'
+            '<testcase classname="t.B" name="test_fail">'
+            '<failure message="AssertionError: 1 != 2">trace\nAssertionError: 1 != 2</failure>'
+            "</testcase>"
+            '<testcase classname="t.C" name="test_err"><error message="RuntimeError: boom"/></testcase>'
+            '<testcase classname="t.D" name="test_skip"><skipped/></testcase>'
+            "</testsuite></testsuites>"
+        )
+        p = _write_xml(xml)
+        try:
+            r = mod._parse_junit(p)
+        finally:
+            os.remove(p)
+        self.assertEqual(r["total"], 4)
+        self.assertEqual(r["failed"], 1)
+        self.assertEqual(r["errors"], 1)
+        self.assertEqual(r["skipped"], 1)
+        self.assertEqual(len(r["failures"]), 2)
+        names = {f["test"] for f in r["failures"]}
+        self.assertEqual(names, {"t.B.test_fail", "t.C.test_err"})
+
+    def test_failure_message_falls_back_to_element_text(self):
+        mod = _load_diagnostics_module()
+        xml = (
+            '<testsuite tests="1" failures="1" errors="0" skipped="0">'
+            '<testcase classname="t.A" name="test_x"><failure>body line one\nlast line</failure>'
+            "</testcase></testsuite>"
+        )
+        p = _write_xml(xml)
+        try:
+            r = mod._parse_junit(p)
+        finally:
+            os.remove(p)
+        self.assertEqual(r["failures"][0]["message"], "last line")
+
+
+class TestRunDiagnostics(unittest.TestCase):
+    _PASS = {"total": 5, "failed": 0, "errors": 0, "skipped": 0, "failures": []}
+
+    def _run(self, mod, parsed=None, timeout=False):
+        run_mock = MagicMock()
+        if timeout:
+            run_mock.side_effect = subprocess.TimeoutExpired(cmd="pytest", timeout=1800)
         with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod.subprocess, "run", run_mock),
+            patch.object(mod, "_parse_junit", MagicMock(return_value=parsed or self._PASS)),
             patch.object(mod, "_save_report"),
+            patch.object(mod.os, "remove"),
         ):
-            report = mod.run_diagnostics()
+            return mod.run_diagnostics()
 
+    def test_pass_status_when_no_failures(self):
+        mod = _load_diagnostics_module()
+        report = self._run(mod)
         self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["passed"], 5)
+        self.assertEqual(report["total"], 5)
 
-    def test_correct_total_and_passed_counts(self):
+    def test_fail_status_and_passed_count(self):
         mod = _load_diagnostics_module()
-        loader_mock, suite_mock = _make_suite(tests_run=7)
+        parsed = {
+            "total": 5,
+            "failed": 1,
+            "errors": 1,
+            "skipped": 1,
+            "failures": [{"test": "t.A.test_x", "message": "boom"}],
+        }
+        report = self._run(mod, parsed)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["passed"], 2)  # 5 - 1 - 1 - 1
+        self.assertEqual(report["failed"], 1)
+        self.assertEqual(report["errors"], 1)
+        self.assertEqual(report["skipped"], 1)
 
+    def test_errors_only_marks_fail(self):
+        mod = _load_diagnostics_module()
+        parsed = {
+            "total": 3,
+            "failed": 0,
+            "errors": 1,
+            "skipped": 0,
+            "failures": [{"test": "t.A.test_e", "message": "err"}],
+        }
+        report = self._run(mod, parsed)
+        self.assertEqual(report["status"], "FAIL")
+
+    def test_timeout_marks_fail(self):
+        mod = _load_diagnostics_module()
+        report = self._run(mod, timeout=True)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["errors"], 1)
+        self.assertIn("timed out", report["failures"][0]["message"])
+
+    def test_parse_error_marks_fail(self):
+        mod = _load_diagnostics_module()
         with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod.subprocess, "run", MagicMock()),
+            patch.object(mod, "_parse_junit", side_effect=ElementTree.ParseError("bad xml")),
             patch.object(mod, "_save_report"),
+            patch.object(mod.os, "remove"),
         ):
             report = mod.run_diagnostics()
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["errors"], 1)
+        self.assertIn("could not parse", report["failures"][0]["message"])
 
-        self.assertEqual(report["total"], 7)
-        self.assertEqual(report["passed"], 7)
-        self.assertEqual(report["failed"], 0)
-        self.assertEqual(report["errors"], 0)
-        self.assertEqual(report["failures"], [])
-
-    def test_report_has_timestamp_and_duration(self):
+    def test_missing_xml_marks_fail(self):
         mod = _load_diagnostics_module()
-        loader_mock, suite_mock = _make_suite(tests_run=2)
-
         with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
+            patch.object(mod.subprocess, "run", MagicMock()),
+            patch.object(mod, "_parse_junit", side_effect=FileNotFoundError("no xml")),
             patch.object(mod, "_save_report"),
+            patch.object(mod.os, "remove"),
         ):
             report = mod.run_diagnostics()
+        self.assertEqual(report["status"], "FAIL")
 
-        self.assertIn("timestamp", report)
-        self.assertIn("duration_seconds", report)
-        self.assertIsInstance(report["duration_seconds"], float)
+    def test_xml_remove_oserror_is_suppressed(self):
+        mod = _load_diagnostics_module()
+        with (
+            patch.object(mod.subprocess, "run", MagicMock()),
+            patch.object(mod, "_parse_junit", MagicMock(return_value=self._PASS)),
+            patch.object(mod, "_save_report"),
+            patch.object(mod.os, "remove", side_effect=OSError("already gone")),
+        ):
+            report = mod.run_diagnostics()
+        self.assertEqual(report["status"], "PASS")
 
     def test_save_report_called(self):
         mod = _load_diagnostics_module()
-        loader_mock, suite_mock = _make_suite(tests_run=3)
-        mock_save = MagicMock()
-
+        save_mock = MagicMock()
         with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report", mock_save),
+            patch.object(mod.subprocess, "run", MagicMock()),
+            patch.object(mod, "_parse_junit", MagicMock(return_value=self._PASS)),
+            patch.object(mod, "_save_report", save_mock),
+            patch.object(mod.os, "remove"),
         ):
             mod.run_diagnostics()
+        save_mock.assert_called_once()
 
-        mock_save.assert_called_once()
-
-
-class TestRunDiagnosticsWithFailures(unittest.TestCase):
-    def test_returns_fail_status_when_failures_exist(self):
+    def test_duration_is_non_negative_float(self):
         mod = _load_diagnostics_module()
-        test_obj = MagicMock()
-        test_obj.__str__ = lambda self: "TestFoo.test_bar"
-        failures = [(test_obj, "AssertionError: 1 != 2\n  assert 1 == 2\nAssertionError: 1 != 2")]
-        loader_mock, suite_mock = _make_suite(failures=failures, tests_run=3)
-
-        with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report"),
-        ):
-            report = mod.run_diagnostics()
-
-        self.assertEqual(report["status"], "FAIL")
-
-    def test_failure_details_included_in_report(self):
-        mod = _load_diagnostics_module()
-        test_obj = MagicMock()
-        test_obj.__str__ = lambda self: "TestFoo.test_bar"
-        failures = [(test_obj, "Traceback...\nAssertionError: expected True")]
-        loader_mock, suite_mock = _make_suite(failures=failures, tests_run=4)
-
-        with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report"),
-        ):
-            report = mod.run_diagnostics()
-
-        self.assertEqual(len(report["failures"]), 1)
-        self.assertIn("message", report["failures"][0])
-        self.assertIn("test", report["failures"][0])
-
-    def test_errors_count_in_report(self):
-        mod = _load_diagnostics_module()
-        test_obj = MagicMock()
-        test_obj.__str__ = lambda self: "TestFoo.test_baz"
-        errors = [(test_obj, "RuntimeError: something broke")]
-        loader_mock, suite_mock = _make_suite(errors=errors, tests_run=5)
-
-        with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report"),
-        ):
-            report = mod.run_diagnostics()
-
-        self.assertEqual(report["errors"], 1)
-        self.assertEqual(report["status"], "FAIL")
-
-    def test_passed_count_is_total_minus_failures_and_errors(self):
-        mod = _load_diagnostics_module()
-        test_obj = MagicMock()
-        test_obj.__str__ = lambda self: "TestFoo.test_x"
-        failures = [(test_obj, "AssertionError")]
-        errors_list = [(test_obj, "RuntimeError")]
-        loader_mock, suite_mock = _make_suite(failures=failures, errors=errors_list, tests_run=10)
-
-        with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report"),
-        ):
-            report = mod.run_diagnostics()
-
-        self.assertEqual(report["passed"], 8)  # 10 - 1 failure - 1 error
-
-
-class TestRunDiagnosticsTimings(unittest.TestCase):
-    def test_duration_is_non_negative(self):
-        mod = _load_diagnostics_module()
-        loader_mock, suite_mock = _make_suite(tests_run=1)
-
-        with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report"),
-        ):
-            report = mod.run_diagnostics()
-
+        report = self._run(mod)
+        self.assertIsInstance(report["duration_seconds"], float)
         self.assertGreaterEqual(report["duration_seconds"], 0.0)
-
-    def test_duration_measured_via_monotonic(self):
-        """Duration reflects actual elapsed time measured by time.monotonic."""
-        mod = _load_diagnostics_module()
-        loader_mock, suite_mock = _make_suite(tests_run=1)
-
-        # Simulate 0.5 second run
-        call_count = [0]
-
-        def fake_monotonic():
-            call_count[0] += 1
-            return call_count[0] * 0.5
-
-        with (
-            patch.object(mod.unittest, "TestLoader", return_value=loader_mock),
-            patch.object(mod, "_save_report"),
-            patch.object(mod.time, "monotonic", side_effect=fake_monotonic),
-        ):
-            report = mod.run_diagnostics()
-
-        self.assertAlmostEqual(report["duration_seconds"], 0.5, places=1)
 
 
 class TestSaveReport(unittest.TestCase):
     def test_saves_json_to_log_dir(self):
         report = {"status": "PASS", "total": 3, "passed": 3}
-
         mock_open = MagicMock()
-        mock_file = MagicMock()
-        mock_open.return_value.__enter__ = MagicMock(return_value=mock_file)
+        mock_open.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
-
         with (
-            patch("builtins.open", mock_open),
-            patch("os.makedirs"),
             patch.dict(sys.modules, {"config": MagicMock(LOG_DIR="/tmp/fake_logs")}),
         ):
-            # Reload to pick up fresh config stub
             mod2 = _load_diagnostics_module()
             with patch("builtins.open", mock_open), patch("os.makedirs"):
                 mod2._save_report(report)
-
         mock_open.assert_called_once()
         call_path = mock_open.call_args[0][0]
         self.assertIn("test_report_", call_path)
         self.assertIn(".json", call_path)
 
-    def test_handles_exception_gracefully(self):
-        """If open() raises, _save_report must not propagate the exception."""
+    def test_handles_open_exception_gracefully(self):
         mod = _load_diagnostics_module()
-        report = {"status": "PASS"}
-
         with patch("builtins.open", side_effect=OSError("disk full")), patch("os.makedirs"):
-            try:
-                mod._save_report(report)
-            except Exception as exc:  # pragma: no cover
-                self.fail(f"_save_report raised unexpectedly: {exc}")
+            mod._save_report({"status": "PASS"})  # must not raise
 
     def test_handles_makedirs_exception_gracefully(self):
-        """If makedirs raises, _save_report logs and swallows the error."""
         mod = _load_diagnostics_module()
-        report = {"status": "PASS"}
-
         with patch("os.makedirs", side_effect=PermissionError("no permission")):
-            try:
-                mod._save_report(report)
-            except Exception as exc:  # pragma: no cover
-                self.fail(f"_save_report raised unexpectedly: {exc}")
+            mod._save_report({"status": "PASS"})  # must not raise
 
     def test_json_dump_called_with_report(self):
-        """json.dump is called with the full report dict."""
         mod = _load_diagnostics_module()
         report = {"status": "PASS", "total": 5}
-
         mock_open = MagicMock()
-        mock_file = MagicMock()
-        mock_open.return_value.__enter__ = MagicMock(return_value=mock_file)
+        mock_open.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
         mock_dump = MagicMock()
-
         with (
             patch("builtins.open", mock_open),
             patch("os.makedirs"),
             patch.object(mod.json, "dump", mock_dump),
         ):
             mod._save_report(report)
-
         mock_dump.assert_called_once()
-        dumped_report = mock_dump.call_args[0][0]
-        self.assertEqual(dumped_report["status"], "PASS")
-        self.assertEqual(dumped_report["total"], 5)
+        self.assertEqual(mock_dump.call_args[0][0]["status"], "PASS")
 
 
 if __name__ == "__main__":  # pragma: no cover

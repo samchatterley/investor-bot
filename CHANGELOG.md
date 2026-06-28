@@ -4,6 +4,24 @@ Full version history. Most recent first.
 
 ---
 
+### 1.126 — June 2026 — weekly diagnostics run pytest (not unittest) + finish the Anthropic-timeout audit
+
+The weekly email reported "failing tests" that pass under CI. Root cause: `run_diagnostics()` ran the
+suite via `unittest.discover` **in-process**, which (a) lacks pytest's conftest/monkeypatch fixture
+isolation, so module-global patches leaked between tests and produced **false failures** (verified: all
+6 reported failures pass under pytest), and (b) ran the tests *inside the scheduler process*, leaking
+test logging into `scheduler.log`. Rewrote it to run **pytest in a subprocess** with JUnit-XML parsing
+and a 30-min bounded timeout — now matches CI exactly and keeps test side effects out of the scheduler.
+
+Also finished the 1.125 timeout audit: `analysis/weekly_review.py` and `scripts/phase0_noise_audit.py`
+each constructed their own **unbounded** `anthropic.Anthropic()` client (the weekly-review one is
+scheduler-reachable — same freeze risk as 1.124). Both now use `timeout=240.0, max_retries=1`.
+
+Not bugs (documented for the record): the weekly email's "no trades this week" was the bearish
+DEFENSIVE_DOWNTREND regime (blocks new BUYs) combined with the squeeze crash (1.122) aborting the short
+phase until the 1.123–1.125 fixes; "no lessons learned" is downstream of that (the review only forms
+lessons from ≥5-trade patterns). Both are resolved by the prior fixes.
+
 ### 1.125 — June 2026 — timeout audit: bound every Alpaca call (latent scheduler-freeze fix)
 
 Follow-up to 1.124's AI-call hang. Audited every external call reachable from a scheduled job for

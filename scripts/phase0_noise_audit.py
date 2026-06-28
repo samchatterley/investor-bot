@@ -33,7 +33,10 @@ from experiment.arms import (  # noqa: E402  # pragma: no cover
     build_arm3_prompt,
     build_structured_prose,
 )
-from experiment.noise_audit import format_report, run_noise_audit  # noqa: E402  # pragma: no cover
+from experiment.noise_audit import (  # noqa: E402  # pragma: no cover
+    format_report,
+    summarise_stability,
+)
 
 
 def _tool_call(client, model, prompt, tool, temperature):  # pragma: no cover
@@ -51,14 +54,13 @@ def _tool_call(client, model, prompt, tool, temperature):  # pragma: no cover
 
 
 def _make_caller(client, model, temperature):  # pragma: no cover
-    """Return caller(candidate) -> coarse context_adjustment via Arm 2 then Arm 3."""
+    """Return caller(candidate) -> full Arm 3 verdict dict via Arm 2 then Arm 3."""
 
-    def caller(candidate: dict) -> str:
+    def caller(candidate: dict) -> dict:
         prose = build_structured_prose(candidate)
         arm2 = _tool_call(client, model, build_arm2_prompt(prose), ARM2_TOOL, temperature)
         arm3_prompt = build_arm3_prompt(prose, arm2, candidate.get("context_block", ""))
-        arm3 = _tool_call(client, model, arm3_prompt, ARM3_TOOL, temperature)
-        return str(arm3.get("context_adjustment", "neutral"))
+        return _tool_call(client, model, arm3_prompt, ARM3_TOOL, temperature)
 
     return caller
 
@@ -74,12 +76,31 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover
     with open(ns.fixtures) as f:
         candidates = json.load(f)
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=240.0, max_retries=1)
     caller = _make_caller(client, CLAUDE_MODEL, ns.temperature)
-    result = run_noise_audit(
-        caller, candidates, runs=ns.runs, pass_flip_threshold=ns.flip_threshold
-    )
-    print(format_report(result))
+
+    # One Arm 2 + Arm 3 pass per candidate-run; capture all three frozen instrument outputs
+    # (context_adjustment for the IC, veto for the headline primary, reason_code) and audit each
+    # separately, so the verdict covers the veto endpoint, not just the IC.
+    adj: dict[str, list[str]] = {}
+    veto: dict[str, list[str]] = {}
+    reason: dict[str, list[str]] = {}
+    for i, cand in enumerate(candidates):
+        sym = cand.get("symbol", f"candidate_{i}")
+        adj[sym], veto[sym], reason[sym] = [], [], []
+        for _ in range(ns.runs):
+            verdict = caller(cand)
+            adj[sym].append(str(verdict.get("context_adjustment", "neutral")))
+            veto[sym].append("veto" if verdict.get("veto") else "no_veto")
+            reason[sym].append(str(verdict.get("reason_code", "other")))
+
+    for label, data in (
+        ("context_adjustment (IC instrument)", adj),
+        ("veto (PRIMARY instrument)", veto),
+        ("reason_code", reason),
+    ):
+        print(f"\n=== {label} ===")
+        print(format_report(summarise_stability(data, pass_flip_threshold=ns.flip_threshold)))
 
 
 if __name__ == "__main__":  # pragma: no cover

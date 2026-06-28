@@ -312,7 +312,9 @@ Respond with ONLY this JSON:
 }}"""
 
     try:
-        ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        # Bounded timeout — the weekly review runs in the sequential scheduler, so a hung call would
+        # freeze all later jobs (cf. the 1.124 incident in analysis/ai_analyst.py).
+        ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=240.0, max_retries=1)
         response = ai_client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2000,
