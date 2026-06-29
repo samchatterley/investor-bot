@@ -128,6 +128,8 @@ omit = [
     "*/scripts/eval_shadow_catalyst_shorts.py",
     "scripts/signal_direction_matrix.py",
     "*/scripts/signal_direction_matrix.py",
+    "scripts/lazy_prices_backtest.py",
+    "*/scripts/lazy_prices_backtest.py",
 ]
 
 [tool.coverage.report]
