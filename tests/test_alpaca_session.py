@@ -66,5 +66,5 @@ class TestWithRequestTimeout(unittest.TestCase):
         self.assertEqual(client._session.request.__name__, "_request_with_timeout")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()
