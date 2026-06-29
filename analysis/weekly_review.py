@@ -177,6 +177,30 @@ def _parse_detail(detail: str) -> tuple[str | None, int | None]:
     return signal, confidence
 
 
+def _fallback_review(metrics: dict, week_attribution: dict | None, reason: str) -> dict:
+    """Data-backed review used when the AI narrative can't be generated.
+
+    Returned (instead of None) so the weekly email still reports the week's REAL activity rather
+    than the stub's false "no trade history available". A genuinely empty week is handled earlier
+    by the no-records short-circuit; this path means trades may well have happened but the AI
+    summary failed (e.g. a truncated or unparseable response).
+    """
+    n_trades = metrics.get("total_trades", 0)
+    total_return = metrics.get("total_return_pct", 0.0)
+    return {
+        "week_summary": (
+            f"Automated narrative unavailable ({reason}). This week: {n_trades} trade(s) "
+            f"executed, net {total_return:+.2f}%. See the attribution section for detail."
+        ),
+        "what_worked": [],
+        "what_didnt": [],
+        "lessons": [],
+        "proposed_changes": [],
+        "week_attribution": week_attribution or {},
+        "review_degraded": True,
+    }
+
+
 def run_weekly_review() -> dict | None:
     """
     Ask Claude to review the past 7 days and generate lessons for next week.
@@ -316,8 +340,12 @@ Respond with ONLY this JSON:
         # freeze all later jobs (cf. the 1.124 incident in analysis/ai_analyst.py).
         ai_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=240.0, max_retries=1)
         response = ai_client.messages.create(
+            # 8192, not 2000: the structured review (summary + worked/didn't + lessons +
+            # config_changes) overran 2000 on an active week, truncating the JSON mid-string
+            # ("Unterminated string") → parse failure → the email fell back to a stub that
+            # falsely reported "no trades this week".
             model=CLAUDE_MODEL,
-            max_tokens=2000,
+            max_tokens=8192,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()  # type: ignore[union-attr]
@@ -358,7 +386,7 @@ Respond with ONLY this JSON:
 
     except json.JSONDecodeError as e:
         logger.error(f"Weekly review: failed to parse Claude response as JSON: {e}")
-        return None
+        return _fallback_review(metrics, week_attribution, "AI response was not valid JSON")
     except Exception as e:
         logger.error(f"Weekly review failed: {e}", exc_info=True)
-        return None
+        return _fallback_review(metrics, week_attribution, "AI call failed")

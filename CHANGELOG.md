@@ -4,6 +4,26 @@ Full version history. Most recent first.
 
 ---
 
+### 1.127 — June 2026 — the weekly email's "no trades" was a truncated review, not a quiet week
+
+Correction to 1.126: trades **were** executed last week (broker fills + `load_history()` both confirm
+~31 trades). The real cause of the email's "no trades / no lessons" was a bug in the weekly review,
+not the regime. `run_weekly_review()` requested `max_tokens=2000`; on an active week the structured
+JSON response (summary + worked/didn't + lessons + config_changes) overran that limit and was cut off
+mid-string ("Unterminated string"), so JSON parsing failed and the function returned `None`. The
+scheduler then fell back to a stub that hardcodes *"No trade history available for this week"* — which
+is false whenever the failure happens on a week that actually traded.
+
+Fixes:
+- `max_tokens` 2000 → 8192 (the review is once-weekly; cost is negligible and truncation is the bug).
+- On AI failure, `run_weekly_review()` now returns a **data-backed degraded review** (real trade count
+  + net return from the metrics it already computed, `review_degraded: True`) instead of `None`, so the
+  email reports actual activity. The genuine "no records this week" case still returns `None` → the
+  stub's message is then accurate.
+
+(The false "failing tests" in the same email was the separate `unittest.discover` → pytest issue fixed
+in 1.126.)
+
 ### 1.126 — June 2026 — weekly diagnostics run pytest (not unittest) + finish the Anthropic-timeout audit
 
 The weekly email reported "failing tests" that pass under CI. Root cause: `run_diagnostics()` ran the

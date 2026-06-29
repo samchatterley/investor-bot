@@ -384,7 +384,10 @@ class TestRunWeeklyReview(unittest.TestCase):
             any(c["status"] in ("applied", "clamped") for c in result["proposed_changes"])
         )
 
-    def test_returns_none_on_json_decode_error(self):
+    def test_json_decode_error_returns_degraded_review_not_none(self):
+        # When records exist but the AI response is unparseable, return a data-backed degraded
+        # review (so the email reports real activity) — NOT None (which falls back to the stub
+        # that falsely reports "no trade history available").
         from analysis.weekly_review import run_weekly_review
 
         bad_msg = MagicMock()
@@ -398,9 +401,11 @@ class TestRunWeeklyReview(unittest.TestCase):
         ):
             mock_anthropic.return_value.messages.create.return_value = bad_msg
             result = run_weekly_review()
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["review_degraded"])
+        self.assertIn("trade(s) executed", result["week_summary"])
 
-    def test_returns_none_on_general_exception(self):
+    def test_general_exception_returns_degraded_review_not_none(self):
         from analysis.weekly_review import run_weekly_review
 
         with (
@@ -412,7 +417,8 @@ class TestRunWeeklyReview(unittest.TestCase):
         ):
             mock_anthropic.return_value.messages.create.side_effect = RuntimeError("API crashed")
             result = run_weekly_review()
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertTrue(result["review_degraded"])
 
     def test_parses_markdown_wrapped_json(self):
         from analysis.weekly_review import run_weekly_review
