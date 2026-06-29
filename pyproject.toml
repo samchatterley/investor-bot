@@ -126,6 +126,8 @@ omit = [
     "*/scripts/collect_short_misses.py",
     "scripts/eval_shadow_catalyst_shorts.py",
     "*/scripts/eval_shadow_catalyst_shorts.py",
+    "scripts/signal_direction_matrix.py",
+    "*/scripts/signal_direction_matrix.py",
 ]
 
 [tool.coverage.report]
