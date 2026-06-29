@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import config
-from analysis import ai_analyst, performance
+from analysis import ai_analyst, performance, shadow_catalyst_shorts
 from analysis.weekly_review import get_latest_review
 from core.deps import TradingDeps
 from data import (
@@ -3347,6 +3347,20 @@ def _run_inner(
     db = _build_data_bundle(client, snap, mc, mode, deps=deps)
     if db is None:
         return
+
+    # ── Shadow measurement (read-only) ────────────────────────────────────────
+    # Record catalyst-flagged names regardless of regime, so we can later score whether catalyst
+    # shorts have edge OUTSIDE bear regimes (currently gated off by scan_short_candidates). No
+    # trades, no experiment writes. Fail-safe — instrumentation must never block trading.
+    try:
+        shadow_catalyst_shorts.capture(
+            db.short_snapshots + db.snapshots,
+            mc.regime.get("regime", "UNKNOWN"),
+            mode,
+            run_id,
+        )
+    except Exception as _shadow_exc:  # pragma: no cover - defensive; capture is itself robust
+        logger.warning(f"Shadow catalyst capture failed (non-fatal): {_shadow_exc}")
 
     # ── AI analysis + validation + decision logging ───────────────────────────
     account_now = deps.trader.get_account_info(client)

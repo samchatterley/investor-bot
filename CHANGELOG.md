@@ -4,6 +4,27 @@ Full version history. Most recent first.
 
 ---
 
+### 1.128 — June 2026 — shadow measurement: do catalyst shorts have edge outside bear regimes?
+
+Motivated by the PAYX case (we detected `eps_estimate_cut` and used it to *exit a long*, but the
+regime gate forbade *shorting* it). The short universe is catalyst-enriched on every cycle, but
+`scan_short_candidates` is regime-gated (ADR-006 B1), so catalyst shorts never fire outside bear
+regimes — even though a catalyst (fraud, EPS collapse, guidance cut) is idiosyncratic and can play
+out in any market. Before relaxing that gate we want evidence, and we're still pre-PNR, so a positive
+result can be folded in before go-live.
+
+- New `analysis/shadow_catalyst_shorts.capture()` — records every catalyst-flagged name each run,
+  **regardless of regime**, with entry price + the catalyst signal(s) → `logs/shadow_catalyst_shorts.jsonl`.
+  Wired fail-safe into `_run_inner` (read-only: no trades, no experiment-observation writes). A flag→
+  signal map is drift-guarded against `CATALYST_SHORT_SIGNALS`.
+- New `scripts/eval_shadow_catalyst_shorts.py` — scores matured rows: forward short return, market-
+  excess (beta≈1), net of an assumed flat borrow, split by bear vs non-bear regime and by signal.
+  (Borrow is assumed flat — no point-in-time fee feed — so treat `net` as an upper bound.)
+
+No behaviour change to live trading; this only accrues forward evidence. If non-bear catalyst shorts
+show edge net of beta+borrow, the follow-up is to relax the regime gate for the catalyst class
+specifically (beta-hedged / small-sized), freeze-gated.
+
 ### 1.127 — June 2026 — the weekly email's "no trades" was a truncated review, not a quiet week
 
 Correction to 1.126: trades **were** executed last week (broker fills + `load_history()` both confirm

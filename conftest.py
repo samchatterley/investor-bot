@@ -22,6 +22,19 @@ def _isolate_experiment_observations(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_shadow_catalyst_log(tmp_path, monkeypatch):
+    """Never let the test suite write to the live shadow-catalyst-shorts log.
+
+    main._run_inner calls shadow_catalyst_shorts.capture() (fail-safe instrumentation), which appends
+    to SHADOW_LOG_PATH. Redirect it to a per-test temp file so exercising the run loop in tests cannot
+    pollute the real measurement log.
+    """
+    import analysis.shadow_catalyst_shorts as _shadow
+
+    monkeypatch.setattr(_shadow, "SHADOW_LOG_PATH", str(tmp_path / "shadow_catalyst_shorts.jsonl"))
+
+
+@pytest.fixture(autouse=True)
 def _pin_index_hedge_disabled(monkeypatch):
     """Keep tests deterministic regardless of the operator's .env. config.load_dotenv() runs at
     import, so an enabled deployment toggle (INDEX_HEDGE_ENABLED=true) would otherwise fire the live
