@@ -4,6 +4,18 @@ Full version history. Most recent first.
 
 ---
 
+### 1.130 — June 2026 — dedupe repeated AI candidates instead of fail-closing the whole run
+
+Claude occasionally lists the same symbol twice in `buy_candidates` (e.g. `JKHY` twice in the
+2026-06-30 midday run). The `DecisionSet` schema flags that as a structural error, which main.py
+treats as fatal → **blocks the entire decision set** (the run's valid sells, shorts, and other buys
+all discarded). This had happened **12× in 5 weeks** — ~2–3 nuked runs/week from a benign LLM repeat.
+
+Fix: `_dedupe_candidates()` collapses repeated buy/short symbols (keeping the first occurrence) at the
+AI-response choke point in `get_trading_decisions`, before validation — so a duplicate is silently
+corrected and the run proceeds with intent intact, rather than fail-closed. Genuine contradictions
+(a symbol in both BUY and SHORT) remain fatal. 100% covered.
+
 ### 1.129 — June 2026 — BUGFIX: correlation filter blocked buys on degenerate (r=1.00) price data
 
 Found via a log scan of the concentration filter: **16 of 20 correlation-skips were `AAPL ↔ MSFT` /

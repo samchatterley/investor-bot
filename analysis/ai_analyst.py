@@ -32,6 +32,32 @@ client = anthropic.Anthropic(
 )
 
 
+def _dedupe_candidates(decisions: dict) -> None:
+    """Drop repeated symbols the model occasionally emits in a candidate list (keeping the first).
+
+    A duplicate buy/short candidate is a benign LLM formatting artifact, but the DecisionSet schema
+    treats it as a structural error → main.py fail-closes the ENTIRE decision set (losing that run's
+    valid sells/shorts/other buys). Collapsing duplicates here, before validation, lets the run
+    proceed with intent intact. Mutates `decisions` in place.
+    """
+    for key in ("buy_candidates", "short_candidates"):
+        items = decisions.get(key)
+        if not isinstance(items, list):
+            continue
+        seen: set[str] = set()
+        deduped: list = []
+        for item in items:
+            sym = item.get("symbol") if isinstance(item, dict) else None
+            if sym is not None and sym in seen:
+                logger.warning(f"Deduped repeated {key} symbol from AI response: {sym}")
+                continue
+            if sym is not None:
+                seen.add(sym)
+            deduped.append(item)
+        if len(deduped) != len(items):
+            decisions[key] = deduped
+
+
 SYSTEM_PROMPT = """You are a short-term US equities decision-support analyst.
 Your job is to rank pre-filtered candidates by signal quality, downside risk, and uncertainty.
 Default to no new BUY when evidence is mixed, stale, contradictory, or mostly broad-market beta.
@@ -696,6 +722,7 @@ def get_trading_decisions(
             return None
 
         decisions = tool_block.input
+        _dedupe_candidates(decisions)
 
         # Independent domain validation — API schema enforcement and internal
         # validation are kept separate so neither can mask failures in the other.

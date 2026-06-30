@@ -640,3 +640,46 @@ class TestClientTimeout(unittest.TestCase):
 
         self.assertIsNotNone(a.client.timeout, "Anthropic client must have a request timeout set")
         self.assertLessEqual(float(a.client.timeout), 600.0)
+
+
+class TestDedupeCandidates(unittest.TestCase):
+    """A repeated symbol in a candidate list is a benign LLM artifact; _dedupe_candidates collapses
+    it (keeping the first) so the validator doesn't fail-close the whole decision set."""
+
+    def _dedupe(self, decisions):
+        from analysis.ai_analyst import _dedupe_candidates
+
+        _dedupe_candidates(decisions)
+        return decisions
+
+    def test_removes_duplicate_buy_keeping_first(self):
+        d = self._dedupe(
+            {
+                "buy_candidates": [
+                    {"symbol": "JKHY", "confidence": 8},
+                    {"symbol": "JKHY", "confidence": 7},
+                    {"symbol": "AAPL"},
+                ]
+            }
+        )
+        self.assertEqual([c["symbol"] for c in d["buy_candidates"]], ["JKHY", "AAPL"])
+        self.assertEqual(d["buy_candidates"][0]["confidence"], 8)  # first kept
+
+    def test_removes_duplicate_short(self):
+        d = self._dedupe({"short_candidates": [{"symbol": "X"}, {"symbol": "X"}]})
+        self.assertEqual(len(d["short_candidates"]), 1)
+
+    def test_noop_without_duplicates(self):
+        d = self._dedupe({"buy_candidates": [{"symbol": "A"}, {"symbol": "B"}]})
+        self.assertEqual(len(d["buy_candidates"]), 2)
+
+    def test_handles_missing_and_nonlist(self):
+        self._dedupe({})  # no candidate keys — must not raise
+        d = self._dedupe({"buy_candidates": "not-a-list"})
+        self.assertEqual(d["buy_candidates"], "not-a-list")  # left untouched
+
+    def test_keeps_nondict_and_symbolless_items(self):
+        d = self._dedupe(
+            {"buy_candidates": [{"no_symbol": 1}, "weird", {"symbol": "A"}, {"symbol": "A"}]}
+        )
+        self.assertEqual(len(d["buy_candidates"]), 3)  # only the duplicate A dropped
