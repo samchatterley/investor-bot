@@ -4,6 +4,15 @@ Full version history. Most recent first.
 
 ---
 
+### 1.131 — June 2026 — weekly review records experiment monitoring even when the AI review fails
+
+The experiment monitoring entry (`docs/EXPERIMENT_LOG.md`) was appended only on the weekly review's
+*success* path, so when the 2026-06-28 review failed (the 1.127 truncation) the telemetry entry was
+silently dropped — leaving the log stale at 2026-06-21. `build_monitoring_lines()` + `append_log_entry`
+now run **before** the AI call (monitoring is descriptive telemetry independent of the AI narrative),
+and the lines attach to the degraded fallback review too. So a failed/truncated/timed-out review no
+longer creates a hole in the experiment telemetry. 100% covered.
+
 ### 1.130 — June 2026 — dedupe repeated AI candidates instead of fail-closing the whole run
 
 Claude occasionally lists the same symbol twice in `buy_candidates` (e.g. `JKHY` twice in the

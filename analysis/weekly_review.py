@@ -335,6 +335,12 @@ Respond with ONLY this JSON:
   ]
 }}"""
 
+    # Experiment monitoring is descriptive telemetry independent of the AI narrative — record it
+    # BEFORE the AI call so a failed/truncated/timed-out review never drops the weekly telemetry entry
+    # (the 2026-06-28 review failed and the EXPERIMENT_LOG.md entry was silently skipped). Fail-safe.
+    monitoring_lines = build_monitoring_lines()
+    append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
+
     try:
         # Bounded timeout — the weekly review runs in the sequential scheduler, so a hung call would
         # freeze all later jobs (cf. the 1.124 incident in analysis/ai_analyst.py).
@@ -360,12 +366,8 @@ Respond with ONLY this JSON:
         review["proposed_changes"] = proposed_changes
         review["week_attribution"] = week_attribution or {}
 
-        # Experiment monitoring: descriptive telemetry only, never a hypothesis test
-        # (docs/EXPERIMENT.md section 2.6). Appended to docs/EXPERIMENT_LOG.md and kept out
-        # of the paper's Results section. append_log_entry is fail-safe.
-        monitoring_lines = build_monitoring_lines()
+        # Monitoring already recorded (above) so it survives an AI failure; just attach to the review.
         review["experiment_monitoring"] = monitoring_lines
-        append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
         path = os.path.join(LOG_DIR, f"weekly_review_{date.today().isoformat()}.json")
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -386,7 +388,11 @@ Respond with ONLY this JSON:
 
     except json.JSONDecodeError as e:
         logger.error(f"Weekly review: failed to parse Claude response as JSON: {e}")
-        return _fallback_review(metrics, week_attribution, "AI response was not valid JSON")
+        fb = _fallback_review(metrics, week_attribution, "AI response was not valid JSON")
+        fb["experiment_monitoring"] = monitoring_lines
+        return fb
     except Exception as e:
         logger.error(f"Weekly review failed: {e}", exc_info=True)
-        return _fallback_review(metrics, week_attribution, "AI call failed")
+        fb = _fallback_review(metrics, week_attribution, "AI call failed")
+        fb["experiment_monitoring"] = monitoring_lines
+        return fb

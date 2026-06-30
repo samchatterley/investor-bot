@@ -404,6 +404,11 @@ class TestRunWeeklyReview(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result["review_degraded"])
         self.assertIn("trade(s) executed", result["week_summary"])
+        # Monitoring telemetry must survive an AI failure (the 2026-06-28 dropped-entry bug):
+        # it's attached to the degraded review AND written to EXPERIMENT_LOG.md.
+        self.assertTrue(result["experiment_monitoring"])
+        with open(os.path.join(self.tmpdir, "EXPERIMENT_LOG.md")) as f:
+            self.assertIn("Monitoring only", f.read())
 
     def test_general_exception_returns_degraded_review_not_none(self):
         from analysis.weekly_review import run_weekly_review
