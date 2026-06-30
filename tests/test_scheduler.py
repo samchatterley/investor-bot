@@ -750,5 +750,41 @@ class TestPrefetchExceptionPaths(unittest.TestCase):
             self.fail("_prefetch should not propagate fear_greed exception")
 
 
+class TestBackfillOutcomes(unittest.TestCase):
+    """The post-close experiment outcome backfill — fail-safe, halt-aware."""
+
+    def test_halt_file_skips_backfill(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("scripts.backfill_outcomes.main") as m,
+        ):
+            mod._backfill_outcomes()
+        m.assert_not_called()
+
+    def test_runs_backfill_when_not_halted(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("scripts.backfill_outcomes.main") as m,
+        ):
+            mod._backfill_outcomes()
+        m.assert_called_once()
+
+    def test_backfill_exception_is_non_fatal(self):
+        mod = _load_scheduler_module()
+        mod.config.HALT_FILE = "/tmp/test_halt_scheduler"
+        with (
+            patch("os.path.exists", return_value=False),
+            patch("scripts.backfill_outcomes.main", side_effect=RuntimeError("boom")),
+        ):
+            try:
+                mod._backfill_outcomes()
+            except Exception as exc:  # pragma: no cover
+                self.fail(f"_backfill_outcomes should not propagate: {exc}")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

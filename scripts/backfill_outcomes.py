@@ -41,16 +41,19 @@ def _load_observations(path: str) -> list[dict]:  # pragma: no cover
 
 def _price_series(
     symbols: set[str], earliest: str
-) -> dict[str, tuple[list[str], list[float]]]:  # pragma: no cover
+) -> dict[str, tuple[list[str], list[float], list[float], list[float]]]:  # pragma: no cover
     from data.market_data import _download_symbols
 
+    # +40d buffer before the earliest decision so a 14-bar ATR is computable at the first observation.
     fetch_days = (date.today() - date.fromisoformat(earliest)).days + 40
     data = _download_symbols(list(symbols), max(fetch_days, 60))
-    series: dict[str, tuple[list[str], list[float]]] = {}
+    series: dict[str, tuple[list[str], list[float], list[float], list[float]]] = {}
     for sym, df in data.items():
         dates = [ts.strftime("%Y-%m-%d") for ts in df.index]
+        highs = [float(h) for h in df["High"].tolist()]
+        lows = [float(low) for low in df["Low"].tolist()]
         closes = [float(c) for c in df["Close"].tolist()]
-        series[sym] = (dates, closes)
+        series[sym] = (dates, highs, lows, closes)
     return series
 
 

@@ -212,6 +212,24 @@ def _weekly_review():
         logger.error(f"Weekly review failed: {e}", exc_info=True)
 
 
+def _backfill_outcomes():
+    """Score forward outcomes for logged experiment observations (horizons fill in as they close).
+
+    Runs after the close so the day's now-matured horizons get scored into
+    logs/experiment_scored.jsonl. Without this the observations accumulate with no outcomes and the
+    experiment can never progress. Fail-safe — instrumentation must never block the scheduler.
+    """
+    if os.path.exists(config.HALT_FILE):
+        return
+    logger.info("Backfilling experiment outcomes...")
+    try:
+        from scripts.backfill_outcomes import main as _run_backfill
+
+        _run_backfill()
+    except Exception as e:
+        logger.error(f"Outcome backfill failed (non-fatal): {e}", exc_info=True)
+
+
 def _startup_prefetch() -> None:
     """Warm caches immediately on startup in case the 07:00 ET prefetch was missed.
 
@@ -251,11 +269,13 @@ if __name__ == "__main__":  # pragma: no cover
         getattr(schedule.every(), _day).at("10:00", _ET).do(_open)
         getattr(schedule.every(), _day).at("12:00", _ET).do(_midday)
         getattr(schedule.every(), _day).at("15:30", _ET).do(_close)
+        getattr(schedule.every(), _day).at("16:15", _ET).do(_backfill_outcomes)
 
     schedule.every().sunday.at("15:30", _ET).do(_weekly_review)
 
     logger.info(
-        "Scheduler running — Mon–Fri at 07:00 (prefetch) / 09:31 (sells) / 10:00 (buys) / 12:00 / 15:30 ET (America/New_York)"
+        "Scheduler running — Mon–Fri at 07:00 (prefetch) / 09:31 (sells) / 10:00 (buys) / 12:00 / "
+        "15:30 (close) / 16:15 (outcome backfill) ET (America/New_York)"
     )
     logger.info("Ctrl+C to stop.")
 

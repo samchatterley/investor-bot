@@ -20,6 +20,34 @@ from experiment.dataset import forward_r
 
 DEFAULT_HORIZONS: tuple[int, ...] = (1, 3, 5, 10)
 DEFAULT_ROUND_TRIP_BPS = 10.0  # ~5 bps each way: spread + slippage on a liquid large/mid-cap name
+_ATR_PERIOD = 14  # standard ATR lookback
+
+
+def _atr_at(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    idx: int | None,
+    period: int = _ATR_PERIOD,
+) -> float | None:
+    """Average true range (PRICE units) over `period` bars ending at `idx`, using only bars ≤ idx.
+
+    Reconstructed here rather than read from the observation: the live snapshot never carries an
+    `atr` field, so the decision-time normaliser is computed point-in-time from the price history
+    (no bar after the decision bar is touched). None if there isn't enough history.
+    """
+    if idx is None or idx < period:
+        return None
+    trs = []
+    for i in range(idx - period + 1, idx + 1):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        trs.append(tr)
+    atr = sum(trs) / len(trs)
+    return atr if atr > 0 else None
 
 
 def _entry_index(dates: list[str], decision_date: str) -> int | None:
@@ -43,22 +71,27 @@ def cost_r_estimate(
 def score_observation(
     obs: dict,
     dates: list[str],
+    highs: list[float],
+    lows: list[float],
     closes: list[float],
     *,
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     round_trip_bps: float = DEFAULT_ROUND_TRIP_BPS,
 ) -> dict:
     """Return a copy of ``obs`` with an ``outcomes`` block: gross forward_r per horizon (None until
-    that horizon closes), the cost estimate, and how many horizons are now scored."""
+    that horizon closes), the cost estimate, and how many horizons are now scored.
+
+    The ATR normaliser is computed point-in-time from the OHLC history at the decision bar (the live
+    snapshot doesn't log atr), so outcomes score from price history alone."""
     feats = obs.get("features") or {}
-    atr = feats.get("atr")
     price = feats.get("current_price")
     idx = _entry_index(dates, str(obs.get("date", "")))
+    atr = _atr_at(highs, lows, closes, idx)
 
     gross: dict[str, float | None] = {}
     for h in horizons:
         gross[f"forward_r_{h}d"] = (
-            forward_r(closes, idx, h, float(atr)) if (idx is not None and atr) else None
+            forward_r(closes, idx, h, atr) if (idx is not None and atr) else None
         )
 
     scored = dict(obs)
@@ -72,23 +105,25 @@ def score_observation(
 
 def backfill(
     observations: list[dict],
-    price_series: dict[str, tuple[list[str], list[float]]],
+    price_series: dict[str, tuple[list[str], list[float], list[float], list[float]]],
     *,
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     round_trip_bps: float = DEFAULT_ROUND_TRIP_BPS,
 ) -> list[dict]:
     """Score every observation for which a price series is available.
 
-    ``price_series`` maps symbol -> (ascending date strings, matching closes). Observations whose
-    symbol has no series are skipped (left for a later run once prices are available).
+    ``price_series`` maps symbol -> (ascending dates, highs, lows, closes). Observations whose symbol
+    has no series are skipped (left for a later run once prices are available).
     """
     out: list[dict] = []
     for obs in observations:
         series = price_series.get(obs.get("symbol", ""))
         if not series:
             continue
-        dates, closes = series
+        dates, highs, lows, closes = series
         out.append(
-            score_observation(obs, dates, closes, horizons=horizons, round_trip_bps=round_trip_bps)
+            score_observation(
+                obs, dates, highs, lows, closes, horizons=horizons, round_trip_bps=round_trip_bps
+            )
         )
     return out

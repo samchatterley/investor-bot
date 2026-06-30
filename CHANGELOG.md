@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.132 — June 2026 — unblock experiment outcome scoring (ATR from history) + schedule the backfill
+
+The experiment had been collecting un-scorable observations for ~2 weeks: `experiment/backfill`'s
+`forward_r` is ATR-normalised, but the live snapshot never carries an `atr` field, so the scorer read
+`atr=None` and **0 of 8,107** observations scored — N_eff pinned at 0 regardless of accumulation. Two
+fixes:
+
+- **ATR computed point-in-time from price history.** `score_observation` now reconstructs the
+  decision-bar ATR (price units) from the OHLC history via `_atr_at` (no bar after the decision is
+  touched), instead of depending on a logged `atr` that's never present. `backfill` / the runner now
+  carry OHLC. Re-running scored the backlog: **6,109 / 4,310 / 2,768** horizons closed at 1d/3d/5d.
+- **Backfill wired into the scheduler** (`_backfill_outcomes`, Mon–Fri 16:15 ET, after close) — it was
+  an offline step that nothing ran. Fail-safe + halt-aware.
+
+NOTE (still open): N_eff in the monitoring summary still reads 0 — the dataset-assembly / arm-matching
+pipeline (`build_dataset`) that turns scored outcomes into the effective 3-arm sample is the next,
+separate, unbuilt blocker. Also flagged: a few test rows (`SYM1`/`SYM4`) leaked into the live
+observations log (conftest isolation gap).
+
 ### 1.131 — June 2026 — weekly review records experiment monitoring even when the AI review fails
 
 The experiment monitoring entry (`docs/EXPERIMENT_LOG.md`) was appended only on the weekly review's
