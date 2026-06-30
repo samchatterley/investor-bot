@@ -4,6 +4,22 @@ Full version history. Most recent first.
 
 ---
 
+### 1.129 — June 2026 — BUGFIX: correlation filter blocked buys on degenerate (r=1.00) price data
+
+Found via a log scan of the concentration filter: **16 of 20 correlation-skips were `AAPL ↔ MSFT` /
+`AAPL ↔ GOOG` at r=1.00**, clustered on four consecutive Fridays (Jun 5/12/19/26), 4× each. A perfect
+1.00 between *distinct* stocks is impossible on 20 daily returns (live AAPL↔MSFT ≈ 0.34) — it's
+duplicated/degenerate price data from the bulk yfinance fetch. `correlated_with_held` trusted it and
+**wrongly blocked AAPL buys ~weekly** (real corr is well under the 0.70 gate → those were missed
+trades). The other 4 skips (0.72–0.86) were legitimate.
+
+Fix: fail open on an implausible correlation (`r ≥ 0.999 = _IMPLAUSIBLE_CORR`) — log a warning and
+ignore the pair rather than block on bad data (consistent with the module's existing
+fail-open-when-data-unavailable design). Updated the filter's blocking tests to use a realistic
+high-but-imperfect correlation (r≈0.975) instead of identical series, and added a fail-open
+regression test. (Residual: the upstream Friday fetch-degeneracy couldn't be reproduced live; the
+guard neutralizes its impact regardless.)
+
 ### 1.128 — June 2026 — shadow measurement: do catalyst shorts have edge outside bear regimes?
 
 Motivated by the PAYX case (we detected `eps_estimate_cut` and used it to *exit a long*, but the

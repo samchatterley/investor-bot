@@ -30,6 +30,34 @@ _UP = [100.0 + i for i in range(21)]
 _ZIGZAG_UP = _from_returns([0.05, -0.05] * 10)  # 21 prices: up then down repeatedly
 _ZIGZAG_DOWN = _from_returns([-0.05, 0.05] * 10)  # opposite phase → r ≈ -1
 
+# Highly but IMPERFECTLY correlated (r≈0.975): high enough to trip the 0.7 filter, but below the
+# _IMPLAUSIBLE_CORR=0.999 bad-data guard — i.e. what two genuinely co-moving distinct stocks look
+# like. (Two distinct names never produce r≈1.0; that only happens with duplicated price data.)
+_CORR_BASE = [
+    0.02,
+    -0.01,
+    0.03,
+    -0.02,
+    0.01,
+    0.025,
+    -0.015,
+    0.02,
+    -0.01,
+    0.03,
+    0.015,
+    -0.02,
+    0.025,
+    -0.01,
+    0.02,
+    -0.015,
+    0.03,
+    -0.02,
+    0.01,
+    0.02,
+]
+_HIGHCORR_A = _from_returns(_CORR_BASE)
+_HIGHCORR_B = _from_returns([r + 0.005 * (-1) ** i for i, r in enumerate(_CORR_BASE)])
+
 
 class TestPearson(unittest.TestCase):
     def test_identical_series_returns_one(self):
@@ -85,9 +113,16 @@ class TestCorrelatedWithHeld(unittest.TestCase):
         self.assertFalse(result)
 
     def test_high_correlation_returns_true(self):
-        fetch = _make_fetch({"AAPL": _UP, "MSFT": _UP})
+        fetch = _make_fetch({"AAPL": _HIGHCORR_A, "MSFT": _HIGHCORR_B})  # r≈0.975
         result = correlated_with_held("AAPL", {"MSFT"}, threshold=0.7, _fetch_fn=fetch)
         self.assertTrue(result)
+
+    def test_implausible_correlation_fails_open(self):
+        # Duplicated/degenerate data (identical series → r≈1.0) is not a real correlation and must
+        # NOT block — this is the Friday AAPL↔MSFT r=1.00 bug. Fail open.
+        fetch = _make_fetch({"AAPL": _UP, "MSFT": _UP})
+        result = correlated_with_held("AAPL", {"MSFT"}, threshold=0.7, _fetch_fn=fetch)
+        self.assertFalse(result)
 
     def test_negative_correlation_not_flagged(self):
         # Anticorrelated pair (r ≈ -1) should not trigger the filter (threshold=0.7 is positive)
@@ -106,13 +141,13 @@ class TestCorrelatedWithHeld(unittest.TestCase):
 
     def test_custom_threshold_respected(self):
         # With threshold=0.0, any positive correlation triggers
-        fetch = _make_fetch({"AAPL": _UP, "MSFT": _UP})
+        fetch = _make_fetch({"AAPL": _HIGHCORR_A, "MSFT": _HIGHCORR_B})
         result = correlated_with_held("AAPL", {"MSFT"}, threshold=0.0, _fetch_fn=fetch)
         self.assertTrue(result)
 
     def test_one_correlated_held_among_many_returns_true(self):
-        # MSFT anticorrelated, GOOG identical — GOOG should trigger the filter
-        fetch = _make_fetch({"AAPL": _ZIGZAG_UP, "MSFT": _ZIGZAG_DOWN, "GOOG": _ZIGZAG_UP})
+        # MSFT anticorrelated, GOOG highly (not perfectly) correlated — GOOG should trigger
+        fetch = _make_fetch({"AAPL": _HIGHCORR_A, "MSFT": _ZIGZAG_DOWN, "GOOG": _HIGHCORR_B})
         result = correlated_with_held("AAPL", {"MSFT", "GOOG"}, threshold=0.7, _fetch_fn=fetch)
         self.assertTrue(result)
 
@@ -124,8 +159,7 @@ class TestCorrelatedWithHeld(unittest.TestCase):
 
     def test_default_threshold_is_module_constant(self):
         # Verify the default threshold wires through correctly
-        fetch = _make_fetch({"AAPL": _UP, "MSFT": _UP})
-        # r=1.0 will always exceed CORRELATION_THRESHOLD=0.7
+        fetch = _make_fetch({"AAPL": _HIGHCORR_A, "MSFT": _HIGHCORR_B})  # r≈0.975 > 0.7
         result = correlated_with_held("AAPL", {"MSFT"}, _fetch_fn=fetch)
         self.assertTrue(result)
         self.assertEqual(CORRELATION_THRESHOLD, 0.7)

@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 LOOKBACK_DAYS = 20
 CORRELATION_THRESHOLD = 0.7
 _MIN_OVERLAP = 10  # minimum shared trading days to trust the result
+# Two DISTINCT stocks never have ~perfect 20-day daily-return correlation — an r at/above this is
+# duplicated/degenerate price data from the bulk fetch (observed intermittently; it wrongly blocked
+# AAPL vs MSFT/GOOG on ~weekly runs). Treat it as bad data and fail open rather than block.
+_IMPLAUSIBLE_CORR = 0.999
 
 
 def _fetch_closes(symbols: list[str], days: int) -> dict[str, list[float]]:
@@ -112,6 +116,12 @@ def correlated_with_held(
         if not held_closes:
             continue
         corr = _pearson(candidate_closes, held_closes)
+        if corr >= _IMPLAUSIBLE_CORR:
+            logger.warning(
+                f"Correlation filter: {candidate} ↔ {held} r={corr:.2f} implausible for distinct "
+                f"names — likely duplicated price data, ignoring"
+            )
+            continue
         if corr > threshold:
             logger.info(
                 f"Correlation filter: {candidate} ↔ {held} r={corr:.2f} > {threshold:.2f} — skipping"
