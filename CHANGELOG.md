@@ -4,6 +4,22 @@ Full version history. Most recent first.
 
 ---
 
+### 1.133 — July 2026 — stop placement self-heals (fixed → broker-native trailing fallback)
+
+`place_trailing_stop`'s fractional-quantity path placed a **fixed** stop at
+`current_price * (1 − trail%)`. When `current_price` was stale (from the decision snapshot) and the
+price had since fallen, the computed stop landed **above** the live market → Alpaca rejected it with
+err 42210000 ("stop price must be less than current price") → `STOP_FAILED`. Observed live on MU
+(2026-07-01): stop $1,119.66 vs market $1,078 — briefly "unprotected" until the
+`ensure_stops_attached` backstop re-attached a trailing stop.
+
+Fix: the fractional path now **falls back to a broker-native trailing stop** on any fixed-stop
+rejection (and uses it directly when no anchor price is available). Alpaca anchors a trailing stop to
+the LIVE market, so it can't be wrong-sided — the PRIMARY path is now self-healing instead of relying
+on the backstop. `STOP_FAILED` is returned only if both the fixed and trailing attempts fail; genuine
+sub-share positions still return `UNPROTECTED`. All positions were protected throughout (backstop);
+this removes the dependency on it. 100% covered.
+
 ### 1.132 — June 2026 — unblock experiment outcome scoring (ATR from history) + schedule the backfill
 
 The experiment had been collecting un-scorable observations for ~2 weeks: `experiment/backfill`'s

@@ -294,49 +294,76 @@ def place_trailing_stop(
                 f"({safe_qty:.6f}) — Alpaca does not support fractional stop orders"
             )
             return OrderResult(status=OrderStatus.UNPROTECTED, symbol=symbol)
-        if not current_price:
-            logger.warning(f"Cannot place stop for {symbol}: no current price")
-            return OrderResult(
-                status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason="no current price"
-            )
-        stop_price = round(current_price * (1 - effective_trail / 100), 2)
-        try:
-            order = client.submit_order(
-                StopOrderRequest(
-                    symbol=symbol,
-                    qty=whole_qty,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,
-                    stop_price=stop_price,
+
+        # Protect the whole-share part. Prefer a fixed stop when a price is available, but fall back
+        # to a broker-native TRAILING stop on ANY rejection (and when no price is given). A stale
+        # current_price can compute a fixed stop ABOVE the live market — Alpaca then rejects it with
+        # "stop price must be less than current price" (the MU incident, err 42210000). A trailing
+        # stop is anchored by Alpaca to the LIVE market, so it can't be wrong-sided. This keeps the
+        # PRIMARY path self-healing instead of leaning on the ensure_stops_attached backstop.
+        order_id: str | None = None
+        if current_price:
+            stop_price = round(current_price * (1 - effective_trail / 100), 2)
+            try:
+                order = client.submit_order(
+                    StopOrderRequest(
+                        symbol=symbol,
+                        qty=whole_qty,
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC,
+                        stop_price=stop_price,
+                    )
                 )
-            )
-            order_id = str(order.id)
-            logger.info(
-                f"Stop order: {symbol} {whole_qty} shares (of {safe_qty:.6f}) "
-                f"stop=${stop_price} | order_id={order_id}"
-            )
-            # Liquidate fractional remainder — Alpaca cannot stop-protect it
-            if remainder >= 0.001:
-                try:
-                    client.submit_order(
-                        MarketOrderRequest(
-                            symbol=symbol,
-                            qty=remainder,
-                            side=OrderSide.SELL,
-                            time_in_force=TimeInForce.DAY,
-                        )
+                order_id = str(order.id)
+                logger.info(
+                    f"Stop order: {symbol} {whole_qty} shares (of {safe_qty:.6f}) "
+                    f"stop=${stop_price} | order_id={order_id}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Fixed stop for {symbol} rejected ({e}) — falling back to broker-native "
+                    f"trailing stop"
+                )
+
+        if order_id is None:
+            try:
+                order = client.submit_order(
+                    TrailingStopOrderRequest(
+                        symbol=symbol,
+                        qty=whole_qty,
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.GTC,
+                        trail_percent=effective_trail,
                     )
-                    logger.info(f"Liquidated fractional remainder {remainder:.6f} of {symbol}")
-                except Exception as e:
-                    logger.warning(
-                        f"Could not liquidate fractional remainder {remainder:.6f} of {symbol}: {e}"
+                )
+                order_id = str(order.id)
+                logger.info(
+                    f"Trailing stop: {symbol} {whole_qty} shares (of {safe_qty:.6f}) "
+                    f"{effective_trail}% trail | order_id={order_id}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to place trailing stop for {symbol}: {e}")
+                return OrderResult(
+                    status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason=str(e)
+                )
+
+        # Liquidate fractional remainder — Alpaca cannot stop-protect it
+        if remainder >= 0.001:
+            try:
+                client.submit_order(
+                    MarketOrderRequest(
+                        symbol=symbol,
+                        qty=remainder,
+                        side=OrderSide.SELL,
+                        time_in_force=TimeInForce.DAY,
                     )
-            return OrderResult(status=OrderStatus.FILLED, symbol=symbol, stop_order_id=order_id)
-        except Exception as e:
-            logger.error(f"Failed to place trailing stop for {symbol}: {e}")
-            return OrderResult(
-                status=OrderStatus.STOP_FAILED, symbol=symbol, rejection_reason=str(e)
-            )
+                )
+                logger.info(f"Liquidated fractional remainder {remainder:.6f} of {symbol}")
+            except Exception as e:
+                logger.warning(
+                    f"Could not liquidate fractional remainder {remainder:.6f} of {symbol}: {e}"
+                )
+        return OrderResult(status=OrderStatus.FILLED, symbol=symbol, stop_order_id=order_id)
     else:
         try:
             order = client.submit_order(

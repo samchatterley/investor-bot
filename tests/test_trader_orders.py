@@ -1137,10 +1137,44 @@ class TestPlaceTrailingStop(unittest.TestCase):
         expected_stop = round(200.0 * (1 - TRAILING_STOP_PCT / 100), 2)
         self.assertAlmostEqual(stop_req.stop_price, expected_stop, places=2)
 
-    def test_fractional_without_current_price_returns_stop_failed(self):
+    def test_fractional_without_current_price_falls_back_to_trailing(self):
+        # No anchor price → skip the fixed stop and use a broker-native trailing stop (market-anchored,
+        # needs no price) rather than leaving the position unprotected.
+        from alpaca.trading.requests import TrailingStopOrderRequest
+
         from execution.trader import place_trailing_stop
 
-        result = place_trailing_stop(MagicMock(), "AAPL", 2.5, current_price=None)
+        client = MagicMock()
+        client.submit_order.return_value = self._make_order("trail-nocp")
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=None)
+        self.assertTrue(result.is_success)
+        self.assertIsInstance(client.submit_order.call_args_list[0][0][0], TrailingStopOrderRequest)
+
+    def test_fractional_fixed_stop_rejected_falls_back_to_trailing(self):
+        # The MU incident: a stale current_price computed a fixed stop above market → Alpaca rejects
+        # it. The PRIMARY path must fall back to a broker-native trailing stop, not leave it unprotected.
+        from alpaca.trading.requests import StopOrderRequest, TrailingStopOrderRequest
+
+        from execution.trader import place_trailing_stop
+
+        client = MagicMock()
+        client.submit_order.side_effect = [
+            Exception("stop price must be less than current price"),  # fixed stop rejected
+            self._make_order("trail-fallback"),  # trailing stop succeeds
+            self._make_order("liq"),  # remainder liquidation
+        ]
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
+        self.assertTrue(result.is_success)
+        self.assertEqual(result.stop_order_id, "trail-fallback")
+        self.assertIsInstance(client.submit_order.call_args_list[0][0][0], StopOrderRequest)
+        self.assertIsInstance(client.submit_order.call_args_list[1][0][0], TrailingStopOrderRequest)
+
+    def test_fractional_both_stops_fail_returns_stop_failed(self):
+        from execution.trader import place_trailing_stop
+
+        client = MagicMock()
+        client.submit_order.side_effect = Exception("rejected")  # fixed AND trailing both fail
+        result = place_trailing_stop(client, "AAPL", 2.5, current_price=150.0)
         self.assertEqual(result.status, OrderStatus.STOP_FAILED)
         self.assertFalse(result.is_success)
 
