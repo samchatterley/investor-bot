@@ -174,15 +174,18 @@ class TestPlaceTrailingStopFractionalRouting(unittest.TestCase):
         submitted = client.submit_order.call_args[0][0]
         self.assertIsInstance(submitted, TrailingStopOrderRequest)
 
-    def test_fractional_without_current_price_returns_stop_failed(self):
+    def test_fractional_without_current_price_falls_back_to_trailing(self):
+        # No anchor price → use a broker-native trailing stop (market-anchored, needs no price)
+        # rather than leaving the position unprotected (1.133).
+        from alpaca.trading.requests import TrailingStopOrderRequest
+
         from execution.trader import place_trailing_stop
-        from models import OrderStatus
 
         client = self._make_client()
         result = place_trailing_stop(client, "NVDA", qty=132.652248, current_price=None)
         self.assertIsNotNone(result)
-        self.assertEqual(result.status, OrderStatus.STOP_FAILED)
-        client.submit_order.assert_not_called()
+        self.assertTrue(result.is_success)
+        self.assertIsInstance(client.submit_order.call_args_list[0][0][0], TrailingStopOrderRequest)
 
     def test_fractional_stop_price_calculated_from_current_price(self):
         from config import TRAILING_STOP_PCT
