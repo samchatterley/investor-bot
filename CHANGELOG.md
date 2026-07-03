@@ -4,6 +4,20 @@ Full version history. Most recent first.
 
 ---
 
+### 1.134 — July 2026 — daily email reports change since the last email (close-to-close)
+
+The daily email headlined `daily_pnl`, which is measured **from this morning's open** and so drops
+overnight gaps — successive emails didn't reconcile with the actual account balance (2026-07-01: email
++$186 while the account was +$675 since yesterday's close; the ~$558 overnight move vanished from the
+email's tally).
+
+Fix: the daily email now headlines the **change since the last email** — close-to-close, from the
+prior day's closing portfolio value (`_pnl_since_last_email`), which includes the overnight move and
+reconciles with the balance. Added a transparency line splitting it into **bot-intraday vs overnight**
+so the reader sees how much the bot's decisions drove vs an overnight gap. The stored `daily_pnl`
+(from-open) is unchanged — the weekly review and experiment still use it to evaluate the bot's
+decisions. Falls back to from-open for the first-ever email. 100% covered.
+
 ### 1.133 — July 2026 — stop placement self-heals (fixed → broker-native trailing fallback)
 
 `place_trailing_stop`'s fractional-quantity path placed a **fixed** stop at

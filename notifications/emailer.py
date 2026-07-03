@@ -531,16 +531,63 @@ def _build_experiment_section(record: dict) -> str:
           </table>"""
 
 
-def _build_html(record: dict, name: str = "there") -> str:
-    pnl = record["daily_pnl"]
+def _pnl_since_last_email(record: dict) -> tuple[float, float]:
+    """P&L since the previous daily email — CLOSE-TO-CLOSE, so it includes the overnight move and
+    reconciles with the account balance (unlike the from-open ``daily_pnl``, which drops overnight
+    gaps so successive emails don't sum to the real account change). Returns (pnl, base_value).
+    Falls back to the from-open figure when there is no prior record (the first email)."""
+    from utils.portfolio_tracker import load_history
+
+    today = str(record.get("date", ""))[:10]
+    closing = (record.get("account_after") or {}).get("portfolio_value")
+    prior_close = None
+    if closing is not None:
+        try:
+            prior = [r for r in load_history() if str(r.get("date", ""))[:10] < today]
+            if prior:
+                prior_close = (prior[-1].get("account_after") or {}).get("portfolio_value")
+        except Exception:
+            prior_close = None
+    if closing is not None and prior_close:
+        return closing - prior_close, prior_close
+    return record["daily_pnl"], record["account_before"]["portfolio_value"]
+
+
+def _build_html(
+    record: dict,
+    name: str = "there",
+    *,
+    since_last_pnl: float | None = None,
+    since_last_base: float | None = None,
+) -> str:
+    intraday_pnl = record["daily_pnl"]  # the bot's from-open trading-day result
+    # Headline is the change since the last email (close-to-close). When called without it (e.g. a
+    # standalone render), fall back to the from-open figure.
+    if since_last_pnl is None:
+        since_last_pnl = intraday_pnl
+        since_last_base = record["account_before"]["portfolio_value"]
+    pnl = since_last_pnl
     pnl_colour = "#2e7d32" if pnl >= 0 else "#c62828"
     pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
     pnl_bg = "#f1f8f1" if pnl >= 0 else "#fff5f5"
 
     opening_capital = record["account_before"]["portfolio_value"]
     closing_portfolio = record["account_after"]["portfolio_value"]
-    day_return_pct = (pnl / opening_capital * 100) if opening_capital else 0.0
+    day_return_pct = (pnl / since_last_base * 100) if since_last_base else 0.0
     day_return_str = f"+{day_return_pct:.2f}%" if day_return_pct >= 0 else f"{day_return_pct:.2f}%"
+
+    # Split the headline into overnight vs the bot's intraday result, shown only when they differ, so
+    # the reader can see how much of the move the bot actually drove vs an overnight gap.
+    overnight = pnl - intraday_pnl
+    if abs(overnight) >= 0.01:
+        _intr = f"+${intraday_pnl:,.2f}" if intraday_pnl >= 0 else f"-${abs(intraday_pnl):,.2f}"
+        _ovn = f"+${overnight:,.2f}" if overnight >= 0 else f"-${abs(overnight):,.2f}"
+        split_note = (
+            '<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#888;'
+            f'margin:0 0 16px">Bot intraday {_intr} &#183; Overnight {_ovn}</p>'
+        )
+    else:
+        split_note = ""
 
     trade_count = len(record.get("trades_executed", [])) + len(
         record.get("stop_losses_triggered", [])
@@ -583,9 +630,10 @@ def _build_html(record: dict, name: str = "there") -> str:
           <!-- P&L hero -->
           <table width="100%" cellpadding="0" cellspacing="0" style="background:{pnl_bg};border-radius:10px;margin-bottom:24px">
             <tr><td style="padding:24px;text-align:center">
-              <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#888;margin:0 0 4px 0">Today&#39;s P&amp;L</p>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#888;margin:0 0 4px 0">P&amp;L since last update</p>
               <p style="font-family:Arial,Helvetica,sans-serif;font-size:44px;font-weight:bold;color:{pnl_colour};line-height:1;margin:0">{pnl_str}</p>
-              <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:600;color:{pnl_colour};margin:6px 0 20px">{day_return_str}</p>
+              <p style="font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:600;color:{pnl_colour};margin:6px 0 8px">{day_return_str}</p>
+              {split_note}
 
               <!-- Stats 2x3 -->
               <table width="100%" cellpadding="0" cellspacing="0">
@@ -931,11 +979,12 @@ def send_weekly_review(
 
 
 def send_summary(record: dict):
-    opening = record["account_before"]["portfolio_value"]
-    pnl = record["daily_pnl"]
-    ret_pct = (pnl / opening * 100) if opening else 0.0
+    # Report the change since the last email (close-to-close), so the number reconciles with the
+    # account balance rather than silently excluding the overnight move (the from-open daily_pnl).
+    pnl, base = _pnl_since_last_email(record)
+    ret_pct = (pnl / base * 100) if base else 0.0
     sign = "+" if pnl >= 0 else ""
     _send_html(
         subject=f"Trading Bot {record['date']} — {sign}${pnl:,.2f} ({sign}{ret_pct:.2f}%)",
-        html_fn=lambda name: _build_html(record, name),
+        html_fn=lambda name: _build_html(record, name, since_last_pnl=pnl, since_last_base=base),
     )

@@ -1216,3 +1216,59 @@ class TestBuildAttributionHtml(unittest.TestCase):
     def test_hold_duration_breakdown_appears(self):
         html = _build_attribution_html(self._attribution())
         self.assertIn("1-2d", html)
+
+
+class TestPnlSinceLastEmail(unittest.TestCase):
+    """The daily email headline is the change since the last email (close-to-close), not from-open."""
+
+    def test_close_to_close_when_prior_exists(self):
+        from notifications.emailer import _pnl_since_last_email
+
+        rec = _record(pnl=100.0)  # account_after = 100,100
+        prior = [{"date": "2026-04-25-close", "account_after": {"portfolio_value": 99_500.0}}]
+        with patch("utils.portfolio_tracker.load_history", return_value=prior):
+            pnl, base = _pnl_since_last_email(rec)
+        self.assertAlmostEqual(pnl, 600.0)  # 100,100 - 99,500 (includes overnight)
+        self.assertAlmostEqual(base, 99_500.0)
+
+    def test_falls_back_to_from_open_when_no_prior(self):
+        from notifications.emailer import _pnl_since_last_email
+
+        rec = _record(pnl=100.0)
+        with patch("utils.portfolio_tracker.load_history", return_value=[]):
+            pnl, base = _pnl_since_last_email(rec)
+        self.assertAlmostEqual(pnl, 100.0)  # from-open daily_pnl fallback
+        self.assertAlmostEqual(base, 100_000.0)
+
+    def test_falls_back_when_no_closing_value(self):
+        from notifications.emailer import _pnl_since_last_email
+
+        rec = _record(pnl=100.0)
+        rec["account_after"] = {"cash": 1.0}  # no portfolio_value
+        with patch("utils.portfolio_tracker.load_history", return_value=[]):
+            pnl, base = _pnl_since_last_email(rec)
+        self.assertAlmostEqual(pnl, 100.0)
+
+    def test_falls_back_on_history_error(self):
+        from notifications.emailer import _pnl_since_last_email
+
+        rec = _record(pnl=100.0)
+        with patch("utils.portfolio_tracker.load_history", side_effect=RuntimeError("db down")):
+            pnl, base = _pnl_since_last_email(rec)
+        self.assertAlmostEqual(pnl, 100.0)  # fallback, not a crash
+
+
+class TestBuildHtmlSinceLast(unittest.TestCase):
+    def test_headline_and_split_when_overnight_differs(self):
+        rec = _record(pnl=50.0)  # bot intraday = +$50
+        html = _build_html(rec, since_last_pnl=600.0, since_last_base=99_500.0)  # overnight = 550
+        self.assertIn("P&amp;L since last update", html)
+        self.assertIn("+$600.00", html)  # headline = close-to-close
+        self.assertIn("Bot intraday", html)
+        self.assertIn("+$50.00", html)  # intraday split
+        self.assertIn("Overnight", html)
+
+    def test_no_split_when_overnight_zero(self):
+        rec = _record(pnl=50.0)
+        html = _build_html(rec, since_last_pnl=50.0, since_last_base=100_000.0)  # overnight = 0
+        self.assertNotIn("Bot intraday", html)
