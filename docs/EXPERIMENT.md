@@ -1,8 +1,19 @@
 # EXPERIMENT.md — Pre-registration: Does AI contextual judgement add incremental value?
 
-> **Status:** Pre-registration (v1.3, pre-data amendments). Freeze before collecting any primary
+> **Status:** Pre-registration (v1.4, pre-data amendments). Freeze before collecting any primary
 > data. Any change after data collection begins requires a new version and a new evaluation period.
-> Companion docs: `docs/strategic_review.md` (why), `docs/audit_v1.100.md` (code-level audit).
+> Companion docs: `docs/strategic_review.md` (why), `docs/audit_v1.100.md` (code-level audit),
+> `docs/POINT_OF_NO_RETURN.md` (the freeze protocol).
+>
+> **v1.4 amendment (pre-data): power the IC endpoint to a ~quarter horizon (sections 4, 15.10).**
+> Gate B (2026-06-19) found the continuous incremental-IC test (H2) underpowered at the
+> eligible-candidate scale (~2 years to reach N_eff ≈ 1,537). Two pre-data changes fix it without
+> geographic expansion or abandoning it: **(B)** the IC is computed on *market-relative* (idiosyncratic)
+> forward R — what the thesis is actually about — which also collapses same-day clustering; **(A)** the
+> IC sample broadens from deterministic-eligible to *all material-context names* (the §15.2 snapshot
+> layer), scored by Arm 2+Arm 3 at ~50–100/day. Together they take the IC primary from ~2 years to
+> **~one quarter**. The veto/risk test (H1) stays the headline primary; the IC (H2) becomes a
+> co-primary on the quarter horizon. Gated on Gate A; frozen at the PNR.
 >
 > **v1.3 amendment (pre-data): LLM lookahead control (section 15.8).** The model has a training
 > knowledge cutoff (~Jan 2026), so on historical dates before it the LLM may already know the
@@ -474,6 +485,43 @@ Therefore:
   Each decision logs which mode was in effect (`adaptive_prompt` in the
   `experiment/collection.py` observation), so the two questions — does *context* help, and does *weekly
   learning* help — are answered one at a time instead of confounding each other.
+
+**15.10 Powering the IC endpoint (v1.4, pre-data).** Gate B (2026-06-19) showed the continuous
+incremental-IC test (H2) underpowered at the eligible-candidate scale (min detectable IC 0.065–0.128
+vs a 0.03–0.05 target; ~2 years to N_eff ≈ 1,537). The veto/risk primary (H1) is conditionally powered
+over ~1 year and remains the headline. Two pre-data changes make the IC endpoint answerable on a useful
+horizon without geographic expansion or abandoning it:
+
+- **Lever B — market-relative forward R (rigour-positive).** The IC is computed on the *idiosyncratic*
+  component of forward R — excess over the market (a contemporaneous SPY/beta control, or a day
+  fixed-effect in the IC regression) — not the raw ATR-normalised return. This is what the contextual
+  thesis is actually about (does the AI's context read predict the *stock-specific* move, not market
+  beta), and it removes the dominant source of same-day cross-sectional dependence, cutting the design
+  effect and raising N_eff/day roughly 3–4×. H=5 / ATR14 / cost definitions are otherwise unchanged;
+  this amends section 4's metric **for the IC test only** (the veto test's risk endpoints are unaffected).
+
+- **Lever A — broaden the IC sample to the material-context population.** The IC test runs on *all names
+  carrying a material-context category* (§15.1) drawn from the §15.2 research-snapshot layer — not only
+  the deterministic-eligible subset — scored by Arm 2 + Arm 3 at ~50–100 names/day (raising the §8 Arm-3
+  cost cap from 30). This is ~25–100× the daily IC observations and is arguably a *cleaner* test of the
+  thesis: it measures the AI's context read directly, decoupled from the (weak) signal book's selection.
+  **The IC claim scope changes accordingly:** "context predicts idiosyncratic forward return *among
+  material-catalyst names*," not "among engine-eligible candidates." The veto/selection endpoints, which
+  depend on the engine's eligible set, keep their original population.
+
+**Power consequence.** With B+A the IC = 0.05 endpoint is reachable in **~one quarter** of live-forward
+collection, contingent on the realised post-adjustment same-day ICC (assumed ~0.02–0.03; if nearer 0.05,
+~3–4 months — measured from the first weeks of data). IC = 0.03 remains a multi-quarter endpoint. The §10
+schedule gains an IC milestone fired at N_eff ≈ 1,537 (not the underpowered 400). The historical track
+stays barred for the IC predictor (§15.8): this is live-forward only.
+
+**Cost.** ~50–100 Arm-2 + Arm-3 `claude-sonnet-4-6` calls/day ≈ **$0.4–1.6/day (~$25–100/quarter)** at
+current prompt sizes — not the binding constraint.
+
+**Freeze impact.** This amends the frozen forward-R metric (POINT_OF_NO_RETURN manifest item 13, IC
+variant), the scored-population definition (item 12), and the Arm-3 budget — all frozen at the PNR.
+**Gated on Gate A:** both the IC and the veto require the instrument to reproduce its verdict; if Gate A
+fails, neither is salvageable by sample size.
 
 ---
 
