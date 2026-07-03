@@ -253,7 +253,6 @@ if __name__ == "__main__":  # pragma: no cover
     atexit.register(_remove_pid_file)
     signal.signal(signal.SIGTERM, _sigterm_handler)
     migrate_bulk_caches_to_subdir()  # adopt logs/market_data/ foldering for legacy installs
-    _startup_prefetch()
 
     # Append to log file so history survives launchd restarts
     _log_path = os.path.join(_ROOT, "logs", "scheduler.log")
@@ -262,6 +261,10 @@ if __name__ == "__main__":  # pragma: no cover
         logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
     )
     logging.getLogger().addHandler(_fh)
+    # Warm caches now — AFTER the file handler is attached, so the prefetch's own log lines
+    # ("Startup: launching…", "Pre-market prefetch starting…") land in scheduler.log. This runs
+    # in case the 07:00 ET prefetch was missed, e.g. a launchd restart after a power outage.
+    _startup_prefetch()
     _ET = "America/New_York"
     for _day in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
         getattr(schedule.every(), _day).at("07:00", _ET).do(_prefetch)

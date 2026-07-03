@@ -4,6 +4,20 @@ Full version history. Most recent first.
 
 ---
 
+### 1.135 — July 2026 — startup prefetch log lines land in scheduler.log
+
+`_startup_prefetch()` — the self-heal that warms caches on a restart when the 07:00 ET prefetch was
+missed (e.g. a launchd relaunch after a power outage) — was called **before** the file-log handler was
+attached, so its own log lines (`Startup: launching…`, `Pre-market prefetch starting…`) went only to
+the console and never reached `scheduler.log`. After the 2026-07-03 power-outage restart this made the
+prefetch look silent in the log; its progress could only be confirmed indirectly via cache-file mtimes.
+
+Fix: move the `_startup_prefetch()` call to **after** the file handler is attached, so the startup cache
+warm is visible in `scheduler.log`. No behavioural change to the prefetch itself (the `__main__` block
+is `pragma: no cover`).
+
+---
+
 ### 1.134 — July 2026 — daily email reports change since the last email (close-to-close)
 
 The daily email headlined `daily_pnl`, which is measured **from this morning's open** and so drops
