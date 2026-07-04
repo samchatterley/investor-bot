@@ -4,6 +4,20 @@ Full version history. Most recent first.
 
 ---
 
+### 1.142 — July 2026 — FINRA daily short-flow feed (free point-in-time positioning history)
+
+New `data/short_flow`: FINRA's Reg SHO consolidated daily short-sale volume file
+(`cdn.finra.org/equity/regsho/daily/`, no key, per-name daily history to ~2009). The derived
+`short_volume_ratio` gives the bot its first **flow/positioning** feed with point-in-time history —
+the one mechanism family the v2 signal workshop flagged as both unexhausted *and* suited to the
+liquid universe. Unlocks: (a) informed short-flow signals (Boehmer-Jones-Zhang — heavy shorting
+predicts negative returns in large caps, where borrow is general-collateral so the short side is not
+friction-dead); (b) a historical crowding/borrow proxy — the missing gate for `lottery_pop_short`
+(workshop v2 #1) and the blocker that killed N2/knife-short backtests. Per-day disk cache; pure
+parser + isolated fetch; 100% covered. Feed survey also verified free: Alpaca historical options
+(Feb 2024→, unlocks kill/keep tests of the 4 live-only options signals), SEC fails-to-deliver, and
+GDELT news tone. +9 tests (4,997 → 5,006).
+
 ### 1.141 — July 2026 — raise MAX_POSITIONS 2 → 5 in small-account mode
 
 Two positions is dangerously concentrated for the book (one name dominates the drawdown). The

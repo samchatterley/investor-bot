@@ -67,6 +67,7 @@ files = [
     "data/index_membership.py",
     "data/edgar_event_history.py",
     "data/universe_builder.py",
+    "data/short_flow.py",
     "signals/evaluator.py",
     "experiment/monitoring.py",
     "experiment/arms.py",
@@ -160,6 +161,8 @@ omit = [
     "*/scripts/insider_backtest.py",
     "scripts/falling_knife_short.py",
     "*/scripts/falling_knife_short.py",
+    "scripts/short_flow_backtest.py",
+    "*/scripts/short_flow_backtest.py",
 ]
 
 [tool.coverage.report]
