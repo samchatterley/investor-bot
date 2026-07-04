@@ -69,6 +69,9 @@ def main() -> None:
     ap.add_argument("--costs", default="0,4,7,10,14", help="round-trip cost sweep (bps)")
     ap.add_argument("--winsor", type=float, default=25.0, help="cap |forward excess| at this %")
     ap.add_argument("--start", default="2015-01-01")
+    ap.add_argument(
+        "--entry-lag", type=int, default=1, help="sessions after reclaim to enter (live=1)"
+    )
     args = ap.parse_args()
     costs = [float(c) for c in args.costs.split(",")]
 
@@ -107,13 +110,16 @@ def main() -> None:
                 baseline.append((max(-w, min(w, ex * 100.0)), years[g]))
             if not (gcol[g] and qcol[g]) or math.isnan(c_prev):
                 continue
-            # First reclaim of the pre-gap close within 2 sessions → entry there.
-            entry = g if cvals[g] > c_prev else (g + 1 if cvals[g + 1] > c_prev else -1)
-            if entry < 0 or entry + h >= n or math.isnan(cvals[entry + h]):
+            # First reclaim of the pre-gap close within 2 sessions.
+            reclaim = g if cvals[g] > c_prev else (g + 1 if cvals[g + 1] > c_prev else -1)
+            if reclaim < 0:
                 continue
-            ex = (cvals[entry + h] / cvals[entry] - 1.0) - (
-                spy_vals[entry + h] / spy_vals[entry] - 1.0
-            )
+            e = (
+                reclaim + args.entry_lag
+            )  # live enters the session AFTER the reclaim (signal is EOD)
+            if e + h >= n or math.isnan(cvals[e]) or math.isnan(cvals[e + h]):
+                continue
+            ex = (cvals[e + h] / cvals[e] - 1.0) - (spy_vals[e + h] / spy_vals[e] - 1.0)
             events.append((max(-w, min(w, ex * 100.0)), years[g]))
 
     print(f"\n=== N7 gap-down reclaim — hold {h}d, winsorised excess vs SPY, COST SWEEP ===")
