@@ -81,7 +81,10 @@ SMALL_ACCOUNT_MODE = os.getenv("SMALL_ACCOUNT_MODE", "false").lower() == "true"
 _SAM = SMALL_ACCOUNT_MODE  # shorthand for inline defaults below
 
 # Position sizing
-MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "2" if _SAM else "5"))
+# 2026-07: raised small-account default 2 -> 5. Two positions is dangerously concentrated for a
+# ~$100k book (one name dominates the drawdown); the reversal-basket sweep shows IR peaks at ~5 with
+# no risk-adjusted penalty vs fewer, so 5 lowers single-name blow-up risk essentially for free.
+MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
 MAX_POSITION_PCT = 0.45  # Deprecated — legacy Kelly cap; kept only for config.validate(). Superseded by MAX_POSITION_WEIGHT.
 CASH_RESERVE_PCT = 0.10  # Always keep 10% as cash buffer
 

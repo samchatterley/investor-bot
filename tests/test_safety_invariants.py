@@ -111,8 +111,10 @@ class TestSmallAccountModeSafeBounds(unittest.TestCase):
             self.cfg.MAX_ORDERS_PER_RUN, 1, "MAX_ORDERS_PER_RUN must be 1 in small-account mode"
         )
 
-    def test_max_positions_is_2(self):
-        self.assertEqual(self.cfg.MAX_POSITIONS, 2, "MAX_POSITIONS must be 2 in small-account mode")
+    def test_max_positions_is_5(self):
+        self.assertEqual(
+            self.cfg.MAX_POSITIONS, 5, "MAX_POSITIONS must be 5 (raised from 2, 2026-07)"
+        )
 
     def test_single_order_less_than_daily_notional(self):
         self.assertLess(

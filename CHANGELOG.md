@@ -4,6 +4,17 @@ Full version history. Most recent first.
 
 ---
 
+### 1.141 — July 2026 — raise MAX_POSITIONS 2 → 5 in small-account mode
+
+Two positions is dangerously concentrated for the book (one name dominates the drawdown). The
+reversal-basket sweep (the one validated edge) shows the information ratio **peaks at ~5 positions and
+is flat-to-lower beyond**, with N=2 the *worst* (most concentrated) — so raising the small-account
+default from 2 to 5 lowers single-name blow-up risk essentially for free, and it matches the
+non-small-account default. The **dollar** caps (`MAX_DEPLOYED_USD`, `MAX_SINGLE_ORDER_USD`, daily
+notional) are unchanged, so total exposure is identical — 5 positions are just smaller, more
+diversified slices (and more decision samples for the experiment). Safety invariants and their tests
+updated accordingly.
+
 ### 1.140 — July 2026 — dynamic rules-based universe builder
 
 New `data/universe_builder`: a self-maintaining tradeable universe built from **Alpaca's free assets

@@ -68,14 +68,14 @@ class TestSmallAccountCapitalCaps(unittest.TestCase):
             importlib.reload(cfg)
             self.assertEqual(cfg.MAX_ORDERS_PER_RUN, 1)
 
-    def test_max_positions_is_2_in_small_account_mode(self):
+    def test_max_positions_is_5_in_small_account_mode(self):
         import importlib
 
         with patch.dict(os.environ, {"SMALL_ACCOUNT_MODE": "true"}, clear=False):
             import config as cfg
 
             importlib.reload(cfg)
-            self.assertEqual(cfg.MAX_POSITIONS, 2)
+            self.assertEqual(cfg.MAX_POSITIONS, 5)  # raised 2 -> 5 (2026-07, concentration risk)
 
     def test_env_override_wins_over_small_account_default(self):
         """An explicit env var always beats the SMALL_ACCOUNT_MODE default."""
