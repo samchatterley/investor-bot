@@ -130,6 +130,22 @@ omit = [
     "*/scripts/signal_direction_matrix.py",
     "scripts/lazy_prices_backtest.py",
     "*/scripts/lazy_prices_backtest.py",
+    "scripts/pead_conditioning_backtest.py",
+    "*/scripts/pead_conditioning_backtest.py",
+    "scripts/residual_reversal_backtest.py",
+    "*/scripts/residual_reversal_backtest.py",
+    "scripts/quiet_volume_backtest.py",
+    "*/scripts/quiet_volume_backtest.py",
+    "scripts/overnight_accumulation_backtest.py",
+    "*/scripts/overnight_accumulation_backtest.py",
+    "scripts/gap_down_reclaim_backtest.py",
+    "*/scripts/gap_down_reclaim_backtest.py",
+    "scripts/signal_ablation.py",
+    "*/scripts/signal_ablation.py",
+    "scripts/pead_pullback_backtest.py",
+    "*/scripts/pead_pullback_backtest.py",
+    "scripts/existing_signal_isolation.py",
+    "*/scripts/existing_signal_isolation.py",
 ]
 
 [tool.coverage.report]
