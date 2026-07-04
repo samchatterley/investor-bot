@@ -63,24 +63,41 @@ def _report(label: str, weekly: list[tuple[float, float, int]], cost_wk: float) 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Diversified sleeve premise backtest")
-    ap.add_argument("--limit", type=int, default=len(_UNIVERSE))
+    ap.add_argument("--limit", type=int, default=100000)
     ap.add_argument("--sizes", default="5,10,20,30,50", help="basket sizes N to sweep")
     ap.add_argument("--hold", type=int, default=5, help="rebalance/hold in sessions (weekly=5)")
     ap.add_argument("--cost-bps", type=float, default=14.0, help="round-trip cost / rebalance")
     ap.add_argument("--winsor", type=float, default=25.0)
     ap.add_argument("--start", default="2015-01-01")
+    ap.add_argument("--dynamic", action="store_true", help="use the dynamic Alpaca universe (~4x)")
     args = ap.parse_args()
     sizes = [int(s) for s in args.sizes.split(",")]
     w, h = args.winsor, args.hold
 
-    universe = [to_yf_symbol(s) for s in list(_UNIVERSE)[: args.limit]]
+    if args.dynamic:
+        from data.universe_builder import build_universe
+
+        base = build_universe(use_cache=False) or list(_UNIVERSE)
+    else:
+        base = list(_UNIVERSE)
+    universe = [to_yf_symbol(s) for s in base[: args.limit]]
     print(
         f"sleeve backtest: {len(universe)} names, sizes {sizes}, hold {h}d, cost {args.cost_bps}bps"
     )
     syms = sorted(set(universe) | {"SPY"})
-    close = yf.download(syms, start=args.start, auto_adjust=True, progress=False)["Close"].dropna(
-        how="all"
-    )
+    # Chunk the download: yfinance spawns a thread per ticker, so thousands at once exhausts the OS
+    # thread limit. Batches of 300 with bounded threads keep it stable for the ~4k dynamic universe.
+    import pandas as pd  # noqa: PLC0415
+
+    frames = []
+    for i in range(0, len(syms), 300):
+        part = yf.download(
+            syms[i : i + 300], start=args.start, auto_adjust=True, progress=False, threads=8
+        )["Close"]
+        frames.append(part)
+        print(f"  downloaded {min(i + 300, len(syms))}/{len(syms)} …", flush=True)
+    close = pd.concat(frames, axis=1).dropna(how="all")
+    close = close.loc[:, ~close.columns.duplicated()]
     spy = close["SPY"]
     cols = [c for c in close.columns if c != "SPY"]
     close = close[cols]
