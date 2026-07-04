@@ -148,6 +148,8 @@ omit = [
     "*/scripts/existing_signal_isolation.py",
     "scripts/residual_reversal_threshold.py",
     "*/scripts/residual_reversal_threshold.py",
+    "scripts/sleeve_backtest.py",
+    "*/scripts/sleeve_backtest.py",
 ]
 
 [tool.coverage.report]
