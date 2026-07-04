@@ -22,11 +22,7 @@ Computed from end-of-day bar history via yfinance.
 | `iv_vs_rv_spread` | ATM IV / 20d realised vol < 0.70 — options market underpricing risk vs realised; EMA or MACD confirmation + volume | 4 days |
 | `mean_reversion` | RSI < 35 + BB < 0.15 + vol spike; blocked in NEUTRAL_CHOP, DEFENSIVE_DOWNTREND, and STRESS_RISK_OFF | 2 days |
 | `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 5 days |
-| `macd_crossover` | MACD line crosses above signal line + volume; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 4 days |
-| `golden_cross` | SMA50 crosses above SMA200 + vol_ratio ≥ 0.8; regime-agnostic | 5 days |
 | `candle_exhaustion` | Hammer or bullish engulf at 20d low with vol_ratio ≥ 1.5; blocked in STRESS_RISK_OFF and HIGH_VOL_DOWNTREND | 3 days |
-| `obv_divergence` | OBV 5d slope rising while price 5d negative (accumulation divergence) + vol_ratio ≥ 1.0; blocked in STRESS_RISK_OFF | 3 days |
-| `obv_acceleration` | OBV 5d slope > OBV 20d slope (accelerating into price) + EMA aligned or MACD positive + vol_ratio ≥ 1.2; blocked in STRESS_RISK_OFF | 3 days |
 | `breadth_thrust` | Zweig breadth-thrust: universe breadth jumps from <40% to >60% above 50d SMA within 10 days; EMA9 > EMA21 required | 4 days |
 | `gap_and_go` | Intraday gap ≥ 2% + close above open + volume + ADX ≥ 20; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 5 days |
 
@@ -76,6 +72,10 @@ Signals removed after statistically evidenced negative contribution. Blocked in 
 | `range_reversion` | 2 trades in combined production backtest, WR 0%, avg −16.2%; backward elimination Step 3 (ΔSharpe +0.04); conditions too restrictive to fire reliably | v1.98 |
 | `volume_climax_reversal` | 1 trade in combined production backtest, WR 0%, avg −2.8%; fires too rarely to contribute | v1.98 |
 | `tax_loss_reversal` | 38 trades, WR 37%, avg −1.02%; January-only seasonal with no confirmed reversal edge | v1.98 |
+| `obv_divergence` | Below-50% WR, negative avg in every window; ΔSharpe +0.12 from joint OBV removal (doc corrected — was already in `GLOBALLY_DISABLED`) | v1.x |
+| `obv_acceleration` | Consistently <50% WR, negative avg; joint OBV removal ΔSharpe +0.12 (doc corrected — was already in `GLOBALLY_DISABLED`) | v1.x |
+| `macd_crossover` | 2026-07 signal workshop — standalone isolation event study (907 names, 2015–2026, cost-swept): gross −0.008%/4d (t=−0.37), negative pre-cost; subsumed by `momentum` | v1.136 |
+| `golden_cross` | 2026-07 signal workshop — standalone isolation: gross +0.038%/5d, break-even 3.8bps, *below* the universe baseline (5.2bps); no edge (wrong horizon) | v1.136 |
 
 ---
 
@@ -85,8 +85,8 @@ Signals removed after statistically evidenced negative contribution. Blocked in 
 |--------|---------|
 | Mean-reversion | `mean_reversion` |
 | Volatility / IV | `bb_squeeze`, `inside_day_breakout`, `iv_compression`, `iv_vs_rv_spread` |
-| Trend / momentum | `trend_pullback`, `momentum`, `macd_crossover`, `gap_and_go` |
-| OHLCV technical | `golden_cross`, `candle_exhaustion`, `obv_divergence`, `obv_acceleration`, `breadth_thrust` |
+| Trend / momentum | `trend_pullback`, `momentum`, `gap_and_go` |
+| OHLCV technical | `candle_exhaustion`, `breadth_thrust` |
 | Catalyst / fundamental | `pead`, `insider_buying`, `activist_13d_signal`, `guidance_raise_signal`, `fcf_yield_signal` |
 | Options (live-only) | `options_skew_signal`, `iv_vs_rv_spread`, `unusual_options_activity`, `put_call_contrarian` |
 | Short squeeze (live-only) | `squeeze_setup_long`, `squeeze_momentum_long`, `short_interest_trend_long` |

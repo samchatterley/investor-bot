@@ -215,10 +215,11 @@ class TestPrefilterCandidates(unittest.TestCase):
         result = prefilter_candidates([snap])
         self.assertEqual(len(result), 1)
 
-    def test_macd_crossover_passes(self):
+    def test_macd_crossover_disabled_filtered_out(self):
+        # macd_crossover retired (GLOBALLY_DISABLED) — a macd-only snapshot no longer passes
         snap = _snap(macd_crossed_up=True, vol_ratio=1.5)
         result = prefilter_candidates([snap])
-        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result), 0)
 
     def test_no_signal_filtered_out(self):
         snap = _snap()  # all defaults — no signal

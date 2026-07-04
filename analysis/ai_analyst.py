@@ -75,10 +75,8 @@ CATALYST / FUNDAMENTAL
 
 TREND / MOMENTUM
 - momentum: EMA9 > EMA21 + MACD positive + positive 5d return + volume; blocked in chop/downtrend
-- macd_crossover: MACD line crosses above signal line with volume
 - gap_and_go: confirmed gap continuation on high volume; blocked in chop/downtrend
 - trend_pullback: uptrend intact, price 0.5–2% below EMA21, RSI 50–58 — buy the dip
-- golden_cross: SMA50 crosses above SMA200 + volume ≥0.8× avg; regime-agnostic
 
 MEAN-REVERSION
 - mean_reversion: RSI <35 + BB <0.15 + volume spike; blocked in chop/downtrend/stress

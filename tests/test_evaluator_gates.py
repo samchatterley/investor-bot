@@ -61,11 +61,9 @@ class TestPremarketGapQualityGate(unittest.TestCase):
         from signals.evaluator import evaluate_signals
 
         snap = _gap_and_go_snapshot(premarket_gap_retrace=True)
-        # Give the snapshot momentum characteristics too
-        snap["macd_crossed_up"] = True
-        snap["vol_ratio"] = 1.5
+        # The snapshot also carries momentum characteristics (ema_up, macd_diff>0, ret_5d>0, adx>=20).
         signals = evaluate_signals(snap)
         # gap_and_go suppressed
         self.assertNotIn("gap_and_go", signals)
-        # macd_crossover should still fire (adx>=20, vol>=1.2, macd_crossed_up=True)
-        self.assertIn("macd_crossover", signals)
+        # momentum should still fire (macd_crossover was retired)
+        self.assertIn("momentum", signals)

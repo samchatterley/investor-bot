@@ -403,6 +403,10 @@ GLOBALLY_DISABLED: frozenset[str] = frozenset(
         "tax_loss_reversal",
         "obv_divergence",
         "obv_acceleration",
+        # 2026-07 signal workshop — standalone isolation event study (907 names, 2015-2026,
+        # winsorised excess vs SPY, cost-swept). Both have no standalone edge:
+        "macd_crossover",  # gross -0.008%/4d (t=-0.37) — negative pre-cost; subsumed by momentum
+        "golden_cross",  # gross +0.038%/5d, break-even 3.8bps — below the universe baseline (5.2bps)
     }
 )
 
@@ -1211,7 +1215,7 @@ def evaluate_signals(
 
     # MACD crossover
     if macd_up and vol > p["macd_vol_min"] and adx >= 20 and "macd_crossover" not in blocked:
-        matched.append("macd_crossover")
+        matched.append("macd_crossover")  # pragma: no cover — macd_crossover in GLOBALLY_DISABLED
 
     # ── Batch 1 OHLCV signals ─────────────────────────────────────────────────
 
@@ -1222,7 +1226,7 @@ def evaluate_signals(
         and vol >= p["gc_vol_min"]
         and "golden_cross" not in blocked
     ):
-        matched.append("golden_cross")
+        matched.append("golden_cross")  # pragma: no cover — golden_cross in GLOBALLY_DISABLED
 
     # Candle exhaustion: bullish reversal candle (hammer or bullish engulfing) at the
     # 20-day low with elevated volume — panic selling into support; capitulation setup.

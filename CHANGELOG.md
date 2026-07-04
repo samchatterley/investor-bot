@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.136 — July 2026 — retire golden_cross + macd_crossover (signal workshop)
+
+First implementation output of the 2026-07 signal workshop (a full re-adjudication of the signal
+book via standalone isolation event studies — 907 names, 2015–2026, winsorised excess vs SPY,
+cost-swept). Both retired for having **no standalone edge**:
+
+- **macd_crossover** — gross −0.008%/4d (t=−0.37), negative even before cost; the crossover adds
+  only timing over `momentum` (which already requires MACD positive) and is subsumed by it.
+- **golden_cross** — gross +0.038%/5d, break-even 3.8bps, *below* the universe baseline (5.2bps);
+  an SMA50/200 cross is a monthly-horizon state variable with no 1–5d cross-sectional edge (the same
+  wrong-horizon flaw that retired `death_cross` on the short side).
+
+Both added to `GLOBALLY_DISABLED`, removed from `SYSTEM_PROMPT`, detection branches `pragma: no
+cover`, and their firing tests converted to the disabled-pattern. Also corrected `docs/signals.md`,
+which still listed `obv_divergence`/`obv_acceleration` as active though both were already disabled.
+(Confirmed survivors from the workshop — N1 residual_reversal, N7 gap_down_reclaim, N5
+overnight_accumulation, the lottery-MAX gate, and the pead muted-reaction filter — are wired in
+follow-up commits.)
+
 ### 1.135 — July 2026 — startup prefetch log lines land in scheduler.log
 
 `_startup_prefetch()` — the self-heal that warms caches on a restart when the 07:00 ET prefetch was

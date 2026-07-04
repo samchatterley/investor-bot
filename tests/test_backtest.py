@@ -534,8 +534,11 @@ class TestBatch1LongSignals(unittest.TestCase):
 
     # ── golden_cross ─────────────────────────────────────────────────────────
 
-    def test_golden_cross_fires(self):
-        self.assertIn("golden_cross", self._eval(golden_cross=True, vol_ratio=1.0))
+    def test_golden_cross_disabled_does_not_fire(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("golden_cross", GLOBALLY_DISABLED)
+        self.assertNotIn("golden_cross", self._eval(golden_cross=True, vol_ratio=1.0))
 
     def test_golden_cross_absent_when_false(self):
         self.assertNotIn("golden_cross", self._eval(golden_cross=False))
@@ -551,12 +554,12 @@ class TestBatch1LongSignals(unittest.TestCase):
             evaluate_signals({"golden_cross": True, "vol_ratio": 0.5}),
         )
 
-    def test_golden_cross_allowed_in_stress_regime(self):
+    def test_golden_cross_disabled_even_in_stress_regime(self):
         from signals.evaluator import REGIME_BLOCKED, evaluate_signals
 
         blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
         result = evaluate_signals({"golden_cross": True, "vol_ratio": 1.0}, blocked=blocked)
-        self.assertIn("golden_cross", result)
+        self.assertNotIn("golden_cross", result)
 
     def test_golden_cross_in_signal_priority(self):
         from signals.evaluator import SIGNAL_PRIORITY
@@ -1116,8 +1119,11 @@ class TestEntrySignal(unittest.TestCase):
 class TestEntrySignalNewDailySignals(unittest.TestCase):
     """Tests for the six new daily signals added to _entry_signal."""
 
-    def test_macd_crossover_fires(self):
-        self.assertEqual(_entry_signal(_make_row(macd_cross=True, vol_ratio=1.3)), "macd_crossover")
+    def test_macd_crossover_disabled(self):
+        from signals.evaluator import GLOBALLY_DISABLED
+
+        self.assertIn("macd_crossover", GLOBALLY_DISABLED)
+        self.assertIsNone(_entry_signal(_make_row(macd_cross=True, vol_ratio=1.3)))
 
     def test_macd_crossover_requires_volume(self):
         self.assertIsNone(_entry_signal(_make_row(macd_cross=True, vol_ratio=1.1)))
