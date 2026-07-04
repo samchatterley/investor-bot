@@ -65,6 +65,7 @@ files = [
     "data/fundamental_cache.py",
     "data/fundamentals.py",
     "data/index_membership.py",
+    "data/edgar_event_history.py",
     "signals/evaluator.py",
     "experiment/monitoring.py",
     "experiment/arms.py",
@@ -150,6 +151,8 @@ omit = [
     "*/scripts/residual_reversal_threshold.py",
     "scripts/sleeve_backtest.py",
     "*/scripts/sleeve_backtest.py",
+    "scripts/offering_backtest.py",
+    "*/scripts/offering_backtest.py",
 ]
 
 [tool.coverage.report]

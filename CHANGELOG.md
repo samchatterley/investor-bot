@@ -4,6 +4,26 @@ Full version history. Most recent first.
 
 ---
 
+### 1.139 — July 2026 — historical EDGAR filing-event feed (unlock the catalyst class)
+
+New **free, point-in-time** data feed: `data/edgar_event_history`. The SEC submissions API returns
+~1000 recent filings per company (10+ years for many names) with filing dates — free, no key, already
+reachable via `edgar_client`. This exposes them as a historical event archive so the bot's
+**catalyst** signals — previously live-only with no history to backtest against — can finally be
+validated:
+
+- `secondary_offering_short` → 424B* / S-3 / S-1 (dilution)
+- `activist_13d_signal` → SC 13D
+- `insider_buying` / `insider_selling_short` → Form 4
+- `accounting_concern_short` → 8-K items 4.01 / 4.02
+
+One request per symbol (reuses edgar_client's CIK map + rate-limit), cached per calendar day; pure
+parse logic with the single network call isolated for testing. This is the **root capability** the
+signal workshop identified: the bot's growth is bottlenecked on *signal supply* (it has one robust
+cross-sectional edge, and a diversified sleeve needs several uncorrelated ones), and the whole
+catalyst class was untestable for lack of history. Not yet wired into the live bot — a research feed
+that unblocks backtesting. +15 tests (4,964 → 4,979).
+
 ### 1.138 — July 2026 — lottery / MAX gate (signal workshop)
 
 A ≥+10% single-day pop marks lottery-demand overpricing (Bali-Cakici-Whitelaw MAX effect). The
