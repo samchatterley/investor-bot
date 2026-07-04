@@ -155,6 +155,8 @@ omit = [
     "*/scripts/offering_backtest.py",
     "scripts/catalyst_backtest.py",
     "*/scripts/catalyst_backtest.py",
+    "scripts/insider_backtest.py",
+    "*/scripts/insider_backtest.py",
 ]
 
 [tool.coverage.report]
