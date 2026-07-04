@@ -32,6 +32,9 @@ SIGNAL_PRIORITY: dict[str, int] = {
     "iv_vs_rv_spread": 14,  # ATM IV/RV < 0.7 = vol genuinely cheap vs realised
     "range_reversion": 15,
     "rsi_divergence": 16,
+    # residual_reversal (2026-07 workshop, N1): idiosyncratic 5d loser reverts over 1-3d; the
+    # better-validated reversion signal, so it outranks mean_reversion when both fire.
+    "residual_reversal": 16,
     # mean_reversion outranks momentum (counter-cyclical conviction beats trend-following)
     "mean_reversion": 17,
     "momentum": 18,
@@ -102,6 +105,9 @@ DEFAULT_SIGNAL_PARAMS: dict[str, float] = {
     "rsi_threshold": 35.0,
     "bb_threshold": 0.15,  # tightened from 0.25 in v1.48
     "mr_vol_threshold": 1.2,
+    # residual_reversal (N1): fire when market-excess 5d return (ret_5d - spy_ret_5d, %) <= this.
+    # -7% chosen from the threshold sweep: net +0.31%/3d @7bps, t=7.6, 9/12 +yrs, break-even 37.6bps.
+    "resid_rev_threshold": -7.0,
     # momentum
     "mom_vol_threshold": 1.3,
     "mom_ret5d_threshold": 1.0,
@@ -210,6 +216,7 @@ _BEAR_DAY_BLOCKED = frozenset(
         "intraday_momentum",
         "iv_compression",  # -1.3% avg in BEAR_DAY — n=24
         "mean_reversion",  # WR 47%, p>0.05 in STRESS_RISK_OFF (n=129)
+        "residual_reversal",  # no reversion buying in acute stress (belt-and-suspenders; N1)
         "rsi_divergence",  # no mean-reversion buying in stress regimes
         "candle_exhaustion",  # catching falling knives in stress; need backtest to validate
         "obv_divergence",  # accumulation signals unreliable in extreme panic selling
@@ -225,6 +232,7 @@ _HIGH_VOL_BLOCKED = frozenset(
         "orb_breakout",
         "candle_exhaustion",  # catching reversal candles in HV downtrend is premature
         "breadth_thrust",  # breadth thrust in high-vol downtrend can be a whipsaw
+        "residual_reversal",  # no reversion buying in HV downtrend / credit stress (N1)
     }
 )
 
@@ -1212,6 +1220,17 @@ def evaluate_signals(
         and "mean_reversion" not in blocked
     ):
         matched.append("mean_reversion")
+
+    # Residual reversal (2026-07 signal workshop, N1): an idiosyncratic 5-day loser reverts over
+    # 1-3 days. Fire on market-excess 5d return (stock ret_5d - SPY ret_5d, both %) <= threshold.
+    # The market-excess construction fires on stock-SPECIFIC drops — a broad selloff hits SPY too,
+    # so the excess rarely triggers — which mutes the crash-tail risk of raw mean-reversion.
+    if (
+        spy_ret_5d is not None
+        and ret_5d - spy_ret_5d <= p["resid_rev_threshold"]
+        and "residual_reversal" not in blocked
+    ):
+        matched.append("residual_reversal")
 
     # MACD crossover
     if macd_up and vol > p["macd_vol_min"] and adx >= 20 and "macd_crossover" not in blocked:

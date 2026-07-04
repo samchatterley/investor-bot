@@ -21,6 +21,7 @@ Computed from end-of-day bar history via yfinance.
 | `iv_compression` | Historical volatility rank in bottom 15th percentile of 52-week range + EMA/MACD confirmation + volume; blocked in NEUTRAL_CHOP and STRESS_RISK_OFF | 4 days |
 | `iv_vs_rv_spread` | ATM IV / 20d realised vol < 0.70 — options market underpricing risk vs realised; EMA or MACD confirmation + volume | 4 days |
 | `mean_reversion` | RSI < 35 + BB < 0.15 + vol spike; blocked in NEUTRAL_CHOP, DEFENSIVE_DOWNTREND, and STRESS_RISK_OFF | 2 days |
+| `residual_reversal` | Market-excess 5d return (stock − SPY) ≤ −7% — idiosyncratic laggard reverting over 1–3d; blocked in STRESS_RISK_OFF and HIGH_VOL_DOWNTREND (2026-07 workshop, N1) | 3 days |
 | `momentum` | EMA9 > EMA21 + MACD positive + positive 5d return + high volume; blocked in NEUTRAL_CHOP and DEFENSIVE_DOWNTREND | 5 days |
 | `candle_exhaustion` | Hammer or bullish engulf at 20d low with vol_ratio ≥ 1.5; blocked in STRESS_RISK_OFF and HIGH_VOL_DOWNTREND | 3 days |
 | `breadth_thrust` | Zweig breadth-thrust: universe breadth jumps from <40% to >60% above 50d SMA within 10 days; EMA9 > EMA21 required | 4 days |
@@ -83,7 +84,7 @@ Signals removed after statistically evidenced negative contribution. Blocked in 
 
 | Family | Signals |
 |--------|---------|
-| Mean-reversion | `mean_reversion` |
+| Mean-reversion | `mean_reversion`, `residual_reversal` |
 | Volatility / IV | `bb_squeeze`, `inside_day_breakout`, `iv_compression`, `iv_vs_rv_spread` |
 | Trend / momentum | `trend_pullback`, `momentum`, `gap_and_go` |
 | OHLCV technical | `candle_exhaustion`, `breadth_thrust` |

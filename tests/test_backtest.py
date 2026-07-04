@@ -566,6 +566,43 @@ class TestBatch1LongSignals(unittest.TestCase):
 
         self.assertIn("golden_cross", SIGNAL_PRIORITY)
 
+    # ── residual_reversal (N1) ───────────────────────────────────────────────
+
+    def test_residual_reversal_fires(self):
+        from signals.evaluator import evaluate_signals
+
+        # market-excess 5d = ret_5d - spy_ret_5d = -8 - 0 = -8 <= -7 → fires
+        self.assertIn("residual_reversal", evaluate_signals({"ret_5d_pct": -8.0}, spy_ret_5d=0.0))
+
+    def test_residual_reversal_fires_on_relative_underperformance(self):
+        from signals.evaluator import evaluate_signals
+
+        # Stock flat but SPY +8% → market-excess -8% → idiosyncratic laggard → fires
+        self.assertIn("residual_reversal", evaluate_signals({"ret_5d_pct": 0.0}, spy_ret_5d=8.0))
+
+    def test_residual_reversal_absent_above_threshold(self):
+        from signals.evaluator import evaluate_signals
+
+        self.assertNotIn(
+            "residual_reversal", evaluate_signals({"ret_5d_pct": -3.0}, spy_ret_5d=0.0)
+        )
+
+    def test_residual_reversal_absent_without_spy_ret(self):
+        from signals.evaluator import evaluate_signals
+
+        self.assertNotIn(
+            "residual_reversal", evaluate_signals({"ret_5d_pct": -8.0}, spy_ret_5d=None)
+        )
+
+    def test_residual_reversal_blocked_in_stress(self):
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        self.assertNotIn(
+            "residual_reversal",
+            evaluate_signals({"ret_5d_pct": -8.0}, blocked=blocked, spy_ret_5d=0.0),
+        )
+
     # ── candle_exhaustion ────────────────────────────────────────────────────
 
     def test_candle_exhaustion_fires_with_hammer(self):

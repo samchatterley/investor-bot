@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.137 — July 2026 — new signal: residual_reversal (N1, signal workshop)
+
+The strongest confirmed idea from the 2026-07 signal workshop, and the first net-new signal from it.
+Idiosyncratic 5-day losers revert over 1–3 days (liquidity-provision premium): a stock that has
+underperformed SPY by ≥7% over the last 5 sessions is bought for a 3-day reversion.
+
+Wired as **market-excess 5d return** (`ret_5d − spy_ret_5d`, both already flowing into
+`evaluate_signals`) `≤ −7%`, so it needs **zero new data plumbing** and works identically in the live
+scanner and the backtest engine (verified through both `evaluate_signals` and the engine's
+`_entry_signal` seam). The market-excess construction fires on *stock-specific* drops — a broad
+selloff hits SPY too, so the excess rarely triggers — which mutes the crash-tail risk of raw
+mean-reversion; it is additionally regime-gated out of STRESS_RISK_OFF / HIGH_VOL_DOWNTREND /
+CREDIT_STRESS as belt-and-suspenders.
+
+Validation (standalone event study, 907 names, 2015–2026, winsorised excess vs SPY, cost-swept):
+the −7% threshold nets **+0.31%/3d at 7bps round-trip (t=7.6), positive in 9/12 years, break-even
+37.6bps** — a large cushion over the engine's calibrated costs. It outranks `mean_reversion` in
+`SIGNAL_PRIORITY` as the better-validated reversion signal. +5 tests (4,957 → 4,962).
+
 ### 1.136 — July 2026 — retire golden_cross + macd_crossover (signal workshop)
 
 First implementation output of the 2026-07 signal workshop (a full re-adjudication of the signal

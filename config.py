@@ -152,6 +152,7 @@ MAX_HOLD_DAYS = int(os.getenv("MAX_HOLD_DAYS", "5" if _SAM else "3"))
 # news_catalyst, trend_continuation) were pruned — lookups use .get(signal, MAX_HOLD_DAYS).
 SIGNAL_MAX_HOLD_DAYS: dict[str, int] = {
     "mean_reversion": 2,
+    "residual_reversal": 3,  # N1 — idiosyncratic 5d loser reversion; edge captured in 2-3d
     "macd_crossover": 4,
     "momentum": 5,
     "bb_squeeze": 4,  # volatility squeeze → expansion; hold for the move

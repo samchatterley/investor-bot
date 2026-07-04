@@ -1678,8 +1678,8 @@ def _build_data_bundle(
                 blocked=regime_blocked,
                 params=None,
                 vix_spike=bool(s.get("vix_spike", False)),
-                spy_ret_5d=s.get("spy_ret_5d"),
-                spy_ret_10d=s.get("spy_ret_10d"),
+                spy_ret_5d=spy_ret_5d,
+                spy_ret_10d=spy_ret_10d,
             )
             s["signals"] = new_signals  # keep for compatibility
             # Merge newly-fired options signals into matched_signals so the cofiring

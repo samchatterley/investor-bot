@@ -80,6 +80,7 @@ TREND / MOMENTUM
 
 MEAN-REVERSION
 - mean_reversion: RSI <35 + BB <0.15 + volume spike; blocked in chop/downtrend/stress
+- residual_reversal: idiosyncratic 5d loser (stock underperformed SPY by ≥7% over the last 5d) reverting over 1–3d; blocked in stress/high-vol
 
 VOLATILITY / IV
 - bb_squeeze: Bollinger Bands compress to 20th-percentile bandwidth + ADX ≥25 + breakout

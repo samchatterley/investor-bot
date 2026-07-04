@@ -146,6 +146,8 @@ omit = [
     "*/scripts/pead_pullback_backtest.py",
     "scripts/existing_signal_isolation.py",
     "*/scripts/existing_signal_isolation.py",
+    "scripts/residual_reversal_threshold.py",
+    "*/scripts/residual_reversal_threshold.py",
 ]
 
 [tool.coverage.report]
