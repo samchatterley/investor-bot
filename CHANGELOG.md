@@ -4,6 +4,21 @@ Full version history. Most recent first.
 
 ---
 
+### 1.140 — July 2026 — dynamic rules-based universe builder
+
+New `data/universe_builder`: a self-maintaining tradeable universe built from **Alpaca's free assets
+API** + a screen, replacing the hand-curated hardcoded `STOCK_UNIVERSE` (which goes stale — misses
+new listings, keeps delisted names). The screen keeps active, tradable, **fractionable** (Alpaca's
+own liquidity/establishment proxy) US common stocks on NYSE/NASDAQ/AMEX, excluding ETFs/funds/trusts
+by name and warrants/units/rights/preferreds by symbol shape.
+
+Live it yields **~3,979 liquid names vs the 907 hardcoded** (879 overlap + ~3,100 new small/mid-caps)
+— a 4.4× expansion. Screen logic is a pure function (unit-testable); the single Alpaca call is
+isolated for mocking; cached per calendar day; falls back to [] on failure so the static list stays a
+safety net. Not yet wired into the live bot — pending a measure-first check that the wider
+cross-section actually improves the (validated) reversal edge, and that the 4.4× prefetch/API scale is
+operationally viable. +18 tests (4,979 → 4,997).
+
 ### 1.139 — July 2026 — historical EDGAR filing-event feed (unlock the catalyst class)
 
 New **free, point-in-time** data feed: `data/edgar_event_history`. The SEC submissions API returns

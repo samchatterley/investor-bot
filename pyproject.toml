@@ -66,6 +66,7 @@ files = [
     "data/fundamentals.py",
     "data/index_membership.py",
     "data/edgar_event_history.py",
+    "data/universe_builder.py",
     "signals/evaluator.py",
     "experiment/monitoring.py",
     "experiment/arms.py",
