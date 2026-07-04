@@ -111,6 +111,10 @@ def fetch_stock_data(
 
         # Price momentum
         df["ret_1d"] = close.pct_change(1) * 100
+        # Lottery/MAX gate (2026-07 workshop): a >=+10% single-day pop within the last 3 sessions.
+        df["recent_lottery_pop"] = (df["ret_1d"] >= 10.0).astype(float).rolling(
+            3, min_periods=1
+        ).max() > 0
         df["ret_5d"] = close.pct_change(5) * 100
         df["ret_10d"] = close.pct_change(10) * 100
         df["ret_20d"] = close.pct_change(20) * 100
@@ -279,6 +283,7 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
         "data_source": "preloaded" if is_preloaded else "live",
         "current_price": round(float(latest["Close"]), 2),
         "ret_1d_pct": round(float(latest["ret_1d"]), 2),
+        "recent_lottery_pop": bool(latest.get("recent_lottery_pop", False)),
         "ret_5d_pct": round(float(latest["ret_5d"]), 2),
         "ret_10d_pct": round(float(latest["ret_10d"]), 2),
         "ret_20d_pct": round(float(_r20), 2)

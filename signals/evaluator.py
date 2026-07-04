@@ -948,6 +948,12 @@ def evaluate_signals(
     if bool(snapshot.get("premarket_gap_retrace", False)):
         blocked = blocked | frozenset({"gap_and_go"})
 
+    # Lottery/MAX gate (2026-07 workshop): a >=+10% single-day pop within the last 3 sessions
+    # precedes underperformance (-0.44%/3d, t=-5.1; Bali-Cakici-Whitelaw). Don't let the
+    # momentum family chase the lottery pop into its reversal.
+    if bool(snapshot.get("recent_lottery_pop", False)):
+        blocked = blocked | frozenset({"momentum", "gap_and_go"})
+
     # ── Fundamental quality gates ─────────────────────────────────────────────
 
     # Altman Z distress gate: Z < threshold means likely financial distress.

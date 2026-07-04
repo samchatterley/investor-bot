@@ -124,6 +124,9 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["vol_ratio"] = volume / vol_ma20
     df["avg_volume_20"] = vol_ma20
     df["ret_5d"] = close.pct_change(5) * 100
+    # Lottery/MAX gate (2026-07 workshop): a >=+10% single-day pop within the last 3 sessions.
+    _pop = (close.pct_change(1) * 100 >= 10.0).astype(float)
+    df["recent_lottery_pop"] = _pop.rolling(3, min_periods=1).max() > 0
 
     # ── Extended indicators for new daily signals ─────────────────────────────
     df["ret_10d"] = close.pct_change(10) * 100
@@ -306,6 +309,7 @@ def _row_to_snapshot(
         "adx": float(row.get("adx", 30)),
         "ret_5d_pct": float(row.get("ret_5d", 0)),
         "ret_10d_pct": float(row.get("ret_10d", 0)),
+        "recent_lottery_pop": bool(row.get("recent_lottery_pop", False)),
         "price_vs_ema21_pct": float(row.get("pct_vs_ema21", 0)),
         "price_vs_52w_high_pct": float(row.get("price_vs_52w_high_pct", -999)),
         "hv_rank": float(row.get("hv_rank", 1.0)),

@@ -112,6 +112,7 @@ Applied before signal evaluation; block specific signals when conditions are met
 | Sector correlation | Sector corr > 0.75 | `momentum`, `bb_squeeze` |
 | ERP gate | 1/P/E − 10y yield < 1% | Same set as forward P/E expensive |
 | AAII excessive bulls | AAII bulls > 60% for ≥1 week | `momentum`, `gap_and_go` |
+| Lottery / MAX | ≥ +10% single-day pop within the last 3 sessions (2026-07 workshop: −0.44%/3d, t=−5.1) | `momentum`, `gap_and_go` |
 
 ---
 

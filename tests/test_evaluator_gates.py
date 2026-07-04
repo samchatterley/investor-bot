@@ -67,3 +67,22 @@ class TestPremarketGapQualityGate(unittest.TestCase):
         self.assertNotIn("gap_and_go", signals)
         # momentum should still fire (macd_crossover was retired)
         self.assertIn("momentum", signals)
+
+    def test_lottery_pop_blocks_momentum_family(self):
+        """A recent >=+10% single-day pop gates momentum + gap_and_go (MAX effect)."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot()
+        snap["recent_lottery_pop"] = True
+        signals = evaluate_signals(snap)
+        self.assertNotIn("momentum", signals)
+        self.assertNotIn("gap_and_go", signals)
+
+    def test_no_lottery_pop_allows_momentum(self):
+        """Without a recent pop the momentum family fires normally (control)."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot()
+        snap["recent_lottery_pop"] = False
+        signals = evaluate_signals(snap)
+        self.assertIn("momentum", signals)

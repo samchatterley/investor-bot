@@ -4,6 +4,19 @@ Full version history. Most recent first.
 
 ---
 
+### 1.138 — July 2026 — lottery / MAX gate (signal workshop)
+
+A ≥+10% single-day pop marks lottery-demand overpricing (Bali-Cakici-Whitelaw MAX effect). The
+workshop's standalone isolation study confirmed it at scale: a name that popped ≥10% in a single
+session underperforms by **−0.44%/3d (t=−5.1), negative in 7/12 years**.
+
+New gate: when a name has had a ≥+10% single-day return within the last 3 sessions
+(`recent_lottery_pop`), the momentum family (`momentum`, `gap_and_go`) is blocked — we don't chase
+the pop into its reversal. Computed identically in the live scanner (`data/market_data.py`) and the
+backtest (`_compute_indicators` → `_row_to_snapshot`), and seam-verified end-to-end through
+`_entry_signal`. It is a pure subtraction (only blocks entries), so the downside is bounded. +2 tests
+(4,962 → 4,964).
+
 ### 1.137 — July 2026 — new signal: residual_reversal (N1, signal workshop)
 
 The strongest confirmed idea from the 2026-07 signal workshop, and the first net-new signal from it.
