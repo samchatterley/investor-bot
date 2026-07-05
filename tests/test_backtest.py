@@ -603,6 +603,24 @@ class TestBatch1LongSignals(unittest.TestCase):
             evaluate_signals({"ret_5d_pct": -8.0}, blocked=blocked, spy_ret_5d=0.0),
         )
 
+    def test_residual_reversal_sector_rout_blocks(self):
+        """v1.144 conjunct: -8% vs SPY but sector also down 6% → sector-relative -2% → no fire."""
+        from signals.evaluator import evaluate_signals
+
+        self.assertNotIn(
+            "residual_reversal",
+            evaluate_signals({"ret_5d_pct": -8.0, "sector_ret_5d_pct": -6.0}, spy_ret_5d=0.0),
+        )
+
+    def test_residual_reversal_fires_when_sector_flat(self):
+        """Sector flat → drop is idiosyncratic vs both benchmarks → fires."""
+        from signals.evaluator import evaluate_signals
+
+        self.assertIn(
+            "residual_reversal",
+            evaluate_signals({"ret_5d_pct": -8.0, "sector_ret_5d_pct": 0.0}, spy_ret_5d=0.0),
+        )
+
     # ── candle_exhaustion ────────────────────────────────────────────────────
 
     def test_candle_exhaustion_fires_with_hammer(self):

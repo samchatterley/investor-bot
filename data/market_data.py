@@ -379,6 +379,33 @@ def summarise_for_ai(symbol: str, df: pd.DataFrame, is_preloaded: bool = False) 
     }
 
 
+def _apply_sector_ret5d(snapshots: list[dict], min_members: int = 5) -> None:
+    """Set sector_ret_5d_pct (equal-weight sector-peer 5d return, %) on each snapshot in place.
+
+    Feeds the residual_reversal sector conjunct (v1.144): a -7% drop must clear the threshold vs the
+    name's own sector too, else it's sector beta (which continues), not idiosyncratic flow (which
+    reverts). Sectors with fewer than ``min_members`` priced members are skipped (field absent →
+    the evaluator fails open to the spy-only construction). Unknown sectors are skipped.
+    """
+    from data.sector_data import get_sector
+
+    groups: dict[str, list[float]] = {}
+    sec_of: dict[int, str] = {}
+    for idx, s in enumerate(snapshots):
+        r5 = s.get("ret_5d_pct")
+        if r5 is None:
+            continue
+        sec = get_sector(s.get("symbol", ""))
+        if not sec or sec == "Unknown":
+            continue
+        sec_of[idx] = sec
+        groups.setdefault(sec, []).append(float(r5))
+    means = {sec: sum(v) / len(v) for sec, v in groups.items() if len(v) >= min_members}
+    for idx, sec in sec_of.items():
+        if sec in means:
+            snapshots[idx]["sector_ret_5d_pct"] = round(means[sec], 2)
+
+
 def compute_amihud_illiquidity(df: pd.DataFrame, lookback: int = 20) -> float:
     """Return the Amihud (2002) illiquidity ratio averaged over the last *lookback* bars.
 
@@ -796,6 +823,8 @@ def get_market_snapshots(
         for snap in executor.map(_fetch_one, symbols):
             if snap is not None:
                 snapshots.append(snap)
+
+    _apply_sector_ret5d(snapshots)
 
     # Cross-sectional RS rank: percentile within this universe (100 = top).
     # Requires rel_strength_20d on at least 4 snapshots to be meaningful.

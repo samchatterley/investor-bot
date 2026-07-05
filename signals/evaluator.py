@@ -1235,9 +1235,16 @@ def evaluate_signals(
     # 1-3 days. Fire on market-excess 5d return (stock ret_5d - SPY ret_5d, both %) <= threshold.
     # The market-excess construction fires on stock-SPECIFIC drops — a broad selloff hits SPY too,
     # so the excess rarely triggers — which mutes the crash-tail risk of raw mean-reversion.
+    # v1.144 sector conjunct: the drop must ALSO clear the threshold vs the name's own sector
+    # (sector_ret_5d_pct, equal-weight universe peers) — a -7% move during a sector rout is sector
+    # beta that continues, not idiosyncratic flow that reverts. Head-to-head study: the intersection
+    # nets +0.374%/3d @7bps (t=7.1, 10/12 +yrs) vs +0.301% (8/12) for spy-only. Fail-open when the
+    # sector field is absent (backtest engine + unknown-sector names keep the spy-only construction).
+    _sect5 = snapshot.get("sector_ret_5d_pct")
     if (
         spy_ret_5d is not None
         and ret_5d - spy_ret_5d <= p["resid_rev_threshold"]
+        and (_sect5 is None or ret_5d - float(_sect5) <= p["resid_rev_threshold"])
         and "residual_reversal" not in blocked
     ):
         matched.append("residual_reversal")

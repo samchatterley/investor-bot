@@ -2245,3 +2245,39 @@ class TestNewInjectionBlocks(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0].get("lockup_expiry_soon"))
         self.assertEqual(result[0].get("days_to_lockup"), 7)
+
+
+class TestApplySectorRet5d(unittest.TestCase):
+    """_apply_sector_ret5d — sector-EW 5d return for the residual_reversal conjunct (v1.144)."""
+
+    def _snaps(self):
+        return [
+            {"symbol": f"T{i}", "ret_5d_pct": float(i)}
+            for i in range(5)  # Tech: mean 2.0
+        ] + [
+            {"symbol": "F0", "ret_5d_pct": 10.0},  # Finance: only 2 members -> skipped
+            {"symbol": "F1", "ret_5d_pct": 20.0},
+            {"symbol": "U0", "ret_5d_pct": 1.0},  # Unknown sector -> skipped
+            {"symbol": "NR"},  # no ret_5d_pct -> skipped
+        ]
+
+    def test_sets_mean_for_big_sector_skips_small_unknown_missing(self):
+        from unittest.mock import patch as _patch
+
+        from data.market_data import _apply_sector_ret5d
+
+        def fake_sector(sym):
+            if sym.startswith("T"):
+                return "Technology"
+            if sym.startswith("F"):
+                return "Financial Services"
+            return "Unknown"
+
+        snaps = self._snaps()
+        with _patch("data.sector_data.get_sector", side_effect=fake_sector):
+            _apply_sector_ret5d(snaps)
+        for i in range(5):
+            self.assertEqual(snaps[i]["sector_ret_5d_pct"], 2.0)
+        self.assertNotIn("sector_ret_5d_pct", snaps[5])  # small sector
+        self.assertNotIn("sector_ret_5d_pct", snaps[7])  # unknown
+        self.assertNotIn("sector_ret_5d_pct", snaps[8])  # missing ret_5d_pct

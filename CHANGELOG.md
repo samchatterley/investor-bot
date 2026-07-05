@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.144 — July 2026 — N1 sector conjunct + crowded-popper short shadow (workshop v2 #1/#2)
+
+Two outputs of the v2 signal workshop's top ideas, both measure-first validated:
+
+- **`residual_reversal` sector conjunct (SHIPPED).** The −7% market-excess drop must now ALSO clear
+  −7% vs the name's **own sector** (equal-weight universe peers, `sector_ret_5d_pct`, computed in the
+  live cross-sectional block; fail-open when sector unknown / in the backtest engine). Head-to-head
+  (identical weeks, 2015–2026): the intersection nets **+0.374%/3d @7bps (t=7.1, 10/12 +yrs)** vs
+  +0.301% (8/12) for the live spy-only construction — the removed trades are sector-rout beta that
+  continues rather than reverts.
+- **Crowded-popper short shadow (`analysis/shadow_popper_shorts`).** The lottery_pop_short study
+  found the short edge after ≥+10% pops lives ONLY in FINRA-crowded names (top-quartile short-volume
+  ratio: +0.86%/3d gross, t=3.7, survives 30%/yr borrow on the mean) — but year-consistency degrades
+  under borrow (4/9 at 15%/yr) and the live squeeze tail is unbounded, so it ships as a read-only
+  shadow logger (fail-safe in the run loop, like the catalyst shadow) to accrue forward evidence.
+  Notable: combined with the N1×SVR result, short-flow is now confirmed as a **mean-reversion
+  amplifier on both tails** (crowded names overshoot and snap back harder in either direction), not a
+  directional signal. Research: `scripts/lottery_pop_short_backtest.py`, `scripts/n1_sector_residual.py`.
+
 ### 1.143 — July 2026 — options kill/keep: retire unusual_options_activity + put_call_contrarian
 
 First-ever evidence for the v1.98 live-only options signals, via Alpaca's historical option bars

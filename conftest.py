@@ -35,6 +35,15 @@ def _isolate_shadow_catalyst_log(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_shadow_popper_log(tmp_path, monkeypatch):
+    """Never let the test suite write to the live shadow-popper-shorts log (mirror of the
+    catalyst-shadow isolation above; main._run_inner calls shadow_popper_shorts.capture)."""
+    import analysis.shadow_popper_shorts as _popper
+
+    monkeypatch.setattr(_popper, "SHADOW_LOG_PATH", str(tmp_path / "shadow_popper_shorts.jsonl"))
+
+
+@pytest.fixture(autouse=True)
 def _pin_index_hedge_disabled(monkeypatch):
     """Keep tests deterministic regardless of the operator's .env. config.load_dotenv() runs at
     import, so an enabled deployment toggle (INDEX_HEDGE_ENABLED=true) would otherwise fire the live

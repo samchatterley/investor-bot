@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import config
-from analysis import ai_analyst, performance, shadow_catalyst_shorts
+from analysis import ai_analyst, performance, shadow_catalyst_shorts, shadow_popper_shorts
 from analysis.weekly_review import get_latest_review
 from core.deps import TradingDeps
 from data import (
@@ -3359,8 +3359,11 @@ def _run_inner(
             mode,
             run_id,
         )
+        # Crowded-popper short shadow (workshop v2 #1): +10% poppers with top-quartile FINRA
+        # short-flow. Read-only forward-evidence accrual — see analysis/shadow_popper_shorts.
+        shadow_popper_shorts.capture(db.snapshots, mode, run_id)
     except Exception as _shadow_exc:  # pragma: no cover - defensive; capture is itself robust
-        logger.warning(f"Shadow catalyst capture failed (non-fatal): {_shadow_exc}")
+        logger.warning(f"Shadow capture failed (non-fatal): {_shadow_exc}")
 
     # ── AI analysis + validation + decision logging ───────────────────────────
     account_now = deps.trader.get_account_info(client)
