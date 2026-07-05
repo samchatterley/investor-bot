@@ -175,6 +175,8 @@ omit = [
     "*/scripts/residual_trend_pullback.py",
     "scripts/peer_lead_lag.py",
     "*/scripts/peer_lead_lag.py",
+    "scripts/tom_overlay.py",
+    "*/scripts/tom_overlay.py",
 ]
 
 [tool.coverage.report]
