@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.143 — July 2026 — options kill/keep: retire unusual_options_activity + put_call_contrarian
+
+First-ever evidence for the v1.98 live-only options signals, via Alpaca's historical option bars
+(~2.4y, 907 names, 32,555 name-week ATM snapshots; IV by Black-Scholes inversion of synthetic-OCC
+contract closes; volume proxies where OI history doesn't exist):
+
+- **`iv_vs_rv_spread` — KEEP.** Its premise (ATM IV / RV20 < 0.70) is the one options idea with real
+  signal: +0.262%/4d gross (t=2.6), positive all 3 years, while the rich-vol control arm is dead flat.
+- **`unusual_options_activity` — RETIRED.** Premise **inverted**: call-volume spikes precede
+  −0.178%/3d (t=−2.4, 0/3 years). "Informed upside buying" is actually retail chase (MAX-effect
+  family) — the signal had been feeding systematic underperformers to the AI shortlist since v1.98.
+- **`put_call_contrarian` — RETIRED.** Flat on the volume proxy (+0.037%/3d, t=0.99); no supporting
+  evidence after two years live.
+- `options_skew_signal` — not testable without OTM put chains; stays live-only.
+
+Standard disable checklist applied (GLOBALLY_DISABLED + pragmas + SYSTEM_PROMPT + tests converted +
+docs). 2.4-year window is corroborative rather than 9-year-definitive — flagged in the research
+script (`scripts/options_iv_backtest.py`).
+
 ### 1.142 — July 2026 — FINRA daily short-flow feed (free point-in-time positioning history)
 
 New `data/short_flow`: FINRA's Reg SHO consolidated daily short-sale volume file

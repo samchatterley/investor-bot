@@ -32,8 +32,6 @@ Computed from end-of-day bar history via yfinance.
 | Signal | Entry conditions | Hold limit |
 |--------|-----------------|------------|
 | `options_skew_signal` | Panic put-skew spike (contrarian long) or call-skew spike (informed upside); requires options data post-filter injection | 3 days |
-| `unusual_options_activity` | Large OTM call open-interest surge — informed upside conviction; requires options data | 3 days |
-| `put_call_contrarian` | Put/call OI ratio > 2.5 (extreme panic hedging) + EMA or MACD confirmation — contrarian long | 3 days |
 | `squeeze_setup_long` | High short interest + price dormant near 20d low — crowded short pre-squeeze setup | 5 days |
 | `squeeze_momentum_long` | High short interest + strong 5d return + price above 20d high — active short squeeze in motion | 4 days |
 | `short_interest_trend_long` | SI% falling >30% from peak + price rising — short covering into strength (informed capitulation) | 5 days |
@@ -77,6 +75,8 @@ Signals removed after statistically evidenced negative contribution. Blocked in 
 | `obv_acceleration` | Consistently <50% WR, negative avg; joint OBV removal ΔSharpe +0.12 (doc corrected — was already in `GLOBALLY_DISABLED`) | v1.x |
 | `macd_crossover` | 2026-07 signal workshop — standalone isolation event study (907 names, 2015–2026, cost-swept): gross −0.008%/4d (t=−0.37), negative pre-cost; subsumed by `momentum` | v1.136 |
 | `golden_cross` | 2026-07 signal workshop — standalone isolation: gross +0.038%/5d, break-even 3.8bps, *below* the universe baseline (5.2bps); no edge (wrong horizon) | v1.136 |
+| `unusual_options_activity` | 2026-07 options kill/keep (Alpaca 2.4y history, first-ever evidence): premise **inverted** — call-volume spikes precede −0.178%/3d (t=−2.4, 0/3 yrs); retail chase, not informed buying | v1.143 |
+| `put_call_contrarian` | 2026-07 options kill/keep: flat on the volume proxy (+0.037%/3d, t=0.99); no supporting evidence after 2 years live | v1.143 |
 
 ---
 
@@ -89,7 +89,7 @@ Signals removed after statistically evidenced negative contribution. Blocked in 
 | Trend / momentum | `trend_pullback`, `momentum`, `gap_and_go` |
 | OHLCV technical | `candle_exhaustion`, `breadth_thrust` |
 | Catalyst / fundamental | `pead`, `insider_buying`, `activist_13d_signal`, `guidance_raise_signal`, `fcf_yield_signal` |
-| Options (live-only) | `options_skew_signal`, `iv_vs_rv_spread`, `unusual_options_activity`, `put_call_contrarian` |
+| Options (live-only) | `options_skew_signal`, `iv_vs_rv_spread` |
 | Short squeeze (live-only) | `squeeze_setup_long`, `squeeze_momentum_long`, `short_interest_trend_long` |
 | Sentiment / alt-data | `aaii_extreme_fear_long`, `fear_greed_extreme_fear`, `analyst_upgrade_signal`, `google_trends_bullish` |
 | Cross-asset | `sector_pair_mean_reversion` |

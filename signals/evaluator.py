@@ -415,6 +415,10 @@ GLOBALLY_DISABLED: frozenset[str] = frozenset(
         # winsorised excess vs SPY, cost-swept). Both have no standalone edge:
         "macd_crossover",  # gross -0.008%/4d (t=-0.37) — negative pre-cost; subsumed by momentum
         "golden_cross",  # gross +0.038%/5d, break-even 3.8bps — below the universe baseline (5.2bps)
+        # 2026-07 options kill/keep (Alpaca 2.4y history, 32,555 name-weeks — first-ever evidence
+        # for the v1.98 live-only options signals; iv_vs_rv_spread KEPT: +0.26%/4d, t=2.6, 3/3 yrs):
+        "unusual_options_activity",  # premise INVERTED: call-vol spike -0.178%/3d, t=-2.4, 0/3 yrs
+        "put_call_contrarian",  # flat on volume proxy (+0.037%, t=0.99); no supporting evidence
     }
 )
 
@@ -1378,7 +1382,7 @@ def evaluate_signals(
 
     # unusual_options_activity: large OTM call OI surge signals informed upside conviction.
     if "unusual_options_activity" not in blocked and bool(snapshot.get("unusual_call_oi", False)):
-        matched.append("unusual_options_activity")
+        matched.append("unusual_options_activity")  # pragma: no cover — in GLOBALLY_DISABLED
 
     # put_call_contrarian: extreme put-to-call OI ratio (>2.5) signals panic hedging →
     # contrarian long. Requires trend structure to avoid catching falling knives.
@@ -1389,7 +1393,7 @@ def evaluate_signals(
         and float(_pc_ratio) > p["put_call_contrarian_min"]
         and (ema_up or macd_diff > 0)
     ):
-        matched.append("put_call_contrarian")
+        matched.append("put_call_contrarian")  # pragma: no cover — in GLOBALLY_DISABLED
 
     # ── Batch 6: short-squeeze signals ───────────────────────────────────────
 

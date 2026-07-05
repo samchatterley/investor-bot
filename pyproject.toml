@@ -165,6 +165,8 @@ omit = [
     "*/scripts/short_flow_backtest.py",
     "scripts/n1_short_flow_conditioner.py",
     "*/scripts/n1_short_flow_conditioner.py",
+    "scripts/options_iv_backtest.py",
+    "*/scripts/options_iv_backtest.py",
 ]
 
 [tool.coverage.report]

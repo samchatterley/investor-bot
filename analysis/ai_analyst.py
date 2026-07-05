@@ -94,8 +94,6 @@ OHLCV TECHNICAL
 
 OPTIONS
 - options_skew_signal: panic put-skew spike (contrarian long) or call-skew spike (informed upside)
-- unusual_options_activity: large OTM call open-interest surge — informed upside conviction
-- put_call_contrarian: put/call OI ratio >2.5 — extreme panic hedging; contrarian long
 
 SHORT SQUEEZE
 - squeeze_setup_long: high short interest + price dormant near 20d low — crowded short pre-squeeze

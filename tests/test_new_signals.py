@@ -574,13 +574,14 @@ class TestOptionsSkewSignal:
 
 
 class TestUnusualOptionsActivity:
-    def test_unusual_call_oi_fires(self):
-        """unusual_call_oi=True fires unusual_options_activity."""
-        from signals.evaluator import evaluate_signals
+    def test_unusual_call_oi_disabled_does_not_fire(self):
+        """Retired 2026-07 (options kill/keep: premise inverted, -0.178%/3d t=-2.4, 0/3 yrs)."""
+        from signals.evaluator import GLOBALLY_DISABLED, evaluate_signals
 
+        assert "unusual_options_activity" in GLOBALLY_DISABLED
         snap = _base_snap(unusual_call_oi=True)
         signals = evaluate_signals(snap)
-        assert "unusual_options_activity" in signals
+        assert "unusual_options_activity" not in signals
 
     def test_no_unusual_call_oi_no_signal(self):
         """unusual_call_oi=False doesn't fire."""
@@ -600,16 +601,17 @@ class TestUnusualOptionsActivity:
 
 
 class TestPutCallContrarian:
-    def test_extreme_put_call_with_ema_up_fires(self):
-        """put_call_oi_ratio > 2.5 with ema_up fires put_call_contrarian."""
-        from signals.evaluator import evaluate_signals
+    def test_extreme_put_call_disabled_does_not_fire(self):
+        """Retired 2026-07 (options kill/keep: flat on volume proxy, no supporting evidence)."""
+        from signals.evaluator import GLOBALLY_DISABLED, evaluate_signals
 
+        assert "put_call_contrarian" in GLOBALLY_DISABLED
         snap = _base_snap(put_call_oi_ratio=3.0, ema9_above_ema21=True)
         signals = evaluate_signals(snap)
-        assert "put_call_contrarian" in signals
+        assert "put_call_contrarian" not in signals
 
-    def test_extreme_put_call_with_macd_fires(self):
-        """put_call_oi_ratio > 2.5 with positive macd_diff also fires."""
+    def test_extreme_put_call_with_macd_disabled_does_not_fire(self):
+        """Same via the macd_diff path — the disable covers both trend confirmations."""
         from signals.evaluator import evaluate_signals
 
         snap = _base_snap(
@@ -618,7 +620,7 @@ class TestPutCallContrarian:
             macd_diff=0.5,
         )
         signals = evaluate_signals(snap)
-        assert "put_call_contrarian" in signals
+        assert "put_call_contrarian" not in signals
 
     def test_low_put_call_no_signal(self):
         """put_call_oi_ratio < 2.5 doesn't fire."""
