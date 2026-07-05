@@ -171,6 +171,8 @@ omit = [
     "*/scripts/lottery_pop_short_backtest.py",
     "scripts/n1_sector_residual.py",
     "*/scripts/n1_sector_residual.py",
+    "scripts/residual_trend_pullback.py",
+    "*/scripts/residual_trend_pullback.py",
 ]
 
 [tool.coverage.report]
