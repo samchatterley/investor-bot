@@ -177,6 +177,8 @@ omit = [
     "*/scripts/peer_lead_lag.py",
     "scripts/tom_overlay.py",
     "*/scripts/tom_overlay.py",
+    "scripts/gdelt_tone_probe.py",
+    "*/scripts/gdelt_tone_probe.py",
 ]
 
 [tool.coverage.report]
