@@ -173,6 +173,8 @@ omit = [
     "*/scripts/n1_sector_residual.py",
     "scripts/residual_trend_pullback.py",
     "*/scripts/residual_trend_pullback.py",
+    "scripts/peer_lead_lag.py",
+    "*/scripts/peer_lead_lag.py",
 ]
 
 [tool.coverage.report]
