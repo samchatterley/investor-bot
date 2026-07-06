@@ -4,6 +4,24 @@ Full version history. Most recent first.
 
 ---
 
+### 1.148 — July 2026 — architecture-review finding 4: structured degraded-feed surface
+
+Covers the finding 4 gap deferred in 1.147 (the WARN logs alone left the operator scraping scattered
+lines). New `utils/feed_status` — a live in-process recorder, distinct from `experiment/feed_health`
+(which PROBES on demand): it RECORDS the outcome of the decision-path fetches the cycle already makes
+(zero extra network) and logs a WARNING on failure.
+
+- `get_spy_5d_return` / `get_spy_10d_return` / `get_vix` (data/market_data.py) now route through
+  `feed_status.record(...)` on both success and failure — consolidating the 1.147 ad-hoc WARN logs
+  into one mechanism (single source of truth for feed degradation).
+- `run_startup_health_check` (utils/health.py) surfaces `feed_status.degraded()` as a structured,
+  non-fatal issue list + `degraded_feeds` metric → YELLOW (visible), never RED (a degraded optional
+  input warns, it does not halt the bot).
+- conftest autouse fixture resets the recorder around every test (it is process-global and read by
+  the health check, which four test files invoke). Tests 5,037.
+
+---
+
 ### 1.147 — July 2026 — architecture-review batch 1+2: un-silence degraded inputs + net backstop
 
 Acting on the Fable architecture review (findings 1, 2a, 7, 10). Instrumentation + hardening only —

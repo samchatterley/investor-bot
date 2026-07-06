@@ -16,6 +16,7 @@ from ta.volatility import BollingerBands
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, MARKET_DATA_DIR
 from data.fundamentals import get_fundamentals
+from utils import feed_status
 from utils.alpaca_session import with_request_timeout
 from utils.symbols import to_yf_symbol
 
@@ -434,13 +435,12 @@ def get_vix() -> float | None:
     try:
         hist = yf.Ticker("^VIX").history(period="3d")
         if not hist.empty:
+            feed_status.record("vix", True)
             return round(float(hist["Close"].iloc[-1]), 1)
     except Exception as e:
-        logger.warning("VIX fetch failed — regime stress/HV triggers degraded this cycle: %s", e)
+        feed_status.record("vix", False, f"fetch failed ({e}) — regime stress/HV triggers degraded")
         return None
-    logger.warning(
-        "VIX unavailable (empty history) — regime stress/HV triggers degraded this cycle"
-    )
+    feed_status.record("vix", False, "empty history — regime stress/HV triggers degraded")
     return None
 
 
@@ -461,21 +461,21 @@ def get_index_price(symbol: str = "SPY") -> float | None:
 def get_spy_5d_return() -> float | None:
     """Return SPY's 5-day return % for relative strength calculation.
 
-    On any failure returns None BUT logs it — a silent None here suppresses residual_reversal
-    and rs_leader for the whole cycle (both gate on spy_ret_5d is not None).
+    On any failure returns None BUT records it (feed_status logs + surfaces in the health report) —
+    a silent None here suppresses residual_reversal and rs_leader for the whole cycle (both gate on
+    spy_ret_5d is not None).
     """
     try:
         hist = yf.Ticker("SPY").history(period="15d")
         if len(hist) >= 6:
+            feed_status.record("spy_5d", True)
             return round(
                 (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-6]) - 1) * 100, 2
             )
     except Exception as e:
-        logger.warning(
-            "SPY 5d return fetch failed — RS/reversal context degraded this cycle: %s", e
-        )
+        feed_status.record("spy_5d", False, f"fetch failed ({e}) — RS/reversal context suppressed")
         return None
-    logger.warning("SPY 5d return unavailable — RS/reversal context degraded this cycle")
+    feed_status.record("spy_5d", False, "insufficient data — RS/reversal context suppressed")
     return None
 
 
@@ -484,13 +484,14 @@ def get_spy_10d_return() -> float | None:
     try:
         hist = yf.Ticker("SPY").history(period="25d")
         if len(hist) >= 11:
+            feed_status.record("spy_10d", True)
             return round(
                 (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-11]) - 1) * 100, 2
             )
     except Exception as e:
-        logger.warning("SPY 10d return fetch failed — RS context degraded this cycle: %s", e)
+        feed_status.record("spy_10d", False, f"fetch failed ({e}) — RS context suppressed")
         return None
-    logger.warning("SPY 10d return unavailable — RS context degraded this cycle")
+    feed_status.record("spy_10d", False, "insufficient data — RS context suppressed")
     return None
 
 

@@ -111,6 +111,22 @@ class TestHealthCheckGreen(HealthBase):
         self.assertEqual(report.metrics["unresolved_intents"], 0)
 
 
+class TestHealthCheckDegradedFeeds(HealthBase):
+    def test_degraded_feed_surfaces_as_yellow(self):
+        """A recorded degraded feed shows as a non-fatal issue (YELLOW), never halts (not RED)."""
+        from utils import feed_status
+
+        feed_status.record("vix", False, "empty history")
+        report = self._run(self._client())
+        self.assertEqual(report.status, HealthStatus.YELLOW)
+        self.assertIn("vix", report.metrics["degraded_feeds"])
+        self.assertTrue(any("degraded feed: vix" in i for i in report.issues))
+
+    def test_no_degraded_feeds_metric_is_empty(self):
+        report = self._run(self._client())
+        self.assertEqual(report.metrics["degraded_feeds"], [])
+
+
 class TestHealthCheckHaltFile(HealthBase):
     def test_halt_file_present_returns_red(self):
         open(self.halt_file, "w").close()

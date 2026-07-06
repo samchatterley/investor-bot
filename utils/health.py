@@ -213,6 +213,17 @@ def run_startup_health_check(client) -> HealthReport:
     except Exception as e:
         issues.append(f"order intent check failed: {e}")
 
+    # ── 8. Degraded data feeds ────────────────────────────────────────────────
+    # Structured surface for silently-degraded decision-path feeds (SPY context, VIX). Non-fatal
+    # (no fatal_keyword) → YELLOW, never halts: a degraded optional input should warn, not stop the
+    # bot. Reflects the most recent recorded fetch (utils.feed_status).
+    from utils import feed_status
+
+    degraded_feeds = feed_status.degraded()
+    metrics["degraded_feeds"] = degraded_feeds
+    for feed in degraded_feeds:
+        issues.append(f"degraded feed: {feed}")
+
     # ── Verdict ───────────────────────────────────────────────────────────────
     fatal_keywords = (
         "unexpected broker position",

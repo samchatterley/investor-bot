@@ -44,6 +44,17 @@ def _isolate_shadow_popper_log(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_feed_status():
+    """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
+    test so one test's degraded-feed recording can't leak into another's health-check assertions."""
+    from utils import feed_status
+
+    feed_status.reset()
+    yield
+    feed_status.reset()
+
+
+@pytest.fixture(autouse=True)
 def _pin_index_hedge_disabled(monkeypatch):
     """Keep tests deterministic regardless of the operator's .env. config.load_dotenv() runs at
     import, so an enabled deployment toggle (INDEX_HEDGE_ENABLED=true) would otherwise fire the live
