@@ -649,6 +649,36 @@ class TestBatch1LongSignals(unittest.TestCase):
             ),
         )
 
+    def _capit_row(self, spread: float) -> "pd.Series":
+        """Neutral row for a liquid idiosyncratic 5d loser (only residual_reversal can fire)."""
+        return pd.Series(
+            {
+                "rsi": 50.0,
+                "bb_pct": 0.5,
+                "vol_ratio": 1.0,
+                "ema9": 100.0,
+                "ema21": 100.0,
+                "macd_diff": 0.0,
+                "ret_5d": -8.0,
+                "Close": 100.0,
+                "spread_proxy_20d": spread,
+            }
+        )
+
+    def test_entry_signal_capitulation_fires_in_stress_when_liquid(self):
+        """Engine end-to-end: _entry_signal plumbs regime → capitulation leg fires for a liquid name."""
+        from backtest.engine import _entry_signal
+
+        sig = _entry_signal(self._capit_row(0.002), regime="STRESS_RISK_OFF", spy_ret_5d=0.0)
+        self.assertEqual(sig, "residual_reversal")
+
+    def test_entry_signal_capitulation_blocked_in_stress_when_illiquid(self):
+        """Engine end-to-end: wide-spread (illiquid) name stays blocked in STRESS — no signal fires."""
+        from backtest.engine import _entry_signal
+
+        sig = _entry_signal(self._capit_row(0.02), regime="STRESS_RISK_OFF", spy_ret_5d=0.0)
+        self.assertNotEqual(sig, "residual_reversal")
+
     def test_residual_reversal_sector_rout_blocks(self):
         """v1.144 conjunct: -8% vs SPY but sector also down 6% → sector-relative -2% → no fire."""
         from signals.evaluator import evaluate_signals
