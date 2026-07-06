@@ -436,6 +436,7 @@ def _entry_signal(
         vix_spike=vix_spike,
         spy_ret_5d=spy_ret_5d,
         spy_ret_10d=spy_ret_10d,
+        regime=regime or "",
     )
     return signals[0] if signals else None
 

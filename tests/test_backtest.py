@@ -594,13 +594,59 @@ class TestBatch1LongSignals(unittest.TestCase):
             "residual_reversal", evaluate_signals({"ret_5d_pct": -8.0}, spy_ret_5d=None)
         )
 
-    def test_residual_reversal_blocked_in_stress(self):
+    def test_residual_reversal_blocked_in_stress_when_regime_not_signalled(self):
+        """Default regime='' keeps the capitulation leg off — stays blocked (safe for plain callers)."""
         from signals.evaluator import REGIME_BLOCKED, evaluate_signals
 
         blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
         self.assertNotIn(
             "residual_reversal",
             evaluate_signals({"ret_5d_pct": -8.0}, blocked=blocked, spy_ret_5d=0.0),
+        )
+
+    def test_capitulation_reversal_fires_in_stress_when_liquid(self):
+        """v1.145: STRESS_RISK_OFF + tight spread (liquid) unblocks the capitulation bounce."""
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        self.assertIn(
+            "residual_reversal",
+            evaluate_signals(
+                {"ret_5d_pct": -8.0, "spread_proxy_20d": 0.002},
+                blocked=blocked,
+                spy_ret_5d=0.0,
+                regime="STRESS_RISK_OFF",
+            ),
+        )
+
+    def test_capitulation_reversal_blocked_in_stress_when_illiquid(self):
+        """Survivorship guardrail: wide 20d spread (illiquid) keeps it blocked even in STRESS."""
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["STRESS_RISK_OFF"]
+        self.assertNotIn(
+            "residual_reversal",
+            evaluate_signals(
+                {"ret_5d_pct": -8.0, "spread_proxy_20d": 0.02},
+                blocked=blocked,
+                spy_ret_5d=0.0,
+                regime="STRESS_RISK_OFF",
+            ),
+        )
+
+    def test_capitulation_reversal_only_stress_not_high_vol_downtrend(self):
+        """Only STRESS_RISK_OFF unblocks — HIGH_VOL_DOWNTREND reversal is train-negative, stays blocked."""
+        from signals.evaluator import REGIME_BLOCKED, evaluate_signals
+
+        blocked = REGIME_BLOCKED["HIGH_VOL_DOWNTREND"]
+        self.assertNotIn(
+            "residual_reversal",
+            evaluate_signals(
+                {"ret_5d_pct": -8.0, "spread_proxy_20d": 0.002},
+                blocked=blocked,
+                spy_ret_5d=0.0,
+                regime="HIGH_VOL_DOWNTREND",
+            ),
         )
 
     def test_residual_reversal_sector_rout_blocks(self):

@@ -248,7 +248,11 @@ def prefilter_candidates(
             continue
 
         matched = evaluate_signals(
-            s, blocked=_blocked, spy_ret_5d=spy_ret_5d, spy_ret_10d=spy_ret_10d
+            s,
+            blocked=_blocked,
+            spy_ret_5d=spy_ret_5d,
+            spy_ret_10d=spy_ret_10d,
+            regime=regime or "",
         )
 
         if not matched:

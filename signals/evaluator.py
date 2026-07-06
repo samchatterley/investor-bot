@@ -898,6 +898,7 @@ def evaluate_signals(
     vix_spike: bool = False,
     spy_ret_5d: float | None = None,
     spy_ret_10d: float | None = None,
+    regime: str = "",
 ) -> list[str]:
     """Return all matching signal names for snapshot, sorted by SIGNAL_PRIORITY.
 
@@ -920,6 +921,10 @@ def evaluate_signals(
     spy_ret_5d, spy_ret_10d : float | None
         SPY 5d and 10d returns for the rs_leader relative-strength gate.
         Pass None to skip rs_leader entirely.
+    regime : str
+        Canonical market regime name (data.market_regime). Only "STRESS_RISK_OFF" is used:
+        it unblocks the capitulation-bounce leg of residual_reversal for liquid names. Empty
+        string (default) disables that leg — safe for callers that do not classify regime.
 
     Returns
     -------
@@ -1240,12 +1245,23 @@ def evaluate_signals(
     # beta that continues, not idiosyncratic flow that reverts. Head-to-head study: the intersection
     # nets +0.374%/3d @7bps (t=7.1, 10/12 +yrs) vs +0.301% (8/12) for spy-only. Fail-open when the
     # sector field is absent (backtest engine + unknown-sector names keep the spy-only construction).
+    # v1.145 capitulation bounce: residual_reversal is regime-blocked in STRESS_RISK_OFF, but the
+    # reconcile study (scripts/reversal_regime_reconcile.py) shows that is reversal's BEST bucket —
+    # +1.86% net/3d @7bps, robust in BOTH walk-forward halves (train +2.1 / test +1.3, 6/7 yrs): the
+    # forced-liquidation overshoot in an idiosyncratic loser snaps back. Allow it there for LIQUID
+    # names only (20d spread within the execution gate — the survivorship guardrail: illiquid
+    # distressed names are the ones that delist; the liquid ones bounce). STRESS_RISK_OFF ONLY —
+    # HIGH_VOL_DOWNTREND reversal is train-negative (kept blocked); UNKNOWN stays blocked (no info).
+    _capit = (
+        regime == "STRESS_RISK_OFF"
+        and float(snapshot.get("spread_proxy_20d", 1.0)) <= p["spread_proxy_max"]
+    )
     _sect5 = snapshot.get("sector_ret_5d_pct")
     if (
         spy_ret_5d is not None
         and ret_5d - spy_ret_5d <= p["resid_rev_threshold"]
         and (_sect5 is None or ret_5d - float(_sect5) <= p["resid_rev_threshold"])
-        and "residual_reversal" not in blocked
+        and ("residual_reversal" not in blocked or _capit)
     ):
         matched.append("residual_reversal")
 

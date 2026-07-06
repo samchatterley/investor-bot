@@ -4,6 +4,34 @@ Full version history. Most recent first.
 
 ---
 
+### 1.145 — July 2026 — capitulation-bounce unblock for `residual_reversal` (deepen-the-edge)
+
+The reversal enhancement study (`scripts/reversal_enhance.py` → `reversal_vix_gate.py` →
+`reversal_regime_reconcile.py`, walk-forward train<2021 / test≥2021) found that the live regime
+blocks were suppressing reversal's **single best, most robust bucket**: idiosyncratic losers in
+**STRESS_RISK_OFF** (acute capitulation). Partitioned against the live regimes, `residual_reversal`
+in STRESS nets **+1.86%/3d @7bps** (train +2.11 / test +1.28, 6/7 +yrs, and it *grows* un-winsorised
+so real crash tails don't sink it) — the forced-liquidation overshoot snaps back. Meanwhile the
+allowed calm bucket (VIX<20) is dead and the elevated-not-stress bucket is train-negative, so the
+current live reversal (+0.09% net, train-negative) was mediocre precisely because the block removed
+the good bucket.
+
+- **Unblocked `residual_reversal` in STRESS_RISK_OFF only**, for **liquid names only** — the firing
+  gate now requires `spread_proxy_20d ≤ spread_proxy_max` when `regime == "STRESS_RISK_OFF"`. This is
+  the survivorship guardrail: the distressed names that actually delist in a crash are the illiquid
+  ones (and survivorship is the one bias free data can't correct, so we bound it structurally); the
+  liquid ones bounce. HIGH_VOL_DOWNTREND reversal is train-negative and stays blocked; UNKNOWN stays
+  blocked (no regime info). The market-excess construction (stock − SPY ≤ −7%) already keeps this
+  idiosyncratic, not "buy the whole falling market".
+- **Plumbing:** `evaluate_signals()` gains a `regime: str = ""` argument (empty disables the
+  capitulation leg — safe for plain callers); the live scanner and backtest engine pass the canonical
+  regime through. No new signal name, so SYSTEM_PROMPT / wiring parity is unaffected.
+- Size is deliberately **not** cut in stress: the guardrails (STRESS-only, liquid-only, idiosyncratic
+  market-excess, ≤5 positions, 3-day hold) bound the risk, and cutting size would directly shrink the
+  +1.86% edge we are unblocking.
+
+---
+
 ### 1.144 — July 2026 — N1 sector conjunct + crowded-popper short shadow (workshop v2 #1/#2)
 
 Two outputs of the v2 signal workshop's top ideas, both measure-first validated:
