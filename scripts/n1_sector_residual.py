@@ -12,6 +12,11 @@ Head-to-head on identical weeks, hold 3 (live), entry t+1, winsorised excess vs 
 Also decile-matched arms (bottom decile of each measure) so threshold-induced N differences don't
 confound the comparison. Sector map from the bot's live cache (coverage reported).
 
+PARAM ROBUSTNESS (spy leg fixed <= -7, sweep sector leg): net @7bps sect<=-5:+0.317 / -6:+0.326 /
+-7(live):+0.374 / -8:+0.441 / -9:+0.520 — a smooth monotonic PLATEAU (t>7, 8-11/12 +yrs throughout),
+tighter sector gate = bigger reversion (same mechanism as N1). The live -7 sits comfortably on the
+plateau (not a spike); -8 is marginally stronger per-trade. Confirmed well-parameterised, not overfit.
+
 Usage: python scripts/n1_sector_residual.py [--hold 3] [--thresh -7] [--costs 0,7,14]
        [--winsor 25] [--start 2015-01-01]
 """
@@ -130,6 +135,11 @@ def main() -> None:
                 arms["spy-resid <= -7 (LIVE)"].append((float(ex), yr))
                 if b is not None and b <= args.thresh:
                     arms["both <= -7 (intersection)"].append((float(ex), yr))
+                # PARAM ROBUSTNESS: spy leg fixed at -7, sweep the sector-leg threshold
+                if b is not None:
+                    for st in (-5.0, -6.0, -7.0, -8.0, -9.0):
+                        if b <= st:
+                            arms[f"  spy<=-7 & sect<={st:.0f} (sweep)"].append((float(ex), yr))
             if b is not None and b <= args.thresh:
                 arms["sector-resid <= -7"].append((float(ex), yr))
             if a is not None and a <= spy_dec:
@@ -146,6 +156,13 @@ def main() -> None:
         "sector-resid bottom decile",
     ):
         _sweep(label, arms[label], costs)
+    print("\n--- sector-leg threshold robustness (spy leg fixed <= -7; plateau => robust) ---")
+    for st in (-5.0, -6.0, -7.0, -8.0, -9.0):
+        _sweep(
+            f"  spy<=-7 & sect<={st:.0f} (sweep)",
+            arms[f"  spy<=-7 & sect<={st:.0f} (sweep)"],
+            costs,
+        )
     print(
         "\n  UPGRADE ships if sector-residual (or the intersection) beats the live spy-residual on "
         "net mean AND +yrs at 7bps; otherwise keep the live construction."

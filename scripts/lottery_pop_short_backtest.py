@@ -10,6 +10,12 @@ Entry t+1 after the pop day (EOD signal), hold 3, short P&L = -(fwd excess vs SP
 CAVEATS: no earnings exclusion over 9y (earnings pops drift UP per PEAD, so their inclusion makes
 this CONSERVATIVE); no stop modelled (winsor +/-25% bounds the tail read); borrow swept flat.
 
+PARAM ROBUSTNESS (crowded arm, sweep pop threshold, net @7bps+borrow): pop>=8%:+0.51%(4/9yrs) /
+10%(live):+0.78%(6/9) / 12%:+0.88%(6/9, worst -1.73%) / 15%:+1.32%(4/9, worst -3.72%). Magnitude
+rises monotonically with the threshold but year-consistency degrades and tail years fatten; 10%
+is the consistency sweet spot (best +yrs, survives 15%/yr borrow at +0.61%). Well-chosen — not a
+spike. (Shadow-only signal; still needs forward evidence before live capital.)
+
 Usage: python scripts/lottery_pop_short_backtest.py [--pop 10] [--hold 3] [--winsor 25]
        [--costs 7] [--borrows 0.5,5,15,30] [--start 2015-01-01]
 """
@@ -95,6 +101,8 @@ def main() -> None:
     all_pops: list[tuple[float, int]] = []
     gated: list[tuple[float, int]] = []  # 2018+, SVR below daily median (uncrowded)
     crowded: list[tuple[float, int]] = []  # 2018+, SVR top quartile (avoid per our own finding)
+    pop_sweep = (8.0, 10.0, 12.0, 15.0)  # PARAM ROBUSTNESS: crowded arm across pop thresholds
+    crowded_by_pop: dict[float, list[tuple[float, int]]] = {p: [] for p in pop_sweep}
     for i in range(1, len(close) - h - 2):
         yr = close.index[i].year
         r_row = ret1.iloc[i]
@@ -104,24 +112,33 @@ def main() -> None:
         q3 = svr_row.quantile(0.75) if len(svr_row) >= 100 else None
         for sym in cols:
             rv = r_row.get(sym)
-            if rv is None or (isinstance(rv, float) and math.isnan(rv)) or rv < args.pop:
+            if rv is None or (isinstance(rv, float) and math.isnan(rv)):
                 continue
             pnl = s_row.get(sym)
             if pnl is None or (isinstance(pnl, float) and math.isnan(pnl)):
                 continue
-            all_pops.append((float(pnl), yr))
-            if med is not None:
-                sv = svr_row.get(sym)
-                if sv is not None and not (isinstance(sv, float) and math.isnan(sv)):
+            sv = svr_row.get(sym) if med is not None else None
+            sv_ok = sv is not None and not (isinstance(sv, float) and math.isnan(sv))
+            if rv >= args.pop:
+                all_pops.append((float(pnl), yr))
+                if med is not None and sv_ok:
                     if sv < med:
                         gated.append((float(pnl), yr))
                     if q3 is not None and sv >= q3:
                         crowded.append((float(pnl), yr))
+            # pop-threshold sweep, crowded (top-quartile SVR) arm only
+            if q3 is not None and sv_ok and sv >= q3:
+                for pth in pop_sweep:
+                    if rv >= pth:
+                        crowded_by_pop[pth].append((float(pnl), yr))
 
     print(f"\n=== lottery_pop_short (pop>={args.pop:.0f}%, hold {h}d, t+1, winsorised) ===")
     _report("all pops (2015+)", all_pops, args.costs, borrows, h)
     _report("SVR-gated uncrowded (2018+)", gated, args.costs, borrows, h)
     _report("SVR crowded top-qtl (2018+)", crowded, args.costs, borrows, h)
+    print("\n--- crowded-arm pop-threshold robustness (plateau => robust) ---")
+    for pth in pop_sweep:
+        _report(f"crowded pop>={pth:.0f}%", crowded_by_pop[pth], args.costs, borrows, h)
     print(
         "\n  SHIPS if the SVR-gated arm is net>0 with |t|>=2 at realistic borrow and no meme-year "
         "blowup dominating; crowded arm should be WORSE (squeeze fuel) per the N1xSVR finding."
