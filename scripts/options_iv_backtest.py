@@ -223,6 +223,10 @@ def main() -> None:
                     arms["iv_vs_rv<0.70 (LIVE premise)"].append((ex, yr))
                 if iv_rv > 1.30:
                     arms["iv_rv>1.30 (control: rich vol)"].append((ex, yr))
+                # PARAM ROBUSTNESS sweep — is 0.70 a plateau or a lucky spike?
+                for thr in (0.50, 0.60, 0.70, 0.80, 0.90):
+                    if iv_rv < thr:
+                        arms[f"  iv_rv<{thr:.2f} (sweep)"].append((ex, yr))
         if pc is not None:
             ex = _fx(i, sym, 3)
             if ex is not None and pc > 2.0:
@@ -245,6 +249,9 @@ def main() -> None:
         "call-vol z>=2 (unusual activity)",
     ):
         _sweep(label, arms[label], costs)
+    print("\n--- iv_vs_rv threshold robustness (plateau => robust; single spike => overfit) ---")
+    for thr in (0.50, 0.60, 0.70, 0.80, 0.90):
+        _sweep(f"  iv_rv<{thr:.2f} (sweep)", arms[f"  iv_rv<{thr:.2f} (sweep)"], costs)
     print("  options_skew_signal: NOT TESTED (needs OTM put chains — deferred)")
     print(
         "\n  KEEP a live signal if its premise arm is net>0 with |t|>=2 and year-consistent; "
