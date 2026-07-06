@@ -4,6 +4,22 @@ Full version history. Most recent first.
 
 ---
 
+### 1.146 — July 2026 — fix S&P 500 constituent fetch (Wikipedia 403) + add timeout
+
+The live scanner logged `S&P 500 fetch failed (non-fatal): HTTP Error 403: Forbidden`. Wikipedia now
+rejects the default urllib/pandas User-Agent, so `_fetch_sp500_symbols` was silently failing and the
+universe's S&P 500 refresh tier fell back to the static `STOCK_UNIVERSE` core every scan (non-fatal —
+the bot kept trading the ~906-name core — but the constituent list stopped refreshing).
+
+- New `_fetch_sp500_html()` fetches the page via `urllib` with a **descriptive, policy-compliant
+  User-Agent** (verified: default → 403, descriptive → 200) and a **30s timeout**. The timeout also
+  closes a latent hang: the old `pd.read_html(url)` had no bound, and this runs in the sequential
+  prefetch job where an unbounded fetch would freeze every job behind it.
+- `pd.read_html` remains the parse seam (still mockable in tests). Tests updated to mock the new
+  fetch helper; added a test asserting the UA + timeout are set. Tests 5,024.
+
+---
+
 ### 1.145 — July 2026 — capitulation-bounce unblock for `residual_reversal` (deepen-the-edge)
 
 The reversal enhancement study (`scripts/reversal_enhance.py` → `reversal_vix_gate.py` →

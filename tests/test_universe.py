@@ -317,16 +317,22 @@ class TestFetchSp500Symbols(unittest.TestCase):
 
     def test_returns_eligible_symbols(self):
         eligible = {"AAPL", "MSFT", "GOOGL", "JPM", "XOM"}
-        with patch(
-            "pandas.read_html",
-            return_value=self._make_sp500_df(["AAPL", "MSFT", "GOOGL", "JPM", "XOM"]),
+        with (
+            patch.object(self.mod, "_fetch_sp500_html", return_value="<html/>"),
+            patch(
+                "pandas.read_html",
+                return_value=self._make_sp500_df(["AAPL", "MSFT", "GOOGL", "JPM", "XOM"]),
+            ),
         ):
             result = self.mod._fetch_sp500_symbols(eligible)
         self.assertEqual(sorted(result), ["AAPL", "GOOGL", "JPM", "MSFT", "XOM"])
 
     def test_excludes_non_eligible_symbols(self):
         eligible = {"AAPL"}
-        with patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL", "NVDA"])):
+        with (
+            patch.object(self.mod, "_fetch_sp500_html", return_value="<html/>"),
+            patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL", "NVDA"])),
+        ):
             result = self.mod._fetch_sp500_symbols(eligible)
         self.assertIn("AAPL", result)
         self.assertNotIn("NVDA", result)
@@ -334,7 +340,10 @@ class TestFetchSp500Symbols(unittest.TestCase):
     def test_normalises_dot_tickers(self):
         """BRK.B from Wikipedia → BRK-B if BRK-B is in eligible_set."""
         eligible = {"BRK-B"}
-        with patch("pandas.read_html", return_value=self._make_sp500_df(["BRK.B"])):
+        with (
+            patch.object(self.mod, "_fetch_sp500_html", return_value="<html/>"),
+            patch("pandas.read_html", return_value=self._make_sp500_df(["BRK.B"])),
+        ):
             result = self.mod._fetch_sp500_symbols(eligible)
         self.assertIn("BRK-B", result)
         self.assertNotIn("BRK.B", result)
@@ -342,7 +351,10 @@ class TestFetchSp500Symbols(unittest.TestCase):
     def test_accepts_dot_form_in_eligible(self):
         """If Alpaca uses the dot form (e.g. BRK.B), accept it too."""
         eligible = {"BRK.B"}
-        with patch("pandas.read_html", return_value=self._make_sp500_df(["BRK.B"])):
+        with (
+            patch.object(self.mod, "_fetch_sp500_html", return_value="<html/>"),
+            patch("pandas.read_html", return_value=self._make_sp500_df(["BRK.B"])),
+        ):
             result = self.mod._fetch_sp500_symbols(eligible)
         self.assertIn("BRK-B", result)
 
@@ -361,15 +373,44 @@ class TestFetchSp500Symbols(unittest.TestCase):
         with open(self.mod._SP500_CACHE_PATH, "w") as f:
             json.dump(stale, f)
         eligible = {"AAPL"}
-        with patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL"])):
+        with (
+            patch.object(self.mod, "_fetch_sp500_html", return_value="<html/>"),
+            patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL"])),
+        ):
             result = self.mod._fetch_sp500_symbols(eligible)
         self.assertNotIn("OLD", result)
         self.assertIn("AAPL", result)
 
     def test_network_failure_returns_empty(self):
-        with patch("pandas.read_html", side_effect=Exception("network down")):
+        # The 403/network failure now originates in the HTML fetch (UA'd urllib request).
+        with patch.object(self.mod, "_fetch_sp500_html", side_effect=Exception("network down")):
             result = self.mod._fetch_sp500_symbols({"AAPL"})
         self.assertEqual(result, [])
+
+    def test_fetch_sp500_html_sets_user_agent_and_decodes(self):
+        """_fetch_sp500_html sends a descriptive UA (Wikipedia 403s the default) + bounded timeout."""
+        captured = {}
+
+        class _Resp:
+            def __enter__(self_):
+                return self_
+
+            def __exit__(self_, *a):
+                return False
+
+            def read(self_):
+                return b"<html>ok</html>"
+
+        def _fake_urlopen(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            captured["timeout"] = timeout
+            return _Resp()
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            html = self.mod._fetch_sp500_html()
+        self.assertEqual(html, "<html>ok</html>")
+        self.assertIn("InvestorBot", captured["ua"])
+        self.assertEqual(captured["timeout"], self.mod._WIKI_FETCH_TIMEOUT)
 
     def test_unexpected_cache_error_logs_warning_and_continues(self):
         """A non-FileNotFoundError/KeyError/ValueError (e.g. RuntimeError) on cache read
@@ -384,6 +425,7 @@ class TestFetchSp500Symbols(unittest.TestCase):
         eligible = {"AAPL"}
         with (
             patch("json.load", side_effect=RuntimeError("disk error")),
+            patch.object(self.mod, "_fetch_sp500_html", return_value="<html/>"),
             patch("pandas.read_html", return_value=self._make_sp500_df(["AAPL"])),
         ):
             result = self.mod._fetch_sp500_symbols(eligible)

@@ -21,7 +21,9 @@ failure each tier degrades independently; the fallback is config.STOCK_UNIVERSE.
 import json
 import logging
 import os
+import urllib.request
 from datetime import datetime
+from io import StringIO
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest
@@ -39,6 +41,13 @@ _SP500_CACHE_PATH = os.path.join(LOG_DIR, "caching", "sp500_cache.json")
 _CACHE_TTL_HOURS = 24
 _SP500_CACHE_TTL_DAYS = 7
 _MIN_PRICE = 5.0
+
+_WIKI_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+# Wikipedia 403s the default urllib/pandas User-Agent; send a descriptive, policy-compliant one.
+_WIKI_UA = "InvestorBot/1.0 (S&P 500 constituent list; contact samchatterley1@gmail.com)"
+_WIKI_FETCH_TIMEOUT = (
+    30  # bounded — this runs in the sequential prefetch job (no unbounded blocking)
+)
 _MAX_UNIVERSE_SIZE = 750  # prefilter_candidates handles the final quality gate
 _SNAPSHOT_CHUNK_SIZE = 1000  # Alpaca snapshot API limit per request
 
@@ -110,6 +119,18 @@ def _get_eligible_symbols(client: TradingClient) -> list[str]:
     return eligible
 
 
+def _fetch_sp500_html() -> str:
+    """Fetch the S&P 500 Wikipedia page HTML with a policy-compliant UA and a bounded timeout.
+
+    Wikipedia returns 403 for the default urllib/pandas User-Agent, so we set a descriptive one
+    (per Wikipedia's UA policy). The timeout keeps this off the critical path of the sequential
+    prefetch job — an unbounded fetch would freeze every job behind it.
+    """
+    req = urllib.request.Request(_WIKI_SP500_URL, headers={"User-Agent": _WIKI_UA})
+    with urllib.request.urlopen(req, timeout=_WIKI_FETCH_TIMEOUT) as resp:  # noqa: S310 — https literal
+        return resp.read().decode("utf-8")
+
+
 def _fetch_sp500_symbols(eligible_set: set[str]) -> list[str]:
     """Fetch S&P 500 components from Wikipedia (7-day cache).
 
@@ -135,7 +156,7 @@ def _fetch_sp500_symbols(eligible_set: set[str]) -> list[str]:
     try:
         import pandas as pd  # lazy — only needed for Wikipedia HTML parsing
 
-        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        tables = pd.read_html(StringIO(_fetch_sp500_html()))
         raw = [s for s in tables[0]["Symbol"].tolist() if isinstance(s, str)]
         # Normalise dots → hyphens (yfinance convention); try both forms against Alpaca
         normalised = []
