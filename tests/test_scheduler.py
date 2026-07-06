@@ -72,6 +72,18 @@ class TestSchedulerImportSafety(unittest.TestCase):
         self.assertTrue(t.is_alive() is False, "Import blocked — __main__ guard missing")
         self.assertTrue(result.get("ok"), f"Import failed: {result.get('error')}")
 
+    def test_install_net_backstop_sets_socket_default(self):
+        """The socket backstop bounds timeout-less feed sockets (sequential-scheduler freeze guard)."""
+        import socket
+
+        mod = _load_scheduler_module()
+        orig = socket.getdefaulttimeout()
+        try:
+            mod._install_net_backstop(45)
+            self.assertEqual(socket.getdefaulttimeout(), 45)
+        finally:
+            socket.setdefaulttimeout(orig)
+
 
 class TestSchedulerJobRegistration(unittest.TestCase):
     def setUp(self):

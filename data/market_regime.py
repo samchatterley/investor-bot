@@ -349,6 +349,12 @@ def resolve_regime(
     if f.data_quality == "insufficient":
         return MarketRegime.UNKNOWN, ["insufficient SPY data (< 6 bars)"]
 
+    # Degraded-input visibility: without VIX, the stress triggers that require it (B/C/D/E/F) and
+    # HIGH_VOL_DOWNTREND cannot fire — the classifier is biased AWAY from stress on price alone.
+    # Surface it in the reasons so a VIX outage is not an invisible risk-off blind spot.
+    if f.vix is None:
+        reasons.append("VIX unavailable — VIX-gated stress/HVD triggers disabled (degraded input)")
+
     # ── STRESS_RISK_OFF: requires convergence of ≥2 risk dimensions ──────────
     # Trigger A: single-day shock + sustained 5-day weakness
     trigger_a = f.spy_ret_1d <= t.spy_bear_1d and f.spy_ret_5d <= t.spy_5d_stress

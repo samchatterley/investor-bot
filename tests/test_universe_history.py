@@ -132,17 +132,67 @@ class TestGetUniverseForDate(unittest.TestCase):
         self.assertEqual(sorted(result), sorted(self._BASE))
 
 
+class _FakeResp:
+    """Minimal context-manager stand-in for urllib.request.urlopen()."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return b"<html/>"
+
+
 class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
     def setUp(self):
-        _fetch_sp500_changes.cache_clear()
+        import data.universe_history as _uh
+
+        _uh._SP500_CHANGES_CACHE = None  # success-only cache — reset between tests
 
     def tearDown(self):
-        _fetch_sp500_changes.cache_clear()
+        import data.universe_history as _uh
+
+        _uh._SP500_CHANGES_CACHE = None
 
     def test_network_error_returns_empty(self):
-        with patch("data.universe_history.pd.read_html", side_effect=Exception("timeout")):
+        # Failure now originates in the UA'd urllib fetch (Wikipedia 403 / timeout).
+        with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
             result = _fetch_sp500_changes()
         self.assertEqual(result, [])
+
+    def test_success_is_cached_failure_is_not(self):
+        # First: a failed fetch must NOT be cached.
+        with patch("urllib.request.urlopen", side_effect=Exception("403")):
+            self.assertEqual(_fetch_sp500_changes(), [])
+        # Then: a success populates the cache…
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=self._make_changes_df()),
+        ):
+            first = _fetch_sp500_changes()
+        self.assertIn("AAPL", [r["symbol"] for r in first])
+        # …and a subsequent call returns the cache WITHOUT re-fetching (urlopen would raise).
+        with patch("urllib.request.urlopen", side_effect=AssertionError("should not refetch")):
+            second = _fetch_sp500_changes()
+        self.assertEqual(second, first)
+
+    def test_empty_records_not_cached(self):
+        """read_html succeeds but every row is skipped → [] returned and NOT cached."""
+        import data.universe_history as _uh
+
+        current_df = pd.DataFrame({"Symbol": ["AAPL"]})
+        all_nan = pd.DataFrame(
+            {"Date": [float("nan")], "Added Ticker": ["X"], "Removed Ticker": [""]}
+        )
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=[current_df, all_nan]),
+        ):
+            result = _fetch_sp500_changes()
+        self.assertEqual(result, [])
+        self.assertIsNone(_uh._SP500_CHANGES_CACHE)
 
     def _make_changes_df(self):
         """Minimal 2-table read_html return with a well-formed changes table."""
@@ -157,7 +207,10 @@ class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
         return [current_df, changes_df]
 
     def test_returns_records_on_success(self):
-        with patch("data.universe_history.pd.read_html", return_value=self._make_changes_df()):
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=self._make_changes_df()),
+        ):
             result = _fetch_sp500_changes()
         self.assertIsInstance(result, list)
         symbols = [r["symbol"] for r in result]
@@ -166,14 +219,20 @@ class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
 
     def test_returns_empty_when_fewer_than_2_tables(self):
         single_table = pd.DataFrame({"Symbol": ["AAPL"]})
-        with patch("data.universe_history.pd.read_html", return_value=[single_table]):
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=[single_table]),
+        ):
             result = _fetch_sp500_changes()
         self.assertEqual(result, [])
 
     def test_returns_empty_when_table_missing_date_and_added_columns(self):
         current_df = pd.DataFrame({"Symbol": ["AAPL"]})
         bad_changes_df = pd.DataFrame({"foo": [1], "bar": [2]})
-        with patch("data.universe_history.pd.read_html", return_value=[current_df, bad_changes_df]):
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=[current_df, bad_changes_df]),
+        ):
             result = _fetch_sp500_changes()
         self.assertEqual(result, [])
 
@@ -187,7 +246,10 @@ class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
                 "Removed Ticker": ["", ""],
             }
         )
-        with patch("data.universe_history.pd.read_html", return_value=[current_df, changes_df]):
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=[current_df, changes_df]),
+        ):
             result = _fetch_sp500_changes()
         # "SKIP" row should be absent because its date was NaN
         symbols = [r["symbol"] for r in result]
@@ -214,6 +276,7 @@ class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
             return original_to_datetime(arg, **kwargs)
 
         with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
             patch("data.universe_history.pd.read_html", return_value=[current_df, changes_df]),
             patch("data.universe_history.pd.to_datetime", side_effect=_raise_for_bad),
         ):
@@ -232,7 +295,10 @@ class TestFetchSp500ChangesGracefulFallback(unittest.TestCase):
                 "Added Ticker": ["AAPL"],
             }
         )
-        with patch("data.universe_history.pd.read_html", return_value=[current_df, changes_df]):
+        with (
+            patch("urllib.request.urlopen", return_value=_FakeResp()),
+            patch("data.universe_history.pd.read_html", return_value=[current_df, changes_df]),
+        ):
             result = _fetch_sp500_changes()
         symbols = [r["symbol"] for r in result]
         self.assertIn("AAPL", symbols)

@@ -15,6 +15,7 @@ Leave this process running in a terminal or tmux session.
 """
 
 import os
+import socket
 import sys
 
 # Ensure the project root is on the path when this script is run directly
@@ -248,10 +249,22 @@ def _sigterm_handler(_signum, _frame):
     sys.exit(0)
 
 
+# yfinance/requests calls without an explicit timeout inherit the process socket default. Many
+# feed fetches lack one, and the scheduler runs jobs SEQUENTIALLY — a single hung socket would
+# freeze every downstream job. This global backstop bounds any timeout-less socket read.
+_NET_BACKSTOP_TIMEOUT = 120
+
+
+def _install_net_backstop(timeout_s: int = _NET_BACKSTOP_TIMEOUT) -> None:
+    """Bound all timeout-less sockets so a hung fetch can't freeze the sequential scheduler."""
+    socket.setdefaulttimeout(timeout_s)
+
+
 if __name__ == "__main__":  # pragma: no cover
     _check_singleton()
     atexit.register(_remove_pid_file)
     signal.signal(signal.SIGTERM, _sigterm_handler)
+    _install_net_backstop()  # bound timeout-less feed sockets before any job runs
     migrate_bulk_caches_to_subdir()  # adopt logs/market_data/ foldering for legacy installs
 
     # Append to log file so history survives launchd restarts

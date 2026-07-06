@@ -20,12 +20,21 @@ Usage::
 from __future__ import annotations
 
 import logging
+import urllib.request
 from datetime import date
-from functools import lru_cache
+from io import StringIO
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Wikipedia 403s the default urllib/pandas User-Agent; send a descriptive, policy-compliant one
+# (same fix as execution/universe.py). Bounded timeout so a hung fetch can't stall a research run.
+_WIKI_UA = "InvestorBot/1.0 (S&P 500 constituent history; contact samchatterley1@gmail.com)"
+_WIKI_TIMEOUT = 30
+# Success-only cache: NEVER memoize a failed/empty fetch (the old @lru_cache pinned the empty-list
+# failure for the whole process, silently disabling the constituent filter permanently).
+_SP500_CHANGES_CACHE: list[dict] | None = None
 
 # ---------------------------------------------------------------------------
 # First-trading dates for symbols with known IPOs / listings after 2010.
@@ -68,15 +77,21 @@ _LAST_TRADEABLE: dict[str, date] = {}
 _SP500_TABLE_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 
 
-@lru_cache(maxsize=1)
 def _fetch_sp500_changes() -> list[dict]:
     """Return a list of {symbol, added, removed} dicts from Wikipedia.
 
-    Falls back to empty list on any error (network, parse, etc.).
-    The caller must treat the empty list as 'no S&P 500 filter applied'.
+    Falls back to empty list on any error (network, parse, etc.). The caller must treat the empty
+    list as 'no S&P 500 filter applied'. A SUCCESSFUL fetch is cached for the process; failures are
+    NOT cached, so a transient outage retries next call instead of pinning the filter off.
     """
+    global _SP500_CHANGES_CACHE
+    if _SP500_CHANGES_CACHE is not None:
+        return _SP500_CHANGES_CACHE
     try:
-        tables = pd.read_html(_SP500_TABLE_URL)
+        req = urllib.request.Request(_SP500_TABLE_URL, headers={"User-Agent": _WIKI_UA})
+        with urllib.request.urlopen(req, timeout=_WIKI_TIMEOUT) as resp:  # noqa: S310 — https literal
+            html = resp.read().decode("utf-8")
+        tables = pd.read_html(StringIO(html))
         if len(tables) < 2:
             return []
         changes_df = tables[1]
@@ -109,6 +124,8 @@ def _fetch_sp500_changes() -> list[dict]:
                 if removed_sym and removed_sym != "NAN":
                     records.append({"symbol": removed_sym, "added": None, "removed": change_date})
         logger.info(f"universe_history: loaded {len(records)} S&P 500 change events from Wikipedia")
+        if records:
+            _SP500_CHANGES_CACHE = records  # cache success only
         return records
     except Exception as exc:
         logger.warning(f"universe_history: Wikipedia S&P 500 fetch failed ({exc}); skipping filter")

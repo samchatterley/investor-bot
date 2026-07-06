@@ -361,6 +361,24 @@ class TestResolveRegime(unittest.TestCase):
         self.assertEqual(regime, MarketRegime.UNKNOWN)
         self.assertTrue(len(reasons) > 0)
 
+    def test_vix_none_appends_degraded_reason(self):
+        """With sufficient price data but no VIX, the classifier surfaces the degraded input."""
+        f = RegimeFeatures(
+            spy_ret_1d=0.1,
+            spy_ret_5d=0.5,
+            spy_ret_20d=1.0,
+            spy_above_ma200=True,
+            spy_drawdown_pct=-1.0,
+            vix=None,
+            vix_ma20=None,
+            vix_vs_ma=None,
+            vix_5d_change=None,
+            vix9d=None,
+            data_quality="full",
+        )
+        _, reasons = resolve_regime(f)
+        self.assertTrue(any("VIX unavailable" in r for r in reasons))
+
     def test_stress_trigger_a_single_day_plus_5d(self):
         f = RegimeFeatures(
             spy_ret_1d=-2.0,

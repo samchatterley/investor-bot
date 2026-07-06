@@ -4,6 +4,31 @@ Full version history. Most recent first.
 
 ---
 
+### 1.147 — July 2026 — architecture-review batch 1+2: un-silence degraded inputs + net backstop
+
+Acting on the Fable architecture review (findings 1, 2a, 7, 10). Instrumentation + hardening only —
+no decision-logic change, safe to deploy alongside 1.146 on the next restart.
+
+- **Finding 1 — SPY market-context silent failure.** `get_spy_5d_return` / `get_spy_10d_return` /
+  `get_vix` (data/market_data.py) now LOG a WARNING when they return None instead of swallowing it
+  silently. A silent None here suppresses `residual_reversal` and `rs_leader` for the whole cycle
+  (both gate on `spy_ret_5d is not None`) — previously invisible, the June-2026 all-cash pattern.
+- **Finding 2a — degraded-VIX regime blind spot.** `resolve_regime` (data/market_regime.py) now
+  appends a "VIX unavailable — VIX-gated stress/HVD triggers disabled" reason when VIX is missing,
+  so a VIX outage (which biases the classifier AWAY from stress on price alone) is surfaced.
+- **Finding 7 — duplicate Wikipedia 403 + memoized failure.** `data/universe_history` now fetches
+  with the same descriptive UA + 30s timeout as execution/universe (1.146), and replaces `@lru_cache`
+  with a SUCCESS-ONLY cache — the old cache pinned the empty-list failure for the whole process,
+  silently disabling the constituent filter (and worsening survivorship bias) in research runs.
+- **Finding 10 — unbounded yfinance sockets.** `run_scheduler` installs a 120s `socket` default
+  timeout backstop at startup so a hung timeout-less feed fetch can't freeze the sequential scheduler.
+
+Deferred: finding 4 (structured per-feed freshness in the health report) — the WARN-logging above
+delivers its core visibility; the structured surface needs a recorder-vs-reprobe design decision to
+integrate with the existing `experiment/feed_health` probe without duplication. Tests 5,028.
+
+---
+
 ### 1.146 — July 2026 — fix S&P 500 constituent fetch (Wikipedia 403) + add timeout
 
 The live scanner logged `S&P 500 fetch failed (non-fatal): HTTP Error 403: Forbidden`. Wikipedia now

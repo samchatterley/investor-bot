@@ -430,13 +430,17 @@ def compute_amihud_illiquidity(df: pd.DataFrame, lookback: int = 20) -> float:
 
 
 def get_vix() -> float | None:
-    """Return the latest VIX close."""
+    """Return the latest VIX close, or None if the feed is degraded (logged, not silent)."""
     try:
         hist = yf.Ticker("^VIX").history(period="3d")
         if not hist.empty:
             return round(float(hist["Close"].iloc[-1]), 1)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("VIX fetch failed — regime stress/HV triggers degraded this cycle: %s", e)
+        return None
+    logger.warning(
+        "VIX unavailable (empty history) — regime stress/HV triggers degraded this cycle"
+    )
     return None
 
 
@@ -455,28 +459,38 @@ def get_index_price(symbol: str = "SPY") -> float | None:
 
 
 def get_spy_5d_return() -> float | None:
-    """Return SPY's 5-day return % for relative strength calculation."""
+    """Return SPY's 5-day return % for relative strength calculation.
+
+    On any failure returns None BUT logs it — a silent None here suppresses residual_reversal
+    and rs_leader for the whole cycle (both gate on spy_ret_5d is not None).
+    """
     try:
         hist = yf.Ticker("SPY").history(period="15d")
         if len(hist) >= 6:
             return round(
                 (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-6]) - 1) * 100, 2
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "SPY 5d return fetch failed — RS/reversal context degraded this cycle: %s", e
+        )
+        return None
+    logger.warning("SPY 5d return unavailable — RS/reversal context degraded this cycle")
     return None
 
 
 def get_spy_10d_return() -> float | None:
-    """Return SPY's 10-day return % for relative strength calculation."""
+    """Return SPY's 10-day return % for relative strength calculation (logs on degradation)."""
     try:
         hist = yf.Ticker("SPY").history(period="25d")
         if len(hist) >= 11:
             return round(
                 (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-11]) - 1) * 100, 2
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("SPY 10d return fetch failed — RS context degraded this cycle: %s", e)
+        return None
+    logger.warning("SPY 10d return unavailable — RS context degraded this cycle")
     return None
 
 
