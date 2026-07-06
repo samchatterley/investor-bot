@@ -179,6 +179,12 @@ omit = [
     "*/scripts/tom_overlay.py",
     "scripts/gdelt_tone_probe.py",
     "*/scripts/gdelt_tone_probe.py",
+    "scripts/reversal_enhance.py",
+    "*/scripts/reversal_enhance.py",
+    "scripts/reversal_vix_gate.py",
+    "*/scripts/reversal_vix_gate.py",
+    "scripts/reversal_regime_reconcile.py",
+    "*/scripts/reversal_regime_reconcile.py",
 ]
 
 [tool.coverage.report]
