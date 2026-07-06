@@ -4,6 +4,20 @@ Full version history. Most recent first.
 
 ---
 
+### 1.150 — July 2026 — review finding 6: signal firing-invariant net (test-only, no runtime change)
+
+Closes the dead-wire class the review flagged: a signal can pass 100% coverage and its own unit test
+(which builds the snapshot directly) yet never fire live because a producer→consumer field seam is
+broken. New `TestSignalFiringInvariants` asserts each active price/OHLCV signal (gap_and_go,
+bb_squeeze, inside_day_breakout, iv_compression, momentum, mean_reversion, candle_exhaustion,
+residual_reversal) fires through the ENGINE producer path — `_row_to_snapshot(row) → evaluate_signals`
+— proving the engine sets every field the evaluator reads. Extend the fixture table whenever a
+price/OHLCV long signal ships; this makes the CLAUDE.md "disabling/adding a signal" checklist an
+enforced invariant rather than a manual reminder. No product code changed → no restart needed.
+Tests 5,044.
+
+---
+
 ### 1.149 — July 2026 — review batch 4 (determinism + fail-closed) + full-suite fixes
 
 Fable review findings 5a, 5b, 2b, plus two pre-existing issues the full-suite run surfaced.

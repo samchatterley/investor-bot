@@ -10008,3 +10008,65 @@ class TestPrefetchQualityFundamentals(unittest.TestCase):
         self.assertEqual(aapl["short_ratio"], 2.0)
         self.assertNotIn("piotroski_f", aapl)  # raised → skipped
         self.assertNotIn("short_pct_float", aapl)  # None → skipped
+
+
+class TestSignalFiringInvariants(unittest.TestCase):
+    """Dead-wire net (Fable review finding 6): each active price/OHLCV signal MUST fire through the
+    ENGINE producer path — _row_to_snapshot(row) → evaluate_signals — proving the engine sets every
+    field the evaluator reads. A field the engine forgets to produce is a signal that silently never
+    fires in the backtest even though its own unit test (which builds the snapshot directly) passes:
+    passes coverage, passes unit tests, never trades. Extend _ROW_FIXTURES whenever a price/OHLCV long
+    signal ships. (Options signals like iv_vs_rv_spread are intentionally absent — they are injected
+    post-snapshot in the live path and are not part of _row_to_snapshot.)
+    """
+
+    # engine indicator-row fields that must fire each signal after _row_to_snapshot conversion
+    _ROW_FIXTURES = {
+        "gap_and_go": {"gap_pct": 3.0, "close_above_open": True, "vol_ratio": 2.5, "adx": 30},
+        "bb_squeeze": {
+            "bb_squeeze": True,
+            "bb_squeeze_days": 6,
+            "vol_ratio": 1.5,
+            "macd_diff": 0.5,
+            "adx": 30,
+            "rs_rank_pct": 70,
+            "Close": 100.0,
+        },
+        "inside_day_breakout": {
+            "is_inside_day": True,
+            "vol_ratio": 1.5,
+            "macd_diff": 0.5,
+            "adx": 30,
+        },
+        "iv_compression": {"hv_rank": 0.1, "macd_diff": 0.5, "vol_ratio": 1.5},
+        "momentum": {
+            "ema9": 101.0,
+            "ema21": 100.0,
+            "macd_diff": 0.5,
+            "ret_5d": 3.0,
+            "vol_ratio": 1.5,
+            "adx": 30,
+        },
+        "mean_reversion": {"rsi": 30.0, "bb_pct": 0.1, "vol_ratio": 1.5},
+        "candle_exhaustion": {"hammer": True, "near_20d_low": True, "vol_ratio": 2.0},
+    }
+
+    def test_active_signals_fire_through_engine_row_to_snapshot(self):
+        from backtest.engine import _row_to_snapshot
+        from signals.evaluator import evaluate_signals
+
+        for sig, row_fields in self._ROW_FIXTURES.items():
+            snap = _row_to_snapshot(pd.Series(row_fields))
+            fired = evaluate_signals(snap, blocked=frozenset())
+            self.assertIn(
+                sig, fired, f"{sig} did not fire via _row_to_snapshot — engine dead-wire risk"
+            )
+
+    def test_residual_reversal_fires_through_engine_row_to_snapshot(self):
+        # spy_ret_5d flows as a param (not a row field); an idiosyncratic 5d loser must fire.
+        from backtest.engine import _row_to_snapshot
+        from signals.evaluator import evaluate_signals
+
+        snap = _row_to_snapshot(pd.Series({"ret_5d": -8.0}), spy_ret_5d=0.0)
+        fired = evaluate_signals(snap, blocked=frozenset(), spy_ret_5d=0.0)
+        self.assertIn("residual_reversal", fired)
