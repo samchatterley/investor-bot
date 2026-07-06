@@ -694,6 +694,8 @@ def get_trading_decisions(
         response = client.messages.create(  # type: ignore[call-overload]
             model=CLAUDE_MODEL,
             max_tokens=4096,
+            temperature=0,  # deterministic decisions — same snapshot ⇒ same trades; sampling variance
+            # otherwise confounds the AI-vs-deterministic attribution the research program measures
             system=SYSTEM_PROMPT,
             tools=[_DECISION_TOOL],
             tool_choice={"type": "tool", "name": "submit_trading_decisions"},

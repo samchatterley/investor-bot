@@ -379,6 +379,26 @@ class TestResolveRegime(unittest.TestCase):
         _, reasons = resolve_regime(f)
         self.assertTrue(any("VIX unavailable" in r for r in reasons))
 
+    def test_vix_none_with_stress_level_price_fails_closed_to_unknown(self):
+        """No VIX + already stress-level weak price → fail-closed UNKNOWN, not the milder DEFENSIVE
+        (which would allow ungated reversal-buying while blind to volatility)."""
+        f = RegimeFeatures(
+            spy_ret_1d=-1.0,
+            spy_ret_5d=-5.0,  # <= spy_5d_high_vol (-3) → fail-closed
+            spy_ret_20d=-6.0,
+            spy_above_ma200=False,
+            spy_drawdown_pct=-6.0,
+            vix=None,
+            vix_ma20=None,
+            vix_vs_ma=None,
+            vix_5d_change=None,
+            vix9d=None,
+            data_quality="full",
+        )
+        regime, reasons = resolve_regime(f)
+        self.assertEqual(regime, MarketRegime.UNKNOWN)
+        self.assertTrue(any("fail-closed UNKNOWN" in r for r in reasons))
+
     def test_stress_trigger_a_single_day_plus_5d(self):
         f = RegimeFeatures(
             spy_ret_1d=-2.0,

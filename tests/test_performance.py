@@ -731,7 +731,12 @@ class TestGetAttribution(unittest.TestCase):
         self.assertIn("unknown", result["by_signal"])
 
     def test_period_days_included_in_result(self):
-        rows = [("2026-06-05", "AAPL", "momentum", "BULL", "Tech", 2, 3.0, "live")]
+        # Relative date so the row stays inside the days=30 window as the calendar advances
+        # (a hardcoded date here is a time-bomb: it silently ages out of the filter).
+        from datetime import date, timedelta
+
+        recent = (date.today() - timedelta(days=5)).isoformat()
+        rows = [(recent, "AAPL", "momentum", "BULL", "Tech", 2, 3.0, "live")]
         with patch("utils.db.get_db", _fake_get_db(rows)):
             result = get_attribution(days=30)
         self.assertEqual(result["period_days"], 30)

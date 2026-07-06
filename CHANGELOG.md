@@ -4,6 +4,30 @@ Full version history. Most recent first.
 
 ---
 
+### 1.149 — July 2026 — review batch 4 (determinism + fail-closed) + full-suite fixes
+
+Fable review findings 5a, 5b, 2b, plus two pre-existing issues the full-suite run surfaced.
+
+- **Finding 5a — determinism.** The AI decision call now uses `temperature=0`: same snapshot ⇒ same
+  trades, removing the sampling variance that confounds the AI-vs-deterministic attribution the
+  research program measures.
+- **Finding 5b — fail-closed exits.** `_force_cover_intraday_positions` now runs BEFORE the AI-None
+  abort in `_run_inner`, so an AI/API outage at the close cannot leave intraday shorts uncovered
+  overnight (force-cover is deterministic/broker-driven — no AI input needed).
+- **Finding 2b — fail-closed regime.** `resolve_regime` returns UNKNOWN when VIX is missing AND price
+  is already stress-level (`spy_5d <= spy_5d_high_vol`), instead of the milder DEFENSIVE_DOWNTREND
+  (which does not block reversal) — no ungated dip-buying while blind to volatility.
+- **Suite fix (time-bomb).** `test_performance::test_period_days_included_in_result` hardcoded a date
+  that aged out of the `days=30` window as the calendar advanced → now relative-dated.
+- **Suite fix (coverage).** The options-signal re-injection merge in `main.py` is extracted to
+  `_merge_signals_dedup` (pure, order-preserving, de-duplicated) + unit-tested — closing a genuine
+  gap on the newly-added path. NB: pre-existing, non-CI-gated mypy issues remain at main.py:577/2054
+  (main.py is not in the mypy `files` list); flagged for a separate cleanup.
+
+Tests 5,042.
+
+---
+
 ### 1.148 — July 2026 — architecture-review finding 4: structured degraded-feed surface
 
 Covers the finding 4 gap deferred in 1.147 (the WARN logs alone left the operator scraping scattered

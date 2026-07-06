@@ -253,6 +253,8 @@ class TestGetTradingDecisions(unittest.TestCase):
             )
         self.assertIsNotNone(result)
         self.assertIn("buy_candidates", result)
+        # Determinism: decisions must be sampled at temperature 0 (reproducible attribution).
+        self.assertEqual(mock_client.messages.create.call_args.kwargs["temperature"], 0)
 
     def test_returns_none_when_no_tool_block(self):
         from analysis.ai_analyst import get_trading_decisions

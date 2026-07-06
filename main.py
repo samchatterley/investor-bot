@@ -1459,6 +1459,21 @@ def _fetch_market_context(deps: TradingDeps | None = None) -> MarketContext:
     )
 
 
+def _merge_signals_dedup(existing: list[str] | None, new_signals: list[str]) -> list[str]:
+    """Merge new_signals into existing, order-preserving and de-duplicated.
+
+    Extracted from the options re-injection loop so the merge (including the 'newly-added' path) is
+    unit-testable instead of buried inline in _build_data_bundle.
+    """
+    merged = list(existing or [])
+    seen = set(merged)
+    for sig in new_signals:
+        if sig not in seen:
+            merged.append(sig)
+            seen.add(sig)
+    return merged
+
+
 def _build_data_bundle(
     client,
     snap: PositionSnapshot,
@@ -1684,11 +1699,7 @@ def _build_data_bundle(
             s["signals"] = new_signals  # keep for compatibility
             # Merge newly-fired options signals into matched_signals so the cofiring
             # multiplier, cross-check, and key_signal sizing logic can see them.
-            existing = set(s.get("matched_signals") or [])
-            for sig in new_signals:
-                if sig not in existing:
-                    s.setdefault("matched_signals", []).append(sig)
-                    existing.add(sig)
+            s["matched_signals"] = _merge_signals_dedup(s.get("matched_signals"), new_signals)
 
     # ── Google Trends injection (filtered candidates only — full universe too expensive) ─
     try:
@@ -3368,12 +3379,16 @@ def _run_inner(
     # ── AI analysis + validation + decision logging ───────────────────────────
     account_now = deps.trader.get_account_info(client)
     decisions = _run_ai_phase(db, snap, mc, account_now, run_id, mode, executed_symbols, deps=deps)
-    if decisions is None:
-        return
 
     # ── Force-cover intraday positions (close pass only) ─────────────────────
+    # Runs BEFORE the AI-None abort: an AI/API outage at the close must NOT leave intraday shorts
+    # uncovered overnight. Force-cover is deterministic (broker-driven, no AI input), so it is safe
+    # and mandatory regardless of whether the discretionary AI phase produced decisions.
     if mode == "close":
         _force_cover_intraday_positions(client, dry_run, all_trades, deps=deps)
+
+    if decisions is None:
+        return
 
     # ── Execute sells / covers ────────────────────────────────────────────────
     _execute_sell_phase(

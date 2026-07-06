@@ -1670,6 +1670,27 @@ class TestRunInnerEarningsExit(RunInnerBase):
         self.assertIn("AAPL", log_output)
 
 
+class TestMergeSignalsDedup(unittest.TestCase):
+    """main._merge_signals_dedup — options re-injection merge (order-preserving, de-duplicated)."""
+
+    def test_appends_new_and_skips_duplicate(self):
+        from main import _merge_signals_dedup
+
+        # momentum already present → dedup skip; iv_vs_rv_spread new → append path (main.py 1689-1691)
+        result = _merge_signals_dedup(["momentum"], ["iv_vs_rv_spread", "momentum"])
+        self.assertEqual(result, ["momentum", "iv_vs_rv_spread"])
+
+    def test_none_existing_returns_new(self):
+        from main import _merge_signals_dedup
+
+        self.assertEqual(_merge_signals_dedup(None, ["pead"]), ["pead"])
+
+    def test_empty_new_preserves_existing(self):
+        from main import _merge_signals_dedup
+
+        self.assertEqual(_merge_signals_dedup(["bb_squeeze"], []), ["bb_squeeze"])
+
+
 class TestRunInnerOptionsSignals(RunInnerBase):
     """Line 425: options_sigs non-empty → logger.info('Options signals fetched...')."""
 
@@ -4648,6 +4669,20 @@ class TestForceCoverIntradayInRunInner(RunInnerBase):
 
             _run_inner(dry_run=False, mode="open", today="2026-01-15", deps=deps)
         force_mock.assert_not_called()
+
+    def test_force_cover_runs_in_close_even_when_ai_returns_none(self):
+        """An AI/API outage at the close must NOT leave intraday shorts uncovered overnight —
+        deterministic force-cover runs before the AI-None abort."""
+        force_mock = MagicMock()
+        deps = self._make_deps(ai_analyst__get_trading_decisions=None)
+        with (
+            self._inner_patches(),
+            patch("main._force_cover_intraday_positions", force_mock),
+        ):
+            from main import _run_inner
+
+            _run_inner(dry_run=False, mode="close", today="2026-01-15", deps=deps)
+        force_mock.assert_called_once()
 
 
 class TestFetchMarketContext(unittest.TestCase):

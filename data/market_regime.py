@@ -354,6 +354,15 @@ def resolve_regime(
     # Surface it in the reasons so a VIX outage is not an invisible risk-off blind spot.
     if f.vix is None:
         reasons.append("VIX unavailable — VIX-gated stress/HVD triggers disabled (degraded input)")
+        # Fail closed: without VIX we cannot tell capitulation (reversal OK, liquidity-gated) from a
+        # high-vol downtrend (reversal blocked). If price is ALREADY stress-level weak, refuse to let
+        # the fallthrough land on the milder DEFENSIVE_DOWNTREND (which does NOT block reversal) — go
+        # UNKNOWN instead (blocks reversal/momentum buys) rather than buy dips while blind to vol.
+        if f.spy_ret_5d <= t.spy_5d_high_vol:
+            reasons.append(
+                f"SPY {f.spy_ret_5d:+.1f}%/5d stress-level with no VIX → fail-closed UNKNOWN"
+            )
+            return MarketRegime.UNKNOWN, reasons
 
     # ── STRESS_RISK_OFF: requires convergence of ≥2 risk dimensions ──────────
     # Trigger A: single-day shock + sustained 5-day weakness
