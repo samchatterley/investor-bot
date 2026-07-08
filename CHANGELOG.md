@@ -4,6 +4,25 @@ Full version history. Most recent first.
 
 ---
 
+### 1.151 — July 2026 — fix: test suite was polluting the LIVE production DB (order_intents)
+
+Root-cause fix for a serious test-isolation defect. `test_live_safety` (and the short-order tests)
+call the REAL `place_buy_order(client, "SOFI"/"AAPL", …)` with a mocked broker but **without patching
+`_DB_PATH`**, so `create_intent` ran `INSERT INTO order_intents` against the live `logs/investorbot.db`
+using the real `today_et()` date. `INSERT OR IGNORE` dedupes per day, so every day the suite ran added
+one `ib-SOFI-BUY-<date>` + one `ib-AAPL-BUY-<date>` intent (plus a ~20-symbol short batch from the
+short tests) into the running bot's database — ~300 phantom rows accumulated since May, which the live
+bot then processed (auto-cancel etc.) and surfaced as mystery "AAPL always times out / SOFI always
+rejected" daily failures.
+
+Fix: a global `conftest` autouse fixture `_isolate_db` points `_DB_PATH` at a per-test throwaway file
+(reset init flag, no-op the legacy-JSON import, eager `init_db`), so NO test can ever touch the live
+DB again — even one that forgets to patch it. The 9 files that already isolate `_DB_PATH` still win
+(their patch nests over the fixture). Verified: running the previously-polluting tests leaves live
+`order_intents` unchanged (301 → 301). (Existing live-DB rows are cleaned separately.)
+
+---
+
 ### 1.150 — July 2026 — review finding 6: signal firing-invariant net (test-only, no runtime change)
 
 Closes the dead-wire class the review flagged: a signal can pass 100% coverage and its own unit test

@@ -10,6 +10,24 @@ from core.deps import RunConfig, TradingDeps
 
 
 @pytest.fixture(autouse=True)
+def _isolate_db(tmp_path, monkeypatch):
+    """No test may touch the live logs/investorbot.db.
+
+    Point the DB at a per-test throwaway file (and reset the init flag / no-op the legacy-JSON
+    import) so ANY get_db()/init_db() — even from a test that forgot to patch _DB_PATH — hits a
+    disposable DB, never the running bot's database. This is the root-cause fix for the order_intents
+    pollution: tests calling the real place_buy_order (e.g. test_live_safety with "SOFI"/"AAPL")
+    wrote ib-<symbol>-BUY-<today> intents straight into the live DB on every suite run. Tests that
+    already patch _DB_PATH still win (their patch nests over this one)."""
+    import utils.db as _db
+
+    monkeypatch.setattr(_db, "_DB_PATH", str(tmp_path / "investorbot_test.db"))
+    monkeypatch.setattr(_db, "_initialized", False)
+    monkeypatch.setattr(_db, "_migrate_json_state", lambda: None)
+    _db.init_db()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_experiment_observations(tmp_path, monkeypatch):
     """Never let the test suite write to the live experiment observations log.
 
