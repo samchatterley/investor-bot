@@ -16,6 +16,8 @@ assumption being frozen into the stored outcomes.
 
 from __future__ import annotations
 
+import json
+
 from experiment.dataset import forward_r
 
 DEFAULT_HORIZONS: tuple[int, ...] = (1, 3, 5, 10)
@@ -127,3 +129,38 @@ def backfill(
             )
         )
     return out
+
+
+def _scored_horizons(row: dict) -> int:
+    return int((row.get("outcomes") or {}).get("scored_horizons", 0) or 0)
+
+
+def _observation_key(row: dict) -> str:
+    """Stable identity of the underlying observation: its full content minus the ``outcomes`` block.
+
+    Observations are append-only and ``score_observation`` copies every field verbatim (only
+    ``outcomes`` is added), so the non-outcome content is byte-identical across runs for the same
+    observation — and genuinely distinct rows (same symbol+date but different mode/decision_type)
+    still differ. Keying on this avoids both collapsing distinct same-day observations and failing to
+    match a re-score against its prior row.
+    """
+    return json.dumps(
+        {k: v for k, v in row.items() if k != "outcomes"}, sort_keys=True, default=str
+    )
+
+
+def merge_scored(existing: list[dict], new: list[dict]) -> list[dict]:
+    """Merge two scored datasets, keeping the MORE-populated outcome per observation.
+
+    Monotonic by construction: a run whose price fetch failed (all horizons None) can never downgrade
+    an observation that was already scored — it simply loses the max() and the prior value is kept.
+    This is the failure-safety the runner lacked: it rewrote the whole file each run, so a single
+    transient fetch failure wiped every accumulated outcome to None. On ties (same horizon count) the
+    newer row wins, so genuine re-scores (e.g. a price revision) still take effect.
+    """
+    best: dict[str, dict] = {}
+    for row in [*existing, *new]:
+        key = _observation_key(row)
+        if key not in best or _scored_horizons(row) >= _scored_horizons(best[key]):
+            best[key] = row
+    return list(best.values())

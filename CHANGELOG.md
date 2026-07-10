@@ -4,6 +4,29 @@ Full version history. Most recent first.
 
 ---
 
+### 1.152 — July 2026 — fix: a single failed price fetch was silently wiping all backfilled outcomes
+
+The forward-outcome backfill (`scripts/backfill_outcomes.py`) rewrote the *entire*
+`logs/experiment_scored.jsonl` on every run. So when the nightly bulk price fetch (~900 symbols) had a
+transient failure, `score_observation` produced `forward_r = None` for every horizon and that all-`None`
+file **overwrote the accumulated outcomes** — the experiment silently reverted to `N_eff = 0` with no
+error. That is exactly what happened: last night's scored file had 13,569 rows with *every* forward
+return `None`, even though the scoring logic is correct (a fresh run now scores 9,033 observations at
+the 5d primary horizon, 12,486 at 1d).
+
+Fix: the backfill is now **monotonic, not destructive**. New `experiment.backfill.merge_scored(existing,
+new)` merges each run against the prior scored file, keeping the more-populated outcome per observation
+(keyed on the full observation content minus `outcomes`, so distinct same-day/same-symbol rows — e.g.
+open vs close mode — are never collapsed). A run whose fetch fails can no longer downgrade an
+observation that was already scored; a genuine re-score with more horizons closed still takes effect
+(ties prefer the newer row). Runner now loads the existing scored file and writes the merged result.
+
+Tests: +6 in `test_experiment_backfill.py` (`TestMergeScored`) covering the failure-safety invariant,
+horizon-progress, tie-breaking, distinct same-day observations, and tolerance of missing blocks.
+`experiment/backfill.py` remains at 100% line + branch coverage.
+
+---
+
 ### 1.151 — July 2026 — fix: test suite was polluting the LIVE production DB (order_intents)
 
 Root-cause fix for a serious test-isolation defect. `test_live_safety` (and the short-order tests)

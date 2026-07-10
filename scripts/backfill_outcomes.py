@@ -21,7 +21,11 @@ from datetime import date  # pragma: no cover
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pragma: no cover
 
-from experiment.backfill import DEFAULT_HORIZONS, backfill  # noqa: E402  # pragma: no cover
+from experiment.backfill import (  # noqa: E402  # pragma: no cover
+    DEFAULT_HORIZONS,
+    backfill,
+    merge_scored,
+)
 
 _OBS_PATH = os.path.join("logs", "experiment_observations.jsonl")  # pragma: no cover
 _OUT_PATH = os.path.join("logs", "experiment_scored.jsonl")  # pragma: no cover
@@ -66,7 +70,10 @@ def main() -> None:  # pragma: no cover
     symbols = {o["symbol"] for o in obs if o.get("symbol")}
     earliest = min(o["date"] for o in obs if o.get("date"))
     series = _price_series(symbols, earliest)
-    scored = backfill(obs, series)
+    new_scored = backfill(obs, series)
+    # Merge with the prior scored file so a transient price-fetch failure (all horizons None) can
+    # never wipe already-accumulated outcomes — the backfill is monotonic, not destructive.
+    scored = merge_scored(_load_observations(_OUT_PATH), new_scored)
 
     os.makedirs(os.path.dirname(_OUT_PATH) or ".", exist_ok=True)
     with open(_OUT_PATH, "w") as fh:

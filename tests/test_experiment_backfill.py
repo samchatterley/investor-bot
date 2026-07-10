@@ -7,6 +7,7 @@ from experiment.backfill import (
     _entry_index,
     backfill,
     cost_r_estimate,
+    merge_scored,
     score_observation,
 )
 
@@ -107,6 +108,66 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(len(out), 1)  # NOPRICE skipped
         self.assertEqual(out[0]["symbol"], "AAPL")
         self.assertAlmostEqual(out[0]["outcomes"]["forward_r_5d"], 2.5)
+
+
+class TestMergeScored(unittest.TestCase):
+    """merge_scored is the failure-safety the runner lacked: a transient all-None re-score must never
+    wipe accumulated outcomes, yet a genuine re-score with more horizons closed must take effect."""
+
+    @staticmethod
+    def _row(symbol, date, scored, extra=None, fwd5=1.0, mode="open"):
+        outcomes = {"scored_horizons": scored}
+        if scored:
+            outcomes["forward_r_5d"] = fwd5
+        row = {"symbol": symbol, "date": date, "outcomes": outcomes}
+        if mode is not None:
+            row["extra"] = {"mode": mode, **(extra or {})}
+        return row
+
+    def test_failed_rescore_never_downgrades_scored_outcome(self):
+        existing = [self._row("AAPL", "2024-01-15", scored=3, fwd5=2.5)]
+        new = [self._row("AAPL", "2024-01-15", scored=0)]  # fetch failed → all None
+        out = merge_scored(existing, new)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["outcomes"]["scored_horizons"], 3)
+        self.assertAlmostEqual(out[0]["outcomes"]["forward_r_5d"], 2.5)
+
+    def test_more_horizons_closed_takes_effect(self):
+        existing = [self._row("AAPL", "2024-01-15", scored=1, fwd5=None)]
+        new = [self._row("AAPL", "2024-01-15", scored=3, fwd5=2.5)]  # 5d now closed
+        out = merge_scored(existing, new)
+        self.assertEqual(out[0]["outcomes"]["scored_horizons"], 3)
+        self.assertAlmostEqual(out[0]["outcomes"]["forward_r_5d"], 2.5)
+
+    def test_tie_prefers_new_row(self):
+        existing = [self._row("AAPL", "2024-01-15", scored=3, fwd5=2.5)]
+        new = [self._row("AAPL", "2024-01-15", scored=3, fwd5=9.9)]  # price revision, same horizons
+        out = merge_scored(existing, new)
+        self.assertAlmostEqual(out[0]["outcomes"]["forward_r_5d"], 9.9)
+
+    def test_distinct_same_day_observations_kept_apart(self):
+        # same symbol+date, different mode → different observations, must both survive
+        existing = [
+            self._row("AAPL", "2024-01-15", scored=3, fwd5=2.5, mode="open"),
+            self._row("AAPL", "2024-01-15", scored=3, fwd5=1.1, mode="close"),
+        ]
+        out = merge_scored(existing, [])
+        self.assertEqual(len(out), 2)
+        self.assertEqual({r["outcomes"]["forward_r_5d"] for r in out}, {2.5, 1.1})
+
+    def test_new_observation_appended(self):
+        existing = [self._row("AAPL", "2024-01-15", scored=3)]
+        new = [self._row("MSFT", "2024-01-16", scored=1)]
+        out = merge_scored(existing, new)
+        self.assertEqual({r["symbol"] for r in out}, {"AAPL", "MSFT"})
+
+    def test_missing_outcomes_and_extra_are_tolerated(self):
+        # rows with no outcomes block and no extra key must not raise (key falls back cleanly)
+        existing = [{"symbol": "AAPL", "date": "2024-01-15"}]
+        new = [{"symbol": "AAPL", "date": "2024-01-15", "outcomes": {"scored_horizons": 2}}]
+        out = merge_scored(existing, new)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["outcomes"]["scored_horizons"], 2)
 
 
 if __name__ == "__main__":  # pragma: no cover
