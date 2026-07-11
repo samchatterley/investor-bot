@@ -4,6 +4,31 @@ Full version history. Most recent first.
 
 ---
 
+### 1.156 — July 2026 — AI edge-anatomy telemetry (the levers, measured — not acted on)
+
+The first real AI-vs-baseline measurement (see the experiment scored dataset) showed the AI's selection
+beats the deterministic top-K but mostly because that baseline is anti-predictive; its edge over the
+field is modest (+0.13–0.15R at 3–5d) and not yet significant (n≈52, one rally regime). Digging in
+located *where* the edge lives: it concentrates in confidence-8 picks (conf≤7 shows ~zero edge), it
+tilts toward extended names that mean-revert, and it is almost entirely a PEAD-selection edge.
+
+Rather than act on 12 days of bull tape, this ships the **measurement infrastructure** so those levers
+accumulate evidence honestly. New `experiment.monitoring.build_edge_anatomy_lines` (wired into the
+weekly review, fail-safe) reports, from the scored open-mode candidates deduped to one row per
+(symbol, date):
+- **confidence calibration** — net forward_r by arm3 confidence bucket vs the field, plus the
+  **pre-registered `MIN_CONFIDENCE` 7→8 trigger** status. It only flags "consider raising" once *both*
+  buckets clear n≥50 with the conf≤7≈0 / conf=8>0 pattern intact — so the live gate is never raised off
+  a small sample (it is a flagged decision, never automatic);
+- **extension tilt** — AI pick-rate and edge among extended (rsi≥60) vs not;
+- **per-primary-signal pick quality**.
+
+Also fixes a real telemetry trap: a single day can carry many open-mode run_ids (a 68-run replay burst
+on 2026-06-21) which would multiply-count that day; the report dedups per (symbol, date). No live
+trading behaviour changes — this is monitoring only. `MIN_CONFIDENCE` stays 7 and the context card
+stays unwired until the trailing-outcome signal has the sample/regime coverage to not just reflect the
+current tape.
+
 ### 1.155 — July 2026 — review finding 3: the snapshot-seam contract (parity + fail-closed guards)
 
 `evaluate_signals` reads a plain dict assembled independently by two producers — `data/market_data`

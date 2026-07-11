@@ -8,9 +8,27 @@ from experiment.monitoring import (
     MONITORING_BANNER,
     ExperimentState,
     append_log_entry,
+    build_edge_anatomy_lines,
     build_monitoring_lines,
     build_three_arm_summary,
+    load_scored_observations,
 )
+
+
+def _obs(symbol, *, sel=False, conf=8, fr5=0.5, rsi=50.0, sig="pead", date="2026-06-17", cost=0.0):
+    return {
+        "symbol": symbol,
+        "date": date,
+        "extra": {
+            "decision_type": "buy_candidate",
+            "mode": "open",
+            "arm3_ai_selected": sel,
+            "arm3_ai_confidence": conf,
+        },
+        "features": {"rsi_14": rsi},
+        "fired_signals": [sig],
+        "outcomes": {"forward_r_5d": fr5, "cost_r_estimate": cost},
+    }
 
 
 class TestBuildMonitoringLines(unittest.TestCase):
@@ -116,6 +134,119 @@ class TestBuildThreeArmSummary(unittest.TestCase):
 
     def test_truthy_but_no_known_keys(self):
         self.assertEqual(build_three_arm_summary({"foo": "bar"}), ["No arm metrics available yet."])
+
+
+class TestLoadScoredObservations(unittest.TestCase):
+    def test_reads_jsonl_skipping_blanks(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "scored.jsonl")
+            with open(p, "w") as f:
+                f.write('{"symbol": "AAA"}\n\n{"symbol": "BBB"}\n')
+            rows = load_scored_observations(p)
+        self.assertEqual([r["symbol"] for r in rows], ["AAA", "BBB"])
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(load_scored_observations("/no/such/scored.jsonl"), [])
+
+    def test_malformed_json_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "scored.jsonl")
+            with open(p, "w") as f:
+                f.write("{not json}\n")
+            self.assertEqual(load_scored_observations(p), [])
+
+
+class TestBuildEdgeAnatomyLines(unittest.TestCase):
+    def test_no_scored_candidates(self):
+        self.assertEqual(
+            build_edge_anatomy_lines([]), ["Edge anatomy: no scored open-mode buy candidates yet."]
+        )
+
+    def test_ignores_non_open_and_unclosed_horizon(self):
+        rows = [
+            {
+                "symbol": "X",
+                "date": "d",
+                "extra": {"decision_type": "buy_candidate", "mode": "close"},
+                "outcomes": {"forward_r_5d": 1.0},
+            },
+            {
+                "symbol": "Y",
+                "date": "d",
+                "extra": {"decision_type": "buy_candidate", "mode": "open"},
+                "outcomes": {"forward_r_5d": None},
+            },
+        ]
+        self.assertEqual(
+            build_edge_anatomy_lines(rows)[0],
+            "Edge anatomy: no scored open-mode buy candidates yet.",
+        )
+
+    def test_dedups_duplicate_symbol_date(self):
+        # same (symbol, date) across 3 run-bursts must count once
+        rows = [_obs("DUP", sel=True, fr5=0.5) for _ in range(3)]
+        line = build_edge_anatomy_lines(rows)[0]
+        self.assertIn("field n=1", line)
+        self.assertIn("AI picks n=1", line)
+
+    def test_confidence_buckets_and_accumulating_trigger(self):
+        rows = [
+            _obs("A", sel=True, conf=7, fr5=0.4),
+            _obs("B", sel=True, conf=8, fr5=0.9),
+            _obs("C", sel=True, conf=9, fr5=0.8),
+            _obs("D", sel=False, conf=None, fr5=0.3),
+        ]
+        out = "\n".join(build_edge_anatomy_lines(rows))
+        self.assertIn("conf<=7: n=1", out)
+        self.assertIn("conf=8: n=1", out)
+        self.assertIn("conf>=9: n=1", out)
+        self.assertIn("accumulating", out)  # far below n>=50
+
+    def test_trigger_met(self):
+        # a large non-pick field at 0.5 sets field_mean ~0.5; conf<=7 picks match it (~0 edge),
+        # conf=8 picks sit well above -> the pre-registered pattern holds at n>=50
+        rows = [_obs(f"F{i}", sel=False, conf=None, fr5=0.50) for i in range(400)]
+        rows += [_obs(f"L{i}", sel=True, conf=7, fr5=0.50) for i in range(60)]
+        rows += [_obs(f"H{i}", sel=True, conf=8, fr5=0.80) for i in range(60)]
+        out = "\n".join(build_edge_anatomy_lines(rows))
+        self.assertIn("PRE-REGISTERED TRIGGER MET", out)
+
+    def test_trigger_present_but_pattern_fails(self):
+        # both buckets clear n>=50 but conf=8 shows no real edge over the field -> do not raise
+        rows = [_obs(f"F{i}", sel=False, conf=None, fr5=0.50) for i in range(400)]
+        rows += [_obs(f"L{i}", sel=True, conf=7, fr5=0.50) for i in range(60)]
+        rows += [_obs(f"H{i}", sel=True, conf=8, fr5=0.52) for i in range(60)]
+        out = "\n".join(build_edge_anatomy_lines(rows))
+        self.assertIn("did NOT hold", out)
+
+    def test_extension_and_signal_family_lines(self):
+        rows = [_obs(f"E{i}", sel=(i < 5), conf=8, fr5=0.3, rsi=65, sig="pead") for i in range(10)]
+        rows += [
+            _obs(f"N{i}", sel=(i < 5), conf=8, fr5=0.6, rsi=40, sig="momentum") for i in range(10)
+        ]
+        out = "\n".join(build_edge_anatomy_lines(rows))
+        self.assertIn("extended(rsi>=60)", out)
+        self.assertIn("not-extended", out)
+        self.assertIn("signal pead", out)  # >=4 picks
+        self.assertIn("signal momentum", out)
+
+    def test_missing_rsi_and_no_fired_signals_are_tolerated(self):
+        rows = [
+            {
+                "symbol": f"Z{i}",
+                "date": "d",
+                "extra": {
+                    "decision_type": "buy_candidate",
+                    "mode": "open",
+                    "arm3_ai_selected": True,
+                    "arm3_ai_confidence": 8,
+                },
+                "outcomes": {"forward_r_5d": 0.5},
+            }
+            for i in range(4)
+        ]  # no features, no fired_signals
+        out = "\n".join(build_edge_anatomy_lines(rows))
+        self.assertIn("signal (none)", out)  # falls back to (none) family
 
 
 if __name__ == "__main__":  # pragma: no cover

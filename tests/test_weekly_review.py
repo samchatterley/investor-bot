@@ -307,6 +307,34 @@ class TestRunWeeklyReview(unittest.TestCase):
         self.assertIn("week_summary", result)
         self.assertIn("proposed_changes", result)
 
+    def test_edge_anatomy_failure_does_not_break_review(self):
+        # telemetry must never break the weekly review — a raising build_edge_anatomy_lines is swallowed
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "ok",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+            patch(
+                "analysis.weekly_review.build_edge_anatomy_lines",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            result = run_weekly_review()
+        self.assertIsNotNone(result)  # review completes despite the telemetry failure
+
     def test_experiment_monitoring_recorded_and_logged(self):
         from analysis.weekly_review import run_weekly_review
 

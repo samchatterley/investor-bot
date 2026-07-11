@@ -21,7 +21,12 @@ import anthropic
 import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
-from experiment.monitoring import append_log_entry, build_monitoring_lines
+from experiment.monitoring import (
+    append_log_entry,
+    build_edge_anatomy_lines,
+    build_monitoring_lines,
+    load_scored_observations,
+)
 from utils.portfolio_tracker import load_history
 
 logger = logging.getLogger(__name__)
@@ -339,6 +344,12 @@ Respond with ONLY this JSON:
     # BEFORE the AI call so a failed/truncated/timed-out review never drops the weekly telemetry entry
     # (the 2026-06-28 review failed and the EXPERIMENT_LOG.md entry was silently skipped). Fail-safe.
     monitoring_lines = build_monitoring_lines()
+    # Edge-anatomy telemetry (AI-vs-field selection edge) is fail-safe around its own data read, but
+    # wrap it too so a malformed scored file can never drop the core monitoring entry.
+    try:
+        monitoring_lines = monitoring_lines + build_edge_anatomy_lines(load_scored_observations())
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"edge-anatomy telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:
