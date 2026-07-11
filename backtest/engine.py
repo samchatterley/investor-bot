@@ -342,6 +342,11 @@ def _row_to_snapshot(
     _m121 = row.get("mom_12_1")
     if _m121 is not None:
         snap["mom_12_1_pct"] = float(_m121)
+    # Cross-sectional sector 5d return (finding 8), injected by _apply_sector_ret5d. Present only when
+    # the sector met the per-date member quorum — absent/NaN ⇒ evaluator fails open to spy-only.
+    _sec5 = row.get("sector_ret_5d_pct")
+    if _sec5 is not None and not math.isnan(float(_sec5)):
+        snap["sector_ret_5d_pct"] = float(_sec5)
     if fundamentals:
         snap["insider_cluster"] = bool(fundamentals.get("insider_cluster", False))
         snap["pead_candidate"] = bool(fundamentals.get("pead_active", False))
@@ -2649,6 +2654,38 @@ def _run_combined_simulation(
     }
 
 
+def _apply_sector_ret5d(indicators: dict[str, pd.DataFrame], min_members: int = 5) -> None:
+    """Write a cross-sectional equal-weight sector 5d-return column (`sector_ret_5d_pct`) into each
+    symbol's indicator frame, so the backtest exercises residual_reversal's sector conjunct exactly
+    like live (mirror of `data.market_data._apply_sector_ret5d`). Finding 8: the engine never computed
+    this, so the sector conjunct never fired in the backtest — live diverged from the validated base.
+
+    Point-in-time safe: each date's sector mean uses only that date's `ret_5d` values (closes ≤ date),
+    and the daily loop reads the prior-day row. Sectors with fewer than `min_members` priced members
+    ON A GIVEN DATE get no value that date (NaN → field absent → the evaluator fails open to the
+    spy-only construction). Unknown sectors are skipped entirely.
+    """
+    from data.sector_data import get_sector
+
+    by_sector: dict[str, list[str]] = {}
+    for sym, df in indicators.items():
+        if "ret_5d" not in df.columns:
+            continue
+        sec = get_sector(sym)
+        if not sec or sec == "Unknown":
+            continue
+        by_sector.setdefault(sec, []).append(sym)
+
+    for syms in by_sector.values():
+        if len(syms) < min_members:
+            continue  # sector can never reach the per-date quorum → leave the field absent
+        wide = pd.DataFrame({sym: indicators[sym]["ret_5d"] for sym in syms})
+        counts = wide.notna().sum(axis=1)
+        sec_mean = wide.mean(axis=1).where(counts >= min_members).round(2)  # NaN where < quorum
+        for sym in syms:
+            indicators[sym]["sector_ret_5d_pct"] = sec_mean.reindex(indicators[sym].index)
+
+
 def _build_indicators(
     raw: pd.DataFrame,
     symbols: list[str],
@@ -2676,6 +2713,7 @@ def _build_indicators(
             indicators[sym] = _compute_indicators(df)
         except Exception:
             pass
+    _apply_sector_ret5d(indicators)
     return indicators
 
 

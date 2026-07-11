@@ -10072,3 +10072,112 @@ class TestSignalFiringInvariants(unittest.TestCase):
         snap = _row_to_snapshot(pd.Series({"ret_5d": -8.0}), spy_ret_5d=0.0)
         fired = evaluate_signals(snap, blocked=frozenset(), spy_ret_5d=0.0)
         self.assertIn("residual_reversal", fired)
+
+
+class TestSectorRet5dParity(unittest.TestCase):
+    """Finding 8: the backtest engine computes the cross-sectional sector 5d return so
+    residual_reversal's sector conjunct is exercised in-sample exactly like live — previously the
+    field was never set in the engine, so the conjunct always fell open to the spy-only construction."""
+
+    @staticmethod
+    def _tech_inds(n, ret5d, dates):
+        idx = pd.to_datetime(list(dates))
+        return {f"T{i}": pd.DataFrame({"ret_5d": list(ret5d)}, index=idx) for i in range(n)}
+
+    def test_sector_mean_written_when_quorum_met(self):
+        from backtest.engine import _apply_sector_ret5d
+
+        idx = pd.to_datetime(["2024-01-01", "2024-01-02"])
+        inds = {f"T{i}": pd.DataFrame({"ret_5d": [float(i), 0.0]}, index=idx) for i in range(5)}
+        with patch("data.sector_data.get_sector", return_value="Technology"):
+            _apply_sector_ret5d(inds)
+        for i in range(5):  # day0 equal-weight mean of ret_5d(0,1,2,3,4) = 2.0
+            self.assertAlmostEqual(inds[f"T{i}"]["sector_ret_5d_pct"].iloc[0], 2.0)
+
+    def test_below_quorum_sector_has_no_column(self):
+        from backtest.engine import _apply_sector_ret5d
+
+        inds = self._tech_inds(4, [1.0], ["2024-01-01"])  # 4 < min_members(5)
+        with patch("data.sector_data.get_sector", return_value="Technology"):
+            _apply_sector_ret5d(inds)
+        self.assertNotIn("sector_ret_5d_pct", inds["T0"].columns)
+
+    def test_unknown_sector_skipped(self):
+        from backtest.engine import _apply_sector_ret5d
+
+        inds = self._tech_inds(6, [1.0], ["2024-01-01"])
+        with patch("data.sector_data.get_sector", return_value="Unknown"):
+            _apply_sector_ret5d(inds)
+        self.assertNotIn("sector_ret_5d_pct", inds["T0"].columns)
+
+    def test_symbol_without_ret5d_column_skipped(self):
+        from backtest.engine import _apply_sector_ret5d
+
+        inds = {"NOCOL": pd.DataFrame({"Close": [1.0]}, index=pd.to_datetime(["2024-01-01"]))}
+        with patch("data.sector_data.get_sector", return_value="Technology"):
+            _apply_sector_ret5d(inds)  # must not raise
+        self.assertNotIn("sector_ret_5d_pct", inds["NOCOL"].columns)
+
+    def test_per_date_quorum_nan_when_below_members(self):
+        from backtest.engine import _apply_sector_ret5d
+
+        inds = self._tech_inds(5, [1.0, 1.0], ["2024-01-01", "2024-01-02"])
+        inds["T4"]["ret_5d"] = [1.0, float("nan")]  # day1 drops to 4 priced members
+        with patch("data.sector_data.get_sector", return_value="Technology"):
+            _apply_sector_ret5d(inds)
+        col = inds["T0"]["sector_ret_5d_pct"]
+        self.assertAlmostEqual(col.iloc[0], 1.0)  # day0: 5 members → mean
+        self.assertTrue(pd.isna(col.iloc[1]))  # day1: 4 < quorum → NaN
+
+    def test_build_indicators_applies_sector_column(self):
+        # wiring: _build_indicators must call _apply_sector_ret5d (5 same-sector symbols reach quorum)
+        from backtest.engine import _build_indicators
+
+        idx = pd.to_datetime(pd.date_range("2024-01-01", periods=30))
+        syms = [f"T{i}" for i in range(5)]
+        cols = {}
+        for field in ("Close", "Open", "High", "Low", "Volume"):
+            base = 100.0 if field != "Volume" else 1_000_000.0
+            cols[field] = pd.DataFrame({s: [base + j for j in range(30)] for s in syms}, index=idx)
+        raw = pd.concat(cols, axis=1)
+        with patch("data.sector_data.get_sector", return_value="Technology"):
+            inds = _build_indicators(raw, syms)
+        self.assertIn("sector_ret_5d_pct", inds["T0"].columns)
+
+    def test_row_to_snapshot_surfaces_present_value(self):
+        from backtest.engine import _row_to_snapshot
+
+        snap = _row_to_snapshot(pd.Series({"ret_5d": -8.0, "sector_ret_5d_pct": -6.0}))
+        self.assertAlmostEqual(snap["sector_ret_5d_pct"], -6.0)
+
+    def test_row_to_snapshot_omits_nan_value(self):
+        from backtest.engine import _row_to_snapshot
+
+        snap = _row_to_snapshot(pd.Series({"ret_5d": -8.0, "sector_ret_5d_pct": float("nan")}))
+        self.assertNotIn("sector_ret_5d_pct", snap)
+
+    def test_row_to_snapshot_omits_absent_value(self):
+        from backtest.engine import _row_to_snapshot
+
+        snap = _row_to_snapshot(pd.Series({"ret_5d": -8.0}))
+        self.assertNotIn("sector_ret_5d_pct", snap)
+
+    def test_sector_conjunct_filters_residual_reversal(self):
+        # the parity win: a loser that fell no more than its sector is sector beta, not idiosyncratic
+        # flow → the sector conjunct blocks it (threshold −7.0), where spy-only alone would have fired.
+        from backtest.engine import _row_to_snapshot
+        from signals.evaluator import evaluate_signals
+
+        blocked_snap = _row_to_snapshot(
+            pd.Series({"ret_5d": -8.0, "sector_ret_5d_pct": -8.0}), spy_ret_5d=0.0
+        )
+        self.assertNotIn(
+            "residual_reversal", evaluate_signals(blocked_snap, blocked=frozenset(), spy_ret_5d=0.0)
+        )
+        # control: sector flat → the −8% drop IS idiosyncratic → still fires
+        fires_snap = _row_to_snapshot(
+            pd.Series({"ret_5d": -8.0, "sector_ret_5d_pct": 0.0}), spy_ret_5d=0.0
+        )
+        self.assertIn(
+            "residual_reversal", evaluate_signals(fires_snap, blocked=frozenset(), spy_ret_5d=0.0)
+        )

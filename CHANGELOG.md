@@ -4,6 +4,30 @@ Full version history. Most recent first.
 
 ---
 
+### 1.154 — July 2026 — review finding 8: backtest sector parity (residual_reversal sector conjunct)
+
+`residual_reversal` (v1.144) requires a −7% move to be idiosyncratic vs BOTH the market (SPY) and the
+name's own sector (`sector_ret_5d_pct`) — a drop that merely tracks a sector rout is sector beta, which
+continues, not idiosyncratic flow, which reverts. Live computes `sector_ret_5d_pct`
+(`data/market_data._apply_sector_ret5d`), but the **backtest engine never did**, so the sector conjunct
+always fell open to the spy-only construction — the engine took residual_reversal trades that live would
+filter (an A3.1-class live/backtest divergence).
+
+Fix: `backtest.engine._apply_sector_ret5d` computes the cross-sectional equal-weight sector 5d return
+and writes it as a `sector_ret_5d_pct` column on each symbol's indicator frame, hooked once in the shared
+`_build_indicators` so every backtest variant inherits it. Point-in-time safe (each date's mean uses only
+that date's `ret_5d`; the daily loop reads the prior-day row); per-date member quorum (min 5) mirrors
+live, and below-quorum/Unknown sectors leave the field absent (evaluator fails open, unchanged).
+`_row_to_snapshot` surfaces the column when present and non-NaN.
+
+No golden re-baseline was required — the existing full-backtest fixtures don't hit the 5-member sector
+quorum, so aggregate metrics are unchanged; the parity now bites on the real universe. +10 tests
+(`TestSectorRet5dParity`: quorum, per-date NaN, Unknown/absent skips, `_build_indicators` wiring,
+`_row_to_snapshot` surfacing, and the conjunct filtering residual_reversal). engine coverage unchanged.
+
+Finding 9 (amihud) verified already-safe in 1.153. Remaining from the Fable review: finding 3 (the shared
+typed snapshot schema seam) — a live-code structural change, scoped for a dedicated pass.
+
 ### 1.153 — July 2026 — review finding 11: reconcile the spread_proxy_20d fail-direction
 
 `signals/evaluator.py` read `spread_proxy_20d` with two *contradictory* fallbacks: the execution-cost
