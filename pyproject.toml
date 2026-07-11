@@ -69,6 +69,7 @@ files = [
     "data/universe_builder.py",
     "data/short_flow.py",
     "signals/evaluator.py",
+    "signals/snapshot.py",
     "experiment/monitoring.py",
     "experiment/arms.py",
     "experiment/noise_audit.py",

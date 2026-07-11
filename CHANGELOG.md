@@ -4,6 +4,31 @@ Full version history. Most recent first.
 
 ---
 
+### 1.155 — July 2026 — review finding 3: the snapshot-seam contract (parity + fail-closed guards)
+
+`evaluate_signals` reads a plain dict assembled independently by two producers — `data/market_data`
+(live) and `backtest/engine` (`_row_to_snapshot` + `_entry_signal`). Divergence at that seam is silent:
+a field one path produces and the other doesn't makes a signal fire live but never in the backtest (or
+vice versa), passing unit tests the whole time; and a field read with a fire-on-absent default is a
+fail-open hole (finding 11 was one).
+
+Investigating the seam surfaced an important nuance: the field defaults that *look* inconsistent are
+mostly **intentional** — the same field correctly carries different defaults at different sites when the
+comparison direction differs (e.g. `ema9_above_ema21` reads default `False` for an uptrend signal and
+`True` under `not ...` for a downtrend one — both mean "don't fire when the trend is unknown"). So the
+right artifact is not a centralised default-schema (that would be wrong) but a **parity contract with
+two enforced invariants**:
+
+New `signals/snapshot.py` declares `LIVE_ONLY_FIELDS` (the reviewable allowlist of ~37 evaluator fields
+the daily backtest genuinely can't reconstruct — live enrichment feeds, the intraday engine, the short
+path) and `INTENTIONAL_SPLIT_DEFAULTS` (the 3 blessed per-site splits). `tests/test_snapshot_contract.py`
+enforces: (1) **parity** — every evaluator-read field not declared live-only IS produced by the real
+backtest long builder (`_entry_signal` driven with a maximal row, snapshot captured), so a core field
+going dead in the backtest fails CI; (2) **fail-closed** — any field read with two different literal
+defaults that isn't a blessed split fails CI (the finding-11 regression guard); plus allowlist hygiene
+(no stale entries). No live-code change — this is instrumentation that turns the divergence class into a
+build break. Completes the Fable architecture review (findings 1–11 all addressed).
+
 ### 1.154 — July 2026 — review finding 8: backtest sector parity (residual_reversal sector conjunct)
 
 `residual_reversal` (v1.144) requires a −7% move to be idiosyncratic vs BOTH the market (SPY) and the
