@@ -86,3 +86,32 @@ class TestPremarketGapQualityGate(unittest.TestCase):
         snap["recent_lottery_pop"] = False
         signals = evaluate_signals(snap)
         self.assertIn("momentum", signals)
+
+
+class TestSpreadProxyGateDirection(unittest.TestCase):
+    """Finding 11: a missing spread_proxy_20d must read as WIDE (illiquid) at both evaluator sites —
+    previously the execution gate defaulted 0.0 (fail-open) while the capitulation guardrail defaulted
+    1.0 (fail-closed), so an absent field meant 'liquid' in one place and 'illiquid' in the other.
+    gap_and_go is in _SPREAD_PROXY_GATED, so it's the probe for the execution-cost gate."""
+
+    def test_liquid_spread_allows_gated_signal(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot()
+        snap["spread_proxy_20d"] = 0.0  # tight spread → liquid → not gated (control)
+        self.assertIn("gap_and_go", evaluate_signals(snap))
+
+    def test_wide_spread_gates_signal(self):
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot()
+        snap["spread_proxy_20d"] = 0.05  # 5% spread ≫ spread_proxy_max → gated
+        self.assertNotIn("gap_and_go", evaluate_signals(snap))
+
+    def test_absent_spread_fails_closed_and_gates_signal(self):
+        """The reconciliation: an absent field now behaves like a wide spread (fail-closed)."""
+        from signals.evaluator import evaluate_signals
+
+        snap = _gap_and_go_snapshot()
+        del snap["spread_proxy_20d"]
+        self.assertNotIn("gap_and_go", evaluate_signals(snap))

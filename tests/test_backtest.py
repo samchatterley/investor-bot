@@ -528,7 +528,9 @@ class TestBatch1LongSignals(unittest.TestCase):
     def _eval(self, **kwargs):
         from signals.evaluator import evaluate_signals
 
-        snap = {"rsi_14": 50, "bb_pct": 0.5, "adx": 25, "vol_ratio": 1.0}
+        # spread_proxy_20d=0.0 mirrors a real (liquid) snapshot: both producers always populate the
+        # field, so its absence would now fail-closed and gate the execution-sensitive signals.
+        snap = {"rsi_14": 50, "bb_pct": 0.5, "adx": 25, "vol_ratio": 1.0, "spread_proxy_20d": 0.0}
         snap.update(kwargs)
         return evaluate_signals(snap)
 

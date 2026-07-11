@@ -4,6 +4,26 @@ Full version history. Most recent first.
 
 ---
 
+### 1.153 — July 2026 — review finding 11: reconcile the spread_proxy_20d fail-direction
+
+`signals/evaluator.py` read `spread_proxy_20d` with two *contradictory* fallbacks: the execution-cost
+gate defaulted `0.0` (missing ⇒ liquid ⇒ **fail-open**, allow the short-hold signals) while the
+residual_reversal capitulation guardrail defaulted `1.0` (missing ⇒ illiquid ⇒ **fail-closed**, block).
+So an absent field meant "liquid" in one place and "illiquid" in another — the ambiguous-schema class
+the Fable review flagged.
+
+Fix: a single named constant `_SPREAD_PROXY_ABSENT = 1.0` used at both sites, declaring one direction —
+**an absent spread reads as WIDE (illiquid), so both sites fail closed on unknown liquidity.** No live
+behaviour change: both snapshot producers (`data/market_data`, the backtest engine) always populate the
+field (real value or `0.0`), so the default only bites hand-built/partial snapshot dicts.
+
+Tests: new `TestSpreadProxyGateDirection` (liquid fires / wide gates / **absent now fails closed**); the
+`TestBatch1LongSignals._eval` helper now seeds `spread_proxy_20d=0.0` to mirror a real liquid snapshot.
+
+Note (finding 9): `compute_amihud_illiquidity` already returns `0.0` (not `None`) on failure, so there is
+no None-propagation bug; the only residual is that the backtest omits amihud entirely — a backtest-parity
+gap that belongs with the snapshot-seam work (finding 3), not a live defect.
+
 ### 1.152 — July 2026 — fix: a single failed price fetch was silently wiping all backfilled outcomes
 
 The forward-outcome backfill (`scripts/backfill_outcomes.py`) rewrote the *entire*

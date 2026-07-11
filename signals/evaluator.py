@@ -249,6 +249,13 @@ _SPREAD_PROXY_GATED: frozenset[str] = frozenset(
         "intraday_momentum",  # intraday — execution cost matters most at open
     }
 )
+# Fallback when a snapshot has no spread_proxy_20d at all (both producers — data/market_data and the
+# backtest engine — always populate it with a real value or 0.0, so this only bites hand-built /
+# partial snapshot dicts). Declared direction: an ABSENT spread reads as WIDE (illiquid) so both the
+# execution-cost gate (block short-hold signals) and the capitulation-bounce guardrail (require a
+# liquid name) fail CLOSED on unknown liquidity — previously the gate defaulted 0.0 (fail-open) while
+# the guardrail defaulted 1.0, treating a missing field as liquid in one place and illiquid in another.
+_SPREAD_PROXY_ABSENT = 1.0
 # DEFENSIVE_DOWNTREND: mean_reversion has edge here (WR 53%, avg +0.6%, n=112) — kept.
 _DEFENSIVE_BLOCKED = frozenset(
     {
@@ -937,7 +944,7 @@ def evaluate_signals(
 
     # Spread proxy gate: when average daily H–L spread > threshold, execution cost exceeds
     # edge for short-hold and intraday signals — dynamically add them to blocked.
-    if float(snapshot.get("spread_proxy_20d", 0.0)) > p["spread_proxy_max"]:
+    if float(snapshot.get("spread_proxy_20d", _SPREAD_PROXY_ABSENT)) > p["spread_proxy_max"]:
         blocked = blocked | _SPREAD_PROXY_GATED
 
     # ── Macro gates (injected by scanner and backtest engine) ─────────────────
@@ -1254,7 +1261,7 @@ def evaluate_signals(
     # HIGH_VOL_DOWNTREND reversal is train-negative (kept blocked); UNKNOWN stays blocked (no info).
     _capit = (
         regime == "STRESS_RISK_OFF"
-        and float(snapshot.get("spread_proxy_20d", 1.0)) <= p["spread_proxy_max"]
+        and float(snapshot.get("spread_proxy_20d", _SPREAD_PROXY_ABSENT)) <= p["spread_proxy_max"]
     )
     _sect5 = snapshot.get("sector_ret_5d_pct")
     if (
