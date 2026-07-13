@@ -27,7 +27,10 @@ from experiment.material_context import detect_material_context
 
 logger = logging.getLogger(__name__)
 
-OBSERVATIONS_VERSION = "v1"
+# v2: arm3 decision-maker moved from claude-sonnet-4-6 to claude-opus-4-8 (a different model = a
+# different arm), so Opus-era observations are stamped v2 to keep them separable from the v1 sonnet
+# pilot. The v1 observation/scored logs are archived at the swap; accumulation restarts under v2.
+OBSERVATIONS_VERSION = "v2"
 OBSERVATIONS_PATH = os.path.join("logs", "experiment_observations.jsonl")
 
 # Decision-time feature view: the point-in-time inputs the engine/AI saw. atr + current_price anchor

@@ -220,8 +220,11 @@ MAX_SECTOR_POSITIONS = 2
 # How many days of historical data to feed to Claude
 LOOKBACK_DAYS = 30
 
-# Claude model
-CLAUDE_MODEL = "claude-sonnet-4-6"
+# Claude model — the arm3 decision-maker. Opus 4.8 is a generation ahead of sonnet-4-6; the experiment
+# is still pre-freeze (no EXPERIMENT_VERSION / t0), so switching the model now just starts a fresh
+# pilot-accumulation epoch (observations re-versioned, prior sonnet data archived). NB: Opus 4.8 rejects
+# temperature/top_p/top_k with a 400 — the ai_analyst call must NOT pass temperature (it doesn't).
+CLAUDE_MODEL = "claude-opus-4-8"
 
 # Market schedule (US Eastern Time)
 MARKET_OPEN_HOUR = 9

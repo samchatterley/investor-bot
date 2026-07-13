@@ -4,6 +4,31 @@ Full version history. Most recent first.
 
 ---
 
+### 1.157 — July 2026 — restart the experiment on Claude Opus 4.8 (arm3 model upgrade)
+
+The arm3 decision-maker moves from `claude-sonnet-4-6` to **`claude-opus-4-8`** — a generation ahead.
+The experiment is still **pre-freeze** (no `EXPERIMENT_VERSION`/`t0`; monitoring reports Phase 0,
+N_eff = 0), so this is the right time to finalise the model: the Gate A noise audit is meant to run on
+the *to-be-frozen* model, and there is no frozen evaluation period to invalidate.
+
+Changes:
+- `config.CLAUDE_MODEL = "claude-opus-4-8"`.
+- **Removed `temperature=0` from the decision call** (`analysis/ai_analyst.py`). Opus 4.8 removes
+  sampling params and returns a **400** if `temperature`/`top_p`/`top_k` is passed — a naive model swap
+  would have failed every live trading call. Verified end-to-end against the API (forced `tool_choice`,
+  no temperature, `stop_reason=tool_use`). Tradeoff, called out honestly: this gives up the
+  temperature=0 determinism added in 1.149 — Opus has no temperature knob, so sampling variance is now
+  an accepted part of the arm3 measurement (temperature=0 never *guaranteed* identical outputs anyway).
+- LLM cost constants updated to Opus pricing ($5 / $25 per 1M in/out, was $3 / $15).
+- `experiment.collection.OBSERVATIONS_VERSION = "v2"` so Opus-era observations stay separable from the
+  v1 sonnet pilot. The v1 `experiment_observations` / `experiment_scored` logs were archived
+  (`*.v1-sonnet-<date>.jsonl`, ~15k obs) and accumulation restarts fresh under v2.
+
+Operational note: Opus is ~5× the per-token cost of sonnet-4-6, and the pilot-accumulation clock
+(including the pre-registered `MIN_CONFIDENCE` 7→8 trigger) restarts from zero on the new arm. The
+`scripts/phase0_noise_audit.py` research helper still passes `temperature` and will need a rework before
+it can run on Opus — it is a manual, non-live tool, tracked separately.
+
 ### 1.156 — July 2026 — AI edge-anatomy telemetry (the levers, measured — not acted on)
 
 The first real AI-vs-baseline measurement (see the experiment scored dataset) showed the AI's selection

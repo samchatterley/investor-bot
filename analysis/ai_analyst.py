@@ -596,8 +596,8 @@ Focus on signal quality and confidence accuracy.
 Use the submit_trading_decisions tool to return your analysis."""
 
 
-_COST_PER_M_INPUT = 3.0  # USD per 1M input tokens (claude-sonnet-4-x)
-_COST_PER_M_OUTPUT = 15.0  # USD per 1M output tokens
+_COST_PER_M_INPUT = 5.0  # USD per 1M input tokens (claude-opus-4-8)
+_COST_PER_M_OUTPUT = 25.0  # USD per 1M output tokens (claude-opus-4-8)
 
 
 def _record_llm_usage(run_id: str | None, input_tokens: int, output_tokens: int):
@@ -694,8 +694,10 @@ def get_trading_decisions(
         response = client.messages.create(  # type: ignore[call-overload]
             model=CLAUDE_MODEL,
             max_tokens=4096,
-            temperature=0,  # deterministic decisions — same snapshot ⇒ same trades; sampling variance
-            # otherwise confounds the AI-vs-deterministic attribution the research program measures
+            # No `temperature`: Opus 4.8 removes sampling params (temperature/top_p/top_k) and returns a
+            # 400 if any is passed. This gives up the temperature=0 determinism that kept the
+            # AI-vs-deterministic attribution reproducible (same snapshot ⇒ same trades) — Opus has no
+            # temperature knob, so sampling variance is now an accepted part of the arm3 measurement.
             system=SYSTEM_PROMPT,
             tools=[_DECISION_TOOL],
             tool_choice={"type": "tool", "name": "submit_trading_decisions"},
