@@ -25,7 +25,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import config
-from analysis import ai_analyst, performance, shadow_catalyst_shorts, shadow_popper_shorts
+from analysis import (
+    ai_analyst,
+    macro_gate_shadow,
+    performance,
+    shadow_catalyst_shorts,
+    shadow_popper_shorts,
+)
 from analysis.weekly_review import get_latest_review
 from core.deps import TradingDeps
 from data import (
@@ -2305,6 +2311,18 @@ def _execute_buy_phase(
         if _exp_drawdown_triggered:
             reasons.append("experiment drawdown cap reached")
         logger.warning(f"Skipping new buys: {', '.join(reasons)}")
+        # Macro-gate efficacy shadow (read-only): when a MACRO event blocks buys, record the would-be
+        # buy candidates so we can measure per event whether skipping helped. Real runs only (a
+        # live-shadow/dry run would double-log the same day). Fail-safe — never affects trading.
+        if mc.macro.get("is_high_risk") and not dry_run:
+            macro_gate_shadow.capture(
+                mc.macro.get("event"),
+                decisions.get("buy_candidates", []),
+                today=today,
+                mode=mode,
+                regime=mc.regime.get("regime"),
+                vix=mc.vix,
+            )
     else:
         if mode == "open" and not dry_run:
             _audit_log.log_open_buys_locked(today)

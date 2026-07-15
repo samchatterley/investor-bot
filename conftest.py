@@ -62,6 +62,15 @@ def _isolate_shadow_popper_log(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_macro_gate_shadow(tmp_path, monkeypatch):
+    """Never let the test suite write to the live macro-gate-shadow log (mirror of the shadow-log
+    isolation above; main._execute_buy_phase calls macro_gate_shadow.capture on a macro skip)."""
+    import analysis.macro_gate_shadow as _mg
+
+    monkeypatch.setattr(_mg, "SHADOW_LOG_PATH", str(tmp_path / "macro_gate_shadow.jsonl"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_feed_status():
     """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
     test so one test's degraded-feed recording can't leak into another's health-check assertions."""

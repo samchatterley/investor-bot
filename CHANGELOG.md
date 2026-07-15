@@ -4,6 +4,30 @@ Full version history. Most recent first.
 
 ---
 
+### 1.158 — July 2026 — macro-gate efficacy shadow log (per-event, saved-vs-cost)
+
+The macro-event gate blocks new buys around FOMC/CPI/NFP etc. Until now we couldn't tell whether that
+helped: were the names we skipped ones that then fell (gate saved us) or ran (gate cost us)? This adds
+the measurement.
+
+- **`analysis/macro_gate_shadow.py`** (read-only, fail-safe): `capture()` records, at each macro skip,
+  the AI's would-be buy candidates (symbol / confidence / key_signal) + event + regime + VIX;
+  `score_event()` computes the equal-weight **market-excess** forward return of those names (only
+  conf ≥ 7, i.e. what would actually have been bought). Aggregate excess < 0 ⇒ the gate SAVED us
+  (blocked names lagged the market); > 0 ⇒ it COST us.
+- **Live capture** wired into `main._execute_buy_phase` — fires only when a *macro* event is the skip
+  reason, and only on real runs (a dry/live-shadow run would double-log the same day). Isolated in
+  tests via a new `conftest` autouse fixture.
+- **`scripts/macro_gate_report.py`**: idempotently backfills past macro-skip events from the scheduler
+  log + daily run records (so history is captured without the live capture having been running), then
+  prints a per-event table scored at 0d (skip-day open→close) / 1d / 3d / 5d, plus the mean across
+  events.
+
+First read across the events with data: the gate has been **net-helpful** — blocked names lagged the
+market by roughly 1–4% over the following days (e.g. the 2026-06-11 CPI skip: −9.56% excess at 5d).
+Small sample, and the gate's real justification is variance reduction, not directional edge — but now
+it accumulates per event. +15 tests; `analysis/macro_gate_shadow.py` at 100% coverage.
+
 ### 1.157 — July 2026 — restart the experiment on Claude Opus 4.8 (arm3 model upgrade)
 
 The arm3 decision-maker moves from `claude-sonnet-4-6` to **`claude-opus-4-8`** — a generation ahead.
