@@ -4,16 +4,17 @@ Reads logs/shadow_catalyst_shorts.jsonl (written fail-safe by analysis/shadow_ca
 on every run) and, for each row matured by `--hold-days` trading days, computes the forward SHORT
 return:
 
-  raw_short      = (entry_close - exit_close) / entry_close          # short profits when price falls
-  market_excess  = raw_short + spy_return                            # beta≈1 market-neutral (isolates
-                                                                       the stock-specific move)
-  net            = market_excess - borrow_cost(hold_days)            # after an assumed flat borrow fee
+  net = -stock_ret + spy_ret - borrow_cost(hold_days) - slippage   # market-neutral, net of costs
 
-The headline question is whether `net` is positive in NON-bear regimes (where the live gate currently
-forbids the trade). Borrow is assumed flat because we have no point-in-time fee feed (see the data
-audit); treat results as an upper bound. Read-only; makes yfinance calls only.
+(a short profits when the name falls; add SPY to isolate the stock-specific move; subtract borrow +
+round-trip slippage). The headline question is whether `net` is positive in NON-bear regimes (where the
+live gate currently forbids the trade). Because these catalyst names skew HARD-TO-BORROW and we have no
+point-in-time fee feed, the honest read is a **borrow-rate sensitivity** (3/10/25/50%/yr), not a single
+number. Writes logs/short_gate_summary.json at a conservative (25%/yr) assumption for the weekly
+short-gate telemetry + un-gate trigger. Read-only; makes yfinance calls only.
 
 Usage: python scripts/eval_shadow_catalyst_shorts.py [--hold-days 5] [--borrow-annual 3.0]
+                                                     [--slippage-bps 15.0]
 """
 
 from __future__ import annotations
@@ -22,17 +23,18 @@ import argparse
 import json
 import os
 import sys
-from collections import defaultdict
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yfinance as yf  # noqa: E402
 
-from analysis.shadow_catalyst_shorts import SHADOW_LOG_PATH  # noqa: E402
+from analysis.shadow_catalyst_shorts import (  # noqa: E402
+    BEAR_REGIMES,
+    SHADOW_LOG_PATH,
+    score_short_edge,
+)
 from utils.symbols import to_yf_symbol  # noqa: E402
-
-_BEAR_REGIMES = {"DEFENSIVE_DOWNTREND", "STRESS_RISK_OFF", "HIGH_VOL_DOWNTREND"}
 
 
 def _load_rows() -> list[dict]:
@@ -62,6 +64,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Score shadow catalyst shorts (read-only)")
     ap.add_argument("--hold-days", type=int, default=5)
     ap.add_argument("--borrow-annual", type=float, default=3.0, help="assumed flat borrow %/yr")
+    ap.add_argument(
+        "--slippage-bps", type=float, default=15.0, help="round-trip execution slippage (bps)"
+    )
     args = ap.parse_args()
 
     rows = _load_rows()
@@ -74,10 +79,9 @@ def main() -> None:
     syms = sorted({to_yf_symbol(r["symbol"]) for r in matured} | {"SPY"})
     start = min(r["date"] for r in matured)
     data = yf.download(syms, start=start, auto_adjust=True, progress=False)["Close"]
-    borrow_cost = args.borrow_annual * args.hold_days / 252.0
 
-    buckets: dict[str, list[float]] = defaultdict(list)
-    per_signal: dict[str, list[float]] = defaultdict(list)
+    non_bear: list[dict] = []
+    bear: list[dict] = []
     for r in matured:
         ysym = to_yf_symbol(r["symbol"])
         if ysym not in data or "SPY" not in data:
@@ -86,27 +90,73 @@ def main() -> None:
         spy_ret = _fwd_return(data["SPY"].dropna(), r["date"], args.hold_days)
         if stock_ret is None or spy_ret is None:
             continue
-        raw_short = -stock_ret
-        net = raw_short + spy_ret - borrow_cost
-        bucket = "bear" if r.get("regime") in _BEAR_REGIMES else "non-bear"
-        buckets[bucket].append(net)
-        for sig in r.get("catalyst_signals", []):
-            per_signal[sig].append(net)
+        obs = {"stock_ret": stock_ret, "spy_ret": spy_ret, "signals": r.get("catalyst_signals", [])}
+        (bear if r.get("regime") in BEAR_REGIMES else non_bear).append(obs)
 
-    def _summary(label: str, vals: list[float]) -> None:
-        if not vals:
-            return
-        hit = sum(1 for v in vals if v > 0) / len(vals) * 100
-        print(
-            f"  {label:28} n={len(vals):3}  net avg={sum(vals) / len(vals):+.2f}%  hit={hit:.0f}%"
+    def _print_table(obs: list[dict], borrow: float) -> None:
+        edges = score_short_edge(
+            obs, borrow_annual_pct=borrow, hold_days=args.hold_days, slippage_bps=args.slippage_bps
         )
+        ordered = [("__all__", edges["__all__"])] if "__all__" in edges else []
+        ordered += sorted(
+            ((k, v) for k, v in edges.items() if k != "__all__"), key=lambda kv: -kv[1][0]
+        )
+        for key, (n, net, hit) in ordered:
+            label = "ALL" if key == "__all__" else key
+            print(f"  {label:28} n={n:4}  net avg={net:+.2f}%  hit={hit:.0f}%")
 
-    print(f"\n=== net short return ({args.hold_days}d, borrow {args.borrow_annual}%/yr) ===")
-    for bucket in ("non-bear", "bear"):
-        _summary(bucket, buckets[bucket])
-    print("\n=== by catalyst signal ===")
-    for sig, vals in sorted(per_signal.items(), key=lambda kv: -len(kv[1])):
-        _summary(sig, vals)
+    print(
+        f"\n=== NON-BEAR net short return ({args.hold_days}d, borrow {args.borrow_annual}%/yr, "
+        f"+{args.slippage_bps:.0f}bps slippage) ==="
+    )
+    _print_table(non_bear, args.borrow_annual)
+
+    # Borrow-rate sensitivity: catalyst-short names skew HARD-TO-BORROW, so the tradeable edge depends
+    # heavily on the fee we can't observe historically. Show how it erodes as borrow rises.
+    print(
+        f"\n=== borrow-rate sensitivity (non-bear, {args.hold_days}d, +{args.slippage_bps:.0f}bps) ==="
+    )
+    rates = (3.0, 10.0, 25.0, 50.0)
+    print(f"  {'signal':28} " + " ".join(f"{r:.0f}%".rjust(9) for r in rates))
+    for key in ("__all__", "guidance_downgrade", "eps_revision_down_short"):
+        cells = []
+        for rate in rates:
+            e = score_short_edge(
+                non_bear,
+                borrow_annual_pct=rate,
+                hold_days=args.hold_days,
+                slippage_bps=args.slippage_bps,
+            ).get(key)
+            cells.append((f"{e[1]:+.2f}%" if e else "--").rjust(9))
+        print(f"  {('ALL' if key == '__all__' else key):28} " + " ".join(cells))
+
+    if bear:
+        print(f"\n=== BEAR regimes (reference, borrow {args.borrow_annual}%/yr) ===")
+        _print_table(bear, args.borrow_annual)
+
+    # Persist a summary at a CONSERVATIVE (hard-to-borrow) assumption for the weekly short-gate
+    # telemetry + un-gate trigger (experiment.monitoring.build_short_gate_lines reads this).
+    realistic = score_short_edge(
+        non_bear, borrow_annual_pct=25.0, hold_days=args.hold_days, slippage_bps=args.slippage_bps
+    )
+    summary_path = os.path.join(os.path.dirname(SHADOW_LOG_PATH), "short_gate_summary.json")
+    try:
+        with open(summary_path, "w") as fh:
+            json.dump(
+                {
+                    "generated": date.today().isoformat(),
+                    "borrow_annual_pct": 25.0,
+                    "slippage_bps": args.slippage_bps,
+                    "hold_days": args.hold_days,
+                    "edges": realistic,
+                },
+                fh,
+            )
+        print(
+            f"\nWrote short-gate summary (borrow 25%, +{args.slippage_bps:.0f}bps) -> {summary_path}"
+        )
+    except OSError as exc:
+        print(f"(could not write summary: {exc})")
 
 
 if __name__ == "__main__":

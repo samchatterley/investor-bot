@@ -105,3 +105,65 @@ def capture(
                 f.write(json.dumps(r) + "\n")
         logger.info(f"Shadow catalyst shorts: captured {len(rows)} name(s) (regime={regime})")
     return len(rows)
+
+
+# ── forward-edge scoring (net of a REALISTIC borrow + slippage haircut) ──────────────────────────
+# Shared by scripts/eval_shadow_catalyst_shorts.py and the weekly short-gate telemetry so both apply
+# the same cost model. Borrow is a flat annualised assumption (no point-in-time fee feed): the names a
+# catalyst short flags are disproportionately hard-to-borrow, so the honest read is a SENSITIVITY over
+# several borrow rates, not a single number — the gross 3%/yr figure is an optimistic upper bound.
+
+BEAR_REGIMES = frozenset({"DEFENSIVE_DOWNTREND", "STRESS_RISK_OFF", "HIGH_VOL_DOWNTREND"})
+
+
+def net_short_return(
+    stock_ret_pct: float,
+    spy_ret_pct: float,
+    *,
+    borrow_annual_pct: float,
+    hold_days: int,
+    slippage_bps: float,
+) -> float:
+    """Net market-neutral short return (%) for one position over ``hold_days``.
+
+    A short profits when the stock falls, so the raw short return is ``-stock_ret``; add SPY to make it
+    ~market-neutral (isolate the stock-specific move), then subtract the borrow accrued over the hold
+    and a round-trip execution slippage (``slippage_bps`` basis points, entry + exit)."""
+    raw_short = -stock_ret_pct
+    market_excess = raw_short + spy_ret_pct
+    borrow = borrow_annual_pct * hold_days / 252.0
+    return market_excess - borrow - slippage_bps / 100.0
+
+
+def score_short_edge(
+    observations: list[dict],
+    *,
+    borrow_annual_pct: float = 3.0,
+    hold_days: int = 5,
+    slippage_bps: float = 0.0,
+) -> dict[str, tuple[int, float, float]]:
+    """Aggregate net short returns per catalyst signal under one cost assumption.
+
+    ``observations`` is a list of ``{"stock_ret", "spy_ret", "signals": [...]}`` (returns are raw long
+    % over the hold; None-valued returns are skipped). Returns ``{key: (n, net_avg_pct, hit_pct)}`` for
+    each catalyst signal plus the pooled key ``"__all__"``. A name flagged by several signals counts
+    under each. Positive net_avg ⇒ shorting the flagged names paid after costs."""
+    per: dict[str, list[float]] = {}
+    for o in observations:
+        if o.get("stock_ret") is None or o.get("spy_ret") is None:
+            continue
+        net = net_short_return(
+            o["stock_ret"],
+            o["spy_ret"],
+            borrow_annual_pct=borrow_annual_pct,
+            hold_days=hold_days,
+            slippage_bps=slippage_bps,
+        )
+        per.setdefault("__all__", []).append(net)
+        for sig in o.get("signals", []):
+            per.setdefault(sig, []).append(net)
+    out: dict[str, tuple[int, float, float]] = {}
+    for key, vals in per.items():
+        hit = sum(1 for v in vals if v > 0) / len(vals) * 100.0
+        out[key] = (len(vals), sum(vals) / len(vals), hit)
+    return out

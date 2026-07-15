@@ -10,8 +10,10 @@ from experiment.monitoring import (
     append_log_entry,
     build_edge_anatomy_lines,
     build_monitoring_lines,
+    build_short_gate_lines,
     build_three_arm_summary,
     load_scored_observations,
+    load_short_gate_edges,
 )
 
 
@@ -247,6 +249,64 @@ class TestBuildEdgeAnatomyLines(unittest.TestCase):
         ]  # no features, no fired_signals
         out = "\n".join(build_edge_anatomy_lines(rows))
         self.assertIn("signal (none)", out)  # falls back to (none) family
+
+
+class TestLoadShortGateEdges(unittest.TestCase):
+    def test_reads_edges_from_summary(self):
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "short_gate_summary.json")
+            with open(p, "w") as f:
+                _json.dump(
+                    {"generated": "2026-07-15", "edges": {"guidance_downgrade": [60, 2.0, 66.0]}}, f
+                )
+            edges = load_short_gate_edges(p)
+        self.assertEqual(edges["guidance_downgrade"], [60, 2.0, 66.0])
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(load_short_gate_edges("/no/such/short_gate.json"), {})
+
+    def test_malformed_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "s.json")
+            with open(p, "w") as f:
+                f.write("{bad")
+            self.assertEqual(load_short_gate_edges(p), {})
+
+
+class TestBuildShortGateLines(unittest.TestCase):
+    def test_no_observations(self):
+        out = build_short_gate_lines({})
+        self.assertEqual(len(out), 1)
+        self.assertIn("no matured", out[0])
+
+    def test_per_signal_lines_and_accumulating(self):
+        edges = {
+            "__all__": (200, 0.5, 55.0),
+            "guidance_downgrade": (60, 2.0, 66.0),  # net>1 but n<200 → accumulating
+            "eps_revision_down_short": (140, 0.4, 55.0),
+        }
+        out = "\n".join(build_short_gate_lines(edges))
+        self.assertIn("guidance_downgrade: n=60 net=+2.00% hit=66%", out)
+        self.assertNotIn("__all__", out)  # pooled key not printed as a signal row
+        self.assertIn("accumulating", out)
+
+    def test_trigger_met(self):
+        edges = {"guidance_downgrade": (250, 1.6, 65.0)}  # n>=200 and net>1.0
+        out = "\n".join(build_short_gate_lines(edges))
+        self.assertIn("PRE-REGISTERED TRIGGER MET", out)
+
+    def test_trigger_present_but_edge_too_small(self):
+        edges = {"guidance_downgrade": (250, 0.4, 55.0)}  # enough n but net below floor
+        out = "\n".join(build_short_gate_lines(edges))
+        self.assertIn("accumulating", out)
+        self.assertNotIn("TRIGGER MET", out)
+
+    def test_trigger_signal_absent(self):
+        edges = {"eps_revision_down_short": (300, 0.5, 55.0)}  # no guidance_downgrade at all
+        out = "\n".join(build_short_gate_lines(edges))
+        self.assertIn("no matured observations yet", out.split("\n")[-1])
 
 
 if __name__ == "__main__":  # pragma: no cover

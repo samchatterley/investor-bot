@@ -102,5 +102,51 @@ class TestCapture(unittest.TestCase):
         self.assertEqual(n, 1)
 
 
+class TestNetShortReturn(unittest.TestCase):
+    def test_short_profits_when_stock_falls_net_of_costs(self):
+        # stock -5%, SPY flat, borrow 3%/yr over 5d (~0.06%), slippage 15bps (0.15%)
+        net = scs.net_short_return(-5.0, 0.0, borrow_annual_pct=3.0, hold_days=5, slippage_bps=15.0)
+        self.assertAlmostEqual(net, 5.0 - (3.0 * 5 / 252.0) - 0.15, places=4)
+
+    def test_market_neutral_subtracts_spy(self):
+        # stock -5%, SPY -4%: the short only earns the 1% idiosyncratic move (no costs here)
+        net = scs.net_short_return(-5.0, -4.0, borrow_annual_pct=0.0, hold_days=5, slippage_bps=0.0)
+        self.assertAlmostEqual(net, 1.0)
+
+    def test_higher_borrow_lowers_net(self):
+        lo = scs.net_short_return(-5.0, 0.0, borrow_annual_pct=3.0, hold_days=5, slippage_bps=0.0)
+        hi = scs.net_short_return(-5.0, 0.0, borrow_annual_pct=50.0, hold_days=5, slippage_bps=0.0)
+        self.assertGreater(lo, hi)
+
+
+class TestScoreShortEdge(unittest.TestCase):
+    def _obs(self, stock, spy, *sigs):
+        return {"stock_ret": stock, "spy_ret": spy, "signals": list(sigs)}
+
+    def test_per_signal_and_pooled(self):
+        obs = [
+            self._obs(-4.0, 0.0, "guidance_downgrade"),
+            self._obs(-2.0, 0.0, "guidance_downgrade", "eps_revision_down_short"),
+            self._obs(+3.0, 0.0, "eps_revision_down_short"),  # rose → short lost
+        ]
+        edges = scs.score_short_edge(obs, borrow_annual_pct=0.0, hold_days=5, slippage_bps=0.0)
+        self.assertEqual(edges["__all__"][0], 3)  # pooled n
+        gd_n, gd_net, gd_hit = edges["guidance_downgrade"]
+        self.assertEqual(gd_n, 2)
+        self.assertAlmostEqual(gd_net, 3.0)  # (+4 + +2)/2
+        self.assertAlmostEqual(gd_hit, 100.0)
+        eps_n, _, eps_hit = edges["eps_revision_down_short"]
+        self.assertEqual(eps_n, 2)
+        self.assertAlmostEqual(eps_hit, 50.0)  # one win (+2), one loss (-3)
+
+    def test_none_returns_skipped(self):
+        obs = [self._obs(None, 0.0, "x"), self._obs(-4.0, None, "x"), self._obs(-4.0, 0.0, "x")]
+        edges = scs.score_short_edge(obs, borrow_annual_pct=0.0, hold_days=5, slippage_bps=0.0)
+        self.assertEqual(edges["__all__"][0], 1)
+
+    def test_empty_observations(self):
+        self.assertEqual(scs.score_short_edge([]), {})
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

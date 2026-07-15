@@ -4,6 +4,30 @@ Full version history. Most recent first.
 
 ---
 
+### 1.159 — July 2026 — short-gate: realistic-cost eval + pre-registered un-gate trigger in the weekly telemetry
+
+Catalyst shorts are gated to bear regimes; the shadow log (2 weeks, ~1,700 matured obs) shows they'd
+have paid in NON-bear regimes too — but the earlier read used an optimistic flat 3%/yr borrow. This
+sharpens it to the *tradeable* edge and wires the decision to accumulate on evidence.
+
+- **Realistic haircut** (`scripts/eval_shadow_catalyst_shorts.py`): net short return is now computed net
+  of round-trip slippage (`--slippage-bps`, default 15) as well as borrow, and prints a **borrow-rate
+  sensitivity** (3/10/25/50%/yr) — because these catalyst names skew hard-to-borrow and the fee isn't
+  observable historically. The result: the bulk `eps_revision_down` edge (+0.90% at 3%) erodes to
+  breakeven by ~50% borrow, but **`guidance_downgrade` holds >1% net even at 50%** — the one signal
+  worth acting on.
+- **Shared scoring core** extracted to `analysis.shadow_catalyst_shorts` (`net_short_return`,
+  `score_short_edge`) so the eval and the telemetry apply the same cost model. 100% covered.
+- **Weekly telemetry + pre-registered trigger** (`experiment.monitoring.build_short_gate_lines`, wired
+  fail-safe into the weekly review): reports per-signal net short edge (non-bear, at a conservative 25%
+  borrow) and the **un-gate trigger for `guidance_downgrade`** — which only flags "consider un-gating in
+  non-bear regimes" once it clears BOTH a sample floor (n≥200) and a net-edge floor (>1.0% after the
+  haircut). Currently: accumulating (n=132, net +1.75% — clears the edge floor, not yet the sample
+  floor). The eval writes `logs/short_gate_summary.json`; the review reads it (no live fetch).
+
+Nothing is un-gated — this is measurement + a flagged decision, mirroring the MIN_CONFIDENCE trigger.
++15 tests; the scoring/telemetry modules at 100% coverage.
+
 ### 1.158 — July 2026 — macro-gate efficacy shadow log (per-event, saved-vs-cost)
 
 The macro-event gate blocks new buys around FOMC/CPI/NFP etc. Until now we couldn't tell whether that

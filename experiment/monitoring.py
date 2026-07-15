@@ -26,12 +26,21 @@ MONITORING_BANNER = "Monitoring only, not a hypothesis test. Formal tests fire a
 
 _DEFAULT_LOG_PATH = os.path.join("docs", "EXPERIMENT_LOG.md")
 _SCORED_PATH = os.path.join("logs", "experiment_scored.jsonl")
+_SHORT_GATE_SUMMARY_PATH = os.path.join("logs", "short_gate_summary.json")
 
 # Pre-registered MIN_CONFIDENCE 7->8 gate trigger (see build_edge_anatomy_lines). Both the low and high
 # confidence buckets must clear this many picks before the edge pattern is trusted enough to act on.
 _TRIGGER_MIN_N = 50
 _TRIGGER_LO_EDGE_MAX = 0.10  # conf<=7 must show ~no edge over the field (|edge| below this)
 _TRIGGER_HI_EDGE_MIN = 0.15  # conf=8 must show a real edge above this
+
+# Pre-registered trigger to un-gate catalyst shorts in non-bear regimes (see build_short_gate_lines).
+# guidance_downgrade is the strongest catalyst-short signal in the shadow log; require a real, cost-
+# surviving edge (net of a conservative hard-to-borrow assumption) over enough matured observations
+# before relaxing the bear-regime gate. A flagged decision, never automatic.
+_SHORT_GATE_TRIGGER_SIGNAL = "guidance_downgrade"
+_SHORT_GATE_MIN_N = 200
+_SHORT_GATE_MIN_NET = 1.0  # net short return % (after realistic borrow + slippage) to consider it
 
 
 @dataclass
@@ -223,6 +232,56 @@ def build_edge_anatomy_lines(rows: list[dict], horizon: int = 5) -> list[str]:
                 f"  signal {key}: field {fm:+.3f}R | AI picks n={len(gp)} {pm:+.3f}R edge {pm - fm:+.3f}R"
             )
 
+    return lines
+
+
+def load_short_gate_edges(path: str = _SHORT_GATE_SUMMARY_PATH) -> dict:
+    """Fail-safe read of the short-gate summary written by scripts/eval_shadow_catalyst_shorts.py.
+    Returns the per-signal edges map {signal: [n, net, hit]} (empty on any error / missing file)."""
+    try:
+        with open(path) as fh:
+            return (json.load(fh) or {}).get("edges", {})
+    except (OSError, ValueError) as exc:
+        logger.warning(f"experiment monitoring: could not read {path}: {exc}")
+        return {}
+
+
+def build_short_gate_lines(
+    edges: dict[str, tuple[int, float, float]],
+    *,
+    trigger_signal: str = _SHORT_GATE_TRIGGER_SIGNAL,
+    min_n: int = _SHORT_GATE_MIN_N,
+    min_net: float = _SHORT_GATE_MIN_NET,
+) -> list[str]:
+    """Short-gate efficacy telemetry (MONITORING ONLY; never changes behaviour).
+
+    Catalyst shorts are gated to bear regimes; the shadow log measures whether they'd pay in NON-bear
+    regimes too. ``edges`` maps catalyst signal -> (n, net_avg_pct, hit_pct) from
+    ``analysis.shadow_catalyst_shorts.score_short_edge`` under a REALISTIC borrow+slippage haircut (the
+    tradeable edge, not the gross). Reports each signal and the PRE-REGISTERED trigger for un-gating the
+    top signal — which only flags once it clears both a sample floor and a net-edge floor, so the gate
+    is never relaxed off a small optimistic-cost sample.
+    """
+    ranked = sorted(((k, v) for k, v in edges.items() if k != "__all__"), key=lambda kv: -kv[1][0])
+    if not ranked:
+        return ["Short-gate efficacy: no matured shadow catalyst-short observations yet."]
+    lines = ["Short-gate efficacy (non-bear, net of realistic borrow+slippage, monitoring only):"]
+    for sig, (n, net, hit) in ranked:
+        lines.append(f"  {sig}: n={n} net={net:+.2f}% hit={hit:.0f}%")
+    t = edges.get(trigger_signal)
+    if t and t[0] >= min_n and t[1] > min_net:
+        lines.append(
+            f"  PRE-REGISTERED TRIGGER MET: {trigger_signal} net short edge {t[1]:+.2f}% at "
+            f"n={t[0]} (>= {min_n}) -> consider un-gating {trigger_signal} shorts in non-bear "
+            f"regimes (a decision to make, not automatic)."
+        )
+    elif t:
+        lines.append(
+            f"  Un-gate trigger ({trigger_signal}): accumulating (need n>={min_n} and "
+            f"net>{min_net:.1f}%; have n={t[0]}, net={t[1]:+.2f}%)."
+        )
+    else:
+        lines.append(f"  Un-gate trigger ({trigger_signal}): no matured observations yet.")
     return lines
 
 

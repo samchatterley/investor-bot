@@ -25,7 +25,9 @@ from experiment.monitoring import (
     append_log_entry,
     build_edge_anatomy_lines,
     build_monitoring_lines,
+    build_short_gate_lines,
     load_scored_observations,
+    load_short_gate_edges,
 )
 from utils.portfolio_tracker import load_history
 
@@ -350,6 +352,10 @@ Respond with ONLY this JSON:
         monitoring_lines = monitoring_lines + build_edge_anatomy_lines(load_scored_observations())
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"edge-anatomy telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_short_gate_lines(load_short_gate_edges())
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"short-gate telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:
