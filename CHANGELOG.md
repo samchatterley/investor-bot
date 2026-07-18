@@ -4,6 +4,36 @@ Full version history. Most recent first.
 
 ---
 
+### 1.163 — July 2026 — validation substrate (2/n): the point-in-time spine (lookahead guard + as-of primitive)
+
+Second anti-self-deception brick. The codebase is full of point-in-time logic (`replay.py` slices to
+`<= T`, `historical_fundamentals` walks sorted events, `backfill` fills only closed horizons) — but
+every "no lookahead" was a **comment, not a test**. As the bot moves toward counterfactual replay and
+case-memory, an unproven point-in-time boundary is the single most dangerous silent bug. So: prove it,
+and give future point-in-time code one contract instead of N hand-rolled `<= T` filters.
+
+- **`experiment/lookahead_guard.py`** — a **future-data-poisoning** audit: run a deterministic
+  computation for date T twice, once on real data and once with everything strictly after T removed, and
+  compare. A point-in-time-honest computation is identical; any divergence (or a crash only on the
+  poisoned run) is a leak, localized to T. Ships with a **canary** (a deliberately-leaky computation the
+  guard must catch — the falsification test for the falsification test). Pure/offline; 100% covered.
+- **Real path proven, not asserted** — the guard audits the actual `fetch_stock_data → summarise_for_ai`
+  path (the deterministic slice→features→snapshot computation `replay.py` trusts) on a synthetic OHLCV
+  fixture: masking the future changes nothing, because it slices to `<= as_of` *before* computing
+  indicators. A test also confirms the guard catches the classic compute-then-slice / full-series
+  normalization bug.
+- **`data/as_of.py`** — the canonical point-in-time primitive: `visible_as_of` (construction-safe
+  `<= on_date` selector, so future consumers stop hand-rolling the filter), `latest_as_of`, and
+  `assert_no_future` (the tripwire). 100% covered, on the mypy gate.
+- **Existing providers brought under the spine by audit, not rewrite** — `pead_active_on_date` /
+  `earnings_miss_active_on_date` are now driven through the lookahead guard on synthetic events, so their
+  point-in-time claims are enforced. Deliberately *not* force-migrated behind `as_of`: they use a strict
+  `< sim_date` boundary (you don't know today's earnings yet) while `visible_as_of` is inclusive, and
+  `universe_history` is a static IPO-gate, not a dated-record stream — collapsing genuinely different
+  semantics behind one accessor would introduce bugs, not remove them.
+
++20 tests. Next substrate brick: live-vs-sim reconciliation (reality audits the validator).
+
 ### 1.162 — July 2026 — validation substrate (1/n): the global degrees-of-freedom ledger
 
 The first brick of the anti-self-deception substrate. As the bot gains more ways to *find* edges (the
