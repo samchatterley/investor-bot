@@ -4,6 +4,31 @@ Full version history. Most recent first.
 
 ---
 
+### 1.160 — July 2026 — improvement-candidate registry (the author→evidence→human-approval backbone)
+
+The backbone for making the bot's self-improvement autonomous *up to the approval line*. Every proposed
+change is a `Candidate` with a **pre-registered bar** (sample floor + effect floor) fixed before the
+data judges it; given the candidate's current forward evidence, the engine renders a uniform verdict —
+`ACCUMULATING`, `READY` (surfaced for human approval), or `NOT-SUPPORTED`. Authoring + evaluation are
+autonomous; promotion to live is always a human decision. Generalises the three hand-wired triggers
+(MIN_CONFIDENCE, macro-gate, guidance_downgrade short) into one data-driven engine.
+
+- **`experiment/candidate_registry.py`** — `Candidate` + `evaluate` + `build_candidate_lines` (the
+  approval-queue renderer: a dossier per READY candidate, then the in-progress list) + `default_candidates`
+  (seeds the two real in-flight decisions) + fail-safe load/save. 100% covered.
+- **Wired into the weekly review** (fail-safe): a "PENDING APPROVAL" block + candidate pipeline, with
+  each candidate's evidence pulled from its source (`confidence_edges` for MIN_CONFIDENCE, the short-gate
+  summary for guidance_downgrade). New `experiment.monitoring.confidence_edges` exposes the calibration
+  section as structured data.
+- **`scripts/pipeline_status.py`** — on-demand "what is the bot working on?" view (same data the weekly
+  review emails).
+- Registry file isolated in tests via a new `conftest` autouse fixture; `candidate_registry` added to the
+  mypy gate.
+
+This is stage 4 of the autonomy spectrum (the promotion engine + approval queue). Still ahead:
+autonomous *identification* (mining candidates from the observation log, multiple-testing corrected) and
+the research-candidate signal tier — both of which land in this registry. +21 tests.
+
 ### 1.159 — July 2026 — short-gate: realistic-cost eval + pre-registered un-gate trigger in the weekly telemetry
 
 Catalyst shorts are gated to bear regimes; the shadow log (2 weeks, ~1,700 matured obs) shows they'd

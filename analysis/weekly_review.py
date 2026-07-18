@@ -21,11 +21,13 @@ import anthropic
 import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
+from experiment.candidate_registry import build_candidate_lines, load_registry
 from experiment.monitoring import (
     append_log_entry,
     build_edge_anatomy_lines,
     build_monitoring_lines,
     build_short_gate_lines,
+    confidence_edges,
     load_scored_observations,
     load_short_gate_edges,
 )
@@ -35,6 +37,25 @@ logger = logging.getLogger(__name__)
 
 _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 EXPERIMENT_LOG_PATH = os.path.join("docs", "EXPERIMENT_LOG.md")
+
+
+def _map_candidate_evidence(cands, conf_edges, short_edges):
+    """Attach each registered candidate's current forward evidence (n, effect) from its source. Pure;
+    absent evidence maps to (None, None) so the candidate reads ACCUMULATING."""
+    gd = short_edges.get("guidance_downgrade")
+    evidence = {
+        "min_confidence_7_to_8": conf_edges.get("conf=8"),
+        "ungate_guidance_downgrade_shorts": (gd[0], gd[1]) if gd else None,
+    }
+    return [(c, *(evidence.get(c.id) or (None, None))) for c in cands]
+
+
+def _candidate_evidence():
+    """Load the registry + evidence sources and map them (glue around _map_candidate_evidence)."""
+    return _map_candidate_evidence(
+        load_registry(), confidence_edges(load_scored_observations()), load_short_gate_edges()
+    )
+
 
 # Only these parameters may be auto-adjusted, within these bounds.
 _SAFE_PARAMS: dict[str, dict] = {
@@ -356,6 +377,10 @@ Respond with ONLY this JSON:
         monitoring_lines = monitoring_lines + build_short_gate_lines(load_short_gate_edges())
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"short-gate telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_candidate_lines(_candidate_evidence())
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"candidate pipeline telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:

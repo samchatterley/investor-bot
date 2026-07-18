@@ -71,6 +71,15 @@ def _isolate_macro_gate_shadow(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_candidate_registry(tmp_path, monkeypatch):
+    """Never let the test suite create/overwrite the live candidate registry (weekly_review calls
+    load_registry(), which seeds + persists defaults when the file is missing)."""
+    import experiment.candidate_registry as _cr
+
+    monkeypatch.setattr(_cr, "REGISTRY_PATH", str(tmp_path / "candidate_registry.json"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_feed_status():
     """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
     test so one test's degraded-feed recording can't leak into another's health-check assertions."""

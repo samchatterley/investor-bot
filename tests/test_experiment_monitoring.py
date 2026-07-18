@@ -12,6 +12,7 @@ from experiment.monitoring import (
     build_monitoring_lines,
     build_short_gate_lines,
     build_three_arm_summary,
+    confidence_edges,
     load_scored_observations,
     load_short_gate_edges,
 )
@@ -249,6 +250,19 @@ class TestBuildEdgeAnatomyLines(unittest.TestCase):
         ]  # no features, no fired_signals
         out = "\n".join(build_edge_anatomy_lines(rows))
         self.assertIn("signal (none)", out)  # falls back to (none) family
+
+
+class TestConfidenceEdges(unittest.TestCase):
+    def test_empty_when_no_open_candidates(self):
+        self.assertEqual(confidence_edges([]), {})
+
+    def test_conf8_edge_vs_field(self):
+        # field = 3 non-picks at 0.0 + 1 conf-8 pick at 1.0 -> field_mean 0.25, conf=8 edge +0.75
+        rows = [_obs(f"F{i}", sel=False, fr5=0.0) for i in range(3)]
+        rows.append(_obs("W", sel=True, conf=8, fr5=1.0))
+        edges = confidence_edges(rows)
+        self.assertEqual(edges["conf=8"][0], 1)
+        self.assertAlmostEqual(edges["conf=8"][1], 0.75)
 
 
 class TestLoadShortGateEdges(unittest.TestCase):

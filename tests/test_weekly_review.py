@@ -363,6 +363,33 @@ class TestRunWeeklyReview(unittest.TestCase):
             result = run_weekly_review()
         self.assertIsNotNone(result)
 
+    def test_candidate_pipeline_telemetry_failure_does_not_break_review(self):
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "ok",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+            patch(
+                "analysis.weekly_review.build_candidate_lines",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+
     def test_experiment_monitoring_recorded_and_logged(self):
         from analysis.weekly_review import run_weekly_review
 
@@ -804,3 +831,24 @@ class TestParseDetail(unittest.TestCase):
         sig, conf = self._parse_detail("$1000.00 | breakout | confidence=9")
         self.assertEqual(sig, "breakout")
         self.assertEqual(conf, 9)
+
+
+class TestMapCandidateEvidence(unittest.TestCase):
+    def test_maps_present_evidence(self):
+        from analysis.weekly_review import _map_candidate_evidence
+        from experiment.candidate_registry import default_candidates
+
+        conf = {"conf=8": (60, 0.30)}
+        short = {"guidance_downgrade": [250, 1.6, 65.0]}
+        out = {
+            c.id: (n, e) for c, n, e in _map_candidate_evidence(default_candidates(), conf, short)
+        }
+        self.assertEqual(out["min_confidence_7_to_8"], (60, 0.30))
+        self.assertEqual(out["ungate_guidance_downgrade_shorts"], (250, 1.6))
+
+    def test_absent_evidence_maps_to_none(self):
+        from analysis.weekly_review import _map_candidate_evidence
+        from experiment.candidate_registry import default_candidates
+
+        out = {c.id: (n, e) for c, n, e in _map_candidate_evidence(default_candidates(), {}, {})}
+        self.assertTrue(all(v == (None, None) for v in out.values()))

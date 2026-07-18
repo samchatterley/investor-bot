@@ -235,6 +235,39 @@ def build_edge_anatomy_lines(rows: list[dict], horizon: int = 5) -> list[str]:
     return lines
 
 
+def confidence_edges(rows: list[dict], horizon: int = 5) -> dict[str, tuple[int, float]]:
+    """Per-confidence-bucket (n, edge-vs-field) for open-mode buy candidates -- the structured form of
+    build_edge_anatomy_lines' calibration section, supplied as the min_confidence candidate's evidence.
+    Returns {"conf<=7": (n, edge), "conf=8": (n, edge), "conf>=9": (n, edge)} for buckets with picks."""
+    candidates = [
+        r
+        for r in rows
+        if (r.get("extra") or {}).get("decision_type") == "buy_candidate"
+        and (r.get("extra") or {}).get("mode") == "open"
+        and _net_r(r, horizon) is not None
+    ]
+    obs = list({(r.get("symbol"), r.get("date")): r for r in candidates}.values())
+    if not obs:
+        return {}
+    field_mean = sum(_nets(obs, horizon)) / len(obs)
+    picks = [r for r in obs if _selected(r)]
+
+    def _conf(r: dict) -> int | None:
+        c = (r.get("extra") or {}).get("arm3_ai_confidence")
+        return c if isinstance(c, int) else None
+
+    out: dict[str, tuple[int, float]] = {}
+    for label, keep in (
+        ("conf<=7", lambda c: c is not None and c <= 7),
+        ("conf=8", lambda c: c == 8),
+        ("conf>=9", lambda c: c is not None and c >= 9),
+    ):
+        vals = _nets([r for r in picks if keep(_conf(r))], horizon)
+        if vals:
+            out[label] = (len(vals), sum(vals) / len(vals) - field_mean)
+    return out
+
+
 def load_short_gate_edges(path: str = _SHORT_GATE_SUMMARY_PATH) -> dict:
     """Fail-safe read of the short-gate summary written by scripts/eval_shadow_catalyst_shorts.py.
     Returns the per-signal edges map {signal: [n, net, hit]} (empty on any error / missing file)."""
