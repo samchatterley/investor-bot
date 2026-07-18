@@ -31,6 +31,7 @@ from experiment.monitoring import (
     load_scored_observations,
     load_short_gate_edges,
 )
+from experiment.research_signals import load_research_signals, score_research_signal
 from utils.portfolio_tracker import load_history
 
 logger = logging.getLogger(__name__)
@@ -39,21 +40,36 @@ _RUNTIME_CONFIG_PATH = os.path.join(LOG_DIR, "runtime_config.json")
 EXPERIMENT_LOG_PATH = os.path.join("docs", "EXPERIMENT_LOG.md")
 
 
-def _map_candidate_evidence(cands, conf_edges, short_edges):
+def _map_candidate_evidence(cands, conf_edges, short_edges, research_by_id, observations):
     """Attach each registered candidate's current forward evidence (n, effect) from its source. Pure;
-    absent evidence maps to (None, None) so the candidate reads ACCUMULATING."""
+    absent evidence maps to (None, None) so the candidate reads ACCUMULATING.
+
+    Manually-registered candidates read their dedicated telemetry; autonomously-mined candidates
+    (source="mined") are scored forward by replaying their research signal over the observation log."""
     gd = short_edges.get("guidance_downgrade")
-    evidence = {
+    fixed = {
         "min_confidence_7_to_8": conf_edges.get("conf=8"),
         "ungate_guidance_downgrade_shorts": (gd[0], gd[1]) if gd else None,
     }
-    return [(c, *(evidence.get(c.id) or (None, None))) for c in cands]
+    out = []
+    for c in cands:
+        if c.id in fixed:
+            ev = fixed[c.id]
+        elif c.source == "mined" and c.id in research_by_id:
+            n, effect = score_research_signal(research_by_id[c.id], observations)
+            ev = (n, effect) if effect is not None else None
+        else:
+            ev = None
+        out.append((c, *(ev or (None, None))))
+    return out
 
 
 def _candidate_evidence():
     """Load the registry + evidence sources and map them (glue around _map_candidate_evidence)."""
+    obs = load_scored_observations()
+    research_by_id = {s.id: s for s in load_research_signals()}
     return _map_candidate_evidence(
-        load_registry(), confidence_edges(load_scored_observations()), load_short_gate_edges()
+        load_registry(), confidence_edges(obs), load_short_gate_edges(), research_by_id, obs
     )
 
 

@@ -4,6 +4,37 @@ Full version history. Most recent first.
 
 ---
 
+### 1.161 — July 2026 — autonomous identification: the candidate miner + research-signal tier (shadow-only)
+
+Closes the loop opened in 1.160. The bot now *identifies its own* candidates — mining the observation
+log for feature→forward-return edges — instead of only evaluating hand-wired ones. Every survivor is
+authored into a shadow-only research signal and registered as a `Candidate`, so it faces the exact same
+pre-registered bar and forward-honest evaluation as a human-proposed change. Nothing mined ever trades:
+identification and authoring are autonomous; promotion to a live signal is still a human decision.
+
+- **`experiment/candidate_miner.py`** — `mine_feature_edges` splits each feature at quantiles (default
+  top/bottom quintile), compares forward 5d market-excess returns with a **Welch t-test**, and applies
+  **Holm–Bonferroni** correction across the *entire* search. A survivor must clear the corrected α, an
+  absolute-excess floor, and a sample floor — the guard against autonomous mining surfacing curve-fit
+  noise. `to_research_signal` / `to_candidate` author survivors. 100% covered. (Fixed a real
+  correctness bug: a zero-standard-error split with a non-zero mean difference is perfect separation —
+  now p→0, not p=1.)
+- **`experiment/research_signals.py`** — the shadow-only signal tier. `score_research_signal` is
+  **forward-honest**: it scores a signal only on observations dated on/after the signal's own creation,
+  so a mined signal is graded purely out-of-sample. Fail-safe load/save. 100% covered.
+- **`scripts/mine_candidates.py`** — the runner: mines open-mode buy-candidate observations, authors
+  survivors, and registers them idempotently (dedup by id, so re-running never double-registers).
+- **Wired into the weekly review**: mined candidates pull their forward evidence by replaying their
+  research signal over the observation log (`_map_candidate_evidence` now handles both hand-wired and
+  mined sources), so they surface in the same PENDING-APPROVAL queue.
+- First real run: 947 observations → **0 survivor edges** after correction — the honest, expected
+  result on thin single-regime data, and exactly what the multiple-testing guard is for.
+- Both new modules added to the mypy gate; research-signal file isolated in tests via a new `conftest`
+  autouse fixture. +5 tests (net; several existing map-evidence tests widened to the new signature).
+
+This completes the autonomy spectrum up to the approval line: **measure → identify → author → validate
+→ surface for human approval**. Promotion to live remains, deliberately, a human decision.
+
 ### 1.160 — July 2026 — improvement-candidate registry (the author→evidence→human-approval backbone)
 
 The backbone for making the bot's self-improvement autonomous *up to the approval line*. Every proposed

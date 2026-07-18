@@ -80,6 +80,15 @@ def _isolate_candidate_registry(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_research_signals(tmp_path, monkeypatch):
+    """Never let the test suite read/write the live research-signal tier (weekly_review + the miner
+    script load/save it)."""
+    import experiment.research_signals as _rs
+
+    monkeypatch.setattr(_rs, "RESEARCH_SIGNALS_PATH", str(tmp_path / "research_signals.json"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_feed_status():
     """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
     test so one test's degraded-feed recording can't leak into another's health-check assertions."""

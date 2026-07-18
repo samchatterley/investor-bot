@@ -841,7 +841,8 @@ class TestMapCandidateEvidence(unittest.TestCase):
         conf = {"conf=8": (60, 0.30)}
         short = {"guidance_downgrade": [250, 1.6, 65.0]}
         out = {
-            c.id: (n, e) for c, n, e in _map_candidate_evidence(default_candidates(), conf, short)
+            c.id: (n, e)
+            for c, n, e in _map_candidate_evidence(default_candidates(), conf, short, {}, [])
         }
         self.assertEqual(out["min_confidence_7_to_8"], (60, 0.30))
         self.assertEqual(out["ungate_guidance_downgrade_shorts"], (250, 1.6))
@@ -850,5 +851,47 @@ class TestMapCandidateEvidence(unittest.TestCase):
         from analysis.weekly_review import _map_candidate_evidence
         from experiment.candidate_registry import default_candidates
 
-        out = {c.id: (n, e) for c, n, e in _map_candidate_evidence(default_candidates(), {}, {})}
+        out = {
+            c.id: (n, e)
+            for c, n, e in _map_candidate_evidence(default_candidates(), {}, {}, {}, [])
+        }
         self.assertTrue(all(v == (None, None) for v in out.values()))
+
+    def test_mined_candidate_scored_from_research_signal(self):
+        from analysis.weekly_review import _map_candidate_evidence
+        from experiment.candidate_registry import Candidate
+        from experiment.research_signals import ResearchSignal
+
+        cand = Candidate(
+            id="mined_rsi_14_ge",
+            hypothesis="h",
+            action="a",
+            metric="R",
+            min_n=60,
+            min_effect=0.15,
+            source="mined",
+        )
+        sig = ResearchSignal("mined_rsi_14_ge", "rsi_14", ">=", 60.0, "long", created="2026-07-01")
+        obs = [
+            {"date": "2026-07-10", "features": {"rsi_14": 70}, "outcomes": {"forward_r_5d": 2.0}},
+            {"date": "2026-07-10", "features": {"rsi_14": 30}, "outcomes": {"forward_r_5d": 0.0}},
+        ]
+        _c, n, effect = _map_candidate_evidence([cand], {}, {}, {"mined_rsi_14_ge": sig}, obs)[0]
+        self.assertEqual(n, 1)
+        self.assertAlmostEqual(effect, 1.0)  # fired mean 2.0 - field mean 1.0
+
+    def test_mined_candidate_without_research_signal_is_none(self):
+        from analysis.weekly_review import _map_candidate_evidence
+        from experiment.candidate_registry import Candidate
+
+        cand = Candidate(
+            id="mined_orphan",
+            hypothesis="h",
+            action="a",
+            metric="R",
+            min_n=60,
+            min_effect=0.15,
+            source="mined",
+        )
+        out = _map_candidate_evidence([cand], {}, {}, {}, [])  # no research signal registered
+        self.assertEqual(out[0][1:], (None, None))
