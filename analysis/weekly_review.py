@@ -22,6 +22,7 @@ import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
 from experiment.candidate_registry import build_candidate_lines, load_registry
+from experiment.dof_ledger import build_ledger_lines, load_ledger
 from experiment.monitoring import (
     append_log_entry,
     build_edge_anatomy_lines,
@@ -397,6 +398,10 @@ Respond with ONLY this JSON:
         monitoring_lines = monitoring_lines + build_candidate_lines(_candidate_evidence())
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"candidate pipeline telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_ledger_lines(load_ledger())
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"research-budget ledger telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:

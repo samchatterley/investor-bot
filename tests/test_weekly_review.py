@@ -390,6 +390,33 @@ class TestRunWeeklyReview(unittest.TestCase):
             result = run_weekly_review()
         self.assertIsNotNone(result)
 
+    def test_ledger_telemetry_failure_does_not_break_review(self):
+        from analysis.weekly_review import run_weekly_review
+
+        fake_review = {
+            "week_summary": "ok",
+            "what_worked": [],
+            "what_didnt": [],
+            "lessons": [],
+            "config_changes": [],
+        }
+        with (
+            patch(
+                "analysis.weekly_review.load_history",
+                return_value=[self._make_record((date.today() - timedelta(days=3)).isoformat())],
+            ),
+            patch("analysis.weekly_review.anthropic.Anthropic") as mock_anthropic,
+            patch(
+                "analysis.weekly_review.load_ledger",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            mock_anthropic.return_value.messages.create.return_value = self._mock_ai_response(
+                fake_review
+            )
+            result = run_weekly_review()
+        self.assertIsNotNone(result)
+
     def test_experiment_monitoring_recorded_and_logged(self):
         from analysis.weekly_review import run_weekly_review
 

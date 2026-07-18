@@ -1,10 +1,11 @@
 # Pending Work
 
 ### In Progress
-- [ ] Commit + push 1.161 to main (ruff/mypy/affected-tests green)
+- [ ] Ship 1.162 DOF ledger: 100% coverage, ruff/mypy clean, CHANGELOG+README, commit, push, restart scheduler
 
 ### Pending
-- [ ] Restart scheduler after push (weekend = market closed = safe)
-- [ ] HELD (gated on evidence): flip MIN_CONFIDENCE 7->8 once trigger reaches n>=50/bucket; wire context card once multi-regime data exists — both bump EXPERIMENT_VERSION
-- [ ] Longer-term: dashboard pipeline panel + auto-alert when a candidate crosses READY
+- [ ] Substrate brick 2: point-in-time data spine (as-of accessor + lookahead guard) — the foundation replay/case-memory stand on
+- [ ] Substrate brick 3: live-vs-sim reconciliation loop (who-watches-the-watchers — reality audits the validator)
+- [ ] Capabilities (each ships with its falsification test): counterfactual replay, self-specialization, causal case-memory
+- [ ] HELD (gated on evidence): MIN_CONFIDENCE 7->8 flip once trigger n>=50/bucket; context-card wiring once multi-regime data exists
 

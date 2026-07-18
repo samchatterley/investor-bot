@@ -20,7 +20,7 @@ from datetime import date  # pragma: no cover
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pragma: no cover
 
 from experiment.candidate_miner import (  # noqa: E402  # pragma: no cover
-    mine_feature_edges,
+    mine_edges_online,
     to_candidate,
     to_research_signal,
 )
@@ -28,6 +28,7 @@ from experiment.candidate_registry import (  # noqa: E402  # pragma: no cover
     load_registry,
     save_registry,
 )
+from experiment.dof_ledger import load_ledger, save_ledger  # noqa: E402  # pragma: no cover
 from experiment.monitoring import load_scored_observations  # noqa: E402  # pragma: no cover
 from experiment.research_signals import (  # noqa: E402  # pragma: no cover
     load_research_signals,
@@ -42,13 +43,18 @@ def main() -> None:  # pragma: no cover
         if (o.get("extra") or {}).get("decision_type") == "buy_candidate"
         and (o.get("extra") or {}).get("mode") == "open"
     ]
-    edges = mine_feature_edges(obs)
-    print(f"Mined {len(obs)} observations -> {len(edges)} survivor edge(s) (Holm-corrected).")
+    ledger = load_ledger()
+    today = date.today().isoformat()
+    ledger, edges = mine_edges_online(obs, ledger, now=today)
+    save_ledger(ledger)  # every look charged against the lifetime budget, discovery or not
+    print(
+        f"Mined {len(obs)} observations -> {len(edges)} survivor edge(s) "
+        f"(online FDR; alpha-wealth now {ledger.wealth:.4f} after {ledger.n_tests} lifetime looks)."
+    )
     if not edges:
-        print("No edge cleared correction + effect floor. (Expected on thin/single-regime data.)")
+        print("No edge cleared the ledger + effect floor. (Expected on thin/single-regime data.)")
         return
 
-    today = date.today().isoformat()
     registry = load_registry()
     existing = {c.id for c in registry}
     signals = load_research_signals()

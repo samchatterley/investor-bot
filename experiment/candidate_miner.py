@@ -1,13 +1,18 @@
 """Autonomous candidate identification: mine feature -> forward-return edges from the observation log.
 
 For each numeric feature, this tests whether its extreme (top- or bottom-quintile) subset has a forward
-return that differs from the rest of the field, then applies **Holm-Bonferroni across every test** so the
-correction reflects the whole search, not a single lucky comparison. This is the discipline that keeps
-autonomous mining from surfacing curve-fit noise -- but it is still only in-sample HYPOTHESIS
-GENERATION: a survivor becomes a `ResearchSignal` and must then forward-validate through the registry
-before it can ever be approved for live trading.
+return that differs from the rest of the field. Multiplicity is the whole danger of autonomous mining --
+run a wide enough search and something always looks significant -- so significance is corrected two ways:
 
-Pure; the observation-log IO + registry filing live in scripts/mine_candidates.py.
+  * ``mine_feature_edges`` -- Holm-Bonferroni across one run's tests (standalone; correct in isolation).
+  * ``mine_edges_online`` -- charges every look against the GLOBAL degrees-of-freedom ledger, so the
+    correction spans the bot's *entire lifetime* of searches, not a fresh free pass each week. This is
+    the production path.
+
+Either way a survivor is only in-sample HYPOTHESIS GENERATION: it becomes a `ResearchSignal` and must
+forward-validate through the registry before it can ever be approved for live trading.
+
+Pure; the observation-log IO + registry/ledger filing live in scripts/mine_candidates.py.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import math
 from dataclasses import dataclass
 
 from experiment.candidate_registry import Candidate
+from experiment.dof_ledger import LedgerState, record_batch
 from experiment.research_signals import ResearchSignal
 
 # Numeric snapshot features worth scanning (the ones the observation log carries).
@@ -85,24 +91,20 @@ def _holm(pvals: list[float]) -> list[float]:
     return adjusted
 
 
-def mine_feature_edges(
+def _collect_tests(
     observations: list[dict],
-    features: tuple[str, ...] = DEFAULT_FEATURES,
+    features: tuple[str, ...],
     *,
-    horizon: int = 5,
-    top_q: float = 0.8,
-    bottom_q: float = 0.2,
-    min_n: int = 30,
-    alpha: float = 0.05,
-    min_abs_excess: float = 0.15,
-) -> list[MinedEdge]:
-    """Return survivor feature edges, most significant first.
+    horizon: int,
+    top_q: float,
+    bottom_q: float,
+    min_n: int,
+) -> list[tuple[str, str, float, float, int, float]]:
+    """Every (feature, quantile-split) hypothesis with enough sample: (feature, op, thr, excess, n, p).
 
-    A survivor clears three bars: Holm-corrected p < ``alpha`` (real after correcting for the search),
-    |excess| >= ``min_abs_excess`` (worth acting on), and the fired subset has >= ``min_n`` members
-    (not a lucky handful). ``observations`` are scored rows with a ``features`` dict and a closed
-    forward_r horizon. Survivors are hypotheses to forward-validate, never conclusions.
-    """
+    This is the raw set of *looks* -- one per top/bottom-quantile split per scannable feature -- before
+    any significance correction. The correction is applied by the caller (Holm per-run, or the global
+    ledger's online FDR); a look counts toward multiplicity whether or not it ends up a discovery."""
     field = [
         o
         for o in observations
@@ -129,7 +131,38 @@ def mine_feature_edges(
                 continue
             excess, p = _welch_p(fired, rest)
             tests.append((feat, op, thr, excess, len(fired), p))
+    return tests
 
+
+def _look_id(feat: str, op: str, thr: float, horizon: int) -> str:
+    """Stable ledger id tying a mined test back to its edge (unique per feature/op/threshold/horizon)."""
+    return f"mined:{feat}{op}{round(thr, 4)}:{horizon}d"
+
+
+def mine_feature_edges(
+    observations: list[dict],
+    features: tuple[str, ...] = DEFAULT_FEATURES,
+    *,
+    horizon: int = 5,
+    top_q: float = 0.8,
+    bottom_q: float = 0.2,
+    min_n: int = 30,
+    alpha: float = 0.05,
+    min_abs_excess: float = 0.15,
+) -> list[MinedEdge]:
+    """Return survivor feature edges, most significant first (standalone, per-run Holm correction).
+
+    A survivor clears three bars: Holm-corrected p < ``alpha`` (real after correcting for the search),
+    |excess| >= ``min_abs_excess`` (worth acting on), and the fired subset has >= ``min_n`` members
+    (not a lucky handful). ``observations`` are scored rows with a ``features`` dict and a closed
+    forward_r horizon. Survivors are hypotheses to forward-validate, never conclusions.
+
+    Prefer ``mine_edges_online`` in production: it charges every look against the lifetime ledger, so a
+    weekly re-run does not get a fresh, free correction each time.
+    """
+    tests = _collect_tests(
+        observations, features, horizon=horizon, top_q=top_q, bottom_q=bottom_q, min_n=min_n
+    )
     if not tests:
         return []
     corrected = _holm([t[5] for t in tests])
@@ -148,6 +181,58 @@ def mine_feature_edges(
         if pc < alpha and abs(excess) >= min_abs_excess
     ]
     return sorted(edges, key=lambda e: e.p_corrected)
+
+
+def mine_edges_online(
+    observations: list[dict],
+    ledger: LedgerState,
+    features: tuple[str, ...] = DEFAULT_FEATURES,
+    *,
+    horizon: int = 5,
+    top_q: float = 0.8,
+    bottom_q: float = 0.2,
+    min_n: int = 30,
+    min_abs_excess: float = 0.15,
+    now: str | None = None,
+) -> tuple[LedgerState, list[MinedEdge]]:
+    """Mine edges, letting the GLOBAL ledger -- not a fresh per-run correction -- judge significance.
+
+    Every split with enough sample is a look, and *all* of them are charged against the ledger's
+    lifetime alpha-wealth (multiplicity is paid whether or not a look becomes a discovery). A survivor
+    is a look the ledger *rejected* under online FDR whose |excess| also clears the effect floor.
+    Returns the advanced ledger (persist it) and the survivors. ``MinedEdge.p_corrected`` here carries
+    the ledger's alpha-level bar the test cleared, not a Holm value."""
+    tests = _collect_tests(
+        observations, features, horizon=horizon, top_q=top_q, bottom_q=bottom_q, min_n=min_n
+    )
+    if not tests:
+        return ledger, []
+    keyed = {
+        _look_id(feat, op, thr, horizon): (feat, op, thr, excess, n, p)
+        for feat, op, thr, excess, n, p in tests
+    }
+    batch = [
+        (lid, "miner", f"{feat} {op} {round(thr, 4)} vs field ({horizon}d forward)", p)
+        for lid, (feat, op, thr, _excess, _n, p) in keyed.items()
+    ]
+    new_ledger, looks = record_batch(ledger, batch, source="miner", now=now)
+    edges = []
+    for lk in looks:
+        feat, op, thr, excess, n, p = keyed[lk.id]
+        if lk.rejected and abs(excess) >= min_abs_excess:
+            edges.append(
+                MinedEdge(
+                    feature=feat,
+                    op=op,
+                    threshold=round(thr, 4),
+                    direction="long" if excess > 0 else "short",
+                    n=n,
+                    excess=excess,
+                    p_value=p,
+                    p_corrected=lk.alpha_level,
+                )
+            )
+    return new_ledger, sorted(edges, key=lambda e: e.p_value)
 
 
 def to_research_signal(edge: MinedEdge, created: str) -> ResearchSignal:

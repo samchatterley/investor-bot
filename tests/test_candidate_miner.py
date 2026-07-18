@@ -7,10 +7,12 @@ from experiment.candidate_miner import (
     _mean_var,
     _pct,
     _welch_p,
+    mine_edges_online,
     mine_feature_edges,
     to_candidate,
     to_research_signal,
 )
+from experiment.dof_ledger import new_state
 
 
 def _obs(rsi, fr5):
@@ -101,6 +103,40 @@ class TestAuthoring(unittest.TestCase):
         self.assertEqual(cand.source, "mined")
         self.assertEqual((cand.min_n, cand.min_effect), (60, 0.15))
         self.assertIn("Promote research signal", cand.action)
+
+
+class TestMineEdgesOnline(unittest.TestCase):
+    def test_surfaces_edge_and_charges_every_look(self):
+        # strong top-quintile long edge; both quantile splits are charged against the ledger
+        obs = [_obs(i, 3.0 if i >= 40 else 0.0) for i in range(50)]
+        ledger, edges = mine_edges_online(
+            obs, new_state(), features=("rsi_14",), min_n=5, min_abs_excess=0.5
+        )
+        self.assertEqual(ledger.n_tests, 2)  # >= and <= splits both counted as looks
+        self.assertGreater(ledger.wealth, 0.05)  # a discovery refunded budget
+        self.assertTrue(any(e.op == ">=" and e.direction == "long" for e in edges))
+
+    def test_empty_tests_returns_ledger_unchanged(self):
+        led = new_state()
+        obs = [_obs(i, 1.0) for i in range(8)]  # < 2*min_n -> no looks collected
+        out_ledger, edges = mine_edges_online(obs, led, features=("rsi_14",), min_n=5)
+        self.assertEqual(edges, [])
+        self.assertIs(out_ledger, led)  # short-circuit: budget untouched
+
+    def test_effect_floor_filters_significant_but_tiny(self):
+        # a highly-significant but tiny-excess split: the ledger rejects it, the floor drops it
+        obs = [_obs(i, 0.10 if i >= 40 else 0.0) for i in range(50)]
+        ledger, edges = mine_edges_online(
+            obs, new_state(), features=("rsi_14",), min_n=5, min_abs_excess=0.5
+        )
+        self.assertEqual(edges, [])
+        self.assertEqual(ledger.n_tests, 2)  # still charged as looks
+
+    def test_null_data_rejects_nothing(self):
+        obs = [_obs(i, 0.0) for i in range(50)]  # flat forward_r -> p=1, no rejections
+        ledger, edges = mine_edges_online(obs, new_state(), features=("rsi_14",), min_n=5)
+        self.assertEqual(edges, [])
+        self.assertEqual((ledger.n_tests, ledger.n_rejections), (2, 0))
 
 
 if __name__ == "__main__":  # pragma: no cover

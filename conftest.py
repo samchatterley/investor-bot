@@ -89,6 +89,15 @@ def _isolate_research_signals(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_dof_ledger(tmp_path, monkeypatch):
+    """Never let the test suite read/write the live degrees-of-freedom ledger (weekly_review calls
+    load_ledger(), which seeds + persists a fresh ledger when the file is missing)."""
+    import experiment.dof_ledger as _dof
+
+    monkeypatch.setattr(_dof, "LEDGER_PATH", str(tmp_path / "dof_ledger.json"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_feed_status():
     """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
     test so one test's degraded-feed recording can't leak into another's health-check assertions."""

@@ -4,6 +4,34 @@ Full version history. Most recent first.
 
 ---
 
+### 1.162 — July 2026 — validation substrate (1/n): the global degrees-of-freedom ledger
+
+The first brick of the anti-self-deception substrate. As the bot gains more ways to *find* edges (the
+miner now, self-specialization and information-expansion later), the ways to *fool itself* compound
+faster than the capabilities — so multiplicity has to be accounted for **once, globally, and across the
+bot's whole lifetime**, not per run. The miner's Holm correction is correct within a single search but
+resets every week; run the same search 52 times and you get 52 free passes.
+
+- **`experiment/dof_ledger.py`** — a persisted **online-FDR** ledger via **alpha-investing** (Foster &
+  Stine, 2008). A bounded pool of "alpha-wealth" that every formal test spends: a test is conducted at
+  level `min(gamma*wealth, alpha)`, a discovery refunds a payout, a non-discovery pays a penalty. So the
+  effective bar *tightens* as unsuccessful looks pile up and *relaxes* after a genuine discovery — a
+  research budget that literally depletes as you test. Marginal FDR is controlled at the target across
+  the entire lifetime search. Fail-safe load/save; 100% covered.
+- **Miner rewired** — new `mine_edges_online` charges *every* quantile split (discovery or not) against
+  the global ledger and treats a ledger rejection (plus the effect floor) as a survivor. `mine_feature_edges`
+  (per-run Holm) stays for standalone use; the runner and production path now use the ledger.
+- **Surfaced in the weekly review** (fail-safe): a "research-budget ledger" block reports looks recorded,
+  families searched, discoveries, and the current alpha-wealth / next-test bar — the system auditing its
+  own multiplicity.
+- Ledger file isolated in tests via a new `conftest` autouse fixture; module added to the mypy gate.
+- First real run: **0 lifetime looks** — verified as honest, not a dead wire: the observation log's
+  5-day forward returns have not matured yet (only 1d has closed), so there is genuinely nothing to test
+  at the 5d horizon. The accountant is in place for when the data arrives. +21 tests.
+
+Governing principle for everything that follows: *no new capability ships without its own falsification
+test attached, and multiplicity is charged here.*
+
 ### 1.161 — July 2026 — autonomous identification: the candidate miner + research-signal tier (shadow-only)
 
 Closes the loop opened in 1.160. The bot now *identifies its own* candidates — mining the observation
