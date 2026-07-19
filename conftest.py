@@ -98,6 +98,14 @@ def _isolate_dof_ledger(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_reconciliation(tmp_path, monkeypatch):
+    """Never let the test suite read/write the live replay-fidelity summary (weekly_review loads it)."""
+    import experiment.reconciliation as _rec
+
+    monkeypatch.setattr(_rec, "RECONCILIATION_PATH", str(tmp_path / "reconciliation_summary.json"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_feed_status():
     """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
     test so one test's degraded-feed recording can't leak into another's health-check assertions."""

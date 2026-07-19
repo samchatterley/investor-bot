@@ -4,6 +4,33 @@ Full version history. Most recent first.
 
 ---
 
+### 1.165 — July 2026 — validation substrate (3/n): live-vs-sim reconciliation (reality audits the validator)
+
+Third anti-self-deception brick. The ledger (1.162) and the lookahead guard (1.163) make our *claims*
+honest, but every backtest and counterfactual replay still rests on one unproven assumption: that the
+simulator reproduces reality. If replay reconstructs a past decision differently from what the bot logged
+live that day, its counterfactuals are fiction — and self-specialization / case-memory built on replay
+inherit the lie. So: measure it.
+
+- **`experiment/reconciliation.py`** — for each logged live observation, replay reconstructs the same
+  snapshot and we compare. `reconcile_snapshot` reports numeric-field divergences (beyond tolerance, or
+  present on one side) and fired-signal-set mismatches (the ones that matter most — a signal that fired
+  live but not in replay means replay would have *traded differently*). `summarise` aggregates to a
+  **fidelity** score (fraction of snapshots reconstructed exactly) plus per-field drift. 100% covered,
+  on the mypy gate.
+- **Fidelity is a gate, not a stat** — `build_reconciliation_lines` flags `FLAG -- replay-derived
+  capabilities not yet trustworthy` below a floor (default 90%). This is the bar counterfactual replay
+  must clear before we believe it.
+- **`scripts/reconcile_replay.py`** (coverage-omit) — reconstructs each logged snapshot through the real
+  replay machinery (`_build_preloaded` → `fetch_stock_data` point-in-time slice → `summarise_for_ai` →
+  `evaluate_signals`) and persists the fidelity summary. The composition was smoke-tested offline
+  (identical live/sim → 100%).
+- **Surfaced in the weekly review** (fail-safe): a replay-fidelity line; summary file isolated in tests
+  via a new `conftest` autouse fixture.
+
++17 tests. The substrate now has three bricks (multiplicity, lookahead, fidelity); the next steps are
+the recursive capabilities, each gated on the substrate — counterfactual replay first, gated on fidelity.
+
 ### 1.164 — July 2026 — fix: spread-proxy fail-closed fallout + CWD-robust snapshot contract
 
 Cleanup of 16 test failures surfaced by a full-suite run. Two are a real bug, the rest are test drift

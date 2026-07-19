@@ -32,6 +32,7 @@ from experiment.monitoring import (
     load_scored_observations,
     load_short_gate_edges,
 )
+from experiment.reconciliation import build_reconciliation_lines, load_reconciliation_summary
 from experiment.research_signals import load_research_signals, score_research_signal
 from utils.portfolio_tracker import load_history
 
@@ -402,6 +403,12 @@ Respond with ONLY this JSON:
         monitoring_lines = monitoring_lines + build_ledger_lines(load_ledger())
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"research-budget ledger telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_reconciliation_lines(
+            load_reconciliation_summary()
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"replay-fidelity telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:
