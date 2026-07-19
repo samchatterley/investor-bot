@@ -22,6 +22,7 @@ import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
 from experiment.candidate_registry import build_candidate_lines, load_registry
+from experiment.counterfactual import build_counterfactual_lines, horizon_counterfactuals
 from experiment.dof_ledger import build_ledger_lines, load_ledger
 from experiment.monitoring import (
     append_log_entry,
@@ -409,6 +410,12 @@ Respond with ONLY this JSON:
         )
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"replay-fidelity telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_counterfactual_lines(
+            horizon_counterfactuals(load_scored_observations())
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"counterfactual telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:

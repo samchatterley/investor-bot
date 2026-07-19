@@ -1,8 +1,5 @@
 # Pending Work
 
-### In Progress
-- [ ] Ship brick 3 (1.165): live-vs-sim reconciliation (replay fidelity gate)
-
 ### Pending
 - [ ] Capability: counterfactual replay (gated on replay fidelity from brick 3; ships with its lookahead audit)
 - [ ] Capability: self-specialization (turns the ΔR thesis into a steering policy; charged against the DOF ledger)

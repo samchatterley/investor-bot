@@ -4,6 +4,34 @@ Full version history. Most recent first.
 
 ---
 
+### 1.166 — July 2026 — first capability on the substrate: counterfactual replay (hold-horizon tier)
+
+The substrate exists to make capabilities safe to add. This is the first: counterfactual replay attacks
+the binding constraint (learning rate) by asking, for every decision already made, what a *different*
+action would have returned from the same forward price path — manufacturing effective sample instead of
+waiting for live outcomes one at a time.
+
+- **`experiment/counterfactual.py`** — the cheapest *honest* tier, the hold-horizon. The observation log
+  already carries the forward return at several closed horizons (1/3/5/10d) plus a round-trip cost, all
+  point-in-time via the backfill, so comparing horizons needs **no simulator** and is *not* exposed to
+  replay-fidelity risk. (Sim-counterfactuals — reconstructing alternative snapshots — are the next tier
+  and *are* gated on 1.165 fidelity.) `horizon_counterfactuals` compares net-of-cost returns per horizon;
+  `to_candidate` authors a pre-registered "switch the hold" Candidate when a non-baseline horizon wins by
+  the effect floor. 100% covered, on the mypy gate.
+- **Ships with its falsification tests** (per the governing principle now in CLAUDE.md): point-in-time
+  (backfill only fills closed horizons); cost-honest (every horizon netted of the same round-trip cost so
+  a shorter hold is not flattered); multiplicity (a "switch horizon" discovery becomes a registry
+  Candidate, forward-validated and charged against the DOF ledger — never acted on in-sample).
+- **Surfaced in the weekly review** (fail-safe). First real run: `1d=+0.14R (n=2232), 3d=+0.57R (n=615)`
+  — and it correctly refuses to author a candidate because the **5d baseline has not matured yet**
+  (uplift undefined without the baseline to beat). The honesty guardrail holds: the machine is in place
+  for when the data arrives.
+- **CLAUDE.md** now codifies the governing principle: *the more we expand the ways to fool ourselves, the
+  more we must prove we are not being fooled* — substrate before capability, every capability ships its
+  falsification test, forward-honest + multiplicity-charged, and the judge never goes recursive.
+
++16 tests.
+
 ### 1.165 — July 2026 — validation substrate (3/n): live-vs-sim reconciliation (reality audits the validator)
 
 Third anti-self-deception brick. The ledger (1.162) and the lookahead guard (1.163) make our *claims*

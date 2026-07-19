@@ -1,5 +1,16 @@
 # InvestorBotHard — Claude Code Instructions
 
+## Governing principle — prove we are not fooling ourselves
+
+**The more we expand the ways to fool ourselves, the more we must prove that we are not being fooled.**
+
+Every new capability that helps the bot *find* or *act on* an edge (a mined signal, a specialisation, a counterfactual, a case memory) also adds a way to be fooled — and those ways compound *faster* than the capabilities, because they interact. So:
+
+- **Substrate before capability.** The validation substrate — the DOF ledger (lifetime multiple-testing), the lookahead guard (point-in-time), live-vs-sim reconciliation (replay fidelity) — is load-bearing. Build or extend it before adding a capability that leans on it.
+- **No capability ships without its own falsification test.** In the same change, state the specific way the capability could fool us and the test that would catch it. A contribution that cannot be attributed or explained is rejected — opacity is a rejection criterion, not a trade-off.
+- **Forward-honest, pre-registered, multiplicity-charged.** Evaluate on data unseen at registration; fix the bar (sample floor + effect floor) *before* the data judges it; charge every look against the global DOF ledger.
+- **Never make the judge recursive.** The evaluation methodology, the pre-registered bars, and the human approval line itself stay fixed and human. Authoring is autonomous; judging whether authoring succeeded is not. The moment the bot can weaken its own bar to pass, Goodhart wins.
+
 ## Session start
 
 If `TODO.md` exists in the project root, read it and restore the items into TodoWrite before doing anything else. This is the persistent backlog — do not skip this step.
