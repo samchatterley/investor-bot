@@ -22,6 +22,7 @@ import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
 from experiment.candidate_registry import build_candidate_lines, load_registry
+from experiment.case_memory import build_case_memory_lines, evaluate_case_memory
 from experiment.counterfactual import build_counterfactual_lines, horizon_counterfactuals
 from experiment.dof_ledger import build_ledger_lines, load_ledger
 from experiment.monitoring import (
@@ -423,6 +424,12 @@ Respond with ONLY this JSON:
         )
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"specialization telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_case_memory_lines(
+            evaluate_case_memory(load_scored_observations())
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"case-memory telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:

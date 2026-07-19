@@ -4,6 +4,33 @@ Full version history. Most recent first.
 
 ---
 
+### 1.168 — July 2026 — third capability: causal case-memory (does recalling similar situations help?)
+
+The bot has statistical memory (confidence + outcome) but no *instance* memory — it cannot recall
+"situations like this one went badly last time." This is the honest first tier: non-parametric,
+retrieval-based. A **case** is a resolved decision's feature-situation plus its realised net forward
+return; for a new situation we retrieve the k nearest past cases and read their mean outcome — the
+multivariate, interaction-aware signal the miner's univariate splits miss.
+
+- **`experiment/case_memory.py`** — `retrieve_neighbors` / `neighbor_outcome` (scale-normalised k-NN over
+  the situation features), and the load-bearing piece: `evaluate_case_memory`, a **held-out
+  falsification**. Cases are built from the earlier part of the log by date; on the held-out later part we
+  ask whether decisions whose neighbours were positive actually out-returned those whose neighbours were
+  negative. If that edge isn't there, the memory is noise and must not be consulted. `to_candidate`
+  authors a "consult the case base" Candidate only when the held-out edge clears the bar. 100% covered.
+- **Measure-and-prove, not live-wire.** Per the governing principle, nothing is wired into the live
+  decision path here — this build validates whether consulting helps; live consultation is a separate,
+  human-approved step *after* the edge clears the bar and forward-validates. Point-in-time by construction
+  (cases strictly precede the held-out decisions), cost-honest, and bounded (`max_test`) so the weekly
+  review stays fast.
+- **Surfaced in the weekly review** (fail-safe). First real run: at the 5d decision horizon, *not enough
+  matured sample*; at 3d (to show the machine works) the held-out edge is **+0.93R (n=185, 152+/33−) —
+  HELPS**: positive-neighbour decisions genuinely out-returned negative-neighbour ones out-of-sample. It
+  becomes a forward-validated candidate, not a live change.
+
++21 tests. Three capabilities now sit on the substrate (counterfactual replay, self-specialization,
+case-memory), each shipping its own falsification test.
+
 ### 1.167 — July 2026 — second capability: self-specialization (where does the AI beat the baseline?)
 
 Operationalises the bot's core falsifiable thesis — does the LLM's selection add value over the frozen

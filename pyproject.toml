@@ -73,6 +73,7 @@ files = [
     "signals/snapshot.py",
     "experiment/monitoring.py",
     "experiment/candidate_registry.py",
+    "experiment/case_memory.py",
     "experiment/counterfactual.py",
     "experiment/specialization.py",
     "experiment/research_signals.py",
