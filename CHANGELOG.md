@@ -4,6 +4,27 @@ Full version history. Most recent first.
 
 ---
 
+### 1.164 — July 2026 — fix: spread-proxy fail-closed fallout + CWD-robust snapshot contract
+
+Cleanup of 16 test failures surfaced by a full-suite run. Two are a real bug, the rest are test drift
+from the finding-11 fail-direction flip (1.161's `_SPREAD_PROXY_ABSENT = 1.0`, absent spread reads as
+illiquid → fail closed).
+
+- **Real bug — `backtest/intraday_engine.py`**: the intraday snapshot neutralised daily fields but never
+  set `spread_proxy_20d`, so after the fail-closed flip *every* intraday signal (orb_breakout,
+  vwap_reclaim, intraday_momentum — all spread-gated) was silently suppressed; the intraday engine
+  produced zero trades. Now sets `spread_proxy_20d = 0.0` (intraday runs on liquid names by design;
+  matches the daily engine, which fills 0.0). The two intraday tests were correctly catching this.
+- **Test drift — `tests/test_stock_scanner.py`**: the hand-built `_snap` helper omitted
+  `spread_proxy_20d`, so its execution-sensitive signals (mean_reversion, rs_leader, …) were gated by the
+  absent-field fallback. Added `spread_proxy_20d = 0.0` (a liquid name) — exactly the "hand-built partial
+  dict" case the fallback comment warned about.
+- **Robustness — `tests/test_snapshot_contract.py`**: it read source files via CWD-relative paths, so the
+  whole contract suite failed when pytest was invoked from a parent directory. Now resolves against the
+  repo root (`__file__`), so it holds regardless of invocation directory.
+
+No feature change; test count unchanged. All 16 pass from both the repo root and a parent directory.
+
 ### 1.163 — July 2026 — validation substrate (2/n): the point-in-time spine (lookahead guard + as-of primitive)
 
 Second anti-self-deception brick. The codebase is full of point-in-time logic (`replay.py` slices to

@@ -312,6 +312,10 @@ def _replay_day(
             "adx": 30.0,
             "ret_5d_pct": 0.0,
             "ret_10d_pct": 0.0,
+            # Intraday signals run on liquid names by design; keep the execution-cost gate open.
+            # Without this the absent-spread fallback (_SPREAD_PROXY_ABSENT=1.0, fail-closed) would
+            # gate every intraday signal — matching the daily engine, which fills spread_proxy_20d=0.0.
+            "spread_proxy_20d": 0.0,
         }
 
         fired = evaluate_signals(snapshot, blocked=_BLOCKED)

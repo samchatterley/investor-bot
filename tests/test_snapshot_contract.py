@@ -8,6 +8,7 @@ Two invariants, each turning a silent live/backtest divergence into a CI failure
 Plus hygiene: the two allowlists contain no stale entries.
 """
 
+import os
 import re
 import unittest
 from unittest.mock import patch
@@ -16,12 +17,15 @@ import pandas as pd
 
 from signals.snapshot import INTENTIONAL_SPLIT_DEFAULTS, LIVE_ONLY_FIELDS
 
+# Resolve source files against the repo root (this file's parent's parent), not the current working
+# directory, so the contract holds no matter where pytest is invoked from (e.g. from a parent dir).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _EVALUATOR_SRC = "signals/evaluator.py"
 _ENGINE_SRC = "backtest/engine.py"
 
 
 def _read(path: str) -> str:
-    with open(path) as fh:
+    with open(os.path.join(_ROOT, path)) as fh:
         return fh.read()
 
 

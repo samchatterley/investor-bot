@@ -33,6 +33,9 @@ def _snap(**kwargs):
         "rel_strength_10d": 0.0,
         "is_inside_day": False,
         "price_vs_ema21_pct": 0.0,
+        # Liquid name: real producers populate spread_proxy_20d; absent it fails CLOSED (=1.0) and
+        # gates the execution-sensitive signals these tests exercise (mean_reversion, rs_leader, ...).
+        "spread_proxy_20d": 0.0,
     }
     defaults.update(kwargs)
     return defaults

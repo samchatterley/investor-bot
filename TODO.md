@@ -1,10 +1,7 @@
 # Pending Work
 
-### In Progress
-- [ ] Ship brick 2 (A+B together): coverage/ruff/mypy, CHANGELOG 1.163 + README, commit, push, restart
-
 ### Pending
-- [ ] Substrate brick 3: live-vs-sim reconciliation loop (reality audits the validator)
+- [ ] Substrate brick 3: live-vs-sim reconciliation loop (reality audits the validator; backtest/replay.py is the seed)
 - [ ] Capabilities (each ships with its falsification test): counterfactual replay, self-specialization, causal case-memory
-- [ ] HELD (gated on evidence): MIN_CONFIDENCE 7->8 flip; context-card wiring
+- [ ] HELD (gated on evidence): MIN_CONFIDENCE 7->8 flip once trigger n>=50/bucket; context-card wiring once multi-regime data exists
 
