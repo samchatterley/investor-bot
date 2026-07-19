@@ -22,8 +22,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from experiment.candidate_miner import _welch_p
 from experiment.candidate_registry import Candidate
 from experiment.counterfactual import _net_r  # shared point-in-time net-forward-return reader
+from experiment.dof_ledger import LedgerState, record_batch
 
 CASE_FEATURES = ("rsi_14", "ret_5d_pct", "ret_10d_pct", "bb_pct", "rs_rank_pct", "vol_ratio")
 
@@ -92,6 +94,41 @@ def neighbor_outcome(
     return sum(c.outcome for c in nb) / len(nb) if nb else None
 
 
+def _held_out_groups(
+    observations: list[dict],
+    *,
+    k: int,
+    split_frac: float,
+    horizon: int,
+    features: tuple[str, ...],
+    max_test: int,
+) -> tuple[int, list[float], list[float]]:
+    """Temporal held-out split: build cases from the earlier ``split_frac`` of dated closed decisions, then
+    on the (most-recent ``max_test`` of the) rest return the actual outcomes grouped by whether the k
+    nearest cases were on average positive. Returns (n_cases, positive-neighbour actuals, negative ones)."""
+    rows: list[tuple[str, dict[str, float], float]] = []
+    for o in observations:
+        s = _situation(o, features)
+        r = _net_r(o, horizon)
+        if s is not None and r is not None and o.get("date"):
+            rows.append((o["date"], s, r))
+    rows.sort(key=lambda x: x[0])
+
+    n = len(rows)
+    split = int(n * split_frac)
+    if split < 1 or split >= n:  # need at least one case AND one held-out decision
+        return split, [], []
+
+    cases = [Case(s, r, d) for d, s, r in rows[:split]]
+    scales = _feature_scales(cases, features)
+    pos: list[float] = []
+    neg: list[float] = []
+    for _d, s, actual in rows[split:][-max_test:]:
+        pred = neighbor_outcome(s, cases, k=k, scales=scales, features=features)
+        (pos if pred > 0 else neg).append(actual)  # type: ignore[operator]  # cases non-empty -> float
+    return len(cases), pos, neg
+
+
 def evaluate_case_memory(
     observations: list[dict],
     *,
@@ -104,50 +141,23 @@ def evaluate_case_memory(
 ) -> dict:
     """Held-out falsification: does consulting the case base improve the decision, out-of-sample?
 
-    Cases are built from the earlier ``split_frac`` of dated, closed-horizon decisions; the rest are held
-    out. On the held-out set we group decisions by whether their neighbours' mean outcome was positive, and
-    report ``edge`` = mean(actual | neighbours positive) - mean(actual | neighbours negative). Positive edge
-    means the memory's retrieval carries out-of-sample signal; ``helps`` gates on the effect floor.
-    ``max_test`` bounds the (most-recent) held-out rows scored so the weekly review stays fast."""
-    rows: list[tuple[str, dict[str, float], float]] = []
-    for o in observations:
-        s = _situation(o, features)
-        r = _net_r(o, horizon)
-        if s is not None and r is not None and o.get("date"):
-            rows.append((o["date"], s, r))
-    rows.sort(key=lambda x: x[0])
-
-    n = len(rows)
-    split = int(n * split_frac)
-    empty = {
-        "n_cases": split,
-        "n_test": 0,
-        "n_pos": 0,
-        "n_neg": 0,
-        "edge": None,
-        "helps": False,
-        "k": k,
-    }
-    if split < 1 or split >= n:  # need at least one case AND one held-out decision
-        return empty
-
-    cases = [Case(s, r, d) for d, s, r in rows[:split]]
-    scales = _feature_scales(cases, features)
-    test_rows = rows[split:][-max_test:]
-
-    pos: list[float] = []
-    neg: list[float] = []
-    for _d, s, actual in test_rows:
-        pred = neighbor_outcome(s, cases, k=k, scales=scales, features=features)
-        (pos if pred > 0 else neg).append(actual)  # type: ignore[operator]  # cases non-empty -> pred is float
-
+    ``edge`` = mean(actual | neighbours positive) - mean(actual | neighbours negative). Positive edge means
+    the memory's retrieval carries out-of-sample signal; ``helps`` gates on the effect floor."""
+    n_cases, pos, neg = _held_out_groups(
+        observations,
+        k=k,
+        split_frac=split_frac,
+        horizon=horizon,
+        features=features,
+        max_test=max_test,
+    )
     edge = None
     helps = False
     if pos and neg:
         edge = round(sum(pos) / len(pos) - sum(neg) / len(neg), 4)
         helps = edge >= min_edge
     return {
-        "n_cases": len(cases),
+        "n_cases": n_cases,
         "n_test": len(pos) + len(neg),
         "n_pos": len(pos),
         "n_neg": len(neg),
@@ -194,3 +204,43 @@ def to_candidate(
         source="case_memory",
         created=created,
     )
+
+
+def author_online(
+    observations: list[dict],
+    ledger: LedgerState,
+    created: str,
+    *,
+    k: int = 10,
+    split_frac: float = 0.7,
+    horizon: int = 5,
+    features: tuple[str, ...] = CASE_FEATURES,
+    max_test: int = 500,
+    min_effect: float = 0.1,
+    now: str | None = None,
+) -> tuple[LedgerState, list[Candidate]]:
+    """Charge the held-out neighbour-signal test against the DOF ledger; author a "consult the case base"
+    Candidate only if the ledger rejects the null AND the edge clears ``to_candidate``'s bar."""
+    _n_cases, pos, neg = _held_out_groups(
+        observations,
+        k=k,
+        split_frac=split_frac,
+        horizon=horizon,
+        features=features,
+        max_test=max_test,
+    )
+    if not (pos and neg):
+        return ledger, []
+    _diff, p = _welch_p(pos, neg)
+    ledger, looks = record_batch(
+        ledger,
+        [("consult_case_memory", "case_memory", f"held-out neighbour edge k={k}", p)],
+        now=now,
+    )
+    if not looks[0].rejected:  # ledger did not clear the lifetime-multiplicity bar
+        return ledger, []
+    edge = round(sum(pos) / len(pos) - sum(neg) / len(neg), 4)
+    c = to_candidate(  # gates the effect + sample floors
+        {"edge": edge, "n_test": len(pos) + len(neg), "k": k}, created, min_effect=min_effect
+    )
+    return ledger, ([c] if c else [])

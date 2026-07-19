@@ -144,6 +144,8 @@ omit = [
     "*/scripts/pipeline_status.py",
     "scripts/mine_candidates.py",
     "*/scripts/mine_candidates.py",
+    "scripts/author_candidates.py",
+    "*/scripts/author_candidates.py",
     "scripts/reconcile_replay.py",
     "*/scripts/reconcile_replay.py",
     "scripts/signal_direction_matrix.py",

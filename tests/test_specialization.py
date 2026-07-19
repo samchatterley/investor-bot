@@ -2,8 +2,10 @@
 
 import unittest
 
+from experiment.dof_ledger import new_state
 from experiment.specialization import (
     ai_edge_by_slice,
+    author_online,
     build_specialization_lines,
     to_candidate,
 )
@@ -135,6 +137,40 @@ class TestToCandidate(unittest.TestCase):
                 "X", {"n_ai": 80, "n_det": 80, "delta_r": 0.05}, "2026-07-19", min_effect=0.1
             )
         )
+
+
+class TestAuthorOnline(unittest.TestCase):
+    def test_authors_when_ledger_rejects_and_bar_clears(self):
+        obs = [_cand(ai=True, rank=50, r5=1.0, regime="BULL") for _ in range(60)] + [
+            _cand(ai=False, rank=1, r5=0.0, regime="BULL") for _ in range(60)
+        ]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19")
+        self.assertEqual([c.id for c in cands], ["specialize_ai_BULL"])
+        self.assertEqual(ledger.n_tests, 1)
+
+    def test_empty_when_no_qualifying_slice(self):
+        obs = [_cand(ai=True, rank=50, r5=1.0) for _ in range(5)] + [
+            _cand(ai=False, rank=1, r5=0.0) for _ in range(5)
+        ]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19")
+        self.assertEqual(cands, [])
+        self.assertEqual(ledger.n_tests, 0)  # too few per arm -> not even charged
+
+    def test_charged_and_rejected_but_below_candidate_bar(self):
+        obs = [_cand(ai=True, rank=50, r5=1.0, regime="X") for _ in range(40)] + [
+            _cand(ai=False, rank=1, r5=0.0, regime="X") for _ in range(40)
+        ]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19")
+        self.assertEqual(cands, [])  # n=40 >= slice floor 30 but < candidate bar 60
+        self.assertEqual((ledger.n_tests, ledger.n_rejections), (1, 1))
+
+    def test_charged_but_not_rejected(self):
+        obs = [_cand(ai=True, rank=50, r5=v, regime="Y") for v in [10, -9] * 20] + [
+            _cand(ai=False, rank=1, r5=0.0, regime="Y") for _ in range(40)
+        ]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19")
+        self.assertEqual(cands, [])
+        self.assertEqual((ledger.n_tests, ledger.n_rejections), (1, 0))
 
 
 if __name__ == "__main__":  # pragma: no cover

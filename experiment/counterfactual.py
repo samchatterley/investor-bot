@@ -20,7 +20,9 @@ Its falsification tests, per the governing principle:
 
 from __future__ import annotations
 
+from experiment.candidate_miner import _welch_p
 from experiment.candidate_registry import Candidate
+from experiment.dof_ledger import LedgerState, record_batch
 
 HORIZONS = (1, 3, 5, 10)
 # the bot's default swing hold; the action counterfactuals are measured against it
@@ -107,3 +109,54 @@ def to_candidate(
         source="counterfactual",
         created=created,
     )
+
+
+def author_online(
+    observations: list[dict],
+    ledger: LedgerState,
+    created: str,
+    *,
+    horizons: tuple[int, ...] = HORIZONS,
+    baseline: int = BASELINE_HORIZON,
+    min_effect: float = 0.1,
+    now: str | None = None,
+) -> tuple[LedgerState, list[Candidate]]:
+    """Charge the best-vs-baseline horizon comparison against the DOF ledger, then author a Candidate only
+    if the ledger rejects the null (lifetime-multiplicity-corrected) AND the uplift clears the effect floor.
+
+    Returns the advanced ledger and the (zero or one) candidate -- the honesty upgrade over
+    ``horizon_counterfactuals`` alone, which relies on forward-validation without lifetime multiplicity."""
+    lists: dict[int, list[float]] = {}
+    for h in horizons:
+        nets = [r for o in observations if (r := _net_r(o, h)) is not None]
+        if nets:
+            lists[h] = nets
+    means = {h: sum(v) / len(v) for h, v in lists.items()}
+    if baseline not in lists or len(lists) < 2:
+        return ledger, []
+    best = max(means, key=lambda h: means[h])
+    if best == baseline:
+        return ledger, []
+    _diff, p = _welch_p(lists[best], lists[baseline])
+    ledger, looks = record_batch(
+        ledger,
+        [
+            (
+                f"cf_hold_{baseline}_to_{best}",
+                "counterfactual",
+                f"{best}d vs {baseline}d hold net R",
+                p,
+            )
+        ],
+        now=now,
+    )
+    if not looks[0].rejected:  # ledger did not clear the lifetime-multiplicity bar
+        return ledger, []
+    result = {
+        "per_horizon": {h: {"n": len(lists[h]), "mean_net_r": round(means[h], 4)} for h in lists},
+        "baseline": baseline,
+        "best": best,
+        "uplift": round(means[best] - means[baseline], 4),
+    }
+    c = to_candidate(result, created, min_effect=min_effect)  # gates the effect floor
+    return ledger, ([c] if c else [])

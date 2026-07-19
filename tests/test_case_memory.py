@@ -6,12 +6,14 @@ from experiment.case_memory import (
     Case,
     _feature_scales,
     _situation,
+    author_online,
     build_case_memory_lines,
     evaluate_case_memory,
     neighbor_outcome,
     retrieve_neighbors,
     to_candidate,
 )
+from experiment.dof_ledger import new_state
 
 _F = ("rsi_14",)
 _SCALES = {"rsi_14": 1.0}
@@ -102,6 +104,16 @@ class TestEvaluate(unittest.TestCase):
         r = evaluate_case_memory([_o(50, 1.0, "2026-01-01")], features=_F)  # split=0
         self.assertEqual((r["n_cases"], r["n_test"], r["edge"]), (0, 0, None))
 
+    def test_skips_incomplete_rows(self):
+        obs = [
+            _o(80, 1.0, "2026-01-01"),
+            {"features": {}, "outcomes": {"forward_r_5d": 1.0}, "date": "2026-01-02"},  # no rsi_14
+            _o(10, -1.0, "2026-01-03"),
+            _o(82, 2.0, "2026-01-04"),
+        ]
+        r = evaluate_case_memory(obs, k=1, split_frac=0.66, features=_F)
+        self.assertEqual(r["n_cases"] + r["n_test"], 3)  # the incomplete row is dropped
+
     def test_max_test_caps_held_out(self):
         obs = [_o(80, 1.0, f"2026-01-0{i}") for i in range(1, 5)] + [
             _o(82, 2.0, "2026-01-05"),
@@ -144,6 +156,52 @@ class TestToCandidate(unittest.TestCase):
         self.assertIsNone(
             to_candidate({"edge": 0.05, "n_test": 200, "k": 10}, "2026-07-19", min_effect=0.1)
         )
+
+
+class TestAuthorOnline(unittest.TestCase):
+    def _dated(self, rsi, r5, i):
+        return _o(rsi, r5, f"{i:04d}")  # zero-padded date sorts lexically
+
+    def _strong(self, n_case, n_test):
+        # cases: high-rsi -> +1, low-rsi -> -1; held-out: high -> +2, low -> -2
+        c_hi = [self._dated(80, 1.0, i) for i in range(n_case)]
+        c_lo = [self._dated(10, -1.0, i) for i in range(n_case, 2 * n_case)]
+        t_hi = [self._dated(80, 2.0, i) for i in range(2 * n_case, 2 * n_case + n_test)]
+        t_lo = [
+            self._dated(10, -2.0, i) for i in range(2 * n_case + n_test, 2 * n_case + 2 * n_test)
+        ]
+        return c_hi + c_lo + t_hi + t_lo
+
+    def test_authors_when_ledger_rejects_and_bar_clears(self):
+        obs = self._strong(60, 60)  # 120 cases, 120 held-out -> n_test 120 >= 100 bar
+        ledger, cands = author_online(obs, new_state(), "2026-07-19", split_frac=0.5, features=_F)
+        self.assertEqual([c.id for c in cands], ["consult_case_memory"])
+        self.assertEqual(ledger.n_tests, 1)
+
+    def test_empty_when_no_groups(self):
+        ledger, cands = author_online([_o(50, 1.0, "0001")], new_state(), "2026-07-19", features=_F)
+        self.assertEqual(cands, [])
+        self.assertEqual(ledger.n_tests, 0)  # guard -> nothing charged
+
+    def test_rejected_but_below_sample_bar(self):
+        obs = self._strong(10, 10)  # n_test 20 < 100 candidate bar
+        ledger, cands = author_online(obs, new_state(), "2026-07-19", split_frac=0.5, features=_F)
+        self.assertEqual(cands, [])
+        self.assertEqual((ledger.n_tests, ledger.n_rejections), (1, 1))
+
+    def test_charged_but_not_rejected(self):
+        cases = [self._dated(80, 1.0, i) for i in range(10)] + [
+            self._dated(10, -1.0, i) for i in range(10, 20)
+        ]
+        test_hi = [
+            self._dated(80, v, 20 + j) for j, v in enumerate([10, -9] * 10)
+        ]  # high-var pos group
+        test_lo = [self._dated(10, 0.0, 40 + j) for j in range(20)]
+        ledger, cands = author_online(
+            cases + test_hi + test_lo, new_state(), "2026-07-19", split_frac=0.334, features=_F
+        )
+        self.assertEqual(cands, [])
+        self.assertEqual((ledger.n_tests, ledger.n_rejections), (1, 0))
 
 
 if __name__ == "__main__":  # pragma: no cover

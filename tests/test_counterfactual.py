@@ -4,10 +4,12 @@ import unittest
 
 from experiment.counterfactual import (
     _net_r,
+    author_online,
     build_counterfactual_lines,
     horizon_counterfactuals,
     to_candidate,
 )
+from experiment.dof_ledger import new_state
 
 
 def _obs(**outcomes):
@@ -108,6 +110,37 @@ class TestToCandidate(unittest.TestCase):
     def test_none_when_no_sample(self):
         r = {"per_horizon": {}, "baseline": 5, "best": None, "uplift": None}
         self.assertIsNone(to_candidate(r, "2026-07-19"))
+
+
+class TestAuthorOnline(unittest.TestCase):
+    def test_authors_when_ledger_rejects_and_uplift_clears(self):
+        obs = [_obs(forward_r_3d=1.0, forward_r_5d=0.0, cost_r_estimate=0.0) for _ in range(50)]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19", horizons=(3, 5), baseline=5)
+        self.assertEqual([c.id for c in cands], ["hold_horizon_5_to_3"])
+        self.assertEqual(ledger.n_tests, 1)
+
+    def test_empty_when_baseline_absent(self):
+        obs = [_obs(forward_r_3d=1.0) for _ in range(10)]  # no 5d sample
+        ledger, cands = author_online(obs, new_state(), "2026-07-19", horizons=(3, 5), baseline=5)
+        self.assertEqual(cands, [])
+        self.assertEqual(ledger.n_tests, 0)  # nothing charged
+
+    def test_empty_when_best_is_baseline(self):
+        obs = [_obs(forward_r_3d=0.0, forward_r_5d=1.0, cost_r_estimate=0.0) for _ in range(50)]
+        _ledger, cands = author_online(obs, new_state(), "2026-07-19", horizons=(3, 5), baseline=5)
+        self.assertEqual(cands, [])
+
+    def test_charged_but_not_rejected(self):
+        obs = [_obs(forward_r_3d=v, forward_r_5d=0.0, cost_r_estimate=0.0) for v in [10, -9] * 10]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19", horizons=(3, 5), baseline=5)
+        self.assertEqual(cands, [])
+        self.assertEqual((ledger.n_tests, ledger.n_rejections), (1, 0))  # a look, no discovery
+
+    def test_rejected_but_uplift_below_floor(self):
+        obs = [_obs(forward_r_3d=0.05, forward_r_5d=0.0, cost_r_estimate=0.0) for _ in range(50)]
+        ledger, cands = author_online(obs, new_state(), "2026-07-19", horizons=(3, 5), baseline=5)
+        self.assertEqual(cands, [])  # rejected (perfect separation) but +0.05R < 0.1 floor
+        self.assertEqual(ledger.n_rejections, 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

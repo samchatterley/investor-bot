@@ -4,6 +4,33 @@ Full version history. Most recent first.
 
 ---
 
+### 1.169 — July 2026 — ledger-charged authoring + the reconciliation gate fires (sim-counterfactual stays blocked)
+
+Two things, both in service of the governing principle. (1) The three capabilities now charge their
+multi-comparison searches against the global DOF ledger before authoring anything. (2) The replay-fidelity
+gate was actually run at scale — and it did its job.
+
+- **`author_online` on all three capabilities** (counterfactual, specialization, case-memory) — mirrors
+  the miner's `mine_edges_online`: Welch-test the discovery, charge it against the DOF ledger via
+  `record_batch`, and author a Candidate *only* if the ledger rejects the null (lifetime-multiplicity
+  corrected) AND the effect floor clears. This closes a gap: the capabilities previously relied on
+  forward-validation alone; now their searches are also charged against lifetime multiplicity. 100%
+  covered, all on the mypy gate.
+- **`scripts/author_candidates.py`** — one runner charges all three against the *same* ledger (multiplicity
+  across capabilities, not per capability) and registers survivors idempotently. First real run: **0
+  lifetime looks charged** — correctly, because all three default to the 5d decision horizon, which has not
+  matured (only 1–3d have closed). The machinery is wired and honest; it waits for the data.
+- **Reconciliation gate fired (1.165, run at scale).** `scripts/reconcile_replay.py` reconstructed 4,214
+  logged snapshots through the replay machinery: **replay fidelity 0.0%** (worst field `ret_10d_pct`, mean
+  |Δ| 2.48). Cause: yfinance `auto_adjust` retroactively rewrites historical prices for later
+  splits/dividends, so reconstructed features ≠ what was computed live. This is the fidelity gate working
+  exactly as designed — it **blocks the sim-counterfactual tier** (which would reconstruct alternative
+  snapshots via replay) *before* anything is built on an unfaithful simulator. That capability stays
+  deliberately unbuilt until replay can reproduce the past.
+
++14 tests. Net: the three shipped capabilities are now lifetime-multiplicity honest, and the one remaining
+capability is correctly gated shut by evidence.
+
 ### 1.168 — July 2026 — third capability: causal case-memory (does recalling similar situations help?)
 
 The bot has statistical memory (confidence + outcome) but no *instance* memory — it cannot recall

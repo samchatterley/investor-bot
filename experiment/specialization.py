@@ -23,8 +23,10 @@ the online candidate-authoring runner, mirroring the miner).
 
 from __future__ import annotations
 
+from experiment.candidate_miner import _welch_p
 from experiment.candidate_registry import Candidate
 from experiment.counterfactual import _net_r  # shared point-in-time net-forward-return reader
+from experiment.dof_ledger import LedgerState, record_batch
 
 DEFAULT_HORIZON = 5  # the decision horizon the bot actually trades
 DEFAULT_TOP_K = 5  # the deterministic baseline's pick count per run (its "would-have-bought" set)
@@ -133,3 +135,50 @@ def to_candidate(
         source="specialization",
         created=created,
     )
+
+
+def author_online(
+    observations: list[dict],
+    ledger: LedgerState,
+    created: str,
+    *,
+    horizon: int = DEFAULT_HORIZON,
+    top_k: int = DEFAULT_TOP_K,
+    slice_key: str = SLICE_KEY,
+    min_n: int = 30,
+    min_effect: float = 0.1,
+    now: str | None = None,
+) -> tuple[LedgerState, list[Candidate]]:
+    """Charge each regime slice's AI-vs-baseline ΔR test against the DOF ledger; author a
+    "concentrate AI" Candidate for each slice the ledger rejects that also clears ``to_candidate``'s bar.
+
+    Only slices with >= ``min_n`` sample per arm are tested (a look you cannot resolve is not charged)."""
+    slices = _slice_returns(observations, horizon=horizon, top_k=top_k, slice_key=slice_key)
+    tests: list[tuple[str, str, str, float]] = []
+    stats: dict[str, tuple[str, dict[str, float]]] = {}
+    for sl, d in slices.items():
+        if len(d["ai"]) < min_n or len(d["det"]) < min_n:
+            continue
+        _diff, p = _welch_p(d["ai"], d["det"])
+        ai_mean = sum(d["ai"]) / len(d["ai"])
+        det_mean = sum(d["det"]) / len(d["det"])
+        stats[f"spec_{sl}"] = (
+            sl,
+            {
+                "n_ai": len(d["ai"]),
+                "n_det": len(d["det"]),
+                "delta_r": round(ai_mean - det_mean, 4),
+            },
+        )
+        tests.append((f"spec_{sl}", "specialization", f"AI vs deterministic ΔR in {sl}", p))
+    if not tests:
+        return ledger, []
+    ledger, looks = record_batch(ledger, tests, now=now)
+    cands: list[Candidate] = []
+    for lk in looks:
+        if lk.rejected:
+            sl, st = stats[lk.id]
+            c = to_candidate(sl, st, created, min_effect=min_effect)
+            if c:
+                cands.append(c)
+    return ledger, cands
