@@ -74,6 +74,7 @@ files = [
     "experiment/monitoring.py",
     "experiment/candidate_registry.py",
     "experiment/counterfactual.py",
+    "experiment/specialization.py",
     "experiment/research_signals.py",
     "experiment/candidate_miner.py",
     "experiment/dof_ledger.py",

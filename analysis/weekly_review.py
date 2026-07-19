@@ -35,6 +35,7 @@ from experiment.monitoring import (
 )
 from experiment.reconciliation import build_reconciliation_lines, load_reconciliation_summary
 from experiment.research_signals import load_research_signals, score_research_signal
+from experiment.specialization import ai_edge_by_slice, build_specialization_lines
 from utils.portfolio_tracker import load_history
 
 logger = logging.getLogger(__name__)
@@ -416,6 +417,12 @@ Respond with ONLY this JSON:
         )
     except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
         logger.warning(f"counterfactual telemetry skipped: {exc}")
+    try:
+        monitoring_lines = monitoring_lines + build_specialization_lines(
+            ai_edge_by_slice(load_scored_observations())
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never break the weekly review
+        logger.warning(f"specialization telemetry skipped: {exc}")
     append_log_entry(monitoring_lines, log_path=EXPERIMENT_LOG_PATH)
 
     try:

@@ -4,6 +4,31 @@ Full version history. Most recent first.
 
 ---
 
+### 1.167 — July 2026 — second capability: self-specialization (where does the AI beat the baseline?)
+
+Operationalises the bot's core falsifiable thesis — does the LLM's selection add value over the frozen
+deterministic Champion, and *where* — turning it from a report into a steering signal. The observation
+log's three-arm ablation is already populated (`arm1_deterministic_rank`, `arm3_ai_selected`, regime,
+outcome), so ΔR is measurable **now**, with no simulator and no fidelity dependency — which is why this
+leapfrogged the sim-counterfactual tier (still blocked on an unmeasured fidelity gate).
+
+- **`experiment/specialization.py`** — `ai_edge_by_slice` computes ΔR per regime (mean net forward
+  return of AI-selected candidates minus the deterministic top-K), like-for-like net of the same
+  round-trip cost. `to_candidate` authors a pre-registered "concentrate AI in this regime" Candidate when
+  a slice clears the bar; `build_specialization_lines` flags EDGE (concentrate) vs NOISE (defer to the
+  baseline) — but only with sufficient sample. 100% covered, on the mypy gate.
+- **Falsification guardrails** (per CLAUDE.md's governing principle): point-in-time (net_r from the
+  backfill); like-for-like cost; pre-registered + forward-validated (a slice edge is a Candidate, never an
+  in-sample conclusion; slice-search multiplicity is charged against the DOF ledger in the fast-follow
+  authoring runner).
+- **Surfaced in the weekly review** (fail-safe). First real run at the 5d decision horizon: *no matured
+  sample yet*. At 3d (to show the machine works): `NEUTRAL_CHOP ΔR=-1.32 (AI -0.72 n=9 vs det +0.59
+  n=15)` — an early hint that AI selection may lag the baseline in chop, but n=9 is far below the floor,
+  so it **correctly withholds any verdict**. The honesty guardrail holds.
+
++12 tests. Two capabilities now sit on the substrate (counterfactual replay, self-specialization), each
+shipping its own falsification test.
+
 ### 1.166 — July 2026 — first capability on the substrate: counterfactual replay (hold-horizon tier)
 
 The substrate exists to make capabilities safe to add. This is the first: counterfactual replay attacks
