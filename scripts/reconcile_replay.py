@@ -17,6 +17,7 @@ from datetime import date, timedelta  # pragma: no cover
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pragma: no cover
 
 from backtest.replay import _build_preloaded  # noqa: E402  # pragma: no cover
+from data.as_of import split_adjust_as_of  # noqa: E402  # pragma: no cover
 from data.market_data import fetch_stock_data, summarise_for_ai  # noqa: E402  # pragma: no cover
 from experiment.monitoring import load_scored_observations  # noqa: E402  # pragma: no cover
 from experiment.reconciliation import (  # noqa: E402  # pragma: no cover
@@ -34,12 +35,19 @@ def main() -> None:  # pragma: no cover
 
     dates = [date.fromisoformat(o["date"]) for o in obs]
     symbols = sorted({o["symbol"] for o in obs})
-    preloaded = _build_preloaded(symbols, min(dates) - timedelta(days=400), max(dates))
+    # Raw (unadjusted) prices + splits, so each snapshot is reconstructed with only the splits known as of
+    # its own decision date -- point-in-time, unlike auto_adjust's retroactive (lookahead) factors.
+    preloaded = _build_preloaded(
+        symbols, min(dates) - timedelta(days=400), max(dates), unadjusted=True
+    )
 
     pairs = []
     for o in obs:
         sym, as_of = o["symbol"], o["date"]
-        df = fetch_stock_data(sym, preloaded=preloaded, as_of=as_of)
+        if sym not in preloaded:
+            continue
+        as_of_frame = split_adjust_as_of(preloaded[sym], as_of)
+        df = fetch_stock_data(sym, preloaded={sym: as_of_frame}, as_of=as_of)
         if df is None:
             continue
         sim = summarise_for_ai(sym, df, is_preloaded=True)

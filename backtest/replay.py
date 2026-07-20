@@ -31,15 +31,20 @@ _WARMUP_DAYS = 252
 
 
 def _build_preloaded(
-    symbols: list[str], fetch_start: date, end_date: date
+    symbols: list[str], fetch_start: date, end_date: date, unadjusted: bool = False
 ) -> dict[str, pd.DataFrame]:
-    """Download full OHLCV history for all symbols in one batch call."""
+    """Download full OHLCV history for all symbols in one batch call.
+
+    ``unadjusted=True`` returns raw prices plus a ``Stock Splits`` column (``auto_adjust=False,
+    actions=True``) so callers can reconstruct a point-in-time series with ``data.as_of.split_adjust_as_of``
+    -- the reconciliation path uses this to avoid auto_adjust's retroactive (lookahead) split factors."""
     tickers = list({*symbols, "SPY", "^VIX"})
     raw = yf.download(
         tickers,
         start=fetch_start.strftime("%Y-%m-%d"),
         end=(end_date + timedelta(days=1)).strftime("%Y-%m-%d"),
-        auto_adjust=True,
+        auto_adjust=not unadjusted,
+        actions=unadjusted,
         progress=False,
     )
 

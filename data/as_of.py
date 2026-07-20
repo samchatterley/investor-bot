@@ -16,6 +16,8 @@ from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from typing import Any
 
+import pandas as pd
+
 
 class LookaheadError(AssertionError):
     """A record dated strictly after the as-of date leaked into a point-in-time view."""
@@ -24,6 +26,28 @@ class LookaheadError(AssertionError):
 def _iso(value: Any) -> str:
     """Normalise a date-like (str | date) to an ISO 'YYYY-MM-DD' string for lexical comparison."""
     return value if isinstance(value, str) else value.isoformat()
+
+
+def split_adjust_as_of(df: pd.DataFrame, as_of: Any) -> pd.DataFrame:
+    """Point-in-time split adjustment: slice ``df`` to <= ``as_of`` and back-adjust OHLC (and forward-adjust
+    Volume) for stock splits whose ex-date is <= ``as_of`` ONLY, so a split *after* ``as_of`` never rewrites
+    the past. This is the fix for the replay-fidelity failure: yfinance ``auto_adjust=True`` applies today's
+    split factors to all history, which is lookahead; this reconstructs the series as it looked on ``as_of``.
+
+    Requires a ``Stock Splits`` column (yfinance ``auto_adjust=False, actions=True``). Dividends are left
+    unadjusted -- a small residual next to splits, which cause the large discontinuities."""
+    sub = df[df.index <= pd.Timestamp(as_of)].copy()
+    if sub.empty or "Stock Splits" not in sub:
+        return sub
+    ratio = sub["Stock Splits"].where(sub["Stock Splits"] > 0, 1.0)
+    rev_cumprod = ratio[::-1].cumprod()[::-1]  # product of splits at each date .. as_of (inclusive)
+    factor = rev_cumprod.shift(-1).fillna(
+        1.0
+    )  # product of splits strictly AFTER each date (<= as_of)
+    for col in ("Open", "High", "Low", "Close"):
+        sub[col] = sub[col] / factor
+    sub["Volume"] = sub["Volume"] * factor
+    return sub
 
 
 def visible_as_of[T](

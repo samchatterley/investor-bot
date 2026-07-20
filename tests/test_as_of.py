@@ -3,7 +3,15 @@
 import unittest
 from datetime import date
 
-from data.as_of import LookaheadError, assert_no_future, latest_as_of, visible_as_of
+import pandas as pd
+
+from data.as_of import (
+    LookaheadError,
+    assert_no_future,
+    latest_as_of,
+    split_adjust_as_of,
+    visible_as_of,
+)
 
 _EVENTS = [
     {"d": "2026-01-01", "v": "a"},
@@ -46,6 +54,41 @@ class TestAssertNoFuture(unittest.TestCase):
     def test_raises_on_a_future_record(self):
         with self.assertRaises(LookaheadError):
             assert_no_future(_EVENTS, "2026-01-05", date_of=_d)
+
+
+class TestSplitAdjustAsOf(unittest.TestCase):
+    def _df(self):
+        idx = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])
+        # raw prices: $100 pre-split, 2:1 split on 01-03 -> $50 post-split
+        return pd.DataFrame(
+            {
+                "Open": [100.0, 100.0, 50.0],
+                "High": [100.0, 100.0, 50.0],
+                "Low": [100.0, 100.0, 50.0],
+                "Close": [100.0, 100.0, 50.0],
+                "Volume": [10.0, 10.0, 20.0],
+                "Stock Splits": [0.0, 0.0, 2.0],
+            },
+            index=idx,
+        )
+
+    def test_adjusts_pre_split_prices_as_of_split_date(self):
+        adj = split_adjust_as_of(self._df(), "2026-01-03")
+        self.assertEqual(
+            list(adj["Close"]), [50.0, 50.0, 50.0]
+        )  # pre-split halved to post-split scale
+        self.assertEqual(list(adj["Volume"]), [20.0, 20.0, 20.0])  # pre-split volume doubled
+
+    def test_no_adjustment_before_the_split(self):
+        adj = split_adjust_as_of(self._df(), "2026-01-02")  # split not yet known
+        self.assertEqual(list(adj["Close"]), [100.0, 100.0])  # raw, point-in-time correct
+
+    def test_empty_when_as_of_precedes_data(self):
+        self.assertTrue(split_adjust_as_of(self._df(), "2025-01-01").empty)
+
+    def test_missing_splits_column_returns_sliced_unadjusted(self):
+        out = split_adjust_as_of(self._df().drop(columns=["Stock Splits"]), "2026-01-03")
+        self.assertEqual(list(out["Close"]), [100.0, 100.0, 50.0])  # untouched
 
 
 if __name__ == "__main__":  # pragma: no cover

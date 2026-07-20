@@ -1,7 +1,7 @@
 # Pending Work
 
 ### Pending
-- [ ] Capability: sim-counterfactual tier (reconstruct alternative snapshots via replay; GATED on 1.165 fidelity — needs a real reconciliation run at scale first)
-- [ ] Fast-follow: ledger-charged authoring runners for counterfactual/specialization/case-memory (charge the multi-comparison searches against the DOF ledger + register candidates)
-- [ ] HELD (gated on evidence): MIN_CONFIDENCE 7->8 flip once trigger n>=50/bucket; context-card wiring once multi-regime data exists
+- [ ] Sim-counterfactual tier: BLOCKED (structural). To unblock would need intraday historical bars at the decision timestamp + stored/reconstructable fundamental+options context — large effort, deferred
+- [ ] Optional follow-up: split the fidelity metric into technical-only vs signal-set so the gate is more informative than a single 0%
+- [ ] HELD (gated on matured 5d sample): MIN_CONFIDENCE 7->8 flip; context-card wiring; the 3 capabilities' candidates auto-appear once 5d matures
 

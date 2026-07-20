@@ -4,6 +4,35 @@ Full version history. Most recent first.
 
 ---
 
+### 1.170 — July 2026 — point-in-time price reconstruction + why replay fidelity is *structurally* 0%
+
+Chased the 0% replay fidelity from 1.169. Hypothesis: yfinance `auto_adjust=True` applies today's split
+factors to all history (lookahead), so fixing the adjustment would restore fidelity. Built the fix,
+re-ran the gate — and the honest result is that **the price adjustment was never the blocker.**
+
+- **`data.as_of.split_adjust_as_of`** — a tested point-in-time price primitive: slice to `<= as_of` and
+  back-adjust OHLC (forward-adjust volume) for splits with ex-date `<= as_of` **only**, so a later split
+  never rewrites the past. `_build_preloaded(unadjusted=True)` now fetches raw prices + splits, and the
+  reconciliation reconstructs each snapshot through `split_adjust_as_of`. Price reconstruction is now
+  genuinely point-in-time faithful. 100% covered.
+- **But fidelity stayed 0.0%**, and the per-field diagnostic shows why — two *structural* blockers, not a
+  data-vendor issue:
+  1. **Non-OHLCV signals.** Replay computes signals from OHLCV alone, so it cannot reproduce
+     fundamental/options/analyst signals the live snapshot carried — `fcf_yield_signal` mismatches on
+     3,281 of 4,214 snapshots (78%), plus `guidance_raise`, `pead`, `options_skew`, `analyst_upgrade`.
+     That alone caps fidelity near zero.
+  2. **Intraday-vs-EOD timing.** Live decisions are made midday against a *partial* intraday bar; replay
+     uses the *finalized* daily close — so `rsi_14` drifts ~3.6, `current_price` ~2.7, 5/10d returns
+     ~2.5pp on essentially every snapshot.
+- **Conclusion:** the sim-counterfactual tier stays blocked, and now we know a point-in-time price source
+  will not unblock it. Faithful replay would require intraday historical bars at the decision timestamp
+  *and* stored (or reconstructable) fundamental/options context — a much larger effort. The fidelity gate
+  did its job: it stopped us building on a simulator that structurally cannot reproduce the past. The
+  three shipped capabilities are unaffected (they use logged data + backfilled outcomes, never replay).
+
++4 tests. Net: a correct PIT price primitive banked, and a definitive, evidence-based answer on why the
+sim tier is gated shut.
+
 ### 1.169 — July 2026 — ledger-charged authoring + the reconciliation gate fires (sim-counterfactual stays blocked)
 
 Two things, both in service of the governing principle. (1) The three capabilities now charge their
