@@ -1,6 +1,6 @@
 # InvestorBot: Does LLM Contextual Judgement Add Incremental Predictive Value Over a Deterministic Equity Signal Engine?
 
-*A pre-registered study, and the governed measurement system built to answer it.*
+*A pre-registered study of whether an LLM adds trading edge — and the self-improving, self-auditing system built to answer it honestly.*
 
 > **Status: pre-registration (v1). Data collection not yet begun.** The hypothesis, design, and
 > analysis plan are frozen in [`docs/EXPERIMENT.md`](docs/EXPERIMENT.md). Results, Discussion, and
@@ -15,25 +15,38 @@
 ## Abstract
 
 Retail algorithmic trading typically collapses into one of two failure modes: full manual control
-(no automation), or opaque model autonomy (no interpretability, override, or audit trail).
-InvestorBot occupies the middle ground. A deterministic signal engine generates and risk-filters
-candidates, and a large language model (LLM) supplies contextual judgement on top. The project's
-central claim, that an LLM's contextual synthesis adds measurable incremental predictive value over a
-deterministic signal engine, is treated here as a falsifiable hypothesis rather than an assumption.
+(no automation), or opaque model autonomy (no interpretability, override, or audit trail). InvestorBot
+occupies the middle ground, and treats the harder question — not "is it profitable?" but "can a system
+improve itself without fooling itself?" — as the point of the exercise.
 
-We pre-register a three-arm, within-candidate ablation: (1) a frozen deterministic Champion selector;
-(2) a structured-only LLM that reasons over identical structured inputs rendered as prose; and (3) a
-contextual LLM identical to (2) plus a timestamp-safe context packet of news, filings, and events.
-The decomposition isolates the function-approximator effect (Arm 2 minus Arm 1) from the contextual
-effect (Arm 3 minus Arm 2), which is the thesis. The primary endpoint is the incremental information
-coefficient (IC) of the LLM's explicit, context-driven conviction revision on 5-day forward
-risk-normalised return, controlling for the frozen evidence score. Measurement runs on two tracks: a
-point-in-time historical backtest (the function-approximator question) and a live-shadow forward test
-(the contextual thesis). Both are gated by two Phase-0 checks, an instrument-noise audit and a
-statistical-power analysis. A preliminary power projection indicates the live track is underpowered to
-resolve a modest effect within a six-month window, so it is pre-scoped as a trend and qualitative
-evidence layer rather than the primary statistical test. The deliverable is a governed, auditable
-measurement framework and an honest result, including a null, not a profitable trading bot.
+The bot swing-trades a roughly 900-name US-equity universe on a deliberately tiny live account (a
+~£150 `SMALL_ACCOUNT_MODE` realism harness, not a profit engine). A frozen deterministic signal engine
+generates and risk-filters candidates; a large language model (LLM) supplies contextual judgement on
+top; and the LLM is never permitted to place, modify, or cancel orders. On top of that trading loop, two
+claims are put to falsifiable test rather than assumed.
+
+**The LLM-value thesis.** A pre-registered, three-arm, within-candidate ablation isolates the
+function-approximator effect — a structured-only LLM reasoning over the same inputs as the frozen
+deterministic Champion — from the contextual effect of adding a timestamp-safe packet of news, filings,
+and events (the thesis). The primary endpoint is the incremental information coefficient (IC) of the
+LLM's explicit, context-driven conviction revision on 5-day forward risk-normalised return, controlling
+for the frozen evidence score. It is measured on two tracks — a point-in-time historical backtest and a
+live-shadow forward test — each gated by two Phase-0 checks (an instrument-noise audit and a
+statistical-power analysis); the live track is pre-scoped as a trend layer, being underpowered to
+resolve a modest effect within six months.
+
+**The self-improvement loop.** Sitting above the trading system is a governed loop that lets the bot
+propose changes *to itself*: it mines its own candidate signals, replays counterfactual actions over its
+own history, measures where the LLM beats the deterministic baseline by market regime, and recalls
+similar past situations. It authors nothing it has not earned. Every proposal is a pre-registered
+candidate with a fixed sample-and-effect bar, forward-validated on data unseen when it was authored,
+charged against a single lifetime multiple-testing ledger, and screened for lookahead and
+simulator-fidelity before it is ever surfaced. Authoring and evaluation are autonomous; **promotion to
+live is always a human decision.**
+
+Both halves obey one principle: *the more we expand the ways to fool ourselves, the more we must prove we
+are not being fooled.* The deliverable is a governed, auditable measurement framework and an honest
+result — a null included — not a profitable trading bot.
 
 ---
 
