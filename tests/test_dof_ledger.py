@@ -68,6 +68,14 @@ class TestRecordTest(unittest.TestCase):
         s, _ = record_test(s, "h", "miner", "d", 0.99, now="t")
         self.assertLess(invest_level(s), before)  # spent-down -> stricter next bar
 
+    def test_charges_each_id_once(self):
+        s = new_state()
+        s1, look1 = record_test(s, "h1", "miner", "d", 0.001, now="t")  # rejected, charged
+        s2, look2 = record_test(s1, "h1", "miner", "d", 0.9, now="t2")  # same id -> not re-charged
+        self.assertEqual(s2.n_tests, 1)
+        self.assertEqual(s2.wealth, s1.wealth)  # budget untouched on the repeat
+        self.assertIs(look2, look1)  # returns the original look
+
 
 class TestRecordBatch(unittest.TestCase):
     def test_processes_ascending_by_pvalue(self):

@@ -4,6 +4,28 @@ Full version history. Most recent first.
 
 ---
 
+### 1.172 — July 2026 — keep the machinery honest: paired hold-horizon + charge each hypothesis once
+
+Two fixes to the anti-self-deception machinery itself, flagged in 1.171.
+
+- **Hold-horizon counterfactual is now paired on the same decisions.** Previously each horizon's mean was
+  taken over its own matured population — and a shorter horizon closes for far more decisions than a longer
+  one, so the "uplift" was confounded by sample composition, not a like-for-like comparison. Now a horizon
+  is compared to the baseline only over decisions where *both* closed, with a one-sample test on the
+  per-decision differences. This is both correct and more powerful (it removes the correlated-baseline
+  noise). The live candidate cleaned up rather than vanished: `hold_horizon_5_to_3` went from a confounded
+  +0.23R to a matched **+0.38R paired over 615 decisions** — and the full paired table (`1d −0.33R, 3d
+  +0.38R`) shows 3d beating *both* 1d and 5d on the same sample.
+- **The DOF ledger now charges each distinct hypothesis once.** `record_test` is idempotent by look-id, so
+  the weekly re-run no longer re-charges (and re-refunds) an already-tested hypothesis — otherwise a
+  persistent discovery would refund its payout every week and the lifetime budget could be gamed.
+- Reset the runtime ledger/registry and re-authored under the corrected code. The two clean candidates
+  now standing for human review: `hold_horizon_5_to_3` (+0.38R paired, n=615) and `consult_case_memory`
+  (+0.67R held-out, n=185). Neither is a live change.
+
+Net: the fix made the counterfactual signal *cleaner and stronger*, which is the point — an honest
+comparison should be more trustworthy, not weaker. +1 test.
+
 ### 1.171 — July 2026 — wire autonomous authoring into the weekly self-review (first candidates appear)
 
 Until now the miner + capabilities only authored candidates when a script was run by hand. This wires

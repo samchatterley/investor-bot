@@ -90,7 +90,14 @@ def record_test(
     """Charge one formal test against the ledger; return the advanced state and the recorded Look.
 
     Reject (discovery) when ``p <= alpha_j``: wealth earns a payout of ``alpha/2``. Otherwise wealth
-    pays ``alpha_j/(1-alpha_j)``. Both keep wealth strictly positive, so the ledger never dead-ends."""
+    pays ``alpha_j/(1-alpha_j)``. Both keep wealth strictly positive, so the ledger never dead-ends.
+
+    Idempotent by ``look_id``: a hypothesis already recorded is charged *once* against the lifetime budget,
+    so re-running the same search (e.g. weekly) returns the original look without re-charging -- otherwise a
+    persistent discovery would refund its payout every run and the budget could be gamed."""
+    prior = next((lk for lk in state.looks if lk.id == look_id), None)
+    if prior is not None:
+        return state, prior
     alpha_j = invest_level(state)
     rejected = p_value <= alpha_j
     if rejected:
