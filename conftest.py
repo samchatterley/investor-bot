@@ -106,6 +106,17 @@ def _isolate_reconciliation(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_scored_observations(tmp_path, monkeypatch):
+    """Never let the test suite read the live scored-observation log. The weekly review's telemetry and
+    candidate-authoring load it via monitoring._SCORED_PATH (a relative path that otherwise resolves to the
+    running bot's real logs/experiment_scored.jsonl); redirect it to a per-test temp file so tests are
+    deterministic and never run authoring/telemetry over live data."""
+    import experiment.monitoring as _mon
+
+    monkeypatch.setattr(_mon, "_SCORED_PATH", str(tmp_path / "experiment_scored.jsonl"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_feed_status():
     """feed_status is an in-process recorder read by run_startup_health_check; reset it around every
     test so one test's degraded-feed recording can't leak into another's health-check assertions."""

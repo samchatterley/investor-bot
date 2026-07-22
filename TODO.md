@@ -1,7 +1,10 @@
 # Pending Work
 
+### In Progress
+- [ ] 1.171: wire autonomous authoring into the weekly self-review (run_authoring) + isolate scored-obs path; first 2 candidates surfaced (case_memory +0.67R held-out, hold_horizon +0.23R)
+
 ### Pending
-- [ ] Sim-counterfactual tier: BLOCKED (structural). To unblock would need intraday historical bars at the decision timestamp + stored/reconstructable fundamental+options context — large effort, deferred
-- [ ] Optional follow-up: split the fidelity metric into technical-only vs signal-set so the gate is more informative than a single 0%
-- [ ] HELD (gated on matured 5d sample): MIN_CONFIDENCE 7->8 flip; context-card wiring; the 3 capabilities' candidates auto-appear once 5d matures
+- [ ] Refine hold-horizon counterfactual: compare only decisions where BOTH horizons closed (current uplift is confounded by mismatched matured-sample sets)
+- [ ] Refine DOF ledger: charge each distinct hypothesis once; don't re-charge already-registered candidates on the weekly re-run
+- [ ] HELD (gated on evidence): MIN_CONFIDENCE 7->8 flip; context-card wiring; sim-counterfactual (blocked, structural); optional fidelity-metric split
 

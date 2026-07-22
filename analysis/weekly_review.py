@@ -21,6 +21,7 @@ import anthropic
 import config as cfg
 from analysis.performance import compute_metrics, get_attribution, get_win_rates
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, LOG_DIR
+from experiment.authoring import run_authoring
 from experiment.candidate_registry import build_candidate_lines, load_registry
 from experiment.case_memory import build_case_memory_lines, evaluate_case_memory
 from experiment.counterfactual import build_counterfactual_lines, horizon_counterfactuals
@@ -383,6 +384,14 @@ Respond with ONLY this JSON:
     }}
   ]
 }}"""
+
+    # Autonomous candidate authoring runs weekly, before the telemetry below renders the registry/ledger,
+    # so any freshly-registered candidate shows up in this same review. Fail-safe: authoring must never
+    # break the review. Nothing goes live — promotion stays a human decision.
+    try:
+        run_authoring()
+    except Exception as exc:  # noqa: BLE001 - authoring must never break the weekly review
+        logger.warning(f"candidate authoring skipped: {exc}")
 
     # Experiment monitoring is descriptive telemetry independent of the AI narrative — record it
     # BEFORE the AI call so a failed/truncated/timed-out review never drops the weekly telemetry entry

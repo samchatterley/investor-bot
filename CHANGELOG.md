@@ -4,6 +4,34 @@ Full version history. Most recent first.
 
 ---
 
+### 1.171 — July 2026 — wire autonomous authoring into the weekly self-review (first candidates appear)
+
+Until now the miner + capabilities only authored candidates when a script was run by hand. This wires
+authoring into the weekly cadence, so mined edges and capability discoveries accrue automatically once the
+data matures.
+
+- **`experiment/authoring.py`** — `run_authoring`, the single orchestration: charges every discovery
+  search (miner + hold-horizon + self-specialization + case-memory) against the ONE global DOF ledger and
+  registers survivors idempotently. `scripts/author_candidates.py` is now a thin wrapper over it. 100%
+  covered.
+- **Called from `run_weekly_review`** (fail-safe, before the telemetry renders the registry/ledger), so
+  the Sunday scheduler runs it automatically — no `run_scheduler.py` change. Nothing goes live: promotion
+  stays a human decision.
+- **Test hygiene:** `load_scored_observations` was reading a live relative path bound as a default arg
+  (so tests read the running bot's real 4,232-row scored log). Fixed to resolve the path at call time and
+  added a `conftest` autouse fixture isolating it — tests are now deterministic and never author over live
+  data.
+- **First real candidates.** 5d outcomes have started maturing, and the first authoring run surfaced two:
+  `consult_case_memory` (**+0.67R held-out edge, n=185** — forward-honest, at the decision horizon) and
+  `hold_horizon_5_to_3` (+0.23R). Both are candidates awaiting human approval, not live changes.
+
+Known refinements (flagged, not yet fixed): (1) the hold-horizon counterfactual compares horizons with
+*different* matured-sample sets (3d has far more closed decisions than 5d), so its uplift is confounded —
+it should compare only decisions where both horizons closed. (2) Re-running the searches weekly re-charges
+the ledger for already-registered candidates; the ledger should charge each distinct hypothesis once.
+
++4 tests.
+
 ### 1.170 — July 2026 — point-in-time price reconstruction + why replay fidelity is *structurally* 0%
 
 Chased the 0% replay fidelity from 1.169. Hypothesis: yfinance `auto_adjust=True` applies today's split

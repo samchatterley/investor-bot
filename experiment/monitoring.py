@@ -106,9 +106,11 @@ def build_three_arm_summary(arm_stats: dict[str, str] | None = None) -> list[str
     return lines or ["No arm metrics available yet."]
 
 
-def load_scored_observations(path: str = _SCORED_PATH) -> list[dict]:
+def load_scored_observations(path: str | None = None) -> list[dict]:
     """Fail-safe read of the scored-observations JSONL. Returns [] on any error or missing file, so a
-    bad data file can never break the weekly review."""
+    bad data file can never break the weekly review. ``path`` defaults to the module constant at call time
+    (not bound at def time) so tests can redirect it via monkeypatch."""
+    path = path or _SCORED_PATH
     rows: list[dict] = []
     try:
         with open(path) as fh:
